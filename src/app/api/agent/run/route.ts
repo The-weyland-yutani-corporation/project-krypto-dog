@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { agentState, agentJournal } from "@/db/schema";
 import { eq, and, desc } from "drizzle-orm";
-import { JOURNAL_CONTEXT_COUNT } from "@/lib/config";
+import { JOURNAL_CONTEXT_COUNT, validateEnv, RSI_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD } from "@/lib/config";
+import { fetchCandles, calculateRSI, calculateEMA } from "@/lib/indicators";
 import { runPreFlightChecks } from "@/guardrails";
 import { runAgent } from "@/agent";
 import type { AgentRunResult, PortfolioState, MarketData, JournalEntry } from "@/lib/types";
@@ -15,6 +16,8 @@ import {
   trackAgentRunStarted,
   trackTradeExecuted,
   trackGuardrailTriggered,
+  trackAgentRunCompleted,
+  trackLLMTokenUsage,
 } from "@/lib/analytics";
 
 const MAX_RETRIES = 3;
@@ -77,6 +80,9 @@ export async function POST(request: NextRequest) {
   if (cronSecret !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Validate environment variables
+  validateEnv();
 
   // 2. Mutex
   try {
@@ -154,13 +160,30 @@ export async function POST(request: NextRequest) {
       writeJournalEntryTool,
     ];
 
-    // Build MarketData (basic — agent can fetch more via tools)
+    // Build MarketData with real indicator values
+    let rsi: number | null = null;
+    let emaShort: number | null = null;
+    let emaLong: number | null = null;
+    let emaCrossover: "bullish" | "bearish" | "neutral" = "neutral";
+
+    try {
+      const closes = await fetchCandles();
+      rsi = Math.round(calculateRSI(closes, RSI_PERIOD) * 100) / 100;
+      emaShort = calculateEMA(closes, EMA_SHORT_PERIOD);
+      emaLong = calculateEMA(closes, EMA_LONG_PERIOD);
+
+      if (emaShort > emaLong) emaCrossover = "bullish";
+      else if (emaShort < emaLong) emaCrossover = "bearish";
+    } catch (err) {
+      console.warn("[agent/run] Failed to fetch indicators, using nulls:", err);
+    }
+
     const currentMarketData: MarketData = {
       ethPrice,
-      rsi: null,
-      emaShort: null,
-      emaLong: null,
-      emaCrossover: "neutral",
+      rsi,
+      emaShort,
+      emaLong,
+      emaCrossover,
       timestamp: new Date(),
     };
 
@@ -233,6 +256,18 @@ export async function POST(request: NextRequest) {
 
     agentResult.durationMs = Date.now() - startTime;
     agentResult.portfolioState = portfolioState;
+
+    // Track run completion
+    try {
+      trackAgentRunCompleted(agentResult);
+    } catch {}
+
+    // Track LLM token usage if available
+    if (agentResult.tokenUsage) {
+      try {
+        trackLLMTokenUsage(agentResult.tokenUsage);
+      } catch {}
+    }
 
     return NextResponse.json(agentResult, { status: 200 });
   } catch (err) {

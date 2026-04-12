@@ -13,6 +13,7 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().min(1).optional(),
   ALERT_EMAIL_TO: z.email().optional(),
   ALERT_EMAIL_FROM: z.email().optional(),
+  ADMIN_PASSWORD: z.string().min(1),
 });
 
 export function validateEnv() {

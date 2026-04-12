@@ -3,6 +3,7 @@ import { agentState } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { SystemLockedError } from "@/lib/types";
 import { MIN_PORTFOLIO_VALUE_USD } from "@/lib/config";
+import { sendGuardrailAlert } from "@/lib/email";
 
 export async function checkDrawdown(): Promise<void> {
   const rows = await db
@@ -43,6 +44,12 @@ export async function checkDrawdown(): Promise<void> {
       .update(agentState)
       .set({ isLocked: true })
       .where(eq(agentState.id, "singleton"));
+
+    // Send email alert (non-blocking)
+    sendGuardrailAlert("Max Drawdown", { portfolioValue }).catch((err) =>
+      console.error("[guardrails] Failed to send drawdown alert email:", err)
+    );
+
     throw new SystemLockedError();
   }
 }

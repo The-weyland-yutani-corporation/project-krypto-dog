@@ -39,6 +39,31 @@ export async function safeTradeHandler(input: SafeTradeInput): Promise<string> {
     return "Error: Trade amount must be greater than $0.";
   }
 
+  // Guardrail 5: Balance validation
+  const stateCheck = await db
+    .select()
+    .from(agentState)
+    .where(eq(agentState.id, "singleton"))
+    .limit(1);
+  const currentState = stateCheck[0];
+
+  if (direction === "SELL") {
+    const estimatedPrice = await fetchEthPrice();
+    const requiredAsset = amountUSD / estimatedPrice;
+    if (!currentState || currentState.currentPositionETH < requiredAsset) {
+      const held = currentState?.currentPositionETH?.toFixed(6) ?? "0";
+      return `Error: Insufficient ETH balance. You hold ${held} ETH but this trade requires ${requiredAsset.toFixed(6)} ETH.`;
+    }
+  }
+
+  if (direction === "BUY") {
+    const requiredUSDC = amountUSD * 1.003; // include 0.3% fee
+    if (!currentState || currentState.currentPositionUSDC < requiredUSDC) {
+      const held = currentState?.currentPositionUSDC?.toFixed(2) ?? "0.00";
+      return `Error: Insufficient USDC balance. You hold $${held} USDC but this trade requires $${requiredUSDC.toFixed(2)} (including fees).`;
+    }
+  }
+
   try {
     const executionPrice = await fetchEthPrice();
     const amountAsset = amountUSD / executionPrice;

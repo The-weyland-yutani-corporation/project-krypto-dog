@@ -2,6 +2,8 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod/v3";
 import { db } from "@/db";
 import { agentJournal } from "@/db/schema";
+import { fetchCandles, calculateRSI, calculateEMA } from "@/lib/indicators";
+import { RSI_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD } from "@/lib/config";
 
 async function fetchMarketSnapshot() {
   const res = await fetch(
@@ -10,8 +12,29 @@ async function fetchMarketSnapshot() {
   const json = (await res.json()) as { data: { amount: string } };
   const ethPrice = parseFloat(json.data.amount);
 
+  let rsi: number | null = null;
+  let emaShort: number | null = null;
+  let emaLong: number | null = null;
+  let emaCrossover: "bullish" | "bearish" | "neutral" = "neutral";
+
+  try {
+    const closes = await fetchCandles();
+    rsi = Math.round(calculateRSI(closes, RSI_PERIOD) * 100) / 100;
+    emaShort = calculateEMA(closes, EMA_SHORT_PERIOD);
+    emaLong = calculateEMA(closes, EMA_LONG_PERIOD);
+
+    if (emaShort > emaLong) emaCrossover = "bullish";
+    else if (emaShort < emaLong) emaCrossover = "bearish";
+  } catch (err) {
+    console.warn("[journal] Failed to fetch indicators:", err);
+  }
+
   return {
     ethPrice,
+    rsi,
+    emaShort,
+    emaLong,
+    emaCrossover,
     timestamp: new Date().toISOString(),
   };
 }
