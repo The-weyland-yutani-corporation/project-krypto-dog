@@ -4,7 +4,7 @@ jest.mock("drizzle-orm/postgres-js", () => ({
   drizzle: jest.fn(() => ({})),
 }));
 
-import { TRADES, JOURNALS, FINAL_AGENT_STATE } from "../../prisma/seed";
+import { TRADES, JOURNALS, FINAL_AGENT_STATE } from "../../scripts/seed-data";
 import {
   MAX_TRADE_SIZE_USD,
   ALLOWED_ASSETS,

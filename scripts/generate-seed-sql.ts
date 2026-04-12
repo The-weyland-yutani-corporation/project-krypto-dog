@@ -1,4 +1,4 @@
-import { TRADES, JOURNALS, FINAL_AGENT_STATE } from "../prisma/seed.ts";
+import { TRADES, JOURNALS, FINAL_AGENT_STATE } from "./seed-data";
 import * as fs from "fs";
 
 function hoursAgo(h: number): Date {
