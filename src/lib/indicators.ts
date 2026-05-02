@@ -1,14 +1,50 @@
 // Coinbase Exchange candles: each entry is [timestamp, low, high, open, close, volume]
 export type CandleRaw = [number, number, number, number, number, number];
 
+const ONE_HOUR_SECONDS = 3600;
+
+/**
+ * Fetch ETH/USD 4-hour close prices.
+ *
+ * Coinbase Exchange's `/products/.../candles` only supports a fixed set of
+ * granularities (60, 300, 900, 3600, 21600, 86400) — 4-hour (14400) is *not*
+ * one of them. We therefore fetch 1-hour candles and aggregate every 4
+ * consecutive bars into a single 4-hour bar. The "close" of each 4-hour bar
+ * equals the close of its last 1-hour bar.
+ *
+ * @param count number of 4-hour bars to return (default 100)
+ */
 export async function fetchCandles(count: number = 100): Promise<number[]> {
+  const oneHourCount = count * 4;
   const res = await fetch(
-    `https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=14400`
+    `https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=${ONE_HOUR_SECONDS}`,
   );
-  const candles = (await res.json()) as CandleRaw[];
-  // Candles arrive newest-first; reverse so index 0 = oldest
-  const sorted = candles.slice(0, count).reverse();
-  return sorted.map((c) => c[4]); // close prices
+  if (!res.ok) {
+    throw new Error(`Coinbase candles API error: ${res.status} ${res.statusText}`);
+  }
+
+  const body = (await res.json()) as CandleRaw[] | { message?: string };
+  if (!Array.isArray(body)) {
+    const message =
+      body && typeof body === "object" && "message" in body
+        ? body.message
+        : JSON.stringify(body);
+    throw new Error(`Coinbase candles API returned non-array response: ${message}`);
+  }
+
+  // Coinbase returns newest-first. Reverse so index 0 = oldest, then take the
+  // newest `oneHourCount` bars to aggregate.
+  const oldestFirst = body.slice().reverse();
+  const recent = oldestFirst.slice(-oneHourCount);
+
+  // Aggregate every 4 consecutive 1h bars into a 4h close (close = last bar's
+  // close in the group). Drop any incomplete trailing group.
+  const fourHourCloses: number[] = [];
+  for (let i = 0; i + 4 <= recent.length; i += 4) {
+    const group = recent.slice(i, i + 4);
+    fourHourCloses.push(group[group.length - 1][4]);
+  }
+  return fourHourCloses;
 }
 
 export function calculateRSI(closes: number[], period: number): number {
