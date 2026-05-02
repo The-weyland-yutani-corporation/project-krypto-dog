@@ -59,8 +59,7 @@ export async function runAgent(
     // Extract token usage from AI messages
     let tokenUsage: AgentRunResult["tokenUsage"] | undefined;
     for (const msg of messages) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const usage = (msg as any).usage_metadata;
+      const usage = (msg as { usage_metadata?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } }).usage_metadata;
       if (usage) {
         tokenUsage = {
           promptTokens: usage.input_tokens ?? 0,
@@ -72,8 +71,7 @@ export async function runAgent(
 
     // Detect whether a trade was executed by checking tool calls
     const tradeExecuted = messages.some(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (msg: any) =>
+      (msg: { name?: string; tool_calls?: Array<Record<string, unknown>> }) =>
         msg.name === "safe_trade" ||
         (Array.isArray(msg.tool_calls) &&
           msg.tool_calls.some(

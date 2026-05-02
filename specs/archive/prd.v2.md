@@ -1,3 +1,8 @@
+> **📦 Archived.** This is the v2 hardening delta-PRD, preserved for historical reference.
+> The current source of truth is [`specs/prd.md`](../prd.md). Snapshot recoverable via `git show spec/v2:specs/prd.v2.md`.
+
+---
+
 ## Project Krypto v2: Hardening & Completeness
 
 ### 1. Overview

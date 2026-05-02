@@ -1,0 +1,50 @@
+# Architecture Decision Records
+
+This directory captures **why** significant architectural choices were made. ADRs are the missing layer between a code change (`git blame` tells you what) and a product spec (`prd.md` tells you what is true today).
+
+## When to write one
+
+Open an ADR for any decision that:
+
+- Locks in a technology choice (DB, ORM, hosting, queue, …)
+- Changes how a critical subsystem behaves (auth, money movement, scheduling)
+- Was contentious or had >1 reasonable option
+- A future contributor would otherwise want to reverse without context
+
+Skip ADRs for routine code changes, refactors, dependency bumps, or anything covered by a PR description.
+
+## Format
+
+Filename: `NNNN-kebab-slug.md` where `NNNN` is the next zero-padded 4-digit number.
+
+```markdown
+# NNNN — Title
+
+- **Status:** Proposed | Accepted | Superseded by NNNN | Deprecated
+- **Date:** YYYY-MM-DD
+- **Deciders:** @handle, @handle
+
+## Context
+What problem are we solving? What constraints apply?
+
+## Decision
+What did we choose, in one or two paragraphs?
+
+## Consequences
+- Positive: …
+- Negative / trade-offs: …
+- Follow-ups required: …
+
+## Alternatives considered
+- Option A — why rejected
+- Option B — why rejected
+```
+
+## Index
+
+| # | Title | Status |
+|---|---|---|
+| [0001](./0001-drizzle-over-prisma.md) | Drizzle ORM over Prisma | Accepted |
+| [0002](./0002-paper-trading-before-live.md) | Paper trading before live AgentKit | Accepted |
+| [0003](./0003-pg-cron-over-vercel-cron.md) | Supabase pg_cron over Vercel Cron | Accepted |
+| [0004](./0004-hybrid-spec-strategy.md) | Hybrid spec strategy (master + ADRs + RFCs + tags) | Accepted |

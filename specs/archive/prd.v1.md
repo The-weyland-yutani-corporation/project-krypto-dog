@@ -1,3 +1,8 @@
+> **📦 Archived.** This is the original v1 PRD, preserved for historical reference.
+> The current source of truth is [`specs/prd.md`](../prd.md). Snapshot recoverable via `git show spec/v1:specs/prd.v1.md`.
+
+---
+
 ## Project Krypto: Autonomous AI Trading Agent
 
 ### 1. Executive Summary & Vision

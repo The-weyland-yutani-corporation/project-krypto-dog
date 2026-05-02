@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'develop/**'
+  pull_request:
+    branches:
+      - main
+      - 'develop/**'
+
+# Newer pushes to the same branch cancel in-progress runs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck scripts and tests
+        # `next build` only typechecks the app code (scripts/ and tests/ are
+        # excluded from tsconfig.json). Run a separate pass over them via
+        # tsconfig.scripts.json to catch type errors in seed scripts and tests.
+        run: npm run typecheck:scripts
+
+      - name: Typecheck (Next.js build)
+        # `next build` runs the TypeScript compiler over the app code.
+        # Stub env vars so config/Zod schemas resolve without real secrets;
+        # build does not call validateEnv() at runtime.
+        env:
+          AZURE_OPENAI_ENDPOINT: https://stub.openai.azure.com
+          AZURE_OPENAI_API_KEY: stub
+          AZURE_OPENAI_DEPLOYMENT_NAME: gpt-4o
+          CDP_API_KEY_NAME: stub
+          CDP_API_KEY_PRIVATE_KEY: stub
+          DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
+          POSTHOG_API_KEY: phc_stub
+          CRON_SECRET: stub
+          ADMIN_PASSWORD: stub
+        run: npm run build
+
+      - name: Test
+        run: npm test -- --ci

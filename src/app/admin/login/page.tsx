@@ -24,7 +24,20 @@ export default function AdminLoginPage() {
       if (res.ok) {
         router.push("/admin");
       } else {
-        setError("Invalid password");
+        // Surface the server's actual error so 429 (rate-limited) doesn't
+        // masquerade as a wrong password during development.
+        let message = "Invalid password";
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body?.error) message = body.error;
+        } catch {
+          // ignore JSON parse failures
+        }
+        if (res.status === 429) {
+          const retryAfter = res.headers.get("retry-after");
+          if (retryAfter) message += ` (retry in ${retryAfter}s)`;
+        }
+        setError(message);
       }
     } catch {
       setError("Something went wrong. Please try again.");
