@@ -2,7 +2,7 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod/v3";
 import { db } from "@/db";
 import { agentState, tradeExecution } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { ALLOWED_ASSETS, MAX_TRADE_SIZE_USD } from "@/lib/config";
 
 async function fetchEthPrice(): Promise<number> {
@@ -69,6 +69,52 @@ export async function safeTradeHandler(input: SafeTradeInput): Promise<string> {
     const amountAsset = amountUSD / executionPrice;
     const feesUSD = amountUSD * 0.003; // 0.3% fee
 
+    // Re-check operator pause / drawdown lock immediately before recording
+    // the trade. This is the in-flight stop: if the operator pauses (or
+    // drawdown trips) after pre-flight passed but before INSERT, we abort
+    // here rather than persist a trade the operator no longer wants.
+    const guardCheck = await db
+      .select({
+        isLocked: agentState.isLocked,
+        isOperatorPaused: agentState.isOperatorPaused,
+      })
+      .from(agentState)
+      .where(eq(agentState.id, "singleton"))
+      .limit(1);
+    const guardState = guardCheck[0];
+    if (guardState?.isOperatorPaused) {
+      return "Trade aborted: operator paused the agent during this run.";
+    }
+    if (guardState?.isLocked) {
+      return "Trade aborted: drawdown safety lock engaged during this run.";
+    }
+
+    // Realised PnL (SELL only). Anchor = price of most recent BUY.
+    //
+    // Querying tradeExecution (rather than agentState.lastTradePrice) avoids
+    // two known issues:
+    //   1. After a SELL, agentState.lastTradePrice becomes the SELL price, so
+    //      a subsequent SELL would be anchored to another SELL — nonsensical.
+    //   2. lastTradePrice is also bumped by SELLs in the state writeback below,
+    //      which would silently corrupt the anchor for future trades.
+    //
+    // Limitation: this still uses only the *most recent* BUY, not a
+    // volume-weighted cost basis across DCA chains. True VWAP cost basis is
+    // tracked as a v3 follow-up (see specs/rfcs/0001-v3-live-trading.md).
+    let pnlUSD: number | null = null;
+    if (direction === "SELL") {
+      const lastBuyRows = await db
+        .select({ price: tradeExecution.executionPrice })
+        .from(tradeExecution)
+        .where(eq(tradeExecution.direction, "BUY"))
+        .orderBy(desc(tradeExecution.createdAt))
+        .limit(1);
+      const anchor = lastBuyRows[0]?.price;
+      if (anchor != null && anchor > 0) {
+        pnlUSD = (executionPrice - anchor) * amountAsset - feesUSD;
+      }
+    }
+
     // Log trade to database
     const [trade] = await db
       .insert(tradeExecution)
@@ -80,6 +126,7 @@ export async function safeTradeHandler(input: SafeTradeInput): Promise<string> {
         executionPrice,
         feesUSD,
         slippage: 0,
+        pnlUSD,
         agentReasoning: reasoning,
       })
       .returning();

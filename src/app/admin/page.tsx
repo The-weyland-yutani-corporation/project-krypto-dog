@@ -3,6 +3,8 @@ export const dynamic = "force-dynamic";
 import { db } from "@/db";
 import { agentState, tradeExecution } from "@/db/schema";
 import { eq, gte, count, sum } from "drizzle-orm";
+import { OperationsPanel } from "./_components/OperationsPanel";
+import { AutoRefresh } from "./_components/AutoRefresh";
 
 function formatUSD(value: number | null | undefined): string {
   if (value == null) return "—";
@@ -19,15 +21,24 @@ function formatNumber(value: number | null | undefined, decimals = 4): string {
 
 function StatusBadge({
   isLocked,
+  isOperatorPaused,
   isRunning,
 }: {
   isLocked: boolean;
+  isOperatorPaused: boolean;
   isRunning: boolean;
 }) {
   if (isLocked) {
     return (
       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
         Locked
+      </span>
+    );
+  }
+  if (isOperatorPaused) {
+    return (
+      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+        Paused
       </span>
     );
   }
@@ -63,6 +74,7 @@ function StatCard({
 }
 
 export default async function AdminDashboard() {
+  // eslint-disable-next-line react-hooks/purity -- server component runs once per request
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   const [stateRows, totalTradesRows, recentTradesRows, pnlRows] = await Promise.all([
@@ -79,8 +91,19 @@ export default async function AdminDashboard() {
 
   return (
     <div>
+      <AutoRefresh />
       <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
       <p className="mt-1 text-sm text-gray-500">Portfolio overview</p>
+
+      {state && (
+        <div className="mt-6">
+          <OperationsPanel
+            isRunning={state.isRunning}
+            isLocked={state.isLocked}
+            isOperatorPaused={state.isOperatorPaused}
+          />
+        </div>
+      )}
 
       <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Portfolio Value (USD)">
@@ -123,6 +146,7 @@ export default async function AdminDashboard() {
           {state ? (
             <StatusBadge
               isLocked={state.isLocked}
+              isOperatorPaused={state.isOperatorPaused}
               isRunning={state.isRunning}
             />
           ) : (

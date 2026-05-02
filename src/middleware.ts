@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
+function getAdminSessionSecret(): string {
+  const dedicated = process.env.ADMIN_SESSION_SECRET;
+  if (dedicated) return dedicated;
+  return process.env.CRON_SECRET || "fallback";
+}
+
 async function computeHmac(secret: string, message: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -26,6 +32,15 @@ async function verifyToken(token: string, secret: string): Promise<boolean> {
   return mismatch === 0;
 }
 
+function unauthorized(request: NextRequest): NextResponse {
+  // Pages get a redirect to the login screen; API endpoints get JSON so the
+  // client fetch can surface a structured error rather than receiving HTML.
+  if (request.nextUrl.pathname.startsWith("/api/")) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return NextResponse.redirect(new URL("/admin/login", request.url));
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -34,23 +49,23 @@ export async function middleware(request: NextRequest) {
   }
 
   const token = request.cookies.get("krypto-admin-token")?.value;
-  const secret = process.env.CRON_SECRET || "fallback";
+  const secret = getAdminSessionSecret();
 
   if (!token) {
-    return NextResponse.redirect(new URL("/admin/login", request.url));
+    return unauthorized(request);
   }
 
   try {
     if (!(await verifyToken(token, secret))) {
-      return NextResponse.redirect(new URL("/admin/login", request.url));
+      return unauthorized(request);
     }
   } catch {
-    return NextResponse.redirect(new URL("/admin/login", request.url));
+    return unauthorized(request);
   }
 
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/admin/:path*"],
+  matcher: ["/admin/:path*", "/api/admin/:path*"],
 };
