@@ -1,0 +1,13 @@
+{
+  "name": "steady-uptrend",
+  "description": "ETH rises without a 3% entry dip; strategy should avoid chasing and preserve cash.",
+  "policy": "rules-basic",
+  "start": "2026-04-01T00:00:00.000Z",
+  "intervalHours": 4,
+  "prices": [1800, 1840, 1880, 1925, 1975, 2030, 2080, 2140, 2210, 2290],
+  "expected": {
+    "minFinalEquity": 200,
+    "maxTrades": 0,
+    "mustNotLock": true
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "sideways-chop",
+  "description": "Sideways market with small oscillations; strategy should avoid overtrading and preserve capital.",
+  "policy": "rules-basic",
+  "start": "2026-02-01T00:00:00.000Z",
+  "intervalHours": 4,
+  "prices": [2000, 1985, 1970, 2010, 1995, 1965, 2025, 2005, 1980, 2030],
+  "expected": {
+    "minFinalEquity": 195,
+    "maxDrawdownPct": 5,
+    "maxTrades": 4,
+    "mustNotLock": true
+  }
+}

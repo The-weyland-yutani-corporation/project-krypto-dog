@@ -256,8 +256,27 @@ npm run db:seed
 
 ## 10. Testing profitability
 
-Do not use one-off local live-paper runs as proof of profitability. To claim net
-gains, the next build should add deterministic backtesting with:
+Do not use one-off local live-paper runs as proof of profitability. Use the
+deterministic backtest runner first:
+
+```bash
+npm run backtest -- --scenario scenarios/dip-recovery.json
+npm run backtest -- --scenario scenarios/sideways-chop.json
+npm run backtest -- --scenario scenarios/crash-rebound.json
+```
+
+To write a JSON artifact:
+
+```bash
+npm run backtest -- --scenario scenarios/dip-recovery.json --out backtest-output/dip-recovery.json
+```
+
+Backtest reports compare final equity against:
+
+- cash baseline: starting with and holding `$200` USDC
+- buy-and-hold ETH from the first scenario price
+
+The current deterministic runner includes:
 
 - controllable price/candle fixtures
 - no-LLM deterministic policies
@@ -266,5 +285,6 @@ gains, the next build should add deterministic backtesting with:
 - cooldown, DCA, balance, and drawdown guardrails
 - comparison against cash baseline and buy-and-hold ETH
 
-Until that harness exists, local testing can prove the app runs correctly, but
-not that the strategy has positive expected value.
+These scenarios are still engineering tests, not financial proof. Add more
+historical windows and avoid cherry-picking before claiming positive expected
+value.

@@ -1,0 +1,15 @@
+{
+  "name": "dip-recovery",
+  "description": "ETH dips enough to build a small position, then recovers above the sell trigger.",
+  "policy": "rules-basic",
+  "start": "2026-01-01T00:00:00.000Z",
+  "intervalHours": 4,
+  "prices": [2100, 2065, 2025, 1960, 1900, 1955, 2020, 2085, 2150, 2210],
+  "expected": {
+    "minFinalEquity": 200,
+    "mustBeatCash": true,
+    "maxDrawdownPct": 12,
+    "minTrades": 2,
+    "mustNotLock": true
+  }
+}

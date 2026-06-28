@@ -1,0 +1,13 @@
+{
+  "name": "crash-rebound",
+  "description": "Sharp selloff followed by recovery; validates DCA, stop-loss, drawdown, and rebound behavior.",
+  "policy": "rules-basic",
+  "start": "2026-03-01T00:00:00.000Z",
+  "intervalHours": 4,
+  "prices": [2200, 2110, 2020, 1910, 1780, 1660, 1540, 1700, 1880, 2070, 2250],
+  "expected": {
+    "minFinalEquity": 170,
+    "maxDrawdownPct": 25,
+    "minTrades": 2
+  }
+}

@@ -248,6 +248,7 @@ ADR `0003-pg-cron-over-vercel-cron.md` records why we chose Supabase `pg_cron` o
 - Unit: operator pause, drawdown, cooldown, `safe_trade` size/asset/balance/in-flight checks, CSRF, and seed data shape.
 - Integration: `tests/agent/agent-run.integration.test.ts` exercises the route handler and real `runAgent` wrapper while stubbing only external LLM/HTTP boundaries.
 - Local paper smoke: [`specs/local-testing.md`](./local-testing.md) covers local Postgres setup, no-LLM route checks, optional live local paper runs, admin checks, daily summary, reset/reseed, and current profitability-testing limits.
+- Deterministic evaluation: `npm run backtest -- --scenario scenarios/dip-recovery.json` replays fixture prices through a no-LLM rules policy with fees, slippage, cooldown, DCA, drawdown, weighted-average cost basis, and cash / buy-and-hold benchmarks.
 - Run with `npm test`. CI: `.github/workflows/ci.yml` runs lint + test on PRs.
 
 ---

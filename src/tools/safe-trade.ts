@@ -4,15 +4,10 @@ import { db } from "@/db";
 import { agentState, tradeExecution } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { ALLOWED_ASSETS, MAX_TRADE_SIZE_USD } from "@/lib/config";
+import { getMarketDataProvider } from "@/lib/market-data-provider";
 
 async function fetchEthPrice(): Promise<number> {
-  const res = await fetch(
-    "https://api.coinbase.com/v2/prices/ETH-USD/spot"
-  );
-  const json = (await res.json()) as {
-    data: { amount: string };
-  };
-  return parseFloat(json.data.amount);
+  return getMarketDataProvider().getEthSpotPrice();
 }
 
 interface SafeTradeInput {

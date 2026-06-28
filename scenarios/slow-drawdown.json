@@ -1,0 +1,13 @@
+{
+  "name": "slow-drawdown",
+  "description": "Persistent decline that validates DCA limits, stop-loss behavior, and drawdown reporting.",
+  "policy": "rules-basic",
+  "start": "2026-05-01T00:00:00.000Z",
+  "intervalHours": 4,
+  "prices": [2200, 2130, 2050, 1970, 1890, 1810, 1730, 1650, 1570, 1490],
+  "expected": {
+    "minFinalEquity": 160,
+    "maxDrawdownPct": 25,
+    "minTrades": 2
+  }
+}

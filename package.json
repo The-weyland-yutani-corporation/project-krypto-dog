@@ -16,7 +16,8 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "npx tsx scripts/seed.ts",
     "db:reseed": "npx tsx scripts/seed.ts",
-    "db:reset": "npx tsx scripts/reset-state.ts"
+    "db:reset": "npx tsx scripts/reset-state.ts",
+    "backtest": "npx tsx scripts/backtest.ts"
   },
   "repository": {
     "type": "git",

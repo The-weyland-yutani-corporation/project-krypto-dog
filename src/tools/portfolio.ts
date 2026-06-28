@@ -3,13 +3,10 @@ import { z } from "zod/v3";
 import { db } from "@/db";
 import { agentState } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { getMarketDataProvider } from "@/lib/market-data-provider";
 
 async function fetchEthPrice(): Promise<number> {
-  const res = await fetch(
-    "https://api.coinbase.com/v2/prices/ETH-USD/spot"
-  );
-  const json = (await res.json()) as { data: { amount: string } };
-  return parseFloat(json.data.amount);
+  return getMarketDataProvider().getEthSpotPrice();
 }
 
 export const getPortfolioStateTool = new DynamicStructuredTool({

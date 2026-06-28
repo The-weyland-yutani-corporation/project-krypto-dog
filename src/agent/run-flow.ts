@@ -9,6 +9,7 @@ import {
   EMA_LONG_PERIOD,
 } from "@/lib/config";
 import { fetchCandles, calculateRSI, calculateEMA } from "@/lib/indicators";
+import { getMarketDataProvider } from "@/lib/market-data-provider";
 import { runPreFlightChecks } from "@/guardrails";
 import { runAgent } from "@/agent";
 import type {
@@ -68,12 +69,7 @@ async function releaseMutex(): Promise<void> {
 }
 
 async function fetchEthPrice(): Promise<number> {
-  const res = await fetch("https://api.coinbase.com/v2/prices/ETH-USD/spot");
-  if (!res.ok) {
-    throw new Error(`Coinbase API error: ${res.status} ${res.statusText}`);
-  }
-  const json = (await res.json()) as { data: { amount: string } };
-  return parseFloat(json.data.amount);
+  return getMarketDataProvider().getEthSpotPrice();
 }
 
 function serializeMarketData(data: MarketData): Record<string, unknown> {

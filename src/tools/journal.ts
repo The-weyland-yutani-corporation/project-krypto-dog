@@ -4,13 +4,10 @@ import { db } from "@/db";
 import { agentJournal } from "@/db/schema";
 import { fetchCandles, calculateRSI, calculateEMA } from "@/lib/indicators";
 import { RSI_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD } from "@/lib/config";
+import { getMarketDataProvider } from "@/lib/market-data-provider";
 
 async function fetchMarketSnapshot() {
-  const res = await fetch(
-    "https://api.coinbase.com/v2/prices/ETH-USD/spot"
-  );
-  const json = (await res.json()) as { data: { amount: string } };
-  const ethPrice = parseFloat(json.data.amount);
+  const ethPrice = await getMarketDataProvider().getEthSpotPrice();
 
   let rsi: number | null = null;
   let emaShort: number | null = null;

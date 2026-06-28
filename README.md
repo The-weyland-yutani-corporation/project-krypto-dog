@@ -75,6 +75,7 @@ open http://localhost:3000/admin/login
 | `npm run db:migrate` | Run committed migrations |
 | `npm run db:studio` | Drizzle Studio (browse the DB) |
 | `npm run db:seed` | Seed the `AgentState` singleton |
+| `npm run backtest -- --scenario scenarios/dip-recovery.json` | Run deterministic paper scenario evaluation |
 
 ## Project layout
 

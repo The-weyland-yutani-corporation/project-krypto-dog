@@ -26,5 +26,8 @@ npm-debug.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# local backtest artifacts
+backtest-output/
+
 # prisma generated client
 src/generated/
