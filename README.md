@@ -11,6 +11,7 @@
 | **Trigger** | Supabase `pg_cron` + `pg_net` calling `/api/agent/run` hourly |
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
 | **Deploy** | [`specs/deployment.md`](./specs/deployment.md) |
+| **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |
 | **Decisions** | [`specs/decisions/`](./specs/decisions/) (ADRs) |
 | **Future work** | [`specs/rfcs/0001-v3-live-trading.md`](./specs/rfcs/0001-v3-live-trading.md) |
 
@@ -101,6 +102,10 @@ tests/                    # Jest unit + integration tests
 ## Deploying
 
 Don't `vercel --prod` blind — there are 7 ordered steps including DB migrations, Vault secrets, smoke tests, and cron enablement. Follow [`specs/deployment.md`](./specs/deployment.md).
+
+## Local testing
+
+Use [`specs/local-testing.md`](./specs/local-testing.md) for local Postgres setup, no-LLM smoke tests, optional live local paper runs, admin dashboard checks, and the current limits of profitability testing.
 
 ## Contributing / spec changes
 
