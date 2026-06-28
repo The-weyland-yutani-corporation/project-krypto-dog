@@ -14,7 +14,7 @@ Before touching production, confirm you have:
 - [ ] **Supabase** project created. Note the project ref, the `postgres` user password, and both connection URLs:
   - Pooler URL (port `6543`, append `?pgbouncer=true&connection_limit=1`) → `DATABASE_URL`
   - Direct URL (port `5432`) → `DIRECT_URL` (used by drizzle-kit migrations)
-- [ ] **Azure OpenAI** resource provisioned with a `gpt-4o` deployment. Have endpoint URL, API key, deployment name.
+- [ ] **Azure AI Foundry** resource provisioned with an Anthropic model deployment exposed through the Azure `/anthropic` API surface. Have endpoint URL, API key, deployment name.
 - [ ] **PostHog** project created. Have project API key + region host (`https://us.i.posthog.com` or `https://eu.i.posthog.com`).
 - [ ] **Resend** account with the sending domain verified (otherwise `ALERT_EMAIL_FROM` will be rejected). Have `RESEND_API_KEY`.
 - [ ] **Coinbase Developer Platform** API key (declared as required in `validateEnv()` schema; not used in v2 paper trading but must be present).
@@ -33,7 +33,8 @@ Migrations are split:
 |---|---|---|
 | `supabase/migrations/20260322000000_init_schema.sql` | Tables (AgentState, TradeExecution, AgentJournal) + indexes + enum | First deploy |
 | `supabase/migrations/20260322000001_seed_data.sql` | Seeds the AgentState singleton (`id='singleton'`, USDC=200) | First deploy |
-| `supabase/migrations/20260322000002_cron_schedule.sql` | pg_cron + pg_net + scheduled jobs | After §2 (Vault setup) |
+| `supabase/migrations/20260322000002_cron_schedule.sql` | pg_cron + pg_net + scheduled jobs; also idempotently ensures `isOperatorPaused` exists before jobs can fire | After §2 (Vault setup) |
+| `supabase/migrations/20260322000003_add_operator_pause.sql` | Backfills the operator pause switch for databases that already applied the cron migration before the column existed | Existing deployments / before enabling cron |
 
 ```bash
 # From the repo root, with DIRECT_URL set in .env.production.local
@@ -42,7 +43,7 @@ DATABASE_URL="<your-direct-url>" npm run db:push
 
 `drizzle-kit push` will sync the schema to Supabase. Verify in the Supabase Studio → Tables that `AgentState`, `TradeExecution`, `AgentJournal` exist.
 
-> **Why not just `supabase db push`?** Either works. `drizzle-kit push` keeps the Drizzle schema as canonical (see ADR `0001-drizzle-over-prisma.md`). If you prefer the Supabase CLI, `supabase db push` will pick up the migrations in `supabase/migrations/` in order.
+> **Why not just `supabase db push`?** Either works. `drizzle-kit push` keeps the Drizzle schema as canonical (see ADR `0001-drizzle-over-prisma.md`). If you prefer the Supabase CLI, `supabase db push` will pick up the migrations in `supabase/migrations/` in order. Pick one schema-apply path per database; do not alternate Drizzle and Supabase migration runners against the same DB unless you are deliberately reconciling migration history.
 
 ### Seed the singleton
 
@@ -111,7 +112,7 @@ In the Vercel project → **Settings → Environment Variables**, add (Productio
 |---|---|
 | `AZURE_OPENAI_ENDPOINT` | from Azure portal |
 | `AZURE_OPENAI_API_KEY` | from Azure portal |
-| `AZURE_OPENAI_DEPLOYMENT_NAME` | e.g. `gpt-4o` |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | Azure-hosted Anthropic deployment name |
 | `CDP_API_KEY_NAME` | from Coinbase Developer Platform |
 | `CDP_API_KEY_PRIVATE_KEY` | from CDP (use as-is, including newlines) |
 | `DATABASE_URL` | Supabase pooler URL with `?pgbouncer=true&connection_limit=1` |
@@ -164,7 +165,7 @@ After a successful run:
 
 1. **Database:** new row in `AgentJournal`, optionally a new row in `TradeExecution`, `AgentState.lastRunAt` updated.
 2. **PostHog:** events `agent_run_started` and `agent_run_completed` visible in the live activity view.
-3. **Admin dashboard:** open `https://<your-app>.vercel.app/admin/login`, sign in with `ADMIN_PASSWORD`, confirm dashboard loads.
+3. **Admin dashboard:** open `https://<your-app>.vercel.app/admin/login`, sign in with `ADMIN_PASSWORD`, confirm dashboard loads, pause/resume works, and the "Run Agent Now" path returns a structured result.
 
 ### 5c. Manual `POST /api/agent/daily-summary`
 

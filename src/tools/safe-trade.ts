@@ -174,6 +174,7 @@ export async function safeTradeHandler(input: SafeTradeInput): Promise<string> {
       `Execution Price: $${executionPrice.toFixed(2)}`,
       `Asset Amount: ${amountAsset.toFixed(6)} ${asset}`,
       `Fees: $${feesUSD.toFixed(4)}`,
+      `P&L: ${pnlUSD === null ? "N/A" : `${pnlUSD >= 0 ? "+" : ""}$${pnlUSD.toFixed(4)}`}`,
       `New ETH Balance: ${newEth.toFixed(6)}`,
       `New USDC Balance: $${newUsdc.toFixed(2)}`,
     ].join("\n");

@@ -17,6 +17,7 @@ async function main() {
       currentPositionUSDC: 200,
       portfolioValueUSD: 200,
       isLocked: false,
+      isOperatorPaused: false,
       isRunning: false,
     })
     .onConflictDoNothing();

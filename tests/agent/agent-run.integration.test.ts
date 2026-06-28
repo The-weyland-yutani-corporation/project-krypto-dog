@@ -5,7 +5,7 @@ import { mockDb } from "../setup";
 // The previous version of this test mocked `@/agent` itself, which meant the
 // real agent loop (prompt construction, token-usage extraction, trade detection
 // from tool calls) was never exercised. We now stub only:
-//   - `@/agent/llm`              — wraps the Azure OpenAI SDK
+//   - `@/agent/llm`              — wraps the Azure-hosted Anthropic SDK
 //   - `@langchain/langgraph/prebuilt` — provides the ReAct agent factory
 // so the route handler + the real `runAgent` are both under test.
 
@@ -67,6 +67,40 @@ function makeRequest(headers: Record<string, string> = {}) {
     method: "POST",
     headers: { "x-cron-secret": "test-cron-secret", ...headers },
   });
+}
+
+function safeTradeSuccessContent({
+  id = "trade-123",
+  direction = "BUY",
+  asset = "ETH",
+  amount = "$25.00",
+  executionPrice = "$2000.00",
+  assetAmount = "0.012500 ETH",
+  fees = "$0.0750",
+  pnl = "N/A",
+}: {
+  id?: string;
+  direction?: "BUY" | "SELL";
+  asset?: string;
+  amount?: string;
+  executionPrice?: string;
+  assetAmount?: string;
+  fees?: string;
+  pnl?: string;
+} = {}) {
+  return [
+    "Trade executed successfully.",
+    `ID: ${id}`,
+    `Direction: ${direction}`,
+    `Asset: ${asset}`,
+    `Amount: ${amount}`,
+    `Execution Price: ${executionPrice}`,
+    `Asset Amount: ${assetAmount}`,
+    `Fees: ${fees}`,
+    `P&L: ${pnl}`,
+    "New ETH Balance: 0.012500",
+    "New USDC Balance: $174.93",
+  ].join("\n");
 }
 
 /** Configure mockDb chains so acquireMutex succeeds */
@@ -221,6 +255,16 @@ describe("POST /api/agent/run", () => {
       completionTokens: 50,
       totalTokens: 150,
     });
+    expect(body.journalWritten).toBe(true);
+    expect(body.journalFallbackWritten).toBe(true);
+    expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entryText: expect.stringContaining("Fallback journal entry"),
+        marketConditions: expect.objectContaining({
+          ethPrice: 2000,
+        }),
+      }),
+    );
     // Pure hold path: no trade analytics call.
     expect(trackTradeExecuted).not.toHaveBeenCalled();
   });
@@ -240,7 +284,16 @@ describe("POST /api/agent/run", () => {
           tool_calls: [{ name: "safe_trade", args: { direction: "BUY", asset: "ETH", amountUSD: 25 } }],
           usage_metadata: { input_tokens: 200, output_tokens: 80, total_tokens: 280 },
         },
-        { role: "tool", name: "safe_trade", content: "Trade executed" },
+        {
+          role: "tool",
+          name: "safe_trade",
+          content: safeTradeSuccessContent(),
+        },
+        {
+          role: "tool",
+          name: "write_journal_entry",
+          content: "Journal entry recorded (ID: journal-123). ETH price at time of entry: $2000.00.",
+        },
         { role: "assistant", content: "Bought ETH because RSI < 30." },
       ],
     });
@@ -250,7 +303,126 @@ describe("POST /api/agent/run", () => {
     const body = await res.json();
     expect(body.status).toBe("executed");
     expect(body.action).toBe("trade");
+    expect(body.trade).toEqual(
+      expect.objectContaining({
+        success: true,
+        tradeId: "trade-123",
+        direction: "BUY",
+        asset: "ETH",
+        amountUSD: 25,
+        executionPrice: 2000,
+        amountAsset: 0.0125,
+        feesUSD: 0.075,
+        pnlUSD: null,
+      }),
+    );
+    expect(body.journalWritten).toBe(true);
+    expect(body.journalFallbackWritten).toBeUndefined();
     expect(body.tokenUsage.totalTokens).toBe(280);
+    expect(trackTradeExecuted).toHaveBeenCalledWith({
+      direction: "BUY",
+      asset: "ETH",
+      amountUSD: 25,
+      executionPrice: 2000,
+      feesUSD: 0.075,
+      pnlUSD: undefined,
+    });
+  });
+
+  it("reports a later successful safe_trade when an earlier attempt failed", async () => {
+    stubMutexSuccess();
+    mockedRunPreFlightChecks.mockResolvedValue({ skip: false });
+    stubSelectCalls();
+
+    mockAgentInvoke.mockResolvedValue({
+      messages: [
+        { role: "user", content: "..." },
+        {
+          role: "tool",
+          name: "safe_trade",
+          content: "Error: Trade exceeds max limit of $50. Please reduce trade size.",
+        },
+        {
+          role: "tool",
+          name: "safe_trade",
+          content: safeTradeSuccessContent({
+            id: "trade-sell",
+            direction: "SELL",
+            amount: "$30.00",
+            assetAmount: "0.015000 ETH",
+            fees: "$0.0900",
+            pnl: "+$1.4100",
+          }),
+        },
+        {
+          role: "tool",
+          name: "write_journal_entry",
+          content: "Journal entry recorded (ID: journal-sell). ETH price at time of entry: $2000.00.",
+        },
+        { role: "assistant", content: "Reduced size and sold successfully." },
+      ],
+    });
+
+    const res = await POST(makeRequest() as any);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe("executed");
+    expect(body.trade).toEqual(
+      expect.objectContaining({
+        success: true,
+        tradeId: "trade-sell",
+        direction: "SELL",
+        amountUSD: 30,
+        amountAsset: 0.015,
+        feesUSD: 0.09,
+        pnlUSD: 1.41,
+      }),
+    );
+    expect(trackTradeExecuted).toHaveBeenCalledWith({
+      direction: "SELL",
+      asset: "ETH",
+      amountUSD: 30,
+      executionPrice: 2000,
+      feesUSD: 0.09,
+      pnlUSD: 1.41,
+    });
+  });
+
+  it("does not fail an executed run when fallback journal insert fails", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    stubMutexSuccess();
+    mockedRunPreFlightChecks.mockResolvedValue({ skip: false });
+    stubSelectCalls();
+    mockDb._insertChain.values.mockImplementationOnce(() => {
+      throw new Error("fallback insert failed");
+    });
+
+    mockAgentInvoke.mockResolvedValue({
+      messages: [
+        { role: "user", content: "..." },
+        { role: "tool", name: "safe_trade", content: safeTradeSuccessContent() },
+        { role: "assistant", content: "Bought ETH but forgot to journal." },
+      ],
+    });
+
+    try {
+      const res = await POST(makeRequest() as any);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe("executed");
+      expect(body.journalWritten).toBe(false);
+      expect(body.journalFallbackWritten).toBeUndefined();
+      expect(trackTradeExecuted).toHaveBeenCalledWith({
+        direction: "BUY",
+        asset: "ETH",
+        amountUSD: 25,
+        executionPrice: 2000,
+        feesUSD: 0.075,
+        pnlUSD: undefined,
+      });
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   // ── Tool wiring ────────────────────────────────────────────────────────

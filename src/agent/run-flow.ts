@@ -76,6 +76,45 @@ async function fetchEthPrice(): Promise<number> {
   return parseFloat(json.data.amount);
 }
 
+function serializeMarketData(data: MarketData): Record<string, unknown> {
+  return {
+    ethPrice: data.ethPrice,
+    rsi: data.rsi,
+    emaShort: data.emaShort,
+    emaLong: data.emaLong,
+    emaCrossover: data.emaCrossover,
+    timestamp: data.timestamp.toISOString(),
+  };
+}
+
+async function ensureJournalEntry(
+  result: AgentRunResult,
+  marketData: MarketData,
+): Promise<void> {
+  if (result.status === "error" || result.journalWritten) {
+    return;
+  }
+
+  const entryText = [
+    "Fallback journal entry: the model did not successfully call write_journal_entry during this run.",
+    `Decision: ${result.action ?? result.status}.`,
+    result.reasoning ? `Reasoning: ${result.reasoning}` : "Reasoning unavailable.",
+  ].join("\n");
+
+  try {
+    await db.insert(agentJournal).values({
+      entryText,
+      marketConditions: serializeMarketData(marketData),
+      ...(result.trade?.tradeId ? { tradeExecutionId: result.trade.tradeId } : {}),
+    });
+
+    result.journalWritten = true;
+    result.journalFallbackWritten = true;
+  } catch (error) {
+    console.error("[run-flow] Failed to write fallback journal entry:", error);
+  }
+}
+
 function isAzure429Error(err: unknown): boolean {
   if (err instanceof Error) {
     return err.message.includes("429") || err.message.includes("Rate limit");
@@ -266,13 +305,26 @@ export async function executeAgentRun(
       return { kind: "upstream_error", result: errorResult, httpStatus: 500 };
     }
 
-    if (agentResult.trade?.success) {
+    await ensureJournalEntry(agentResult, currentMarketData);
+
+    const trade = agentResult.trade;
+    if (
+      trade?.success &&
+      trade.direction &&
+      trade.asset &&
+      trade.amountUSD != null &&
+      trade.executionPrice != null &&
+      trade.feesUSD != null
+    ) {
       try {
-        trackTradeExecuted(
-          agentResult.trade as unknown as Parameters<
-            typeof trackTradeExecuted
-          >[0],
-        );
+        trackTradeExecuted({
+          direction: trade.direction,
+          asset: trade.asset,
+          amountUSD: trade.amountUSD,
+          executionPrice: trade.executionPrice,
+          feesUSD: trade.feesUSD,
+          pnlUSD: trade.pnlUSD ?? undefined,
+        });
       } catch {}
     }
 

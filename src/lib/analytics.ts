@@ -38,6 +38,8 @@ export function trackAgentRunCompleted(
         promptTokens: result.tokenUsage?.promptTokens ?? null,
         completionTokens: result.tokenUsage?.completionTokens ?? null,
         totalTokens: result.tokenUsage?.totalTokens ?? null,
+        journalWritten: result.journalWritten ?? null,
+        journalFallbackWritten: result.journalFallbackWritten ?? false,
         timestamp: new Date().toISOString(),
       },
     });

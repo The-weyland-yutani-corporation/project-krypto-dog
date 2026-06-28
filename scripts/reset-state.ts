@@ -40,6 +40,7 @@ async function main() {
       currentPositionUSDC: INITIAL_CAPITAL_USD,
       portfolioValueUSD: INITIAL_CAPITAL_USD,
       isLocked: false,
+      isOperatorPaused: false,
       isRunning: false,
       lastRunAt: null,
     })
@@ -49,7 +50,7 @@ async function main() {
     `✅ Reset complete. Removed ${tradesDeleted.length} trade(s) and ${journalsDeleted.length} journal entr${journalsDeleted.length === 1 ? "y" : "ies"}.`,
   );
   console.log(
-    `   AgentState → 0 ETH / $${INITIAL_CAPITAL_USD} USDC / value $${INITIAL_CAPITAL_USD} / unlocked.`,
+    `   AgentState → 0 ETH / $${INITIAL_CAPITAL_USD} USDC / value $${INITIAL_CAPITAL_USD} / unlocked / operator resumed.`,
   );
 
   await client.end();

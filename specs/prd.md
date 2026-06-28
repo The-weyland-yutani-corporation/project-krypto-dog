@@ -29,7 +29,7 @@
 |---|---|
 | Application | Next.js 16 (App Router), TypeScript, Node.js |
 | AI orchestration | LangChain (`@langchain/langgraph` ReAct agent) |
-| LLM engine | Azure AI Foundry (Azure OpenAI Service, GPT-4o) |
+| LLM engine | Azure AI Foundry-hosted Anthropic model via the Azure `/anthropic` API surface |
 | Execution venue | Currently: paper trading via Coinbase Spot price API. v3: Coinbase Developer Platform via `@coinbase/agentkit-langchain` |
 | Database | Supabase (PostgreSQL) via **Drizzle ORM** |
 | Observability | PostHog (events) + Vercel logs + Resend (email alerts) |
@@ -55,6 +55,7 @@ Source of truth: [`src/db/schema.ts`](../src/db/schema.ts). Migrations: [`drizzl
 | `currentPositionUSDC` | `double precision` | default `200` |
 | `portfolioValueUSD` | `double precision` | default `200`; updated on each pre-flight check |
 | `isLocked` | `boolean` | set true when drawdown breach occurs; manual reset only |
+| `isOperatorPaused` | `boolean` | operator-controlled pause switch; can be toggled from admin without clearing drawdown lock |
 | `isRunning` | `boolean` | mutex flag; atomically flipped at start/end of each run |
 | `lastRunAt` | `timestamp(3)` | updated on mutex release |
 | `updatedAt` | `timestamp(3)` | auto on update |
@@ -113,11 +114,13 @@ All checks live in TypeScript middleware *before* any tool invocation reaches th
 
 | # | Guardrail | Implementation | Behaviour |
 |---|---|---|---|
-| 1 | **Pre-flight killswitch (max drawdown)** | `src/guardrails/drawdown-check.ts` | If `portfolioValueUSD < $150`, set `isLocked = true`, fire email alert, abort run. Manual DB unlock required. |
-| 2 | **Anti-hyperactivity (cooldown)** | `src/guardrails/cooldown-check.ts` | If `now − lastTrade.createdAt < 2h`, skip the agent invocation entirely (no LLM cost). |
-| 3 | **Max trade size** | `src/tools/safe-trade.ts` (in-tool) | Reject `amountUSD > $50` with an error string returned to the LLM (not a throw — agent can adjust). |
-| 4 | **Asset whitelist** | `src/tools/safe-trade.ts` | Reject anything not in `["ETH","USDC"]`. |
-| 5 | **Balance validation** | `src/tools/safe-trade.ts` | Before SELL, verify `currentPositionETH ≥ amountAsset`. Before BUY, verify `currentPositionUSDC ≥ amountUSD × 1.003` (fee buffer). Prevents phantom shorts and overdrafts. *(Added in v2.)* |
+| 1 | **Operator pause** | `src/guardrails/operator-pause-check.ts` | If `isOperatorPaused = true`, skip the agent invocation entirely. Admin can toggle this without touching drawdown lock. |
+| 2 | **Pre-flight killswitch (max drawdown)** | `src/guardrails/drawdown-check.ts` | If `portfolioValueUSD < $150`, set `isLocked = true`, fire email alert, abort run. Manual DB unlock required. |
+| 3 | **Anti-hyperactivity (cooldown)** | `src/guardrails/cooldown-check.ts` | If `now − lastTrade.createdAt < 2h`, skip the agent invocation entirely (no LLM cost). |
+| 4 | **Max trade size** | `src/tools/safe-trade.ts` (in-tool) | Reject `amountUSD > $50` with an error string returned to the LLM (not a throw — agent can adjust). |
+| 5 | **Asset whitelist** | `src/tools/safe-trade.ts` | Reject anything not in `["ETH","USDC"]`. |
+| 6 | **Balance validation** | `src/tools/safe-trade.ts` | Before SELL, verify `currentPositionETH ≥ amountAsset`. Before BUY, verify `currentPositionUSDC ≥ amountUSD × 1.003` (fee buffer). Prevents phantom shorts and overdrafts. *(Added in v2.)* |
+| 7 | **In-flight pause/lock re-check** | `src/tools/safe-trade.ts` | Immediately before recording a trade, re-read `isOperatorPaused` and `isLocked`; abort if either changed mid-run. |
 | Mutex | **Concurrent-run prevention** | `src/app/api/agent/run/route.ts` `acquireMutex()` | Atomic `UPDATE … WHERE isRunning = false RETURNING *`. Returns 409 if locked. Always released in `finally`. |
 
 ---
@@ -138,7 +141,7 @@ All checks live in TypeScript middleware *before* any tool invocation reaches th
 
 ### `POST /api/agent/run`
 - **Auth:** `x-cron-secret` header matched against `CRON_SECRET`.
-- **Flow:** validate env → acquire mutex → pre-flight guardrails → fetch portfolio + journal + market data → invoke LangChain agent (3 retries on Azure 429) → log analytics → release mutex.
+- **Flow:** validate env → acquire mutex → pre-flight guardrails → fetch portfolio + journal + market data → invoke LangChain agent (3 retries on Azure 429) → ensure journal entry exists → log analytics → release mutex.
 - **Response:** `AgentRunResult` JSON (`status`, `action`, `reasoning`, `trade`, `portfolioState`, `tokenUsage`, `durationMs`).
 
 ### `POST /api/agent/daily-summary`
@@ -147,8 +150,20 @@ All checks live in TypeScript middleware *before* any tool invocation reaches th
 ### `POST /api/auth/login`, `GET /api/auth/logout`
 - Password check against `ADMIN_PASSWORD`. Sets HMAC-signed `krypto-admin-token` cookie (HTTP-only, SameSite=Lax, 24h).
 
+### `POST /api/admin/run-agent`
+- **Auth:** admin cookie via middleware, plus same-origin check.
+- Manually invokes the same shared `executeAgentRun({ triggerSource: "admin" })` path used by cron.
+
+### `POST /api/admin/pause`
+- **Auth:** admin cookie via middleware, plus same-origin check.
+- Body `{ paused: boolean }`. Toggles `AgentState.isOperatorPaused` only; it does not clear the drawdown `isLocked` safety state.
+
+### `POST /api/admin/release-run-lease`
+- **Auth:** admin cookie via middleware, plus same-origin check.
+- Force-clears `isRunning` for a stuck mutex. Dangerous if a run is genuinely in flight; exposed in the admin UI behind a confirmation.
+
 ### `/admin`, `/admin/trades`, `/admin/journal`
-- Server-rendered dashboard. Protected by `src/middleware.ts` matcher `/admin/:path*` (excludes `/admin/login`).
+- Server-rendered dashboard with auto-refresh and operations controls. Protected by `src/middleware.ts` matcher `/admin/:path*` (excludes `/admin/login`); `/api/admin/:path*` is also protected.
 
 ---
 
@@ -184,7 +199,7 @@ Production requires *all* of the following (see [`.env.example`](../.env.example
 |---|---|---|
 | `AZURE_OPENAI_ENDPOINT` | LLM endpoint URL | yes |
 | `AZURE_OPENAI_API_KEY` | LLM API key | yes |
-| `AZURE_OPENAI_DEPLOYMENT_NAME` | GPT-4o deployment name | yes |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | Azure-hosted Anthropic model deployment name | yes |
 | `CDP_API_KEY_NAME` | Coinbase CDP key (v3) | yes (declared, unused in v2) |
 | `CDP_API_KEY_PRIVATE_KEY` | Coinbase CDP private key (v3) | yes (declared, unused in v2) |
 | `DATABASE_URL` | Supabase Postgres URL (use `?pgbouncer=true` for runtime) | yes |
@@ -221,7 +236,7 @@ ADR `0003-pg-cron-over-vercel-cron.md` records why we chose Supabase `pg_cron` o
 |---|---|
 | Mid-trade crash | Log + skip. No retry (avoids double trades). |
 | Coinbase API unreachable | Abort run with HTTP 502; next cron tick retries naturally. |
-| Azure OpenAI 429 | Retry up to 3× with exponential backoff (1s, 2s, 4s). |
+| Azure-hosted LLM 429 | Retry up to 3× with exponential backoff (1s, 2s, 4s). |
 | Drawdown breach | Lock + alert. Manual DB `UPDATE "AgentState" SET "isLocked" = false WHERE id = 'singleton'` to resume. |
 | Mutex stuck (e.g. crashed mid-run) | Manual `UPDATE "AgentState" SET "isRunning" = false WHERE id = 'singleton'`. |
 | Cron HTTP timeout | Vercel kills > 60s; `pg_net` records the response status — see Supabase `net._http_response`. |
@@ -230,8 +245,8 @@ ADR `0003-pg-cron-over-vercel-cron.md` records why we chose Supabase `pg_cron` o
 
 ## 12. Testing
 
-- Unit: all 4 guardrails, `safe_trade` size/asset/balance checks, seed data shape.
-- Integration: `tests/agent/agent-run.integration.test.ts` exercises the route handler (in-progress: should un-mock `runAgent` and only stub external HTTP — tracked separately).
+- Unit: operator pause, drawdown, cooldown, `safe_trade` size/asset/balance/in-flight checks, CSRF, and seed data shape.
+- Integration: `tests/agent/agent-run.integration.test.ts` exercises the route handler and real `runAgent` wrapper while stubbing only external LLM/HTTP boundaries.
 - Run with `npm test`. CI: `.github/workflows/ci.yml` runs lint + test on PRs.
 
 ---

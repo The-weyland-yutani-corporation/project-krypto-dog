@@ -50,7 +50,7 @@ jobs:
         env:
           AZURE_OPENAI_ENDPOINT: https://stub.openai.azure.com
           AZURE_OPENAI_API_KEY: stub
-          AZURE_OPENAI_DEPLOYMENT_NAME: gpt-4o
+          AZURE_OPENAI_DEPLOYMENT_NAME: claude-sonnet-stub
           CDP_API_KEY_NAME: stub
           CDP_API_KEY_PRIVATE_KEY: stub
           DATABASE_URL: postgresql://stub:stub@localhost:5432/stub

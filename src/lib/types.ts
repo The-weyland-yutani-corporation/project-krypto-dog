@@ -25,9 +25,13 @@ export interface TradeRequest {
 export interface TradeResult {
   success: boolean;
   tradeId?: string;
+  direction?: "BUY" | "SELL";
+  asset?: string;
+  amountUSD?: number;
   executionPrice?: number;
   amountAsset?: number;
   feesUSD?: number;
+  pnlUSD?: number | null;
   error?: string;
 }
 
@@ -44,6 +48,8 @@ export interface AgentRunResult {
     completionTokens: number;
     totalTokens: number;
   };
+  journalWritten?: boolean;
+  journalFallbackWritten?: boolean;
   durationMs: number;
 }
 

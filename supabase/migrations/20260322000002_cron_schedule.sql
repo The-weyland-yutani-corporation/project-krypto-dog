@@ -29,6 +29,13 @@
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pg_net;
 
+-- Compatibility for the Supabase migration track: Drizzle has a dedicated
+-- migration for this column, but this file may be applied on a fresh Supabase
+-- project before the idempotent 0003 backfill below. Keep cron-safe schema in
+-- place before scheduling jobs.
+ALTER TABLE "AgentState"
+ADD COLUMN IF NOT EXISTS "isOperatorPaused" BOOLEAN NOT NULL DEFAULT false;
+
 -- ----------------------------------------------------------------------------
 -- Helper: invoke a Krypto API endpoint with the cron-secret header.
 -- Reads URL + secret from Vault on every call (so rotation = single UPDATE).
