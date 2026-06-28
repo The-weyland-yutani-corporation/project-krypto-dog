@@ -226,6 +226,8 @@ LIMIT 10;
 - **Weekly:** open `/admin/journal`. Skim 5–10 entries. Are reasons coherent? Is the LLM ignoring the strategy rules? Are guardrails firing as expected?
 - **Per release:** PostHog → events filtered to `guardrail_triggered` and `agent_run_completed { status = "error" }`. Spike investigation.
 
+See [`monitoring.md`](./monitoring.md) for the PostHog dashboard, alert thresholds, Supabase cron checks, and v3 evidence checklist.
+
 ### "System is locked" recovery
 
 A drawdown breach (`portfolioValue < $150`) sets `isLocked = true` and pauses all trading. The system never auto-unlocks — manual review is required.

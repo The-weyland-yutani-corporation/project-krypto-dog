@@ -12,6 +12,7 @@
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
 | **Deploy** | [`specs/deployment.md`](./specs/deployment.md) |
 | **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |
+| **Monitoring** | [`specs/monitoring.md`](./specs/monitoring.md) |
 | **Decisions** | [`specs/decisions/`](./specs/decisions/) (ADRs) |
 | **Future work** | [`specs/rfcs/0001-v3-live-trading.md`](./specs/rfcs/0001-v3-live-trading.md) |
 

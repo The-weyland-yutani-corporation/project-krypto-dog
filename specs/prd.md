@@ -189,6 +189,8 @@ If `RESEND_API_KEY` / `ALERT_EMAIL_*` are missing, both helpers degrade to conso
 ### Vercel logs
 - Default function logs for everything else (errors, retries, mutex release failures).
 
+Operational dashboards, alert thresholds, Supabase cron checks, and the paper-trading evidence checklist are documented in [`specs/monitoring.md`](./monitoring.md).
+
 ---
 
 ## 9. Environment variables
