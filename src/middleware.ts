@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function getAdminSessionSecret(): string {
-  const dedicated = process.env.ADMIN_SESSION_SECRET;
-  if (dedicated) return dedicated;
-  return process.env.CRON_SECRET || "fallback";
-}
+import { getAdminSessionSecret } from "@/lib/admin-auth";
 
 async function computeHmac(secret: string, message: string): Promise<string> {
   const encoder = new TextEncoder();

@@ -9,6 +9,9 @@ import { safeTradeHandler } from "@/tools/safe-trade";
 describe("Guardrails 3 & 4 – Safe Trade Tool", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockDb._selectChain.limit.mockReset();
+    mockDb._insertChain.returning.mockReset();
+    mockDb._insertChain.onConflictDoUpdate.mockReset();
     // Restore chain wiring after clearAllMocks
     mockDb.select.mockReturnValue(mockDb._selectChain);
     mockDb.insert.mockReturnValue(mockDb._insertChain);
