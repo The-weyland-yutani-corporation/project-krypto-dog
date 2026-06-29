@@ -34,7 +34,8 @@ export function getBacktestSnapshotData(): {
     return {
       name: scenario.name
         .split("-")
-        .map((part) => part[0].toUpperCase())
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase())
         .join(""),
       value: scenarioResult.finalEquityUSD - scenarioResult.initialCapitalUSD,
     };

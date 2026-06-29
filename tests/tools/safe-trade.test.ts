@@ -84,16 +84,15 @@ describe("Guardrails 3 & 4 – Safe Trade Tool", () => {
       id: "singleton", currentPositionETH: 0.05, currentPositionUSDC: 50,
       portfolioValueUSD: 150, lastTradePrice: 2222, isLocked: false, isOperatorPaused: false, isRunning: false,
     };
-    // 4 SELECT.limit() calls for a SELL after the in-flight guard was added:
+    // 3 SELECT.limit() calls for a SELL:
     // (1) initial balance check, (2) in-flight pause/lock guard, (3) last-BUY
-    // anchor, (4) state rebuild for the upsert.
+    // anchor. State writeback reuses the first row.
     // Note: state.lastTradePrice is intentionally bogus (2222) to prove the
     // PnL anchor comes from the tradeExecution table, NOT from agentState.
     mockDb._selectChain.limit
       .mockResolvedValueOnce([state])
       .mockResolvedValueOnce([{ isLocked: false, isOperatorPaused: false }])
-      .mockResolvedValueOnce([{ price: 1900, amountAsset: 0.03, feesUSD: 0.12 }])
-      .mockResolvedValueOnce([state]);
+      .mockResolvedValueOnce([{ price: 1900, amountAsset: 0.03, feesUSD: 0.12 }]);
     mockFetch.mockResolvedValue({
       ok: true, json: async () => ({ data: { amount: "2000" } }),
     });
