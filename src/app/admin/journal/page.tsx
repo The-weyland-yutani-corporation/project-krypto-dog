@@ -4,6 +4,10 @@ import Link from "next/link";
 import { db } from "@/db";
 import { agentJournal, tradeExecution } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { EmptyState } from "@/components/krypto/empty-state";
+import { PageHeader } from "@/components/krypto/page-header";
 
 interface MarketConditions {
   ethPrice?: number;
@@ -55,26 +59,27 @@ export default async function JournalPage() {
   if (entries.length === 0) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Journal</h1>
-        <div className="mt-12 text-center">
-          <p className="text-5xl">📓</p>
-          <p className="mt-4 text-lg font-medium text-gray-600">
-            No journal entries yet
-          </p>
-          <p className="mt-1 text-sm text-gray-400">
-            The agent will log its observations and decisions here.
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Agent memory"
+          title="Journal"
+          description="Reasoning snapshots, market context, and trade-linked memory."
+        />
+        <EmptyState
+          icon="📓"
+          title="No journal entries yet"
+          description="The agent will log observations, decisions, and fallback memory here."
+        />
       </div>
     );
   }
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900">Journal</h1>
-      <p className="mt-1 text-sm text-gray-500">
-        Agent observations and market analysis
-      </p>
+      <PageHeader
+        eyebrow="Agent memory"
+        title="Journal"
+        description="Agent observations and market analysis from recent paper runs."
+      />
 
       <div className="mt-6 space-y-4">
         {entries.map((entry) => {
@@ -83,10 +88,10 @@ export default async function JournalPage() {
           return (
             <div
               key={entry.id}
-              className="bg-white rounded-xl shadow-sm border border-gray-200 p-5"
+              className="rounded-xl border border-border bg-card p-5 shadow-[0_16px_60px_rgba(0,0,0,0.22)]"
             >
               <div className="flex items-start justify-between gap-4">
-                <time className="text-xs font-medium text-gray-400 whitespace-nowrap">
+                <time className="whitespace-nowrap font-mono text-xs text-muted-foreground">
                   {new Date(entry.createdAt).toLocaleString("en-US", {
                     month: "short",
                     day: "numeric",
@@ -99,41 +104,37 @@ export default async function JournalPage() {
                 {entry.tradeExecution && (
                   <Link
                     href="/admin/trades"
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold ${
-                      entry.tradeExecution.direction === "BUY"
-                        ? "bg-green-100 text-green-800"
-                        : "bg-red-100 text-red-800"
-                    }`}
                   >
-                    {entry.tradeExecution.direction === "BUY" ? "↗" : "↘"}{" "}
-                    {entry.tradeExecution.direction} Trade
+                    <Badge variant={entry.tradeExecution.direction === "BUY" ? "success" : "destructive"}>
+                      {entry.tradeExecution.direction === "BUY" ? "↗" : "↘"}{" "}
+                      {entry.tradeExecution.direction} Trade
+                    </Badge>
                   </Link>
                 )}
               </div>
 
-              <p className="mt-3 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
+              <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-card-foreground">
                 {entry.entryText}
               </p>
 
-              {/* Market conditions */}
               {(conditions.ethPrice != null ||
                 conditions.rsi != null ||
                 conditions.ema != null) && (
                 <div className="mt-3 flex flex-wrap gap-3">
                   {conditions.ethPrice != null && (
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-blue-50 text-xs font-medium text-blue-700">
+                    <Badge variant="info">
                       ETH {formatUSD(conditions.ethPrice)}
-                    </span>
+                    </Badge>
                   )}
                   {conditions.rsi != null && (
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-purple-50 text-xs font-medium text-purple-700">
+                    <Badge variant="outline">
                       RSI {conditions.rsi.toFixed(1)}
-                    </span>
+                    </Badge>
                   )}
                   {conditions.ema != null && (
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-50 text-xs font-medium text-amber-700">
+                    <Badge variant="warning">
                       EMA {formatUSD(conditions.ema)}
-                    </span>
+                    </Badge>
                   )}
                 </div>
               )}

@@ -13,6 +13,7 @@
 | **Deploy** | [`specs/deployment.md`](./specs/deployment.md) |
 | **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |
 | **Monitoring** | [`specs/monitoring.md`](./specs/monitoring.md) |
+| **Design** | [`DESIGN.md`](./DESIGN.md) |
 | **Decisions** | [`specs/decisions/`](./specs/decisions/) (ADRs) |
 | **Future work** | [`specs/rfcs/0001-v3-live-trading.md`](./specs/rfcs/0001-v3-live-trading.md) |
 

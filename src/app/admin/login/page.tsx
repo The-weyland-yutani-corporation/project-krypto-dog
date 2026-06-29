@@ -2,6 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Alert } from "@/components/ui/alert";
 
 export default function AdminLoginPage() {
   const [password, setPassword] = useState("");
@@ -47,35 +51,41 @@ export default function AdminLoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-950">
-      <div className="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-900 p-8 shadow-lg">
-        <h1 className="mb-6 text-center text-2xl font-bold text-white">
-          Admin Login
-        </h1>
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <Card className="w-full max-w-sm border-info/20">
+        <CardHeader className="text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-info/30 bg-info/10 text-2xl">
+            🐕
+          </div>
+          <CardTitle className="mt-4">Project Krypto Console</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Authenticate to manage paper trading operations.
+          </p>
+        </CardHeader>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <input
+        <CardContent>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Enter admin password"
             required
-            className="rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2.5 text-white placeholder-zinc-500 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
           />
 
           {error && (
-            <p className="text-sm text-red-400">{error}</p>
+            <Alert variant="destructive">{error}</Alert>
           )}
 
-          <button
+          <Button
             type="submit"
             disabled={loading}
-            className="rounded-lg bg-blue-600 px-4 py-2.5 font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
             {loading ? "Signing in…" : "Sign in"}
-          </button>
+          </Button>
         </form>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

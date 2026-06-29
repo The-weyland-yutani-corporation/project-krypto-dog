@@ -2,6 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface OperationsPanelProps {
   isRunning: boolean;
@@ -137,32 +140,28 @@ export function OperationsPanel({
 
   const statusColor =
     status.kind === "success"
-      ? "text-green-700"
+      ? "text-success"
       : status.kind === "error"
-        ? "text-red-700"
+        ? "text-destructive"
         : status.kind === "info"
-          ? "text-blue-700"
-          : "text-gray-500";
+          ? "text-info"
+          : "text-muted-foreground";
 
   return (
-    <section
-      aria-label="Operations"
-      className="bg-white rounded-xl shadow-sm border border-gray-200 p-5"
-    >
-      <div className="flex items-start justify-between gap-4 flex-wrap">
+    <Card aria-label="Operations">
+      <CardHeader className="flex-row items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">Operations</h2>
-          <p className="mt-1 text-sm text-gray-500">
+          <CardTitle>Operations</CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">
             Manually trigger the agent or change its operating state.
           </p>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <button
+          <Button
             type="button"
             onClick={handleRun}
             disabled={runDisabled}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
             aria-disabled={runDisabled}
             title={
               isLocked
@@ -175,27 +174,22 @@ export function OperationsPanel({
             }
           >
             ▶ Run Agent Now
-          </button>
+          </Button>
 
-          <button
+          <Button
             type="button"
             onClick={handlePauseToggle}
             disabled={pending}
-            className={
-              "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium disabled:cursor-not-allowed " +
-              (isOperatorPaused
-                ? "bg-amber-600 text-white hover:bg-amber-700 disabled:bg-amber-300"
-                : "bg-gray-100 text-gray-900 border border-gray-300 hover:bg-gray-200 disabled:bg-gray-50 disabled:text-gray-400")
-            }
+            variant={isOperatorPaused ? "warning" : "secondary"}
           >
             {isOperatorPaused ? "▶ Resume Agent" : "⏸ Pause Agent"}
-          </button>
+          </Button>
 
-          <button
+          <Button
             type="button"
             onClick={handleReleaseLease}
             disabled={pending || !isRunning}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:bg-red-200 disabled:cursor-not-allowed"
+            variant="destructive"
             title={
               !isRunning
                 ? "No stuck lease to release"
@@ -203,24 +197,23 @@ export function OperationsPanel({
             }
           >
             ⚠ Release Run Lease
-          </button>
+          </Button>
         </div>
-      </div>
+      </CardHeader>
 
-      {isLocked && (
-        <div
-          role="alert"
-          className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
-        >
+      <CardContent className="pt-0">
+        {isLocked && (
+        <Alert variant="destructive">
           🔒 <strong>Drawdown safety lock engaged.</strong> The agent will not
           trade. This lock is intentionally not clearable from this panel; clear
           it via the explicit override flow only after you understand the cause.
-        </div>
+        </Alert>
       )}
 
       {status.kind !== "idle" && (
         <p className={`mt-3 text-sm ${statusColor}`}>{status.message}</p>
       )}
-    </section>
+      </CardContent>
+    </Card>
   );
 }

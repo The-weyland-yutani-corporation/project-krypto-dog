@@ -5,6 +5,11 @@ import { agentState, tradeExecution } from "@/db/schema";
 import { eq, gte, count, sum } from "drizzle-orm";
 import { OperationsPanel } from "./_components/OperationsPanel";
 import { AutoRefresh } from "./_components/AutoRefresh";
+import { BacktestSnapshot } from "@/components/charts/backtest-snapshot";
+import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/krypto/page-header";
+import { MetricCard } from "@/components/krypto/metric-card";
+import { getBacktestSnapshotData } from "@/lib/backtest-display";
 
 function formatUSD(value: number | null | undefined): string {
   if (value == null) return "—";
@@ -30,47 +35,18 @@ function StatusBadge({
 }) {
   if (isLocked) {
     return (
-      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+      <Badge variant="destructive">
         Locked
-      </span>
+      </Badge>
     );
   }
   if (isOperatorPaused) {
-    return (
-      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
-        Paused
-      </span>
-    );
+    return <Badge variant="warning">Paused</Badge>;
   }
   if (isRunning) {
-    return (
-      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-        Running
-      </span>
-    );
+    return <Badge variant="success">Running</Badge>;
   }
-  return (
-    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-      Idle
-    </span>
-  );
-}
-
-function StatCard({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
-      <p className="text-sm font-medium text-gray-500">{label}</p>
-      <div className="mt-1 text-2xl font-semibold text-gray-900">
-        {children}
-      </div>
-    </div>
-  );
+  return <Badge variant="outline">Idle</Badge>;
 }
 
 export default async function AdminDashboard() {
@@ -88,12 +64,16 @@ export default async function AdminDashboard() {
   const totalTrades = totalTradesRows[0].value;
   const recentTrades = recentTradesRows[0].value;
   const totalPnl = Number(pnlRows[0].value) || 0;
+  const chartData = getBacktestSnapshotData();
 
   return (
     <div>
       <AutoRefresh />
-      <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-      <p className="mt-1 text-sm text-gray-500">Portfolio overview</p>
+      <PageHeader
+        eyebrow="Operator console"
+        title="Agent dashboard"
+        description="Paper portfolio state, run controls, and deterministic evidence snapshots before any live trading."
+      />
 
       {state && (
         <div className="mt-6">
@@ -106,56 +86,52 @@ export default async function AdminDashboard() {
       )}
 
       <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Portfolio Value (USD)">
-          {formatUSD(state?.portfolioValueUSD)}
-        </StatCard>
+        <MetricCard label="Portfolio Value (USD)" value={formatUSD(state?.portfolioValueUSD)} />
 
-        <StatCard label="ETH Balance">
-          {formatNumber(state?.currentPositionETH)} ETH
-        </StatCard>
+        <MetricCard label="ETH Balance" value={`${formatNumber(state?.currentPositionETH)} ETH`} />
 
-        <StatCard label="USDC Balance">
-          {formatUSD(state?.currentPositionUSDC)}
-        </StatCard>
+        <MetricCard label="USDC Balance" value={formatUSD(state?.currentPositionUSDC)} />
 
-        <StatCard label="Last Trade Price">
-          {state?.lastTradePrice
-            ? formatUSD(state.lastTradePrice)
-            : "—"}
-        </StatCard>
+        <MetricCard label="Last Trade Price" value={state?.lastTradePrice ? formatUSD(state.lastTradePrice) : "—"} />
 
-        <StatCard label="Total P&L">
+        <MetricCard
+          label="Total P&L"
+          tone={totalPnl >= 0 ? "success" : "destructive"}
+          value={
           <span
             className={
-              totalPnl >= 0 ? "text-green-600" : "text-red-600"
+              totalPnl >= 0 ? "text-success" : "text-destructive"
             }
           >
             {totalPnl >= 0 ? "+" : ""}
             {formatUSD(totalPnl)}
           </span>
-        </StatCard>
+          }
+        />
 
-        <StatCard label="Trades">
-          <span>{totalTrades}</span>
-          <span className="ml-2 text-sm font-normal text-gray-500">
-            ({recentTrades} last 24h)
-          </span>
-        </StatCard>
+        <MetricCard
+          label="Trades"
+          value={totalTrades}
+          detail={`${recentTrades} last 24h`}
+        />
 
-        <StatCard label="System Status">
-          {state ? (
+        <MetricCard
+          label="System Status"
+          value={state ? (
             <StatusBadge
               isLocked={state.isLocked}
               isOperatorPaused={state.isOperatorPaused}
               isRunning={state.isRunning}
             />
           ) : (
-            <span className="text-sm text-gray-400">No state</span>
+            <span className="text-sm text-muted-foreground">No state</span>
           )}
-        </StatCard>
+        />
 
-        <StatCard label="Last Run">
-          <span className="text-base">
+        <MetricCard
+          label="Last Run"
+          value={
+          <span className="text-base text-foreground">
             {state?.lastRunAt
               ? new Date(state.lastRunAt).toLocaleString("en-US", {
                   dateStyle: "medium",
@@ -163,7 +139,12 @@ export default async function AdminDashboard() {
                 })
               : "Never"}
           </span>
-        </StatCard>
+          }
+        />
+      </div>
+
+      <div className="mt-6">
+        <BacktestSnapshot {...chartData} />
       </div>
     </div>
   );

@@ -1,1 +1,78 @@
 @import "tailwindcss";
+
+:root {
+  --background: #05070a;
+  --foreground: #f8fafc;
+  --card: #0d1117;
+  --card-foreground: #e2e8f0;
+  --popover: #0d1117;
+  --popover-foreground: #e2e8f0;
+  --primary: #f8fafc;
+  --primary-foreground: #05070a;
+  --secondary: #111827;
+  --secondary-foreground: #e2e8f0;
+  --muted: #111827;
+  --muted-foreground: #94a3b8;
+  --accent: #082f49;
+  --accent-foreground: #38bdf8;
+  --destructive: #ef4444;
+  --warning: #f59e0b;
+  --success: #22c55e;
+  --info: #38bdf8;
+  --border: #243044;
+  --input: #243044;
+  --ring: #38bdf8;
+  --chart-equity: #38bdf8;
+  --chart-profit: #22c55e;
+  --chart-loss: #ef4444;
+  --chart-benchmark: #a78bfa;
+  --chart-grid: #1e293b;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-warning: var(--warning);
+  --color-success: var(--success);
+  --color-info: var(--info);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-equity: var(--chart-equity);
+  --color-chart-profit: var(--chart-profit);
+  --color-chart-loss: var(--chart-loss);
+  --color-chart-benchmark: var(--chart-benchmark);
+  --color-chart-grid: var(--chart-grid);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    background: var(--background);
+  }
+
+  body {
+    background:
+      radial-gradient(circle at top left, rgba(56, 189, 248, 0.12), transparent 34rem),
+      radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.08), transparent 28rem),
+      var(--background);
+    color: var(--foreground);
+    font-feature-settings: "tnum";
+  }
+}

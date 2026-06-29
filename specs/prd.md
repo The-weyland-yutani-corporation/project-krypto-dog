@@ -33,6 +33,7 @@
 | Execution venue | Currently: paper trading via Coinbase Spot price API. v3: Coinbase Developer Platform via `@coinbase/agentkit-langchain` |
 | Database | Supabase (PostgreSQL) via **Drizzle ORM** |
 | Observability | PostHog (events) + Vercel logs + Resend (email alerts) |
+| Design system | Root [`DESIGN.md`](../DESIGN.md): shadcn/ui + Tailwind trading-terminal UI, EvilCharts-style Recharts graphs |
 | Hosting | Vercel |
 | Scheduling | Supabase `pg_cron` + `pg_net` calling the Vercel endpoint hourly |
 | Email | Resend |
