@@ -175,6 +175,16 @@ describe("POST /api/agent/run", () => {
     expect(res.status).toBe(401);
   });
 
+  it("returns 401 when cron secret length differs", async () => {
+    const req = new Request("http://localhost:3000/api/agent/run", {
+      method: "POST",
+      headers: { "x-cron-secret": "short" },
+    });
+
+    const res = await POST(req as any);
+    expect(res.status).toBe(401);
+  });
+
   // ── Mutex ──────────────────────────────────────────────────────────────
 
   it("returns 409 when agent is already running (mutex)", async () => {

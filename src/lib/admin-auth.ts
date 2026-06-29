@@ -11,7 +11,10 @@ export function getAdminSessionSecret(): string {
     return fallback;
   }
 
-  // Last-resort fallback so dev environments don't crash. Production
-  // validateEnv() requires CRON_SECRET, so this branch is unreachable in prod.
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("ADMIN_SESSION_SECRET or CRON_SECRET must be set");
+  }
+
+  // Last-resort fallback so local/test environments don't crash.
   return "fallback";
 }
