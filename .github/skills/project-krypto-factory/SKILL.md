@@ -17,10 +17,15 @@ Use this skill when designing, debugging, or extending the Project Krypto GH-AW 
 5. Keep implementation PRs draft-first.
 6. Require human review for merges and any production/live-trading decision.
 7. Route risky changes through security, trading-safety, QA, and architecture reviews.
+8. Let proactive PM/research discovery originate software opportunities, but never bypass trading safety.
 
 ## Core labels
 
 - `agentic-factory`
+- `opportunity`
+- `profit-hypothesis`
+- `experiment`
+- `strategy-research`
 - `needs-triage`
 - `ai:research`
 - `ready-for-planning`
@@ -51,6 +56,7 @@ Role prompts live in `.github/agents/`:
 - `trading-safety-reviewer.md`
 - `release-manager.md`
 - `docs-spec-writer.md`
+- `trading-growth-pm.md`
 
 ## Validation baseline
 
@@ -75,6 +81,16 @@ Always require extra review for:
 - `.github/workflows/**`
 - `specs/deployment.md`
 - future live-trading or AgentKit execution paths
+
+## Proactive opportunity discovery
+
+`opportunity-discovery.md` is the self-starting PM/research intake path. It runs daily and can also be triggered with `/discover`.
+
+- It creates at most 3 `[opportunity]` issues per run.
+- It routes every created opportunity through rubber-duck review first.
+- It may recommend low-risk factory, QA, docs, observability, or admin-UX work for planning in the issue body.
+- Trading-strategy, guardrail, portfolio, risk, or live-adjacent opportunities must include safety notes and require rubber-duck/trading-safety review before implementation.
+- It creates software tickets and experiments only; it never gives trading advice or authorizes live trading.
 
 ## Design-system convention
 

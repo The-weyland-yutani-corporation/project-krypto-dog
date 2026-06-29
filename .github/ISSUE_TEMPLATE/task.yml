@@ -1,0 +1,51 @@
+name: Task
+description: Track maintenance, refactoring, tech debt, or operational work.
+title: "[task] "
+labels:
+  - agentic-factory
+  - needs-triage
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: Task
+      description: What needs to be done?
+      placeholder: Refactor the seed script so test setup and local reseeding share one path.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why now?
+      description: What risk, friction, or dependency makes this worth doing?
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this task to be complete?
+      placeholder: |
+        - [ ] The refactor preserves existing behavior.
+        - [ ] Relevant tests pass or are added.
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk level
+      options:
+        - low
+        - medium
+        - high
+        - unknown
+      default: 0
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Files, commands, blockers, or related issues.
+    validations:
+      required: false

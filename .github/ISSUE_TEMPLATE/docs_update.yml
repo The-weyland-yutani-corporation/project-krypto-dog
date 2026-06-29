@@ -1,0 +1,47 @@
+name: Docs or spec update
+description: Request a README, PRD, ADR, RFC, deployment, or factory-doc update.
+title: "[docs] "
+labels:
+  - agentic-factory
+  - documentation
+  - docs-sync
+  - needs-triage
+body:
+  - type: textarea
+    id: gap
+    attributes:
+      label: Documentation gap
+      description: What is missing, stale, confusing, or incorrect?
+    validations:
+      required: true
+  - type: dropdown
+    id: doc_type
+    attributes:
+      label: Documentation type
+      options:
+        - README
+        - PRD
+        - ADR
+        - RFC
+        - deployment runbook
+        - agentic software factory
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true when the docs are updated?
+      placeholder: |
+        - [ ] The documented behavior matches the code/spec.
+        - [ ] Links and commands are current.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Related code, PR, issue, spec section, or deployment step.
+    validations:
+      required: false

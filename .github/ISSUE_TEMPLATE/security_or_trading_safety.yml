@@ -1,0 +1,61 @@
+name: Security or trading-safety concern
+description: Flag auth, secrets, prompt/tool injection, guardrail, portfolio, or trading-safety risk.
+title: "[safety] "
+labels:
+  - agentic-factory
+  - needs-triage
+  - security-review
+  - trading-safety
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste secrets, private keys, API tokens, or exploit payloads into a public issue. If this is a sensitive vulnerability, use the repository's private security reporting process instead.
+  - type: dropdown
+    id: concern_type
+    attributes:
+      label: Concern type
+      options:
+        - auth or session security
+        - secret or credential handling
+        - prompt/tool injection
+        - dependency or supply-chain risk
+        - trading guardrail
+        - portfolio or balance invariant
+        - paper/live trading boundary
+        - deployment or workflow permission
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What risk should be investigated?
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Potential impact
+      description: What could go wrong if this is real?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this concern to be resolved safely?
+      placeholder: |
+        - [ ] The risk is confirmed or ruled out.
+        - [ ] Any fix preserves paper-trading safety invariants.
+        - [ ] Tests or review evidence cover the scenario.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Affected files, logs without secrets, related PR/issue, or safe reproduction notes.
+    validations:
+      required: false

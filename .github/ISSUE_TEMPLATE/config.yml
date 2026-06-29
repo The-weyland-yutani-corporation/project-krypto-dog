@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Agentic software factory guide
+    url: https://github.com/VeVarunSharma/project-krypto-dog/blob/main/docs/agentic-software-factory.md
+    about: Learn how GH-AW labels, commands, and agentic workflows handle issues and PRs in this repository.

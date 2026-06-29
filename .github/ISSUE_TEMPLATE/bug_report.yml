@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a defect, regression, or broken behavior.
+title: "[bug] "
+labels:
+  - agentic-factory
+  - bug
+  - needs-triage
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: The admin dashboard shows stale portfolio data after a manual agent run.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happens now?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Keep this short. Include commands, routes, or data state if relevant.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this bug to be fixed?
+      placeholder: |
+        - [ ] The broken behavior is corrected.
+        - [ ] A regression test covers the scenario.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Logs, screenshots, affected route, environment, or related PR/issue.
+    validations:
+      required: false
