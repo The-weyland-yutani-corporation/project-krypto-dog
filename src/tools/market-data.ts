@@ -2,13 +2,10 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod/v3";
 import { RSI_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD } from "@/lib/config";
 import { fetchCandles, calculateRSI, calculateEMA } from "@/lib/indicators";
+import { getMarketDataProvider } from "@/lib/market-data-provider";
 
 async function fetchEthSpotPrice(): Promise<number> {
-  const res = await fetch(
-    "https://api.coinbase.com/v2/prices/ETH-USD/spot"
-  );
-  const json = (await res.json()) as { data: { amount: string } };
-  return parseFloat(json.data.amount);
+  return getMarketDataProvider().getEthSpotPrice();
 }
 
 export const getEthPriceTool = new DynamicStructuredTool({

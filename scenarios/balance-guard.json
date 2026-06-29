@@ -1,0 +1,13 @@
+{
+  "name": "balance-guard",
+  "description": "Repeated falling prices should respect max DCA and avoid spending beyond available USDC.",
+  "policy": "rules-basic",
+  "start": "2026-08-01T00:00:00.000Z",
+  "intervalHours": 4,
+  "prices": [2400, 2320, 2240, 2160, 2080, 2000, 1920, 1840, 1760, 1680, 1600],
+  "expected": {
+    "minFinalEquity": 155,
+    "maxDrawdownPct": 30,
+    "maxTrades": 8
+  }
+}

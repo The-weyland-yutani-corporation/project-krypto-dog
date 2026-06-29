@@ -1,0 +1,48 @@
+name: Agentic work item
+description: Request research, planning, implementation, QA, docs, or release work from the GH-AW software factory.
+title: "[factory] "
+labels:
+  - agentic-factory
+  - needs-triage
+body:
+  - type: dropdown
+    id: work_type
+    attributes:
+      label: Work type
+      options:
+        - research
+        - product-triage
+        - planning
+        - rubber-duck
+        - implementation
+        - qa
+        - security-review
+        - trading-safety-review
+        - docs-sync
+        - release-readiness
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or goal
+      description: What should change, and why?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true when this is done?
+      placeholder: |
+        - [ ] The requested outcome is delivered.
+        - [ ] Relevant validation or review is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context, links, or constraints
+      description: Include relevant specs, files, screenshots, risks, or non-goals.
+    validations:
+      required: false

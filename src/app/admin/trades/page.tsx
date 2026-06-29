@@ -4,6 +4,19 @@ import Link from "next/link";
 import { db } from "@/db";
 import { tradeExecution } from "@/db/schema";
 import { desc, count } from "drizzle-orm";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { EmptyState } from "@/components/krypto/empty-state";
+import { PageHeader } from "@/components/krypto/page-header";
 
 const PAGE_SIZE = 50;
 
@@ -37,36 +50,34 @@ export default async function TradesPage({
   if (trades.length === 0 && page === 1) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Trades</h1>
-        <div className="mt-12 text-center">
-          <p className="text-5xl">💹</p>
-          <p className="mt-4 text-lg font-medium text-gray-600">
-            No trades yet
-          </p>
-          <p className="mt-1 text-sm text-gray-400">
-            Trades will appear here once the agent starts executing.
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Ledger"
+          title="Trades"
+          description="Paper trade executions, modeled fees, realised P&L, and model reasoning."
+        />
+        <EmptyState
+          icon="💹"
+          title="No trades yet"
+          description="Trades will appear here once the paper agent starts executing."
+        />
       </div>
     );
   }
 
   return (
     <div>
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Trades</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            {totalCount} total trade{totalCount !== 1 ? "s" : ""}
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Ledger"
+        title="Trades"
+        description={`${totalCount} total paper trade${totalCount !== 1 ? "s" : ""} recorded by the agent.`}
+      />
 
-      <div className="mt-6 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      <Card className="mt-6 overflow-hidden">
+        <CardContent className="p-0">
         <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-muted/40 hover:bg-muted/40">
                 {[
                   "Time",
                   "Direction",
@@ -77,105 +88,92 @@ export default async function TradesPage({
                   "P&L",
                   "Reasoning",
                 ].map((header) => (
-                  <th
+                  <TableHead
                     key={header}
-                    className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
                   >
                     {header}
-                  </th>
+                  </TableHead>
                 ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {trades.map((trade) => (
-                <tr key={trade.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+                <TableRow key={trade.id}>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">
                     {new Date(trade.createdAt).toLocaleString("en-US", {
                       month: "short",
                       day: "numeric",
                       hour: "2-digit",
                       minute: "2-digit",
                     })}
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold ${
-                        trade.direction === "BUY"
-                          ? "bg-green-100 text-green-800"
-                          : "bg-red-100 text-red-800"
-                      }`}
-                    >
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    <Badge variant={trade.direction === "BUY" ? "success" : "destructive"}>
                       {trade.direction}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap font-medium text-foreground">
                     {trade.asset}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap tabular-nums">
                     {formatUSD(trade.amountUSD)}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap tabular-nums">
                     {formatUSD(trade.executionPrice)}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap tabular-nums text-muted-foreground">
                     {formatUSD(trade.feesUSD)}
-                  </td>
-                  <td className="px-4 py-3 text-sm font-medium whitespace-nowrap">
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap font-medium tabular-nums">
                     {trade.pnlUSD != null ? (
                       <span
                         className={
                           trade.pnlUSD >= 0
-                            ? "text-green-600"
-                            : "text-red-600"
+                            ? "text-success"
+                            : "text-destructive"
                         }
                       >
                         {trade.pnlUSD >= 0 ? "+" : ""}
                         {formatUSD(trade.pnlUSD)}
                       </span>
                     ) : (
-                      <span className="text-gray-400">—</span>
+                      <span className="text-muted-foreground">—</span>
                     )}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-500 max-w-xs">
+                  </TableCell>
+                  <TableCell className="max-w-xs text-muted-foreground">
                     <details>
                       <summary className="cursor-pointer truncate max-w-[200px]">
                         {trade.agentReasoning.slice(0, 80)}
                         {trade.agentReasoning.length > 80 ? "…" : ""}
                       </summary>
-                      <p className="mt-2 whitespace-pre-wrap text-xs text-gray-600">
+                      <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">
                         {trade.agentReasoning}
                       </p>
                     </details>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
-      </div>
+        </CardContent>
+      </Card>
 
-      {/* Pagination */}
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between">
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             Page {page} of {totalPages}
           </p>
           <div className="flex gap-2">
             {page > 1 && (
-              <Link
-                href={`/admin/trades?page=${page - 1}`}
-                className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                ← Previous
-              </Link>
+              <Button asChild variant="secondary" size="sm">
+                <Link href={`/admin/trades?page=${page - 1}`}>← Previous</Link>
+              </Button>
             )}
             {page < totalPages && (
-              <Link
-                href={`/admin/trades?page=${page + 1}`}
-                className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                Next →
-              </Link>
+              <Button asChild variant="secondary" size="sm">
+                <Link href={`/admin/trades?page=${page + 1}`}>Next →</Link>
+              </Button>
             )}
           </div>
         </div>

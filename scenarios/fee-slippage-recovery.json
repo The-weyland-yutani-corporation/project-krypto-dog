@@ -1,0 +1,14 @@
+{
+  "name": "fee-slippage-recovery",
+  "description": "Dip/recovery with enough spread to remain profitable after modeled fees and optional slippage overrides.",
+  "policy": "rules-basic",
+  "start": "2026-07-01T00:00:00.000Z",
+  "intervalHours": 4,
+  "prices": [2100, 2020, 1940, 1880, 1970, 2070, 2190, 2310],
+  "expected": {
+    "minFinalEquity": 202,
+    "mustBeatCash": true,
+    "minTrades": 2,
+    "mustNotLock": true
+  }
+}

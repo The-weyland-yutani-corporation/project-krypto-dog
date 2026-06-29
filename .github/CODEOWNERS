@@ -1,0 +1,16 @@
+# High-risk Project Krypto surfaces require owner review when branch protection
+# enables CODEOWNERS enforcement.
+
+/src/tools/ @VeVarunSharma
+/src/guardrails/ @VeVarunSharma
+/src/agent/ @VeVarunSharma
+/src/app/api/ @VeVarunSharma
+/src/middleware.ts @VeVarunSharma
+/src/db/ @VeVarunSharma
+/drizzle/ @VeVarunSharma
+/supabase/migrations/ @VeVarunSharma
+/.github/workflows/ @VeVarunSharma
+/.github/agents/ @VeVarunSharma
+/.github/skills/ @VeVarunSharma
+/specs/deployment.md @VeVarunSharma
+/specs/rfcs/ @VeVarunSharma

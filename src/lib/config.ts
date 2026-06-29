@@ -4,6 +4,7 @@ const envSchema = z.object({
   AZURE_OPENAI_ENDPOINT: z.string().url(),
   AZURE_OPENAI_API_KEY: z.string().min(1),
   AZURE_OPENAI_DEPLOYMENT_NAME: z.string().min(1),
+  AZURE_OPENAI_API_VERSION: z.string().min(1).optional(),
   CDP_API_KEY_NAME: z.string().min(1),
   CDP_API_KEY_PRIVATE_KEY: z.string().min(1),
   DATABASE_URL: z.string().url(),
@@ -14,6 +15,7 @@ const envSchema = z.object({
   ALERT_EMAIL_TO: z.email().optional(),
   ALERT_EMAIL_FROM: z.email().optional(),
   ADMIN_PASSWORD: z.string().min(1),
+  ADMIN_SESSION_SECRET: z.string().min(1).optional(),
 });
 
 export function validateEnv() {

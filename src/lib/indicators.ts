@@ -1,14 +1,16 @@
-// Coinbase Exchange candles: each entry is [timestamp, low, high, open, close, volume]
-export type CandleRaw = [number, number, number, number, number, number];
+import { getMarketDataProvider } from "./market-data-provider";
 
+/**
+ * Fetch ETH/USD 4-hour close prices.
+ *
+ * Production data comes from the active market-data provider. The default
+ * provider fetches Coinbase 1-hour candles and aggregates them into 4-hour
+ * closes; tests/backtests can swap in fixture data.
+ *
+ * @param count number of 4-hour bars to return (default 100)
+ */
 export async function fetchCandles(count: number = 100): Promise<number[]> {
-  const res = await fetch(
-    `https://api.exchange.coinbase.com/products/ETH-USD/candles?granularity=14400`
-  );
-  const candles = (await res.json()) as CandleRaw[];
-  // Candles arrive newest-first; reverse so index 0 = oldest
-  const sorted = candles.slice(0, count).reverse();
-  return sorted.map((c) => c[4]); // close prices
+  return getMarketDataProvider().getEthClosingPrices(count);
 }
 
 export function calculateRSI(closes: number[], period: number): number {

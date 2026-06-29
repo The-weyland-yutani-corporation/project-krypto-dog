@@ -1,0 +1,1 @@
+ALTER TABLE "AgentState" ADD COLUMN "isOperatorPaused" boolean DEFAULT false NOT NULL;

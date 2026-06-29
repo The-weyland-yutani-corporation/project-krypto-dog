@@ -3,30 +3,43 @@ import type { AgentRunResult } from "./types";
 
 const DISTINCT_ID = "krypto-agent";
 
-export function trackAgentRunStarted(): void {
+export type AgentTriggerSource = "cron" | "admin";
+
+export function trackAgentRunStarted(
+  triggerSource: AgentTriggerSource = "cron",
+): void {
   try {
     getPostHogClient().capture({
       distinctId: DISTINCT_ID,
       event: "agent_run_started",
-      properties: { timestamp: new Date().toISOString() },
+      properties: {
+        triggerSource,
+        timestamp: new Date().toISOString(),
+      },
     });
   } catch (error) {
     console.error("[analytics] Failed to track agent_run_started:", error);
   }
 }
 
-export function trackAgentRunCompleted(result: AgentRunResult): void {
+export function trackAgentRunCompleted(
+  result: AgentRunResult,
+  triggerSource: AgentTriggerSource = "cron",
+): void {
   try {
     getPostHogClient().capture({
       distinctId: DISTINCT_ID,
       event: "agent_run_completed",
       properties: {
+        triggerSource,
         status: result.status,
         action: result.action ?? null,
         durationMs: result.durationMs,
         promptTokens: result.tokenUsage?.promptTokens ?? null,
         completionTokens: result.tokenUsage?.completionTokens ?? null,
         totalTokens: result.tokenUsage?.totalTokens ?? null,
+        journalWritten: result.journalWritten ?? null,
+        journalFallbackWritten: result.journalFallbackWritten ?? false,
         timestamp: new Date().toISOString(),
       },
     });
@@ -37,13 +50,15 @@ export function trackAgentRunCompleted(result: AgentRunResult): void {
 
 export function trackGuardrailTriggered(
   guardrailName: string,
-  details: Record<string, unknown>
+  details: Record<string, unknown>,
+  triggerSource: AgentTriggerSource = "cron",
 ): void {
   try {
     getPostHogClient().capture({
       distinctId: DISTINCT_ID,
       event: "guardrail_triggered",
       properties: {
+        triggerSource,
         guardrailName,
         ...details,
         timestamp: new Date().toISOString(),

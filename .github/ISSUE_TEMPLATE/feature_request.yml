@@ -1,0 +1,56 @@
+name: Feature request
+description: Propose new behavior or an improvement to existing behavior.
+title: "[feature] "
+labels:
+  - agentic-factory
+  - enhancement
+  - needs-triage
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operator problem should this solve?
+      placeholder: Operators need a clearer way to see why the agent skipped a trade.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe the desired behavior, not the full implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true when this feature is done?
+      placeholder: |
+        - [ ] The user can ...
+        - [ ] The system records ...
+        - [ ] Tests cover ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      options:
+        - admin-ui
+        - agent-runtime
+        - trading-tools
+        - guardrails
+        - database
+        - docs-specs
+        - deployment-ops
+        - unknown
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context or constraints
+      description: Links, non-goals, risks, or related specs.
+    validations:
+      required: false

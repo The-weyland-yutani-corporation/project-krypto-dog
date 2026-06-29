@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { SystemLockedError } from "@/lib/types";
 import { MIN_PORTFOLIO_VALUE_USD } from "@/lib/config";
 import { sendGuardrailAlert } from "@/lib/email";
+import { getMarketDataProvider } from "@/lib/market-data-provider";
 
 export async function checkDrawdown(): Promise<void> {
   const rows = await db
@@ -21,15 +22,7 @@ export async function checkDrawdown(): Promise<void> {
     throw new SystemLockedError();
   }
 
-  const res = await fetch(
-    "https://api.coinbase.com/v2/prices/ETH-USD/spot"
-  );
-  if (!res.ok) {
-    throw new Error(`Coinbase API error: ${res.status} ${res.statusText}`);
-  }
-
-  const json = (await res.json()) as { data: { amount: string } };
-  const ethPrice = parseFloat(json.data.amount);
+  const ethPrice = await getMarketDataProvider().getEthSpotPrice();
 
   const portfolioValue =
     state.currentPositionETH * ethPrice + state.currentPositionUSDC;

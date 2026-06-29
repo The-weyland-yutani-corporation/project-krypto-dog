@@ -3,13 +3,14 @@ process.env.NODE_ENV = "test";
 // Dummy env vars so config validation doesn't crash during tests
 process.env.AZURE_OPENAI_ENDPOINT = "https://test.openai.azure.com";
 process.env.AZURE_OPENAI_API_KEY = "test-api-key";
-process.env.AZURE_OPENAI_DEPLOYMENT_NAME = "gpt-4o";
+process.env.AZURE_OPENAI_DEPLOYMENT_NAME = "claude-sonnet-stub";
 process.env.CDP_API_KEY_NAME = "test-cdp-key";
 process.env.CDP_API_KEY_PRIVATE_KEY = "test-cdp-private-key";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 process.env.POSTHOG_API_KEY = "phc_test_key";
 process.env.POSTHOG_HOST = "https://app.posthog.com";
 process.env.CRON_SECRET = "test-cron-secret";
+process.env.ADMIN_SESSION_SECRET = "test-admin-session-secret";
 
 // ---------------------------------------------------------------------------
 // Mock: Drizzle db

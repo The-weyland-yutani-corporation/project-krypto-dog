@@ -24,6 +24,7 @@ export const agentState = pgTable("AgentState", {
     .notNull()
     .default(200),
   isLocked: boolean("isLocked").notNull().default(false),
+  isOperatorPaused: boolean("isOperatorPaused").notNull().default(false),
   isRunning: boolean("isRunning").notNull().default(false),
   lastRunAt: timestamp("lastRunAt", { precision: 3 }),
   updatedAt: timestamp("updatedAt", { precision: 3 })

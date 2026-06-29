@@ -1,0 +1,13 @@
+{
+  "name": "cooldown-edge",
+  "description": "Hourly oscillation around triggers; 2h cooldown should prevent rapid overtrading.",
+  "policy": "rules-basic",
+  "start": "2026-06-01T00:00:00.000Z",
+  "intervalHours": 1,
+  "prices": [2000, 1935, 1995, 1930, 2005, 1940, 2010, 1950, 2020, 1960, 2030],
+  "expected": {
+    "minFinalEquity": 198,
+    "maxTrades": 6,
+    "mustNotLock": true
+  }
+}
