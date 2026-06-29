@@ -33,6 +33,7 @@ env:
   POSTHOG_API_KEY: phc_stub
   CRON_SECRET: stub
   ADMIN_PASSWORD: stub
+  ADMIN_SESSION_SECRET: stub
 tools:
   github:
     mode: gh-proxy

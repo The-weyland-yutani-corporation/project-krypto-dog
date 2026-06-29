@@ -398,6 +398,45 @@ describe("POST /api/agent/run", () => {
     });
   });
 
+  it("parses trade analytics when safe_trade money fields include USD suffixes", async () => {
+    stubMutexSuccess();
+    mockedRunPreFlightChecks.mockResolvedValue({ skip: false });
+    stubSelectCalls();
+
+    mockAgentInvoke.mockResolvedValue({
+      messages: [
+        {
+          role: "tool",
+          name: "safe_trade",
+          content: safeTradeSuccessContent({
+            direction: "SELL",
+            amount: "$30.00 USD",
+            executionPrice: "$2000.00 USD",
+            fees: "$0.0900 USD",
+            pnl: "+$1.3500 USD",
+          }),
+        },
+        {
+          role: "tool",
+          name: "write_journal_entry",
+          content: "Journal entry recorded (ID: journal-sell). ETH price at time of entry: $2000.00.",
+        },
+        { role: "assistant", content: "Sold ETH." },
+      ],
+    });
+
+    const res = await POST(makeRequest() as any);
+    expect(res.status).toBe(200);
+    expect(trackTradeExecuted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountUSD: 30,
+        executionPrice: 2000,
+        feesUSD: 0.09,
+        pnlUSD: 1.35,
+      }),
+    );
+  });
+
   it("does not fail an executed run when fallback journal insert fails", async () => {
     const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
     stubMutexSuccess();

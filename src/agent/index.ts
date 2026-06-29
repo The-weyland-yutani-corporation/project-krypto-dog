@@ -39,7 +39,7 @@ function contentToString(content: unknown): string {
 
 function parseMoney(value: string | undefined): number | undefined {
   if (!value) return undefined;
-  const normalized = value.replace(/[$,+\s]/g, "");
+  const normalized = value.replace(/[$,+\s]|[a-z]+$/gi, "");
   if (normalized === "" || normalized.toUpperCase() === "N/A") return undefined;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : undefined;

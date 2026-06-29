@@ -203,16 +203,23 @@ export function OperationsPanel({
 
       <CardContent className="pt-0">
         {isLocked && (
-        <Alert variant="destructive">
-          🔒 <strong>Drawdown safety lock engaged.</strong> The agent will not
-          trade. This lock is intentionally not clearable from this panel; clear
-          it via the explicit override flow only after you understand the cause.
-        </Alert>
-      )}
+          <Alert variant="destructive">
+            🔒 <strong>Drawdown safety lock engaged.</strong> The agent will not
+            trade. This lock is intentionally not clearable from this panel; clear
+            it via the explicit override flow only after you understand the cause.
+          </Alert>
+        )}
 
-      {status.kind !== "idle" && (
-        <p className={`mt-3 text-sm ${statusColor}`}>{status.message}</p>
-      )}
+        {isOperatorPaused && (
+          <Alert variant="warning" className="mt-3">
+            ⏸ <strong>Agent paused by operator.</strong> The agent will not trade
+            until it is resumed.
+          </Alert>
+        )}
+
+        {status.kind !== "idle" && (
+          <p className={`mt-3 text-sm ${statusColor}`}>{status.message}</p>
+        )}
       </CardContent>
     </Card>
   );

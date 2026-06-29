@@ -15,7 +15,7 @@ const envSchema = z.object({
   ALERT_EMAIL_TO: z.email().optional(),
   ALERT_EMAIL_FROM: z.email().optional(),
   ADMIN_PASSWORD: z.string().min(1),
-  ADMIN_SESSION_SECRET: z.string().min(1).optional(),
+  ADMIN_SESSION_SECRET: z.string().min(1),
 });
 
 export function validateEnv() {
