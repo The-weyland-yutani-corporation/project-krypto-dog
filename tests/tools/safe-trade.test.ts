@@ -89,7 +89,7 @@ describe("Guardrails 3 & 4 – Safe Trade Tool", () => {
     mockDb._selectChain.limit
       .mockResolvedValueOnce([state])
       .mockResolvedValueOnce([{ isLocked: false, isOperatorPaused: false }])
-      .mockResolvedValueOnce([{ price: 1900 }])
+      .mockResolvedValueOnce([{ price: 1900, amountAsset: 0.03, feesUSD: 0.12 }])
       .mockResolvedValueOnce([state]);
     mockFetch.mockResolvedValue({
       ok: true, json: async () => ({ data: { amount: "2000" } }),
@@ -99,8 +99,9 @@ describe("Guardrails 3 & 4 – Safe Trade Tool", () => {
 
     const insertedValues = mockDb._insertChain.values.mock.calls[0][0];
     // amountAsset = 30 / 2000 = 0.015 ETH
-    // pnl = (2000 - 1900) * 0.015 - (30 * 0.003) = 1.5 - 0.09 = 1.41
-    expect(insertedValues.pnlUSD).toBeCloseTo(1.41, 2);
+    // pnl = (2000 - 1900) * 0.015 - sellFee(0.09) - half of BUY fee(0.06)
+    //     = 1.5 - 0.15 = 1.35
+    expect(insertedValues.pnlUSD).toBeCloseTo(1.35, 2);
   });
 
   it("does NOT compute pnlUSD on BUY", async () => {
@@ -148,7 +149,7 @@ describe("Guardrails 3 & 4 – Safe Trade Tool", () => {
     mockDb._selectChain.limit
       .mockResolvedValueOnce([state])
       .mockResolvedValueOnce([{ isLocked: false, isOperatorPaused: false }])
-      .mockResolvedValueOnce([{ price: 1800 }])  // the actual BUY anchor
+      .mockResolvedValueOnce([{ price: 1800, amountAsset: 0.03, feesUSD: 0.162 }])  // the actual BUY anchor
       .mockResolvedValueOnce([state]);
     mockFetch.mockResolvedValue({
       ok: true, json: async () => ({ data: { amount: "2000" } }),
@@ -157,8 +158,9 @@ describe("Guardrails 3 & 4 – Safe Trade Tool", () => {
     await safeTradeHandler({ direction: "SELL", asset: "ETH", amountUSD: 30, reasoning: "trim" });
 
     const insertedValues = mockDb._insertChain.values.mock.calls[0][0];
-    // amountAsset = 0.015; pnl = (2000 - 1800) * 0.015 - 0.09 = 3.0 - 0.09 = 2.91
-    expect(insertedValues.pnlUSD).toBeCloseTo(2.91, 2);
+    // amountAsset = 0.015; pnl = (2000 - 1800) * 0.015 - 0.09 - (0.162 / 2)
+    //     = 3.0 - 0.171 = 2.829
+    expect(insertedValues.pnlUSD).toBeCloseTo(2.83, 2);
     // And critically, NOT (2000 - 2050) * 0.015 - 0.09 = -0.84
     expect(insertedValues.pnlUSD).toBeGreaterThan(0);
   });

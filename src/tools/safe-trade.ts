@@ -93,20 +93,32 @@ export async function safeTradeHandler(input: SafeTradeInput): Promise<string> {
     //   2. lastTradePrice is also bumped by SELLs in the state writeback below,
     //      which would silently corrupt the anchor for future trades.
     //
-    // Limitation: this still uses only the *most recent* BUY, not a
+    // The matched BUY fee is allocated proportionally for partial sells so
+    // realised PnL reflects the round-trip fee cost instead of the SELL fee
+    // only. Limitation: this still uses only the *most recent* BUY, not a
     // volume-weighted cost basis across DCA chains. True VWAP cost basis is
     // tracked as a v3 follow-up (see specs/rfcs/0001-v3-live-trading.md).
     let pnlUSD: number | null = null;
     if (direction === "SELL") {
       const lastBuyRows = await db
-        .select({ price: tradeExecution.executionPrice })
+        .select({
+          price: tradeExecution.executionPrice,
+          amountAsset: tradeExecution.amountAsset,
+          feesUSD: tradeExecution.feesUSD,
+        })
         .from(tradeExecution)
         .where(eq(tradeExecution.direction, "BUY"))
         .orderBy(desc(tradeExecution.createdAt))
         .limit(1);
-      const anchor = lastBuyRows[0]?.price;
+      const lastBuy = lastBuyRows[0];
+      const anchor = lastBuy?.price;
       if (anchor != null && anchor > 0) {
-        pnlUSD = (executionPrice - anchor) * amountAsset - feesUSD;
+        const buyAmountAsset = lastBuy.amountAsset;
+        const buyFeeShare =
+          buyAmountAsset > 0
+            ? lastBuy.feesUSD * Math.min(amountAsset / buyAmountAsset, 1)
+            : 0;
+        pnlUSD = (executionPrice - anchor) * amountAsset - feesUSD - buyFeeShare;
       }
     }
 

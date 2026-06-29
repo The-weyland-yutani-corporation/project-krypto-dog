@@ -63,6 +63,18 @@ function checkRateLimit(ip: string): { allowed: boolean; retryAfterSec?: number 
     return { allowed: false, retryAfterSec: Math.max(retryAfterSec, 1) };
   }
 
+  attemptsByIp.set(ip, recent);
+  return { allowed: true };
+}
+
+function recordFailedAttempt(ip: string) {
+  if (process.env.NODE_ENV !== "production") {
+    return;
+  }
+
+  const now = Date.now();
+  const cutoff = now - RATE_LIMIT_WINDOW_MS;
+  const recent = (attemptsByIp.get(ip) ?? []).filter((t) => t > cutoff);
   recent.push(now);
   attemptsByIp.set(ip, recent);
 
@@ -76,8 +88,6 @@ function checkRateLimit(ip: string): { allowed: boolean; retryAfterSec?: number 
       else if (stillRecent.length !== times.length) attemptsByIp.set(key, stillRecent);
     }
   }
-
-  return { allowed: true };
 }
 
 export async function POST(request: Request) {
@@ -97,6 +107,7 @@ export async function POST(request: Request) {
   const adminPassword = process.env.ADMIN_PASSWORD;
 
   if (!adminPassword || password !== adminPassword) {
+    recordFailedAttempt(ip);
     return NextResponse.json({ error: "Invalid password" }, { status: 401 });
   }
 
