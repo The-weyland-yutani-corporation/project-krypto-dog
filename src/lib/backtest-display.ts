@@ -19,20 +19,13 @@ export function getBacktestSnapshotData(): {
   scenarios: ScenarioBar[];
 } {
   const result = runBacktest(primaryScenario);
-  const prices = primaryScenario.prices;
-  const firstPrice = prices[0];
-  const final = result.finalEquityUSD;
-  const steps = Math.max(1, prices.length - 1);
 
-  const equity = prices.map((price, index) => {
-    const progress = index / steps;
+  const equity = result.equitySnapshots.map((snapshot, index) => {
     return {
       label: `T${index}`,
-      agent: index === prices.length - 1
-        ? final
-        : 200 + (final - 200) * progress + Math.sin(index * 1.7) * 1.8,
-      cash: 200,
-      buyHold: (200 / firstPrice) * price,
+      agent: snapshot.agentEquityUSD,
+      cash: snapshot.cashEquityUSD,
+      buyHold: snapshot.buyHoldEquityUSD,
     };
   });
 

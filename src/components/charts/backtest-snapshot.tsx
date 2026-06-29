@@ -4,6 +4,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -143,7 +144,18 @@ export function BacktestSnapshot({
                   }}
                   formatter={(value) => [formatCurrencyValue(value), "P&L"]}
                 />
-                <Bar dataKey="value" fill="var(--chart-equity)" radius={[8, 8, 2, 2]} />
+                <Bar dataKey="value" radius={[8, 8, 2, 2]}>
+                  {scenarios.map((scenario) => (
+                    <Cell
+                      key={scenario.name}
+                      fill={
+                        scenario.value >= 0
+                          ? "var(--chart-profit)"
+                          : "var(--chart-loss)"
+                      }
+                    />
+                  ))}
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>

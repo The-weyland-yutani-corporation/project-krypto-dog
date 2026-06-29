@@ -273,6 +273,7 @@ export function runBacktest(
   let peakEquity = opts.initialCapitalUSD;
   let minEquity = opts.initialCapitalUSD;
   let maxDrawdownPct = 0;
+  const equitySnapshots: BacktestResult["equitySnapshots"] = [];
 
   for (const point of points) {
     const currentEquity = equity(state, point.price);
@@ -292,6 +293,14 @@ export function runBacktest(
     if (action) {
       executeTrade(state, action.direction, point.price, point.timestamp, action.reason, opts);
     }
+
+    equitySnapshots.push({
+      timestamp: point.timestamp.toISOString(),
+      price: point.price,
+      agentEquityUSD: equity(state, point.price),
+      cashEquityUSD: opts.initialCapitalUSD,
+      buyHoldEquityUSD: (opts.initialCapitalUSD / firstPrice) * point.price,
+    });
   }
 
   const finalEquityUSD = equity(state, lastPrice);
@@ -315,6 +324,7 @@ export function runBacktest(
     minEquityUSD: minEquity,
     locked: state.locked,
     trades: state.trades,
+    equitySnapshots,
   };
 
   return {

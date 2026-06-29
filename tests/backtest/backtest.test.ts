@@ -28,6 +28,11 @@ describe("deterministic backtest runner", () => {
   it("produces net gains in the dip-recovery scenario after fees", () => {
     const result = runBacktest(scenario("dip-recovery"));
     expect(result.assertionFailures).toEqual([]);
+    expect(result.equitySnapshots).toHaveLength(scenario("dip-recovery").prices.length);
+    expect(result.equitySnapshots.at(-1)?.agentEquityUSD).toBeCloseTo(
+      result.finalEquityUSD,
+      8,
+    );
     expect(result.beatsCash).toBe(true);
     expect(result.finalEquityUSD).toBeGreaterThan(200);
     expect(result.trades.some((trade) => trade.direction === "BUY")).toBe(true);

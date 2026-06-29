@@ -44,6 +44,14 @@ export interface BacktestTrade {
   reason: string;
 }
 
+export interface BacktestEquitySnapshot {
+  timestamp: string;
+  price: number;
+  agentEquityUSD: number;
+  cashEquityUSD: number;
+  buyHoldEquityUSD: number;
+}
+
 export interface BacktestResult {
   scenarioName: string;
   policy: BacktestPolicy;
@@ -60,5 +68,6 @@ export interface BacktestResult {
   minEquityUSD: number;
   locked: boolean;
   trades: BacktestTrade[];
+  equitySnapshots: BacktestEquitySnapshot[];
   assertionFailures: string[];
 }
