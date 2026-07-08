@@ -1,4 +1,4 @@
-import { getMarketDataProvider } from "./market-data-provider";
+import { getMarketDataProvider, type Candle } from "./market-data-provider";
 
 /**
  * Fetch ETH/USD 4-hour close prices.
@@ -11,6 +11,16 @@ import { getMarketDataProvider } from "./market-data-provider";
  */
 export async function fetchCandles(count: number = 100): Promise<number[]> {
   return getMarketDataProvider().getEthClosingPrices(count);
+}
+
+/**
+ * Fetch ETH/USD 4-hour OHLC bars (high/low/close) for volatility indicators
+ * such as ATR. Mirrors {@link fetchCandles} but preserves per-bar range.
+ *
+ * @param count number of 4-hour bars to return (default 100)
+ */
+export async function fetchCandleBars(count: number = 100): Promise<Candle[]> {
+  return getMarketDataProvider().getEthCandles(count);
 }
 
 export function calculateRSI(closes: number[], period: number): number {
@@ -62,4 +72,50 @@ export function calculateEMA(closes: number[], period: number): number {
   }
 
   return ema;
+}
+
+/**
+ * Average True Range (Wilder 1978) — a per-bar volatility measure.
+ *
+ * True Range for bar i (i >= 1) is
+ *   max(high - low, |high - prevClose|, |low - prevClose|).
+ * ATR is the Wilder-smoothed mean of TR over `period`: seeded with the simple
+ * average of the first `period` true ranges, then smoothed as
+ *   ATR_i = (ATR_{i-1} * (period - 1) + TR_i) / period.
+ *
+ * Requires `period + 1` bars (period true ranges). With insufficient data,
+ * returns 0 as a neutral fallback, mirroring the other indicators' behaviour.
+ * Arrays are expected to be aligned and equal length; if they are not, the
+ * shortest length is used.
+ */
+export function calculateATR(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  period: number,
+): number {
+  const length = Math.min(highs.length, lows.length, closes.length);
+  if (length < period + 1 || period <= 0) {
+    return 0; // not enough data, return neutral
+  }
+
+  const trueRanges: number[] = [];
+  for (let i = 1; i < length; i++) {
+    const prevClose = closes[i - 1];
+    const highLow = highs[i] - lows[i];
+    const highPrevClose = Math.abs(highs[i] - prevClose);
+    const lowPrevClose = Math.abs(lows[i] - prevClose);
+    trueRanges.push(Math.max(highLow, highPrevClose, lowPrevClose));
+  }
+
+  // Seed ATR with the simple average of the first `period` true ranges.
+  let atr =
+    trueRanges.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+  // Wilder smoothing for the remaining true ranges.
+  for (let i = period; i < trueRanges.length; i++) {
+    atr = (atr * (period - 1) + trueRanges[i]) / period;
+  }
+
+  return atr;
 }

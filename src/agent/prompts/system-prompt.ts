@@ -38,12 +38,17 @@ export function formatJournalEntries(entries: JournalEntry[]): string {
 }
 
 export function formatMarketData(data: MarketData): string {
+  const atrPctSuffix =
+    data.atr !== null && data.ethPrice > 0
+      ? ` (${((data.atr / data.ethPrice) * 100).toFixed(2)}% of price)`
+      : "";
   return [
     `ETH Price: $${data.ethPrice.toFixed(2)}`,
     `RSI(14): ${data.rsi !== null ? data.rsi.toFixed(1) : "unavailable"}`,
     `EMA Short(12): ${data.emaShort !== null ? `$${data.emaShort.toFixed(2)}` : "unavailable"}`,
     `EMA Long(26): ${data.emaLong !== null ? `$${data.emaLong.toFixed(2)}` : "unavailable"}`,
     `EMA Crossover: ${data.emaCrossover}`,
+    `ATR(14): ${data.atr !== null ? `$${data.atr.toFixed(2)}${atrPctSuffix}` : "unavailable"}`,
     `Timestamp: ${new Date(data.timestamp).toISOString()}`,
   ].join("\n");
 }
@@ -75,11 +80,15 @@ ${marketData}
 6. **Trade Cooldown**: There is a ${COOLDOWN_HOURS}-hour cooldown between trades, enforced externally. Do not attempt rapid trades.
 7. **System Lock**: If the system is locked, do NOT execute any trades. Only observe and journal.
 
+## Volatility Context (informational)
+ATR(14) measures recent per-bar volatility. When ATR is small relative to price (a tight range, e.g. well under the ${(BUY_TRIGGER_PCT * 100).toFixed(0)}% trigger), interpret ${(BUY_TRIGGER_PCT * 100).toFixed(0)}% trigger signals with higher skepticism — in low-volatility, choppy conditions the ~${((BUY_TRIGGER_PCT + SELL_TRIGGER_PCT) * 100).toFixed(1)}% round-trip fee drag may outweigh expected gains. This is context to inform your confidence, not a rule that blocks trades: you retain full authority over every BUY, SELL, or HOLD decision.
+
 ## Available Tools
 - \`safe_trade\` — Execute a buy or sell trade (direction, asset, amountUSD)
 - \`get_eth_price\` — Fetch the current ETH price
 - \`get_rsi\` — Fetch the current RSI indicator value
 - \`get_ema\` — Fetch EMA short/long values and crossover status
+- \`get_atr\` — Fetch the current ATR(14) volatility reading
 - \`get_portfolio_state\` — Fetch current portfolio balances and state
 - \`write_journal_entry\` — Write a journal entry explaining your reasoning
 

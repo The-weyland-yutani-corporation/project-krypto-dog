@@ -13,6 +13,7 @@ export interface MarketData {
   emaShort: number | null;
   emaLong: number | null;
   emaCrossover: "bullish" | "bearish" | "neutral";
+  atr: number | null;
   timestamp: Date;
 }
 

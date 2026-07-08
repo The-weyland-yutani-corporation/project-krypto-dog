@@ -1,7 +1,18 @@
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod/v3";
-import { RSI_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD } from "@/lib/config";
-import { fetchCandles, calculateRSI, calculateEMA } from "@/lib/indicators";
+import {
+  RSI_PERIOD,
+  EMA_SHORT_PERIOD,
+  EMA_LONG_PERIOD,
+  ATR_PERIOD,
+} from "@/lib/config";
+import {
+  fetchCandles,
+  fetchCandleBars,
+  calculateRSI,
+  calculateEMA,
+  calculateATR,
+} from "@/lib/indicators";
 import { getMarketDataProvider } from "@/lib/market-data-provider";
 
 async function fetchEthSpotPrice(): Promise<number> {
@@ -68,6 +79,44 @@ export const getEmaTool = new DynamicStructuredTool({
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return `Error calculating EMA: ${msg}`;
+    }
+  },
+});
+
+export const getAtrTool = new DynamicStructuredTool({
+  name: "get_atr",
+  description:
+    "Calculates the ATR(14) volatility for ETH/USD using 4-hour candles from Coinbase. Higher ATR means wider per-bar range (trending); lower ATR means a tighter range (choppy).",
+  schema: z.object({}),
+  func: async () => {
+    try {
+      const bars = await fetchCandleBars();
+      const highs = bars.map((b) => b.high);
+      const lows = bars.map((b) => b.low);
+      const closes = bars.map((b) => b.close);
+      const atr = calculateATR(highs, lows, closes, ATR_PERIOD);
+      const rounded = Math.round(atr * 100) / 100;
+
+      const lastClose = closes[closes.length - 1];
+      const atrPct = lastClose > 0 ? (atr / lastClose) * 100 : 0;
+
+      let interpretation: string;
+      if (atr === 0) {
+        interpretation = "Insufficient data — treat as neutral.";
+      } else if (atrPct < 2) {
+        interpretation =
+          "Low volatility (tight range) — apply higher skepticism to trigger signals; fee drag may outweigh gains.";
+      } else if (atrPct > 5) {
+        interpretation =
+          "High volatility (wide range) — swings are more meaningful, but manage risk carefully.";
+      } else {
+        interpretation = "Moderate volatility — no strong volatility signal.";
+      }
+
+      return `ATR(${ATR_PERIOD}): $${rounded} (${atrPct.toFixed(2)}% of price). ${interpretation}`;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return `Error calculating ATR: ${msg}`;
     }
   },
 });

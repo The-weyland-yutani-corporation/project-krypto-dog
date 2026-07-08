@@ -43,6 +43,7 @@ export const INITIAL_CAPITAL_USD = 200;
 export const EMA_SHORT_PERIOD = 12;
 export const EMA_LONG_PERIOD = 26;
 export const RSI_PERIOD = 14;
+export const ATR_PERIOD = 14;
 export const CANDLE_TIMEFRAME = "FOUR_HOUR" as const;
 
 // Journal context

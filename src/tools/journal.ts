@@ -2,8 +2,19 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod/v3";
 import { db } from "@/db";
 import { agentJournal } from "@/db/schema";
-import { fetchCandles, calculateRSI, calculateEMA } from "@/lib/indicators";
-import { RSI_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD } from "@/lib/config";
+import {
+  fetchCandles,
+  fetchCandleBars,
+  calculateRSI,
+  calculateEMA,
+  calculateATR,
+} from "@/lib/indicators";
+import {
+  RSI_PERIOD,
+  EMA_SHORT_PERIOD,
+  EMA_LONG_PERIOD,
+  ATR_PERIOD,
+} from "@/lib/config";
 import { getMarketDataProvider } from "@/lib/market-data-provider";
 
 async function fetchMarketSnapshot() {
@@ -13,6 +24,7 @@ async function fetchMarketSnapshot() {
   let emaShort: number | null = null;
   let emaLong: number | null = null;
   let emaCrossover: "bullish" | "bearish" | "neutral" = "neutral";
+  let atr: number | null = null;
 
   try {
     const closes = await fetchCandles();
@@ -22,6 +34,17 @@ async function fetchMarketSnapshot() {
 
     if (emaShort > emaLong) emaCrossover = "bullish";
     else if (emaShort < emaLong) emaCrossover = "bearish";
+
+    const bars = await fetchCandleBars();
+    atr =
+      Math.round(
+        calculateATR(
+          bars.map((b) => b.high),
+          bars.map((b) => b.low),
+          bars.map((b) => b.close),
+          ATR_PERIOD,
+        ) * 100,
+      ) / 100;
   } catch (err) {
     console.warn("[journal] Failed to fetch indicators:", err);
   }
@@ -32,6 +55,7 @@ async function fetchMarketSnapshot() {
     emaShort,
     emaLong,
     emaCrossover,
+    atr,
     timestamp: new Date().toISOString(),
   };
 }

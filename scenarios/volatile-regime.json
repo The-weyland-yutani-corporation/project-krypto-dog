@@ -1,0 +1,15 @@
+{
+  "name": "volatile-regime",
+  "description": "High-volatility choppy regime with repeated >5% dips and rebounds. The disciplined buy-the-dip / sell-the-rip rules should stay profitable after fees without locking, and trade activity should stay bounded (the motivating case for ATR volatility context).",
+  "policy": "rules-basic",
+  "start": "2026-09-01T00:00:00.000Z",
+  "intervalHours": 4,
+  "prices": [2000, 1900, 2010, 1910, 2020, 1920, 2030, 1930, 2040],
+  "expected": {
+    "minFinalEquity": 205,
+    "mustBeatCash": true,
+    "minTrades": 6,
+    "maxTrades": 8,
+    "mustNotLock": true
+  }
+}

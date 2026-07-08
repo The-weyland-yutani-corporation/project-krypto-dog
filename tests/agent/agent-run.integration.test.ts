@@ -22,6 +22,7 @@ jest.mock("@/lib/config", () => ({
   RSI_PERIOD: 14,
   EMA_SHORT_PERIOD: 12,
   EMA_LONG_PERIOD: 26,
+  ATR_PERIOD: 14,
 }));
 jest.mock("@/lib/analytics", () => ({
   trackAgentRunStarted: jest.fn(),
@@ -32,8 +33,16 @@ jest.mock("@/lib/analytics", () => ({
 }));
 jest.mock("@/lib/indicators", () => ({
   fetchCandles: jest.fn().mockResolvedValue([100, 101, 102]),
+  fetchCandleBars: jest
+    .fn()
+    .mockResolvedValue([
+      { high: 101, low: 99, close: 100 },
+      { high: 102, low: 100, close: 101 },
+      { high: 103, low: 101, close: 102 },
+    ]),
   calculateRSI: jest.fn().mockReturnValue(50),
   calculateEMA: jest.fn().mockReturnValue(100),
+  calculateATR: jest.fn().mockReturnValue(2),
 }));
 jest.mock("@/guardrails", () => ({ runPreFlightChecks: jest.fn() }));
 jest.mock("@/tools/safe-trade", () => ({ safeTrade: { name: "safe_trade" } }));
@@ -41,6 +50,7 @@ jest.mock("@/tools/market-data", () => ({
   getEthPriceTool: { name: "get_eth_price" },
   getRsiTool: { name: "get_rsi" },
   getEmaTool: { name: "get_ema" },
+  getAtrTool: { name: "get_atr" },
 }));
 jest.mock("@/tools/portfolio", () => ({ getPortfolioStateTool: { name: "get_portfolio_state" } }));
 jest.mock("@/tools/journal", () => ({ writeJournalEntryTool: { name: "write_journal_entry" } }));
@@ -272,6 +282,7 @@ describe("POST /api/agent/run", () => {
         entryText: expect.stringContaining("Fallback journal entry"),
         marketConditions: expect.objectContaining({
           ethPrice: 2000,
+          atr: 2,
         }),
       }),
     );
@@ -476,7 +487,7 @@ describe("POST /api/agent/run", () => {
 
   // ── Tool wiring ────────────────────────────────────────────────────────
 
-  it("passes all six trading tools and a SystemMessage prompt to the agent factory", async () => {
+  it("passes all seven trading tools and a SystemMessage prompt to the agent factory", async () => {
     stubMutexSuccess();
     mockedRunPreFlightChecks.mockResolvedValue({ skip: false });
     stubSelectCalls();
@@ -491,6 +502,7 @@ describe("POST /api/agent/run", () => {
     };
     const toolNames = args.tools.map((t) => t.name).sort();
     expect(toolNames).toEqual([
+      "get_atr",
       "get_ema",
       "get_eth_price",
       "get_portfolio_state",

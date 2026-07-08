@@ -17,6 +17,7 @@ const scenarioNames = [
   "cooldown-edge",
   "fee-slippage-recovery",
   "balance-guard",
+  "volatile-regime",
 ];
 
 describe("deterministic backtest runner", () => {

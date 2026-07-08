@@ -7,8 +7,15 @@ import {
   RSI_PERIOD,
   EMA_SHORT_PERIOD,
   EMA_LONG_PERIOD,
+  ATR_PERIOD,
 } from "@/lib/config";
-import { fetchCandles, calculateRSI, calculateEMA } from "@/lib/indicators";
+import {
+  fetchCandles,
+  fetchCandleBars,
+  calculateRSI,
+  calculateEMA,
+  calculateATR,
+} from "@/lib/indicators";
 import { getMarketDataProvider } from "@/lib/market-data-provider";
 import { runPreFlightChecks } from "@/guardrails";
 import { runAgent } from "@/agent";
@@ -24,6 +31,7 @@ import {
   getEthPriceTool,
   getRsiTool,
   getEmaTool,
+  getAtrTool,
 } from "@/tools/market-data";
 import { getPortfolioStateTool } from "@/tools/portfolio";
 import { writeJournalEntryTool } from "@/tools/journal";
@@ -79,6 +87,7 @@ function serializeMarketData(data: MarketData): Record<string, unknown> {
     emaShort: data.emaShort,
     emaLong: data.emaLong,
     emaCrossover: data.emaCrossover,
+    atr: data.atr,
     timestamp: data.timestamp.toISOString(),
   };
 }
@@ -214,6 +223,7 @@ export async function executeAgentRun(
       getEthPriceTool,
       getRsiTool,
       getEmaTool,
+      getAtrTool,
       getPortfolioStateTool,
       writeJournalEntryTool,
     ];
@@ -222,6 +232,7 @@ export async function executeAgentRun(
     let emaShort: number | null = null;
     let emaLong: number | null = null;
     let emaCrossover: "bullish" | "bearish" | "neutral" = "neutral";
+    let atr: number | null = null;
 
     try {
       const closes = await fetchCandles();
@@ -231,6 +242,17 @@ export async function executeAgentRun(
 
       if (emaShort > emaLong) emaCrossover = "bullish";
       else if (emaShort < emaLong) emaCrossover = "bearish";
+
+      const bars = await fetchCandleBars();
+      atr =
+        Math.round(
+          calculateATR(
+            bars.map((b) => b.high),
+            bars.map((b) => b.low),
+            bars.map((b) => b.close),
+            ATR_PERIOD,
+          ) * 100,
+        ) / 100;
     } catch (err) {
       console.warn("[run-flow] Failed to fetch indicators, using nulls:", err);
     }
@@ -241,6 +263,7 @@ export async function executeAgentRun(
       emaShort,
       emaLong,
       emaCrossover,
+      atr,
       timestamp: new Date(),
     };
 
