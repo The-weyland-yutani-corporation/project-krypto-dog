@@ -6,21 +6,22 @@ without moving real funds.
 
 Local testing has two modes:
 
-1. **No-LLM smoke mode** — uses stub LLM env values and an operator pause so the
-   agent route exercises auth, env validation, mutex release, guardrail skips,
-   DB access, dashboard, and daily summary without calling Azure.
-2. **Live local paper mode** — uses real Azure-hosted Anthropic credentials and
-   real Coinbase market data to execute the current paper-trading loop against
-   local Postgres.
+1. **No-LLM smoke mode** — sets `ROLLOUT_MODE=disabled` so the route exercises
+   auth, `AgentRun` persistence, owned lease acquire/release, telemetry, DB
+   access, dashboard, and daily summary without Coinbase or Foundry.
+2. **Live local shadow/paper mode** — uses real Foundry Anthropic credentials
+   and real Coinbase market data. Start with `shadow`; use `paper` only when
+   deliberate local execution is desired.
 
 Neither mode proves the strategy can make money. Profitability requires the
-future deterministic backtest/scenario harness described in
-[`rfcs/0001-v3-live-trading.md`](./rfcs/0001-v3-live-trading.md) and the current
-session plan.
+evaluation methodology described in [`specs/evaluation.md`](./evaluation.md) and
+the evidence gates in [`specs/readiness.md`](./readiness.md). The aligned
+deterministic backtest/scenario harness is described in
+[`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md).
 
 ## Prerequisites
 
-- Node.js compatible with the repo toolchain.
+- Node.js 22.13.0 (see `.nvmrc`).
 - Docker running locally.
 - Dependencies installed:
   ```bash
@@ -54,16 +55,12 @@ cp .env.example .env
 Use this baseline for **no-LLM smoke mode**:
 
 ```dotenv
-AZURE_OPENAI_ENDPOINT=https://stub.openai.azure.com
-AZURE_OPENAI_API_KEY=stub
-AZURE_OPENAI_DEPLOYMENT_NAME=claude-sonnet-stub
-AZURE_OPENAI_API_VERSION=2024-10-21
+ANTHROPIC_FOUNDRY_BASE_URL=https://stub.services.ai.azure.com/anthropic
+ANTHROPIC_FOUNDRY_API_KEY=stub
+ANTHROPIC_FOUNDRY_DEPLOYMENT=claude-sonnet-stub
 
-CDP_API_KEY_NAME=local-unused
-CDP_API_KEY_PRIVATE_KEY=local-unused
-
-DATABASE_URL=postgresql://krypto:krypto_local@localhost:5433/krypto
-DIRECT_URL=postgresql://krypto:krypto_local@localhost:5433/krypto
+DATABASE_URL=******localhost:5433/krypto
+DIRECT_URL=******localhost:5433/krypto
 
 POSTHOG_API_KEY=phc_local_stub
 POSTHOG_HOST=https://us.i.posthog.com
@@ -74,43 +71,67 @@ ADMIN_PASSWORD=local-admin-password
 ADMIN_SESSION_SECRET=local-admin-session-secret
 ```
 
-For **live local paper mode**, replace the `AZURE_OPENAI_*` values with the real
-Azure-hosted Anthropic endpoint, API key, deployment name, and API version.
-CDP values are still unused in v2 paper mode but must be present because env
-validation requires them.
+For **live local paper mode**, replace the `ANTHROPIC_FOUNDRY_*` values with
+real Azure AI Foundry Anthropic credentials (base URL, API key, deployment name).
 
 Do not commit `.env`.
+
+## Validation gates
+
+```bash
+npm run lint
+npm run typecheck:scripts
+npm run test:coverage
+npm run build
+npm run test:integration
+npm run backtest:all
+npm audit --omit=dev
+```
+
+The coverage command collects runtime configuration, the decision boundary,
+market-data/indicator, admin-auth/route-auth/operations-health, accounting,
+policy, strategy configuration, and shared paper-execution modules. Global and
+critical per-module thresholds are enforced in `jest.config.ts`.
 
 ## 3. Apply schema and seed
 
 ```bash
-npm run db:push
-npm run db:seed
+npm run db:migrate
+npm run db:init
+```
+
+`db:migrate` uses `DIRECT_URL`. `db:init` inserts the singleton only when it is
+absent and never deletes trade or journal history. Do not use `db:push` or
+`supabase db push` for application schema changes.
+
+To verify both a fresh install and adoption of the existing v2 schema against
+temporary local PostgreSQL clusters:
+
+```bash
+npm run test:migrations
 ```
 
 Verify the singleton:
 
 ```bash
 docker exec -i krypto-postgres psql -U krypto -d krypto -c \
-  'SELECT id, "currentPositionETH", "currentPositionUSDC", "portfolioValueUSD", "isLocked", "isOperatorPaused", "isRunning" FROM "AgentState";'
+  'SELECT id, "currentPositionETHDecimal", "currentPositionUSDCDecimal", "portfolioValueUSDDecimal", "isLocked", "isOperatorPaused", "leaseOwner", "leaseExpiresAt" FROM "krypto"."AgentState";'
 ```
 
 Expected baseline:
 
 ```text
-singleton | 0 | 200 | 200 | false | false | false
+singleton | 0 | 200 | 200 | false | false | null | null
 ```
 
 ## 4. No-LLM smoke test
 
-This verifies the route and DB path without calling the LLM. It intentionally
-pauses the operator switch so pre-flight checks skip before model invocation.
+This verifies the route and DB path without calling Coinbase or the LLM.
 
-Pause the agent:
+Set the rollout mode in `.env` and restart the app if it was already running:
 
-```bash
-docker exec -i krypto-postgres psql -U krypto -d krypto -c \
-  'UPDATE "AgentState" SET "isOperatorPaused" = true WHERE id = '\''singleton'\'';'
+```dotenv
+ROLLOUT_MODE=disabled
 ```
 
 Start the app in another terminal:
@@ -130,14 +151,14 @@ curl -i -X POST http://localhost:3000/api/agent/run \
 Expected:
 
 ```json
-{"status":"skipped","guardrailTriggered":"Agent paused by operator",...}
+{"status":"skipped","action":"disabled",...}
 ```
 
-Confirm the mutex was released and `lastRunAt` advanced:
+Confirm the owned lease was released and `lastRunAt` advanced:
 
 ```bash
 docker exec -i krypto-postgres psql -U krypto -d krypto -c \
-  'SELECT "isRunning", "lastRunAt" FROM "AgentState" WHERE id = '\''singleton'\'';'
+  'SELECT "leaseOwner", "leaseExpiresAt", "isRunning", "lastRunAt" FROM "krypto"."AgentState" WHERE id = '\''singleton'\'';'
 ```
 
 ## 5. Admin dashboard smoke test
@@ -153,17 +174,18 @@ Log in with `ADMIN_PASSWORD`.
 Check:
 
 - Dashboard loads with portfolio state.
-- Status badge shows `Paused` after the no-LLM smoke setup.
+- Status badge shows the disabled rollout state after the no-LLM smoke setup.
 - `Resume Agent` toggles `isOperatorPaused` to false.
 - `Pause Agent` toggles it back to true.
 - `Run Agent Now` is disabled while paused/locked/running and enabled otherwise.
 - Trades and Journal pages render, even with no rows.
-- Release Run Lease button is disabled unless `isRunning = true`.
+- Release Run Lease never clears an active unexpired owner; it is only an
+  expired/legacy recovery path.
 
 ## 6. Daily summary smoke test
 
 The daily summary route does not call the LLM. With no Resend config it logs a
-no-op email path to the server console.
+no-op path and returns an explicit skipped delivery result.
 
 ```bash
 curl -i -X POST http://localhost:3000/api/agent/daily-summary \
@@ -174,7 +196,7 @@ curl -i -X POST http://localhost:3000/api/agent/daily-summary \
 Expected:
 
 ```json
-{"success":true,"tradesCount":0,"totalPnlUSD":0}
+{"generated":true,"delivery":{"status":"skipped","reason":"RESEND_API_KEY is not configured"},"tradesCount":0,"totalPnlUSD":0}
 ```
 
 Seed data or real paper runs will change the counts and PnL.
@@ -188,7 +210,7 @@ Resume the agent:
 
 ```bash
 docker exec -i krypto-postgres psql -U krypto -d krypto -c \
-  'UPDATE "AgentState" SET "isOperatorPaused" = false WHERE id = '\''singleton'\'';'
+  'UPDATE "krypto"."AgentState" SET "isOperatorPaused" = false WHERE id = '\''singleton'\'';'
 ```
 
 Reset to a clean paper account if needed:
@@ -217,10 +239,9 @@ Verify side effects:
 
 ```bash
 docker exec -i krypto-postgres psql -U krypto -d krypto -c \
-  'SELECT id, direction, "amountUSD", "executionPrice", "pnlUSD", "createdAt" FROM "TradeExecution" ORDER BY "createdAt" DESC LIMIT 5;'
-
+  'SELECT id, direction, "amountUSD", "executionPrice", "pnlUSD", "createdAt" FROM "krypto"."TradeExecution" ORDER BY "createdAt" DESC LIMIT 5;'
 docker exec -i krypto-postgres psql -U krypto -d krypto -c \
-  'SELECT id, left("entryText", 160), "tradeExecutionId", "createdAt" FROM "AgentJournal" ORDER BY "createdAt" DESC LIMIT 5;'
+  'SELECT id, left("entryText", 160), "tradeExecutionId", "createdAt" FROM "krypto"."AgentJournal" ORDER BY "createdAt" DESC LIMIT 5;'
 ```
 
 ## 8. Reset between experiments
@@ -235,24 +256,24 @@ This clears trades and journals, resets the singleton to:
 0 ETH / 200 USDC / portfolio value 200 / unlocked / unpaused / not running
 ```
 
-If you need seeded historical-looking demo rows instead, rerun:
+If the singleton was removed, recreate it idempotently:
 
 ```bash
-npm run db:seed
+npm run db:init
 ```
 
 ## 9. Common local failures
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `500 AgentState singleton not found` | Singleton not seeded | `npm run db:seed` |
-| `409 Agent is already running` | Stale mutex | `UPDATE "AgentState" SET "isRunning" = false WHERE id = 'singleton';` |
+| `500 AgentState singleton not found` | Singleton not initialized | `npm run db:init` |
+| `409 Agent is already running` | Active owned lease | Inspect `leaseOwner`/`leaseExpiresAt`; wait for expiry or use the admin recovery path only after expiry |
 | `401 Unauthorized` | Wrong or missing `x-cron-secret` | Use the exact `CRON_SECRET` from `.env` |
-| `Invalid environment variables` | Required env missing | Fill all required vars, including dummy CDP and PostHog values locally |
-| LLM auth/model error | Stub Azure values used while unpaused | Pause for no-LLM smoke, or provide real Azure-hosted Anthropic values |
+| Rollout configuration error | Invalid `ROLLOUT_MODE` | Use `disabled`, `shadow`, or `paper` |
+| LLM auth/model error | Stub Foundry values used while unpaused | Pause for no-LLM smoke, or provide real Azure AI Foundry Anthropic values |
 | `Cooldown active` | A trade happened within 2 hours | Wait, reset DB, or test a non-trade route |
-| `System locked` | Portfolio fell below `$150` | Inspect trades/journals before manually clearing `isLocked` |
-| Coinbase API error | Network/Coinbase transient | Retry later; deterministic market-data provider is future work |
+| `System locked` | Drawdown safety threshold was reached | Inspect trades/journals, then use the audited **Clear Safety Lock** admin action with a reason |
+| Coinbase API error | Network/Coinbase transient or invalid/stale candles | Retry later and inspect the typed market-data error |
 
 ## 10. Testing profitability
 
@@ -263,6 +284,7 @@ deterministic backtest runner first:
 npm run backtest -- --scenario scenarios/dip-recovery.json
 npm run backtest -- --scenario scenarios/sideways-chop.json
 npm run backtest -- --scenario scenarios/crash-rebound.json
+npm run backtest:all
 ```
 
 To write a JSON artifact:
@@ -270,6 +292,14 @@ To write a JSON artifact:
 ```bash
 npm run backtest -- --scenario scenarios/dip-recovery.json --out backtest-output/dip-recovery.json
 ```
+
+`backtest:all` emits one aggregate JSON object. Its
+`engineeringAssertions` section is separate from
+`financialEvidenceSummary`; the latter is explicitly classified
+`engineering-fixtures-only` and states that no historical/walk-forward evidence
+exists. Use `--json` for a machine-readable single-scenario result.
+Use `npm run --silent backtest:all` when piping the JSON to another process so
+npm's command banner is suppressed.
 
 Backtest reports compare final equity against:
 
@@ -280,11 +310,27 @@ The current deterministic runner includes:
 
 - controllable price/candle fixtures
 - no-LLM deterministic policies
-- weighted-average cost basis
-- fees and slippage
+- production deterministic policy authorization
+- the same exact fixed-point accounting and pure execution calculator as paper
+  execution
+- default 30 bps fees and 15 bps adverse paper slippage
 - cooldown, DCA, balance, and drawdown guardrails
+- post-action same-step drawdown
 - comparison against cash baseline and buy-and-hold ETH
+- Sharpe, Sortino, Calmar, turnover, fee efficiency, win rate, profit factor,
+  benchmark alpha, total modeled slippage, and optional LLM-cost-adjusted PnL
+- strategy/cost/code/schema/decision-source/dataset version metadata
 
-These scenarios are still engineering tests, not financial proof. Add more
-historical windows and avoid cherry-picking before claiming positive expected
-value.
+`rules-basic` executes mandatory policy actions first, otherwise selects the
+maximum eligible SELL before BUY, selects the maximum eligible BUY next, and
+HOLDs when neither is eligible. `always-hold` suppresses optional actions but
+does not suppress a mandatory production stop-loss.
+
+These scenarios are engineering tests, not financial proof. Current results:
+3 of 8 synthetic scenarios beat the cash baseline, 2 of 8 beat buy-and-hold,
+and 0 of 8 beat both.
+See `specs/evaluation.md` §3 for the distinction between engineering fixtures and
+financial evidence, and `specs/readiness.md` §1 for the current baseline.
+
+Add more historical windows and avoid cherry-picking before claiming positive
+expected value (see `specs/evaluation.md` §4 on cherry-picking prevention).

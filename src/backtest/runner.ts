@@ -1,51 +1,95 @@
 import {
-  BUY_TRIGGER_PCT,
-  COOLDOWN_MS,
-  INITIAL_CAPITAL_USD,
-  MAX_DCA_COUNT,
-  MAX_TRADE_SIZE_USD,
-  MIN_PORTFOLIO_VALUE_USD,
-  SELL_TRIGGER_PCT,
-  SLIPPAGE_TOLERANCE_PCT,
-  STOP_LOSS_PCT,
-} from "@/lib/config";
+  ETH_SCALE,
+  USD_SCALE,
+  formatDecimal,
+  notionalForQuantity,
+  parseDecimal,
+} from "@/trading/accounting";
+import {
+  calculateDrawdownPct,
+  calculatePaperExecution,
+} from "@/trading/paper-execution";
+import { authorizeTradeIntent, evaluateTradePolicy } from "@/trading/policy";
+import {
+  DEFAULT_STRATEGY_CONFIG,
+  type StrategyConfig,
+} from "@/trading/strategy-config";
 import type {
+  PolicyEvaluation,
+  TradeDecision,
+  TradingAccountSnapshot,
+} from "@/trading/types";
+import type {
+  BacktestAggregateReport,
+  BacktestDecisionSource,
+  BacktestMetrics,
   BacktestOptions,
-  BacktestPolicy,
   BacktestResult,
   BacktestTrade,
   ScenarioInput,
 } from "./types";
 
 interface BacktestState {
-  eth: number;
-  usdc: number;
-  costBasisETH: number;
-  costBasisUSD: number;
-  anchorPrice: number;
+  ethBalance: bigint;
+  usdcBalance: bigint;
+  weightedCostBasisUSD: bigint | null;
+  referencePriceUSD: number | null;
+  lastBuyPriceUSD: number | null;
   lastTradeAt: Date | null;
-  consecutiveBuys: number;
+  dcaCount: number;
+  peakPortfolioValueUSD: bigint;
   locked: boolean;
-  realisedPnlUSD: number;
-  totalFeesUSD: number;
+  realisedPnlUSD: bigint;
+  totalFeesUSD: bigint;
+  totalSlippageUSD: bigint;
   trades: BacktestTrade[];
 }
 
 interface NormalizedPoint {
   timestamp: Date;
   price: number;
+  priceUSD: bigint;
 }
 
 const DEFAULT_INTERVAL_HOURS = 4;
-const DEFAULT_FEE_RATE = 0.003;
+export const BACKTEST_CODE_VERSION = "align-backtesting-v1";
+export const BACKTEST_REPORT_SCHEMA_VERSION = "1.0.0";
+
+function decimalNumber(value: bigint, scale: number): number {
+  return Number(formatDecimal(value, scale));
+}
+
+function usd(value: number, field: string): bigint {
+  if (!Number.isFinite(value)) {
+    throw new Error(`${field} must be finite`);
+  }
+  return parseDecimal(value.toFixed(USD_SCALE), USD_SCALE);
+}
+
+function fractionToBps(value: number, field: string): number {
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${field} must be between 0 and 1`);
+  }
+  const bps = value * 10_000;
+  if (!Number.isInteger(bps)) {
+    throw new Error(`${field} must resolve to whole basis points`);
+  }
+  return bps;
+}
 
 function normalizeScenario(scenario: ScenarioInput): NormalizedPoint[] {
   if (scenario.prices.length < 2) {
     throw new Error("Backtest scenario requires at least two prices");
   }
-
   const start = new Date(scenario.start ?? "2026-01-01T00:00:00.000Z");
-  const intervalMs = (scenario.intervalHours ?? DEFAULT_INTERVAL_HOURS) * 60 * 60 * 1000;
+  if (!Number.isFinite(start.getTime())) {
+    throw new Error("Backtest scenario start must be a valid timestamp");
+  }
+  const intervalHours = scenario.intervalHours ?? DEFAULT_INTERVAL_HOURS;
+  if (!Number.isFinite(intervalHours) || intervalHours <= 0) {
+    throw new Error("Backtest scenario intervalHours must be positive");
+  }
+  const intervalMs = intervalHours * 60 * 60 * 1000;
 
   return scenario.prices.map((price, index) => {
     if (!Number.isFinite(price) || price <= 0) {
@@ -54,152 +98,242 @@ function normalizeScenario(scenario: ScenarioInput): NormalizedPoint[] {
     return {
       timestamp: new Date(start.getTime() + index * intervalMs),
       price,
+      priceUSD: usd(price, `price at index ${index}`),
     };
   });
 }
 
-function equity(state: BacktestState, price: number): number {
-  return state.usdc + state.eth * price;
+function resolveStrategy(options: BacktestOptions): StrategyConfig {
+  const initialCapitalUSD =
+    options.initialCapitalUSD ?? DEFAULT_STRATEGY_CONFIG.initialCapitalUSD;
+  const maximumTradeUSD =
+    options.maxTradeSizeUSD ??
+    initialCapitalUSD *
+      DEFAULT_STRATEGY_CONFIG.maximumTradeFractionOfInitialCapital;
+  if (initialCapitalUSD <= 0 || maximumTradeUSD <= 0) {
+    throw new Error("Backtest capital and maximum trade size must be positive");
+  }
+
+  return {
+    ...DEFAULT_STRATEGY_CONFIG,
+    initialCapitalUSD,
+    minimumTradeUSD:
+      options.minTradeSizeUSD ?? DEFAULT_STRATEGY_CONFIG.minimumTradeUSD,
+    maximumTradeFractionOfInitialCapital:
+      maximumTradeUSD / initialCapitalUSD,
+    feeBps:
+      options.feeRate === undefined
+        ? DEFAULT_STRATEGY_CONFIG.feeBps
+        : fractionToBps(options.feeRate, "feeRate"),
+    paperSlippageBps:
+      options.slippagePct === undefined
+        ? DEFAULT_STRATEGY_CONFIG.paperSlippageBps
+        : fractionToBps(options.slippagePct, "slippagePct"),
+    buyTriggerFraction:
+      options.buyTriggerPct ??
+      DEFAULT_STRATEGY_CONFIG.buyTriggerFraction,
+    takeProfitFraction:
+      options.sellTriggerPct ??
+      DEFAULT_STRATEGY_CONFIG.takeProfitFraction,
+    stopLossFraction:
+      options.stopLossPct ?? DEFAULT_STRATEGY_CONFIG.stopLossFraction,
+    maximumDcaEntries:
+      options.maxDcaCount ?? DEFAULT_STRATEGY_CONFIG.maximumDcaEntries,
+    cooldownMs: options.cooldownMs ?? DEFAULT_STRATEGY_CONFIG.cooldownMs,
+    maximumDrawdownPct:
+      options.maximumDrawdownPct ??
+      DEFAULT_STRATEGY_CONFIG.maximumDrawdownPct,
+  };
 }
 
-function canTrade(state: BacktestState, now: Date, cooldownMs: number): boolean {
+function portfolioValue(state: BacktestState, priceUSD: bigint): bigint {
   return (
-    state.lastTradeAt === null ||
-    now.getTime() - state.lastTradeAt.getTime() >= cooldownMs
+    state.usdcBalance +
+    notionalForQuantity(state.ethBalance, priceUSD)
   );
 }
 
-function chooseAction(
-  policy: BacktestPolicy,
+function toPolicyAccount(
   state: BacktestState,
-  price: number,
-  now: Date,
-  opts: Required<BacktestOptions>,
-): { direction: "BUY" | "SELL"; reason: string } | null {
-  if (policy === "always-hold" || state.locked || !canTrade(state, now, opts.cooldownMs)) {
-    return null;
-  }
-
-  const positionValue = state.eth * price;
-  if (
-    state.eth > 0 &&
-    price <= state.anchorPrice * (1 - opts.stopLossPct)
-  ) {
-    return { direction: "SELL", reason: "stop-loss" };
-  }
-
-  if (
-    state.eth > 0 &&
-    price >= state.anchorPrice * (1 + opts.sellTriggerPct) &&
-    positionValue >= opts.minTradeSizeUSD
-  ) {
-    return { direction: "SELL", reason: "sell-trigger" };
-  }
-
-  if (
-    price <= state.anchorPrice * (1 - opts.buyTriggerPct) &&
-    state.consecutiveBuys < opts.maxDcaCount &&
-    state.usdc >= opts.minTradeSizeUSD * (1 + opts.feeRate)
-  ) {
-    return { direction: "BUY", reason: "buy-trigger" };
-  }
-
-  return null;
-}
-
-function executeTrade(
-  state: BacktestState,
-  direction: "BUY" | "SELL",
-  price: number,
-  timestamp: Date,
-  reason: string,
-  opts: Required<BacktestOptions>,
-): void {
-  const executionPrice =
-    direction === "BUY"
-      ? price * (1 + opts.slippagePct)
-      : price * (1 - opts.slippagePct);
-
-  if (direction === "BUY") {
-    const amountUSD = Math.min(
-      opts.maxTradeSizeUSD,
-      state.usdc / (1 + opts.feeRate),
-    );
-    if (amountUSD < opts.minTradeSizeUSD) return;
-
-    const feesUSD = amountUSD * opts.feeRate;
-    const amountAsset = amountUSD / executionPrice;
-
-    state.usdc -= amountUSD + feesUSD;
-    state.eth += amountAsset;
-    state.costBasisETH += amountAsset;
-    state.costBasisUSD += amountUSD + feesUSD;
-    state.totalFeesUSD += feesUSD;
-    state.anchorPrice = executionPrice;
-    state.consecutiveBuys += 1;
-    state.lastTradeAt = timestamp;
-    state.trades.push({
-      timestamp: timestamp.toISOString(),
-      direction,
-      amountUSD,
-      amountAsset,
-      executionPrice,
-      feesUSD,
-      pnlUSD: null,
-      reason,
-    });
-    return;
-  }
-
-  const positionValue = state.eth * executionPrice;
-  const amountUSD = Math.min(opts.maxTradeSizeUSD, positionValue);
-  if (amountUSD < opts.minTradeSizeUSD) return;
-
-  const amountAsset = Math.min(state.eth, amountUSD / executionPrice);
-  const feesUSD = amountUSD * opts.feeRate;
-  const avgCost = state.costBasisETH > 0 ? state.costBasisUSD / state.costBasisETH : executionPrice;
-  const pnlUSD = (executionPrice - avgCost) * amountAsset - feesUSD;
-  const costBasisReduction = avgCost * amountAsset;
-
-  state.eth -= amountAsset;
-  state.usdc += amountUSD - feesUSD;
-  state.costBasisETH = Math.max(0, state.costBasisETH - amountAsset);
-  state.costBasisUSD = Math.max(0, state.costBasisUSD - costBasisReduction);
-  if (state.costBasisETH < 1e-10) {
-    state.costBasisETH = 0;
-    state.costBasisUSD = 0;
-  }
-  state.realisedPnlUSD += pnlUSD;
-  state.totalFeesUSD += feesUSD;
-  state.anchorPrice = executionPrice;
-  state.consecutiveBuys = 0;
-  state.lastTradeAt = timestamp;
-  state.trades.push({
-    timestamp: timestamp.toISOString(),
-    direction,
-    amountUSD,
-    amountAsset,
-    executionPrice,
-    feesUSD,
-    pnlUSD,
-    reason,
-  });
-}
-
-function requiredOptions(options: BacktestOptions): Required<BacktestOptions> {
+  strategy: StrategyConfig,
+): TradingAccountSnapshot {
   return {
-    initialCapitalUSD: options.initialCapitalUSD ?? INITIAL_CAPITAL_USD,
-    maxTradeSizeUSD: options.maxTradeSizeUSD ?? MAX_TRADE_SIZE_USD,
-    minTradeSizeUSD: options.minTradeSizeUSD ?? 10,
-    feeRate: options.feeRate ?? DEFAULT_FEE_RATE,
-    slippagePct: options.slippagePct ?? 0,
-    buyTriggerPct: options.buyTriggerPct ?? BUY_TRIGGER_PCT,
-    sellTriggerPct: options.sellTriggerPct ?? SELL_TRIGGER_PCT,
-    stopLossPct: options.stopLossPct ?? STOP_LOSS_PCT,
-    maxDcaCount: options.maxDcaCount ?? MAX_DCA_COUNT,
-    cooldownMs: options.cooldownMs ?? COOLDOWN_MS,
-    minPortfolioValueUSD: options.minPortfolioValueUSD ?? MIN_PORTFOLIO_VALUE_USD,
-    policy: options.policy ?? "rules-basic",
+    initialCapitalUSD: strategy.initialCapitalUSD,
+    ethBalance: decimalNumber(state.ethBalance, ETH_SCALE),
+    usdcBalance: decimalNumber(state.usdcBalance, USD_SCALE),
+    weightedCostBasisUSD:
+      state.weightedCostBasisUSD === null
+        ? null
+        : decimalNumber(state.weightedCostBasisUSD, USD_SCALE),
+    referencePriceUSD: state.referencePriceUSD,
+    lastBuyPriceUSD: state.lastBuyPriceUSD,
+    dcaCount: state.dcaCount,
+    peakPortfolioValueUSD: decimalNumber(
+      state.peakPortfolioValueUSD,
+      USD_SCALE,
+    ),
+    lastExecutionAt: state.lastTradeAt,
+    isLocked: state.locked,
+    isOperatorPaused: false,
+    accountingStatus: "RECONCILED",
+  };
+}
+
+function chooseDecision(
+  source: BacktestDecisionSource,
+  evaluation: PolicyEvaluation,
+): TradeDecision {
+  if (source === "rules-basic") {
+    if (evaluation.sell) {
+      return {
+        action: "SELL",
+        notionalUSD: evaluation.sell.maximumNotionalUSD,
+        reasoning:
+          "rules-basic selects the maximum eligible SELL before considering BUY",
+      };
+    }
+    if (evaluation.buy) {
+      return {
+        action: "BUY",
+        notionalUSD: evaluation.buy.maximumNotionalUSD,
+        reasoning: "rules-basic selects the maximum eligible BUY",
+      };
+    }
+  }
+  return {
+    action: "HOLD",
+    notionalUSD: null,
+    reasoning:
+      source === "always-hold"
+        ? "always-hold rejects all optional actions"
+        : evaluation.holdReason ?? "No eligible action",
+  };
+}
+
+function sampleStandardDeviation(values: number[]): number | null {
+  if (values.length < 2) return null;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance =
+    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+    (values.length - 1);
+  return variance > 0 ? Math.sqrt(variance) : null;
+}
+
+function finiteRatio(numerator: number, denominator: number): number | null {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator)) return null;
+  if (Math.abs(denominator) <= Number.EPSILON) return null;
+  const result = numerator / denominator;
+  return Number.isFinite(result) ? result : null;
+}
+
+function calculateMetrics(
+  result: {
+    initialCapitalUSD: number;
+    finalEquityUSD: number;
+    buyHoldEquityUSD: number;
+    totalFeesUSD: number;
+    maxDrawdownPct: number;
+    totalSlippageUSD: number;
+    trades: BacktestTrade[];
+    equitySnapshots: BacktestResult["equitySnapshots"];
+    durationMs: number;
+  },
+  llmCostUSD: number | undefined,
+): BacktestMetrics {
+  if (
+    llmCostUSD !== undefined &&
+    (!Number.isFinite(llmCostUSD) || llmCostUSD < 0)
+  ) {
+    throw new Error("llmCostUSD must be finite and non-negative");
+  }
+  const dailyCloses = new Map<string, number>();
+  for (const snapshot of result.equitySnapshots) {
+    dailyCloses.set(snapshot.timestamp.slice(0, 10), snapshot.agentEquityUSD);
+  }
+  const dailyEquity = [...dailyCloses.values()];
+  const returns = dailyEquity.slice(1).map((value, index) => {
+    const prior = dailyEquity[index];
+    return prior > 0 ? value / prior - 1 : 0;
+  });
+  const meanReturn =
+    returns.length > 0
+      ? returns.reduce((sum, value) => sum + value, 0) / returns.length
+      : 0;
+  const standardDeviation = sampleStandardDeviation(returns);
+  const sharpe =
+    standardDeviation === null
+      ? null
+      : finiteRatio(
+          meanReturn * Math.sqrt(252),
+          standardDeviation,
+        );
+  const downsideDeviation =
+    returns.length === 0
+      ? 0
+      : Math.sqrt(
+          returns.reduce(
+            (sum, value) => sum + Math.min(0, value) ** 2,
+            0,
+          ) / returns.length,
+        );
+  const sortino = finiteRatio(
+    meanReturn * Math.sqrt(252),
+    downsideDeviation,
+  );
+  const years = result.durationMs / (365.25 * 24 * 60 * 60 * 1000);
+  const annualizedReturn =
+    years > 0 && result.initialCapitalUSD > 0 && result.finalEquityUSD >= 0
+      ? (result.finalEquityUSD / result.initialCapitalUSD) ** (1 / years) - 1
+      : null;
+  const calmar =
+    annualizedReturn === null
+      ? null
+      : finiteRatio(annualizedReturn, result.maxDrawdownPct / 100);
+  const averageEquity =
+    result.equitySnapshots.reduce(
+      (sum, snapshot) => sum + snapshot.agentEquityUSD,
+      0,
+    ) / result.equitySnapshots.length;
+  const tradedNotional = result.trades.reduce(
+    (sum, trade) => sum + trade.amountUSD,
+    0,
+  );
+  const netPnlUSD = result.finalEquityUSD - result.initialCapitalUSD;
+  const exits = result.trades.filter(
+    (trade): trade is BacktestTrade & { pnlUSD: number } =>
+      trade.direction === "SELL" && trade.pnlUSD !== null,
+  );
+  const winningExits = exits.filter((trade) => trade.pnlUSD > 0);
+  const grossProfit = winningExits.reduce(
+    (sum, trade) => sum + trade.pnlUSD,
+    0,
+  );
+  const grossLoss = exits
+    .filter((trade) => trade.pnlUSD < 0)
+    .reduce((sum, trade) => sum + Math.abs(trade.pnlUSD), 0);
+  const strategyReturn = netPnlUSD / result.initialCapitalUSD;
+  const benchmarkReturn =
+    result.buyHoldEquityUSD / result.initialCapitalUSD - 1;
+
+  return {
+    netPnlUSD,
+    sharpe,
+    sortino,
+    calmar,
+    turnover: finiteRatio(tradedNotional, averageEquity),
+    feeEfficiency: finiteRatio(
+      netPnlUSD,
+      result.totalFeesUSD + result.totalSlippageUSD,
+    ),
+    winRate:
+      exits.length === 0 ? null : winningExits.length / exits.length,
+    profitFactor: finiteRatio(grossProfit, grossLoss),
+    benchmarkAlphaPct: (strategyReturn - benchmarkReturn) * 100,
+    totalModeledSlippageUSD: result.totalSlippageUSD,
+    llmCostUSD: llmCostUSD ?? null,
+    llmCostAdjustedPnlUSD:
+      llmCostUSD === undefined ? null : netPnlUSD - llmCostUSD,
+    returnObservations: returns.length,
   };
 }
 
@@ -209,7 +343,6 @@ function evaluateAssertions(
 ): string[] {
   const expected = scenario.expected;
   if (!expected) return [];
-
   const failures: string[] = [];
   if (
     expected.minFinalEquity !== undefined &&
@@ -249,113 +382,315 @@ export function runBacktest(
   scenario: ScenarioInput,
   options: BacktestOptions = {},
 ): BacktestResult {
-  const opts = requiredOptions({
-    ...options,
-    policy: options.policy ?? scenario.policy ?? "rules-basic",
-  });
   const points = normalizeScenario(scenario);
-  const firstPrice = points[0].price;
-  const lastPrice = points[points.length - 1].price;
+  const strategy = resolveStrategy(options);
+  const decisionSource =
+    options.policy ?? scenario.policy ?? "rules-basic";
+  const initialCapitalUSD = usd(
+    strategy.initialCapitalUSD,
+    "initialCapitalUSD",
+  );
   const state: BacktestState = {
-    eth: 0,
-    usdc: opts.initialCapitalUSD,
-    costBasisETH: 0,
-    costBasisUSD: 0,
-    anchorPrice: firstPrice,
+    ethBalance: 0n,
+    usdcBalance: initialCapitalUSD,
+    weightedCostBasisUSD: null,
+    referencePriceUSD: null,
+    lastBuyPriceUSD: null,
     lastTradeAt: null,
-    consecutiveBuys: 0,
+    dcaCount: 0,
+    peakPortfolioValueUSD: initialCapitalUSD,
     locked: false,
-    realisedPnlUSD: 0,
-    totalFeesUSD: 0,
+    realisedPnlUSD: 0n,
+    totalFeesUSD: 0n,
+    totalSlippageUSD: 0n,
     trades: [],
   };
-
-  let peakEquity = opts.initialCapitalUSD;
-  let minEquity = opts.initialCapitalUSD;
   let maxDrawdownPct = 0;
+  let minEquityUSD = strategy.initialCapitalUSD;
   const equitySnapshots: BacktestResult["equitySnapshots"] = [];
 
   for (const point of points) {
-    const currentEquity = equity(state, point.price);
-    peakEquity = Math.max(peakEquity, currentEquity);
-    minEquity = Math.min(minEquity, currentEquity);
-    maxDrawdownPct = Math.max(
-      maxDrawdownPct,
-      peakEquity > 0 ? ((peakEquity - currentEquity) / peakEquity) * 100 : 0,
+    const markedEquity = portfolioValue(state, point.priceUSD);
+    if (markedEquity > state.peakPortfolioValueUSD) {
+      state.peakPortfolioValueUSD = markedEquity;
+    }
+    const preActionDrawdown = decimalNumber(
+      calculateDrawdownPct(
+        state.peakPortfolioValueUSD,
+        markedEquity,
+        USD_SCALE,
+      ),
+      USD_SCALE,
+    );
+    if (preActionDrawdown >= strategy.maximumDrawdownPct) {
+      state.locked = true;
+    }
+
+    const evaluation = evaluateTradePolicy(
+      toPolicyAccount(state, strategy),
+      {
+        spotPriceUSD: point.price,
+        observedAt: point.timestamp,
+        rsi: null,
+        emaShort: null,
+        emaLong: null,
+      },
+      strategy,
+      point.timestamp,
+    );
+    if (evaluation.referencePriceToInitialize !== undefined) {
+      state.referencePriceUSD = evaluation.referencePriceToInitialize;
+    }
+    const decision = chooseDecision(decisionSource, evaluation);
+    const authorization = authorizeTradeIntent(
+      evaluation,
+      decision,
+      strategy,
     );
 
-    if (currentEquity < opts.minPortfolioValueUSD) {
-      state.locked = true;
-      continue;
+    if (authorization.authorized) {
+      const requestedNotionalUSD = usd(
+        authorization.intent.notionalUSD,
+        "authorized notional",
+      );
+      const calculation = calculatePaperExecution(
+        {
+          account: {
+            ethBalance: state.ethBalance,
+            usdcBalance: state.usdcBalance,
+            weightedCostBasisUSD: state.weightedCostBasisUSD,
+            dcaCount: state.dcaCount,
+          },
+          direction: authorization.intent.action,
+          requestedNotionalUSD,
+          observedPriceUSD: point.priceUSD,
+          feeBps: strategy.feeBps,
+          slippageBps: strategy.paperSlippageBps,
+          fullExit: authorization.intent.fullExit,
+          initialCapitalUSD,
+          peakPortfolioValueUSD: state.peakPortfolioValueUSD,
+        },
+        USD_SCALE,
+      );
+      state.ethBalance = calculation.transition.after.ethBalance;
+      state.usdcBalance = calculation.transition.after.usdcBalance;
+      state.weightedCostBasisUSD =
+        calculation.transition.after.weightedCostBasisUSD;
+      state.dcaCount = calculation.transition.after.dcaCount;
+      state.peakPortfolioValueUSD = calculation.peakPortfolioValueUSD;
+      state.lastTradeAt = point.timestamp;
+      state.totalFeesUSD += calculation.feeUSD;
+      state.totalSlippageUSD += calculation.slippageUSD;
+      if (calculation.transition.realizedPnlUSD !== null) {
+        state.realisedPnlUSD += calculation.transition.realizedPnlUSD;
+      }
+      if (authorization.intent.action === "BUY") {
+        state.lastBuyPriceUSD = decimalNumber(
+          calculation.executionPriceUSD,
+          USD_SCALE,
+        );
+      } else if (authorization.intent.fullExit) {
+        state.referencePriceUSD = decimalNumber(
+          calculation.executionPriceUSD,
+          USD_SCALE,
+        );
+        state.lastBuyPriceUSD = null;
+      }
+      state.trades.push({
+        timestamp: point.timestamp.toISOString(),
+        direction: authorization.intent.action,
+        amountUSD: decimalNumber(
+          calculation.grossNotionalUSD,
+          USD_SCALE,
+        ),
+        amountAsset: decimalNumber(calculation.quantityETH, ETH_SCALE),
+        observedPrice: point.price,
+        executionPrice: decimalNumber(
+          calculation.executionPriceUSD,
+          USD_SCALE,
+        ),
+        feesUSD: decimalNumber(calculation.feeUSD, USD_SCALE),
+        slippageUSD: decimalNumber(
+          calculation.slippageUSD,
+          USD_SCALE,
+        ),
+        pnlUSD:
+          calculation.transition.realizedPnlUSD === null
+            ? null
+            : decimalNumber(
+                calculation.transition.realizedPnlUSD,
+                USD_SCALE,
+              ),
+        reason: authorization.intent.reasoning,
+      });
     }
 
-    const action = chooseAction(opts.policy, state, point.price, point.timestamp, opts);
-    if (action) {
-      executeTrade(state, action.direction, point.price, point.timestamp, action.reason, opts);
+    const postActionEquity = portfolioValue(state, point.priceUSD);
+    if (postActionEquity > state.peakPortfolioValueUSD) {
+      state.peakPortfolioValueUSD = postActionEquity;
     }
-
+    const postActionDrawdown = decimalNumber(
+      calculateDrawdownPct(
+        state.peakPortfolioValueUSD,
+        postActionEquity,
+        USD_SCALE,
+      ),
+      USD_SCALE,
+    );
+    maxDrawdownPct = Math.max(maxDrawdownPct, postActionDrawdown);
+    const postActionEquityNumber = decimalNumber(
+      postActionEquity,
+      USD_SCALE,
+    );
+    minEquityUSD = Math.min(minEquityUSD, postActionEquityNumber);
     equitySnapshots.push({
       timestamp: point.timestamp.toISOString(),
       price: point.price,
-      agentEquityUSD: equity(state, point.price),
-      cashEquityUSD: opts.initialCapitalUSD,
-      buyHoldEquityUSD: (opts.initialCapitalUSD / firstPrice) * point.price,
+      agentEquityUSD: postActionEquityNumber,
+      cashEquityUSD: strategy.initialCapitalUSD,
+      buyHoldEquityUSD:
+        (strategy.initialCapitalUSD / points[0].price) * point.price,
+      drawdownPct: postActionDrawdown,
     });
   }
 
-  const finalEquityUSD = equity(state, lastPrice);
-  const avgCost = state.costBasisETH > 0 ? state.costBasisUSD / state.costBasisETH : 0;
+  const finalPoint = points[points.length - 1];
+  const finalEquityUSD =
+    equitySnapshots[equitySnapshots.length - 1].agentEquityUSD;
+  const weightedCostBasisUSD =
+    state.weightedCostBasisUSD === null
+      ? 0
+      : decimalNumber(state.weightedCostBasisUSD, USD_SCALE);
+  const ethBalance = decimalNumber(state.ethBalance, ETH_SCALE);
   const unrealisedPnlUSD =
-    state.costBasisETH > 0 ? (lastPrice - avgCost) * state.eth : 0;
-  const buyHoldEquityUSD = (opts.initialCapitalUSD / firstPrice) * lastPrice;
-  const resultWithoutAssertions = {
+    state.weightedCostBasisUSD === null
+      ? 0
+      : (finalPoint.price - weightedCostBasisUSD) * ethBalance;
+  const buyHoldEquityUSD =
+    (strategy.initialCapitalUSD / points[0].price) * finalPoint.price;
+  const totalFeesUSD = decimalNumber(state.totalFeesUSD, USD_SCALE);
+  const totalSlippageUSD = decimalNumber(
+    state.totalSlippageUSD,
+    USD_SCALE,
+  );
+  const metrics = calculateMetrics(
+    {
+      initialCapitalUSD: strategy.initialCapitalUSD,
+      finalEquityUSD,
+      buyHoldEquityUSD,
+      totalFeesUSD,
+      maxDrawdownPct,
+      totalSlippageUSD,
+      trades: state.trades,
+      equitySnapshots,
+      durationMs:
+        finalPoint.timestamp.getTime() - points[0].timestamp.getTime(),
+    },
+    options.llmCostUSD,
+  );
+  const resultWithoutAssertions: Omit<
+    BacktestResult,
+    "assertionFailures"
+  > = {
+    metadata: {
+      strategyVersion: strategy.version,
+      costModel: {
+        feeBps: strategy.feeBps,
+        paperSlippageBps: strategy.paperSlippageBps,
+      },
+      codeVersion: BACKTEST_CODE_VERSION,
+      reportSchemaVersion: BACKTEST_REPORT_SCHEMA_VERSION,
+      decisionSource,
+      scenarioDatasetId: scenario.datasetId ?? scenario.name,
+    },
     scenarioName: scenario.name,
-    policy: opts.policy,
-    initialCapitalUSD: opts.initialCapitalUSD,
+    policy: decisionSource,
+    initialCapitalUSD: strategy.initialCapitalUSD,
     finalEquityUSD,
-    cashBaselineUSD: opts.initialCapitalUSD,
+    cashBaselineUSD: strategy.initialCapitalUSD,
     buyHoldEquityUSD,
-    beatsCash: finalEquityUSD > opts.initialCapitalUSD,
+    beatsCash: finalEquityUSD > strategy.initialCapitalUSD,
     beatsBuyHold: finalEquityUSD > buyHoldEquityUSD,
-    realisedPnlUSD: state.realisedPnlUSD,
+    realisedPnlUSD: decimalNumber(state.realisedPnlUSD, USD_SCALE),
     unrealisedPnlUSD,
-    totalFeesUSD: state.totalFeesUSD,
+    totalFeesUSD,
     maxDrawdownPct,
-    minEquityUSD: minEquity,
+    minEquityUSD,
     locked: state.locked,
+    metrics,
     trades: state.trades,
     equitySnapshots,
   };
 
   return {
     ...resultWithoutAssertions,
-    assertionFailures: evaluateAssertions(scenario, resultWithoutAssertions),
+    assertionFailures: evaluateAssertions(
+      scenario,
+      resultWithoutAssertions,
+    ),
   };
 }
 
+export function createAggregateReport(
+  results: BacktestResult[],
+): BacktestAggregateReport {
+  const failures = results
+    .filter((result) => result.assertionFailures.length > 0)
+    .map((result) => ({
+      scenarioName: result.scenarioName,
+      failures: result.assertionFailures,
+    }));
+  return {
+    reportSchemaVersion: BACKTEST_REPORT_SCHEMA_VERSION,
+    engineeringAssertions: {
+      passedScenarios: results.length - failures.length,
+      failedScenarios: failures.length,
+      failures,
+    },
+    financialEvidenceSummary: {
+      classification: "engineering-fixtures-only",
+      scenarioCount: results.length,
+      beatsCash: results.filter((result) => result.beatsCash).length,
+      beatsBuyHold: results.filter((result) => result.beatsBuyHold).length,
+      beatsBoth: results.filter(
+        (result) => result.beatsCash && result.beatsBuyHold,
+      ).length,
+      historicalOrWalkForwardEvidence: false,
+    },
+    results,
+  };
+}
+
+function ratio(value: number | null): string {
+  return value === null ? "n/a" : value.toFixed(4);
+}
+
 export function formatBacktestReport(result: BacktestResult): string {
-  const lines = [
-    `Scenario: ${result.scenarioName}`,
-    `Policy: ${result.policy}`,
+  const financialLines = [
+    "Financial evidence summary (synthetic engineering fixture only):",
     `Final equity: $${result.finalEquityUSD.toFixed(2)}`,
     `Cash baseline: $${result.cashBaselineUSD.toFixed(2)} (${result.beatsCash ? "beat" : "did not beat"})`,
     `Buy-and-hold: $${result.buyHoldEquityUSD.toFixed(2)} (${result.beatsBuyHold ? "beat" : "did not beat"})`,
-    `Realised PnL: ${result.realisedPnlUSD >= 0 ? "+" : ""}$${result.realisedPnlUSD.toFixed(2)}`,
-    `Unrealised PnL: ${result.unrealisedPnlUSD >= 0 ? "+" : ""}$${result.unrealisedPnlUSD.toFixed(2)}`,
-    `Fees: $${result.totalFeesUSD.toFixed(2)}`,
+    `Net PnL: ${result.metrics.netPnlUSD >= 0 ? "+" : ""}$${result.metrics.netPnlUSD.toFixed(2)}`,
+    `Fees / slippage: $${result.totalFeesUSD.toFixed(2)} / $${result.metrics.totalModeledSlippageUSD.toFixed(2)}`,
     `Max drawdown: ${result.maxDrawdownPct.toFixed(2)}%`,
-    `Trades: ${result.trades.length}`,
-    `Locked: ${result.locked ? "yes" : "no"}`,
+    `Sharpe / Sortino / Calmar: ${ratio(result.metrics.sharpe)} / ${ratio(result.metrics.sortino)} / ${ratio(result.metrics.calmar)}`,
+    `Turnover / fee efficiency: ${ratio(result.metrics.turnover)} / ${ratio(result.metrics.feeEfficiency)}`,
+    `Win rate / profit factor: ${ratio(result.metrics.winRate)} / ${ratio(result.metrics.profitFactor)}`,
+    `Benchmark alpha: ${result.metrics.benchmarkAlphaPct.toFixed(2)} percentage points`,
+    "Historical/walk-forward evidence: none",
   ];
-
-  if (result.assertionFailures.length > 0) {
-    lines.push("Assertions: failed");
-    for (const failure of result.assertionFailures) {
-      lines.push(`- ${failure}`);
-    }
-  } else {
-    lines.push("Assertions: passed");
-  }
-
-  return lines.join("\n");
+  const engineeringLines = [
+    "Engineering assertions:",
+    result.assertionFailures.length === 0 ? "passed" : "failed",
+    ...result.assertionFailures.map((failure) => `- ${failure}`),
+  ];
+  return [
+    `Scenario: ${result.scenarioName}`,
+    `Decision source: ${result.policy}`,
+    `Strategy / schema: ${result.metadata.strategyVersion} / ${result.metadata.reportSchemaVersion}`,
+    `Trades: ${result.trades.length}`,
+    ...engineeringLines,
+    ...financialLines,
+  ].join("\n");
 }

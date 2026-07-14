@@ -15,12 +15,12 @@ enabled and before any future live-trading RFC can move beyond draft.
 
 | Signal | Source | Why it matters |
 |---|---|---|
-| Agent run status | PostHog `agent_run_completed.status` | Detects errors, skipped runs, locks, and successful paper decisions |
+| Agent run status | Persisted `AgentRun.outcome` (PostHog is secondary) | Detects errors, skipped runs, locks, and successful paper decisions |
 | Trigger source | PostHog `triggerSource` | Separates cron behavior from operator-triggered runs |
 | Guardrail events | PostHog `guardrail_triggered` | Shows cooldown, drawdown, and pre-flight skips |
 | Trade events | PostHog `trade_executed` | Confirms paper trade execution and structured trade fields |
 | Token usage | PostHog `llm_token_usage` | Tracks prompt/completion cost and abnormal token spikes |
-| Daily summary | Resend email or console no-op | Human-readable 24h PnL/trade digest |
+| Daily summary | `AgentJournal.marketConditions.event = daily-summary-delivery` plus route result | Human-readable 24h digest and persisted sent/skipped/failed health |
 | Cron job result | Supabase `cron.job_run_details` and `net._http_response` | Verifies scheduled HTTP invocation actually reaches Vercel |
 | App logs | Vercel logs / local console | Debugging route exceptions, LLM retries, Coinbase failures, email failures |
 
@@ -58,6 +58,25 @@ Create a "Project Krypto Ops" dashboard with:
    - Breakdown: `triggerSource`
    - Goal: production should mostly be `cron`; `admin` runs should be explainable.
 
+## Admin health dashboard
+
+The `/admin` dashboard derives operational status from persisted database
+evidence:
+
+- **Run Schedule:** healthy within two hours of `lastCompletedRunAt`, or
+  explicitly disabled.
+- **Run Lease:** idle, active, stale, or recoverable based on owner/expiry.
+- **Market Data:** fresh when the latest persisted observation is within two
+  hours.
+- **Accounting:** reconciled, uninitialized, or quarantined.
+- **Alert Delivery:** sent, skipped, failed, stale, or unknown from the latest
+  daily-summary journal event.
+
+Pause/resume, expired-lease recovery, and safety-lock override also write audit
+journal records. Unlock requires an operator reason and is refused while an
+owned lease is active. Unlock leaves the agent paused so resumption is a
+separate audited decision.
+
 ## Supabase cron checks
 
 Registered jobs:
@@ -88,7 +107,10 @@ LIMIT 20;
 
 Healthy criteria:
 
-- `cron.job` contains `krypto-agent-run-hourly` and `krypto-daily-summary`.
+- Before controlled cron enablement, neither Krypto job is active.
+- After v2.1 fixed cron functions are installed and explicitly enabled,
+  `cron.job` contains `krypto-agent-run-hourly` and
+  `krypto-daily-summary`.
 - Recent `cron.job_run_details.status` is `succeeded`.
 - Recent `net._http_response.status_code` is `200`.
 - The response body is one of the healthy API outcomes documented in
@@ -126,16 +148,26 @@ single observation, not proof of edge.
 | Agent error | Any `agent_run_completed.status = error` in 24h | Inspect Vercel logs and DB state |
 | Drawdown lock | Any drawdown guardrail event or `status = locked` | Stop, inspect recent trades/journals, do not auto-unlock |
 | Missing cron | No `agent_run_completed` for > 2h during enabled cron window | Check Supabase cron, Vault secrets, Vercel deployment |
-| Stale mutex | Repeated 409 / `Agent is already running` | Verify no live run exists, then use release-lease flow |
+| Stale lease | `leaseExpiresAt < now()` or repeated 409 after expiry | Inspect owner/run record; use only the expired-lease recovery path |
+| Reconciliation failure | `accountingStatus != RECONCILED` | Keep trading blocked and reconcile immutable history before any unlock |
+| Alert delivery | Latest persisted delivery is failed/skipped, or older than 36h | Repair Resend configuration/provider health and prove a successful delivery |
+| Model retry/latency | `attemptCount > 1` or latency materially above baseline | Inspect Foundry rate limits, deployment health, and timeout frequency |
 | Token spike | `totalTokens` materially above recent median | Inspect prompt/journal context growth |
 
 ## Evidence for v3
 
-Do not advance live-trading work until monitoring shows:
+The full evidence criteria are defined in `specs/evaluation.md` and the release
+gates are in `specs/readiness.md` §4. Summary -- do not advance live-trading work
+until monitoring shows:
 
 - At least 30 calendar days of successful paper cron runs.
 - No unexplained route errors.
 - Guardrails behave as expected.
 - Daily/weekly reports show positive net performance after fees/slippage.
-- Backtests and paper runs compare favorably against cash and buy-and-hold ETH.
+- Paper runs satisfy the evaluation criteria in `specs/evaluation.md` §5: final
+  equity beats both cash and buy-and-hold baselines over a >= 30-day out-of-sample
+  window.
 - Manual journal review finds coherent decisions and no prompt gaming.
+
+Current baseline: 0 production days (v2 not yet deployed). See `specs/readiness.md`
+§1 for the current evidence summary.

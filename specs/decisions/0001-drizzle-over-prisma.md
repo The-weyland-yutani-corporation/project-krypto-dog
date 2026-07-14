@@ -16,8 +16,11 @@ Two PRD-compliant resolutions were possible: complete the Prisma migration (dele
 
 - `src/db/schema.ts` — Drizzle schema is the canonical schema definition.
 - `drizzle/` — generated migrations (committed).
-- `scripts/seed.ts` — Drizzle-based seeding for the `AgentState` singleton.
-- Supabase migrations in `supabase/migrations/` mirror the Drizzle output for `supabase db push` workflows.
+- `scripts/seed.ts` — idempotent Drizzle initialization for the `AgentState`
+  singleton.
+- Drizzle is also the sole production migration history. Supabase migration
+  mirroring was removed because it created competing histories; ADR 0006
+  records that refinement.
 
 ## Consequences
 

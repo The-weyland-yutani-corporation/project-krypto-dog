@@ -2,7 +2,12 @@ import "dotenv/config";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
-import { agentState, tradeExecution, agentJournal } from "../src/db/schema";
+import {
+  agentState,
+  agentRun,
+  tradeExecution,
+  agentJournal,
+} from "../src/db/schema";
 import { INITIAL_CAPITAL_USD } from "../src/lib/config";
 
 async function main() {
@@ -31,6 +36,7 @@ async function main() {
   const tradesDeleted = await db
     .delete(tradeExecution)
     .returning({ id: tradeExecution.id });
+  const runsDeleted = await db.delete(agentRun).returning({ id: agentRun.id });
 
   await db
     .update(agentState)
@@ -39,15 +45,35 @@ async function main() {
       currentPositionETH: 0,
       currentPositionUSDC: INITIAL_CAPITAL_USD,
       portfolioValueUSD: INITIAL_CAPITAL_USD,
+      initialCapitalUSD: INITIAL_CAPITAL_USD.toFixed(8),
+      lastTradePriceDecimal: null,
+      currentPositionETHDecimal: "0.000000000000000000",
+      currentPositionUSDCDecimal: INITIAL_CAPITAL_USD.toFixed(8),
+      portfolioValueUSDDecimal: INITIAL_CAPITAL_USD.toFixed(8),
+      weightedCostBasisUSD: null,
+      referencePriceUSD: null,
+      lastBuyPriceUSD: null,
+      dcaCount: 0,
+      peakPortfolioValueUSD: INITIAL_CAPITAL_USD.toFixed(8),
+      drawdownPct: "0.00000000",
+      strategyVersion: "v2.1-default",
+      strategySnapshot: { source: "local-reset" },
+      accountingStatus: "RECONCILED",
+      accountingIssue: null,
       isLocked: false,
+      lockReason: null,
+      lockedAt: null,
       isOperatorPaused: false,
       isRunning: false,
+      leaseOwner: null,
+      leaseExpiresAt: null,
       lastRunAt: null,
+      lastCompletedRunAt: null,
     })
     .where(eq(agentState.id, "singleton"));
 
   console.log(
-    `✅ Reset complete. Removed ${tradesDeleted.length} trade(s) and ${journalsDeleted.length} journal entr${journalsDeleted.length === 1 ? "y" : "ies"}.`,
+    `✅ Reset complete. Removed ${runsDeleted.length} run(s), ${tradesDeleted.length} trade(s), and ${journalsDeleted.length} journal entr${journalsDeleted.length === 1 ? "y" : "ies"}.`,
   );
   console.log(
     `   AgentState → 0 ETH / $${INITIAL_CAPITAL_USD} USDC / value $${INITIAL_CAPITAL_USD} / unlocked / operator resumed.`,

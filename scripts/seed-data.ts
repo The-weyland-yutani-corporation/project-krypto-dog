@@ -1,5 +1,5 @@
-// Shared seed data constants used by scripts/generate-seed-sql.ts and tests.
-// Extracted from the former prisma/seed.ts.
+// Engineering fixture data used by tests only. It must never be loaded by a
+// production migration or initialization command.
 
 interface SeedTrade {
   direction: "BUY" | "SELL";

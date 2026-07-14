@@ -1,5 +1,25 @@
 import { Resend } from "resend";
 
+export type EmailDeliveryResult =
+  | { status: "sent"; id?: string }
+  | { status: "skipped"; reason: string };
+
+export class EmailDeliveryError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(message);
+    this.name = "EmailDeliveryError";
+  }
+}
+
+export function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function getResendClient(): Resend | null {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
@@ -28,12 +48,13 @@ export async function sendGuardrailAlert(
     lastTradeTime?: Date;
     error?: string;
   }
-): Promise<void> {
+): Promise<EmailDeliveryResult> {
   const subject = `🚨 Krypto Alert: ${guardrailName} Triggered`;
   const timestamp = new Date().toISOString();
+  const safeGuardrailName = escapeHtml(guardrailName);
 
   const detailRows = [
-    `<tr><td style="padding:8px 12px;font-weight:600;color:#374151;">Guardrail</td><td style="padding:8px 12px;">${guardrailName}</td></tr>`,
+    `<tr><td style="padding:8px 12px;font-weight:600;color:#374151;">Guardrail</td><td style="padding:8px 12px;">${safeGuardrailName}</td></tr>`,
     details.portfolioValue !== undefined
       ? `<tr><td style="padding:8px 12px;font-weight:600;color:#374151;">Portfolio Value</td><td style="padding:8px 12px;">$${details.portfolioValue.toFixed(2)}</td></tr>`
       : "",
@@ -41,7 +62,7 @@ export async function sendGuardrailAlert(
       ? `<tr><td style="padding:8px 12px;font-weight:600;color:#374151;">Last Trade</td><td style="padding:8px 12px;">${details.lastTradeTime.toISOString()}</td></tr>`
       : "",
     details.error
-      ? `<tr><td style="padding:8px 12px;font-weight:600;color:#374151;">Error</td><td style="padding:8px 12px;color:#dc2626;">${details.error}</td></tr>`
+      ? `<tr><td style="padding:8px 12px;font-weight:600;color:#374151;">Error</td><td style="padding:8px 12px;color:#dc2626;">${escapeHtml(details.error)}</td></tr>`
       : "",
     `<tr><td style="padding:8px 12px;font-weight:600;color:#374151;">Timestamp</td><td style="padding:8px 12px;">${timestamp}</td></tr>`,
   ]
@@ -52,7 +73,7 @@ export async function sendGuardrailAlert(
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;">
       <div style="background:#dc2626;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0;">
         <h2 style="margin:0;font-size:20px;">🚨 Guardrail Alert</h2>
-        <p style="margin:4px 0 0;opacity:0.9;font-size:14px;">${guardrailName} has been triggered</p>
+        <p style="margin:4px 0 0;opacity:0.9;font-size:14px;">${safeGuardrailName} has been triggered</p>
       </div>
       <div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;padding:24px;">
         <table style="width:100%;border-collapse:collapse;">
@@ -63,23 +84,36 @@ export async function sendGuardrailAlert(
     </div>
   `;
 
+  const resend = getResendClient();
+  const addresses = getEmailAddresses();
+
+  if (!resend || !addresses) {
+    const reason = !resend
+      ? "RESEND_API_KEY is not configured"
+      : "ALERT_EMAIL_TO or ALERT_EMAIL_FROM is not configured";
+    console.log(`[email no-op] ${subject}\n${JSON.stringify(details)}`);
+    return { status: "skipped", reason };
+  }
+
   try {
-    const resend = getResendClient();
-    const addresses = getEmailAddresses();
-
-    if (!resend || !addresses) {
-      console.log(`[email no-op] ${subject}\n${JSON.stringify(details)}`);
-      return;
-    }
-
-    await resend.emails.send({
+    const response = await resend.emails.send({
       from: addresses.from,
       to: addresses.to,
       subject,
       html,
     });
+    if (response.error) {
+      throw new EmailDeliveryError(
+        `Resend rejected guardrail alert: ${response.error.message}`,
+        response.error,
+      );
+    }
+    return response.data?.id
+      ? { status: "sent", id: response.data.id }
+      : { status: "sent" };
   } catch (error) {
-    console.error("[email] Failed to send guardrail alert:", error);
+    if (error instanceof EmailDeliveryError) throw error;
+    throw new EmailDeliveryError("Failed to send guardrail alert", error);
   }
 }
 
@@ -94,7 +128,7 @@ export async function sendDailySummary(data: {
     pnlUSD: number | null;
   }>;
   journalHighlights: string[];
-}): Promise<void> {
+}): Promise<EmailDeliveryResult> {
   const dateStr = new Date().toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
@@ -106,15 +140,17 @@ export async function sendDailySummary(data: {
   const pnlSign = data.totalPnlUSD >= 0 ? "+" : "";
 
   const tradeRows = data.tradesSummary
-    .map(
-      (t) => `
+    .map((t) => {
+      const direction = escapeHtml(t.direction);
+      const asset = escapeHtml(t.asset);
+      return `
       <tr style="border-bottom:1px solid #e5e7eb;">
-        <td style="padding:8px 12px;font-weight:600;color:${t.direction === "BUY" ? "#16a34a" : "#dc2626"};">${t.direction}</td>
-        <td style="padding:8px 12px;">${t.asset}</td>
+        <td style="padding:8px 12px;font-weight:600;color:${t.direction === "BUY" ? "#16a34a" : "#dc2626"};">${direction}</td>
+        <td style="padding:8px 12px;">${asset}</td>
         <td style="padding:8px 12px;">$${t.amountUSD.toFixed(2)}</td>
         <td style="padding:8px 12px;color:${t.pnlUSD !== null && t.pnlUSD >= 0 ? "#16a34a" : "#dc2626"};">${t.pnlUSD !== null ? `${t.pnlUSD >= 0 ? "+" : ""}$${t.pnlUSD.toFixed(2)}` : "—"}</td>
-      </tr>`
-    )
+      </tr>`;
+    })
     .join("");
 
   const journalSection =
@@ -122,7 +158,7 @@ export async function sendDailySummary(data: {
       ? `
       <h3 style="margin:24px 0 8px;font-size:16px;color:#374151;">📝 Journal Highlights</h3>
       <ul style="margin:0;padding-left:20px;color:#4b5563;">
-        ${data.journalHighlights.map((h) => `<li style="margin:4px 0;">${h}</li>`).join("")}
+        ${data.journalHighlights.map((highlight) => `<li style="margin:4px 0;">${escapeHtml(highlight)}</li>`).join("")}
       </ul>`
       : "";
 
@@ -171,22 +207,35 @@ export async function sendDailySummary(data: {
     </div>
   `;
 
+  const resend = getResendClient();
+  const addresses = getEmailAddresses();
+
+  if (!resend || !addresses) {
+    const reason = !resend
+      ? "RESEND_API_KEY is not configured"
+      : "ALERT_EMAIL_TO or ALERT_EMAIL_FROM is not configured";
+    console.log(`[email no-op] ${subject}\n${JSON.stringify(data)}`);
+    return { status: "skipped", reason };
+  }
+
   try {
-    const resend = getResendClient();
-    const addresses = getEmailAddresses();
-
-    if (!resend || !addresses) {
-      console.log(`[email no-op] ${subject}\n${JSON.stringify(data)}`);
-      return;
-    }
-
-    await resend.emails.send({
+    const response = await resend.emails.send({
       from: addresses.from,
       to: addresses.to,
       subject,
       html,
     });
+    if (response.error) {
+      throw new EmailDeliveryError(
+        `Resend rejected daily summary: ${response.error.message}`,
+        response.error,
+      );
+    }
+    return response.data?.id
+      ? { status: "sent", id: response.data.id }
+      : { status: "sent" };
   } catch (error) {
-    console.error("[email] Failed to send daily summary:", error);
+    if (error instanceof EmailDeliveryError) throw error;
+    throw new EmailDeliveryError("Failed to send daily summary", error);
   }
 }

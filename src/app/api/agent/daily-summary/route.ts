@@ -2,12 +2,49 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { agentState, tradeExecution, agentJournal } from "@/db/schema";
 import { eq, gte, desc } from "drizzle-orm";
-import { sendDailySummary } from "@/lib/email";
+import { EmailDeliveryError, sendDailySummary } from "@/lib/email";
+import { timingSafeStringEqual } from "@/lib/secure-compare";
+
+async function recordDelivery(
+  status: "sent" | "skipped" | "failed",
+  detail: string | null,
+): Promise<void> {
+  await db.insert(agentJournal).values({
+    entryText: `Daily summary delivery ${status}${detail ? `: ${detail}` : "."}`,
+    marketConditions: {
+      event: "daily-summary-delivery",
+      status,
+      detail,
+      timestamp: new Date().toISOString(),
+    },
+  });
+}
+
+async function failureResponse(error: unknown): Promise<NextResponse> {
+  const message = error instanceof Error ? error.message : String(error);
+  let alertAuditRecorded = true;
+  try {
+    await recordDelivery("failed", message);
+  } catch (auditError) {
+    alertAuditRecorded = false;
+    console.error("[daily-summary] Failed to record alert failure:", auditError);
+  }
+  console.error("[daily-summary] Error:", error);
+  return NextResponse.json(
+    { error: message, alertAuditRecorded },
+    { status: error instanceof EmailDeliveryError ? 502 : 500 },
+  );
+}
 
 export async function POST(request: NextRequest) {
   // Auth — same CRON_SECRET as agent run
   const cronSecret = request.headers.get("x-cron-secret");
-  if (cronSecret !== process.env.CRON_SECRET) {
+  const expectedSecret = process.env.CRON_SECRET;
+  if (
+    !cronSecret ||
+    !expectedSecret ||
+    !timingSafeStringEqual(cronSecret, expectedSecret)
+  ) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -18,7 +55,8 @@ export async function POST(request: NextRequest) {
     const [state] = await db
       .select()
       .from(agentState)
-      .where(eq(agentState.id, "singleton"));
+      .where(eq(agentState.id, "singleton"))
+      .limit(1);
 
     if (!state) {
       return NextResponse.json(
@@ -42,39 +80,63 @@ export async function POST(request: NextRequest) {
       .orderBy(desc(agentJournal.createdAt));
 
     const totalPnl = recentTrades.reduce(
-      (sum, t) => sum + (t.pnlUSD ?? 0),
-      0
+      (sum, trade) =>
+        sum +
+        Number(trade.realizedPnlUSDDecimal ?? trade.pnlUSD ?? 0),
+      0,
     );
 
-    const tradesSummary = recentTrades.map((t) => ({
-      direction: t.direction,
-      asset: t.asset,
-      amountUSD: t.amountUSD,
-      pnlUSD: t.pnlUSD,
+    const tradesSummary = recentTrades.map((trade) => ({
+      direction: trade.direction,
+      asset: trade.asset,
+      amountUSD: Number(trade.requestedNotionalUSD ?? trade.amountUSD),
+      pnlUSD:
+        trade.realizedPnlUSDDecimal === null
+          ? trade.pnlUSD
+          : Number(trade.realizedPnlUSDDecimal),
     }));
 
     const journalHighlights = recentJournals
       .slice(0, 5)
       .map((j) => j.entryText.slice(0, 200));
 
-    await sendDailySummary({
-      portfolioValueUSD: state.portfolioValueUSD,
+    const delivery = await sendDailySummary({
+      portfolioValueUSD: Number(
+        state.portfolioValueUSDDecimal ?? state.portfolioValueUSD,
+      ),
       totalPnlUSD: totalPnl,
       tradesExecuted: recentTrades.length,
       tradesSummary,
       journalHighlights,
     });
+    try {
+      await recordDelivery(
+        delivery.status,
+        delivery.status === "sent"
+          ? (delivery.id ?? null)
+          : delivery.reason,
+      );
+    } catch (error) {
+      console.error("[daily-summary] Delivery succeeded but audit failed:", error);
+      return NextResponse.json(
+        {
+          generated: true,
+          delivery,
+          alertAuditRecorded: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        { status: 500 },
+      );
+    }
 
     return NextResponse.json({
-      success: true,
+      generated: true,
+      delivery,
+      alertAuditRecorded: true,
       tradesCount: recentTrades.length,
       totalPnlUSD: totalPnl,
     });
   } catch (error) {
-    console.error("[daily-summary] Error:", error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : String(error) },
-      { status: 500 }
-    );
+    return failureResponse(error);
   }
 }

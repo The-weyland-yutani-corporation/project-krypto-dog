@@ -15,7 +15,10 @@ The agent must run on a schedule (hourly during paper trading; eventually WebSoc
 
 **Use Supabase `pg_cron` + `pg_net`** to schedule HTTP POSTs to `/api/agent/run` and `/api/agent/daily-summary`.
 
-The schedule lives in `supabase/migrations/20260322000002_cron_schedule.sql` so it ships with the database, not the application code.
+Schema installation will create fixed, parameterless, privilege-restricted
+functions through the Drizzle migration history. Job enablement remains a
+separate post-smoke operator action so schema migration cannot accidentally
+start execution.
 
 ## Consequences
 
@@ -24,7 +27,8 @@ The schedule lives in `supabase/migrations/20260322000002_cron_schedule.sql` so 
 - **Positive:** Calls survive Vercel project re-linking.
 - **Positive:** Easier to migrate the trigger model in v3 (e.g., listen on a Postgres `LISTEN` channel from a price oracle) without changing Vercel config.
 - **Trade-off:** Adds a dependency on Supabase's `pg_net` extension (Supabase-managed, low risk).
-- **Trade-off:** First deploy requires manual substitution of the Vercel host URL inside the migration. Documented in `specs/deployment.md`.
+- **Trade-off:** First deploy requires Vault configuration and an explicit
+  post-smoke enable action. Documented in `specs/deployment.md`.
 - **Follow-up:** Operators must monitor `cron.job_run_details` and `net._http_response` for failed schedule runs.
 
 ## Alternatives considered

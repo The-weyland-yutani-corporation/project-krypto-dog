@@ -18,7 +18,11 @@ export function getPostHogClient(): PostHog {
           return (event: Record<string, unknown>) =>
             console.log("[PostHog no-op] capture:", JSON.stringify(event));
         }
-        if (prop === "shutdown" || prop === "shutdownAsync") {
+        if (
+          prop === "flush" ||
+          prop === "shutdown" ||
+          prop === "shutdownAsync"
+        ) {
           return () => Promise.resolve();
         }
         return () => {};
@@ -28,8 +32,18 @@ export function getPostHogClient(): PostHog {
     return client;
   }
 
-  client = new PostHog(apiKey, { host });
+  client = new PostHog(apiKey, {
+    host,
+    flushAt: 1,
+    flushInterval: 0,
+  });
   return client;
+}
+
+export async function flushPostHog(): Promise<void> {
+  if (client) {
+    await client.flush();
+  }
 }
 
 export async function shutdownPostHog(): Promise<void> {
