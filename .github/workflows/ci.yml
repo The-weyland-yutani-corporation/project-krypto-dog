@@ -16,10 +16,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Lint, typecheck, test
+  quality:
+    name: Quality and evidence gates
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -28,7 +28,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: '.nvmrc'
           cache: 'npm'
 
       - name: Install dependencies
@@ -48,11 +48,9 @@ jobs:
         # Stub env vars so config/Zod schemas resolve without real secrets;
         # build does not call validateEnv() at runtime.
         env:
-          AZURE_OPENAI_ENDPOINT: https://stub.openai.azure.com
-          AZURE_OPENAI_API_KEY: stub
-          AZURE_OPENAI_DEPLOYMENT_NAME: claude-sonnet-stub
-          CDP_API_KEY_NAME: stub
-          CDP_API_KEY_PRIVATE_KEY: stub
+          ANTHROPIC_FOUNDRY_BASE_URL: https://stub.services.ai.azure.com/anthropic
+          ANTHROPIC_FOUNDRY_API_KEY: stub
+          ANTHROPIC_FOUNDRY_DEPLOYMENT: claude-sonnet-stub
           DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
           POSTHOG_API_KEY: phc_stub
           CRON_SECRET: stub
@@ -60,5 +58,65 @@ jobs:
           ADMIN_SESSION_SECRET: stub
         run: npm run build
 
-      - name: Test
-        run: npm test -- --ci
+      - name: Test critical coverage
+        run: npm run test:coverage
+
+      - name: Run all engineering backtests
+        run: npm run backtest:all -- --out artifacts/backtest-all.json
+
+      - name: Upload backtest evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: engineering-backtest-report
+          path: artifacts/backtest-all.json
+          if-no-files-found: error
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
+  postgres:
+    name: PostgreSQL migrations and execution
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+
+      - name: Run migration and transactional integration suite
+        env:
+          TEST_POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: npm run test:integration
+
+      - name: Reject schema and migration drift
+        env:
+          DIRECT_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          npm run db:generate
+          test -z "$(git status --porcelain -- drizzle)"

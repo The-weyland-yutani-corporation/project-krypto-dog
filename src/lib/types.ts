@@ -37,6 +37,7 @@ export interface TradeResult {
 
 export interface AgentRunResult {
   status: "executed" | "skipped" | "error" | "locked";
+  runId?: string;
   action?: string;
   reasoning?: string;
   trade?: TradeResult;
@@ -47,9 +48,16 @@ export interface AgentRunResult {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    attemptCount: number;
+    latencyMs: number;
   };
   journalWritten?: boolean;
   journalFallbackWritten?: boolean;
+  authorization?: {
+    authorized: boolean;
+    reason: string;
+    adjusted?: boolean;
+  };
   durationMs: number;
 }
 

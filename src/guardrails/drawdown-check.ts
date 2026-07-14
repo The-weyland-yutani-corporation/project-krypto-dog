@@ -38,10 +38,17 @@ export async function checkDrawdown(): Promise<void> {
       .set({ isLocked: true })
       .where(eq(agentState.id, "singleton"));
 
-    // Send email alert (non-blocking)
-    sendGuardrailAlert("Max Drawdown", { portfolioValue }).catch((err) =>
-      console.error("[guardrails] Failed to send drawdown alert email:", err)
-    );
+    void sendGuardrailAlert("Max Drawdown", { portfolioValue })
+      .then((result) => {
+        if (result.status === "skipped") {
+          console.error(
+            `[guardrails] Drawdown alert skipped: ${result.reason}`,
+          );
+        }
+      })
+      .catch((err) =>
+        console.error("[guardrails] Failed to send drawdown alert email:", err),
+      );
 
     throw new SystemLockedError();
   }

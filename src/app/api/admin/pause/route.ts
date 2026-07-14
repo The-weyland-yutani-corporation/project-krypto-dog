@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod/v4";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { agentState } from "@/db/schema";
+import { agentJournal, agentState } from "@/db/schema";
+import { requireAdminSession } from "@/lib/admin-route-auth";
 import { checkSameOrigin } from "@/lib/csrf";
 
 const PauseBody = z.object({ paused: z.boolean() });
@@ -17,6 +18,8 @@ const PauseBody = z.object({ paused: z.boolean() });
 export async function POST(request: NextRequest) {
   const csrf = checkSameOrigin(request);
   if (csrf) return csrf;
+  const auth = await requireAdminSession(request);
+  if (auth) return auth;
 
   let parsed: z.infer<typeof PauseBody>;
   try {
@@ -31,15 +34,28 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const [updated] = await db
-    .update(agentState)
-    .set({ isOperatorPaused: parsed.paused })
-    .where(eq(agentState.id, "singleton"))
-    .returning({
-      isOperatorPaused: agentState.isOperatorPaused,
-      isLocked: agentState.isLocked,
-      isRunning: agentState.isRunning,
+  const updated = await db.transaction(async (tx) => {
+    const [state] = await tx
+      .update(agentState)
+      .set({ isOperatorPaused: parsed.paused })
+      .where(eq(agentState.id, "singleton"))
+      .returning({
+        isOperatorPaused: agentState.isOperatorPaused,
+        isLocked: agentState.isLocked,
+        isRunning: agentState.isRunning,
+      });
+    if (!state) return null;
+
+    await tx.insert(agentJournal).values({
+      entryText: `Operator ${parsed.paused ? "paused" : "resumed"} the agent.`,
+      marketConditions: {
+        event: "operator-pause",
+        paused: parsed.paused,
+        timestamp: new Date().toISOString(),
+      },
     });
+    return state;
+  });
 
   if (!updated) {
     return NextResponse.json(

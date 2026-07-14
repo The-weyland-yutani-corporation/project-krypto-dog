@@ -1,11 +1,11 @@
 process.env.NODE_ENV = "test";
 
-// Dummy env vars so config validation doesn't crash during tests
-process.env.AZURE_OPENAI_ENDPOINT = "https://test.openai.azure.com";
-process.env.AZURE_OPENAI_API_KEY = "test-api-key";
-process.env.AZURE_OPENAI_DEPLOYMENT_NAME = "claude-sonnet-stub";
-process.env.CDP_API_KEY_NAME = "test-cdp-key";
-process.env.CDP_API_KEY_PRIVATE_KEY = "test-cdp-private-key";
+// Dummy env vars so config validation doesn't crash during tests.
+// Use preferred ANTHROPIC_FOUNDRY_* names; legacy AZURE_OPENAI_* fallback is
+// still supported but CDP credentials are no longer required.
+process.env.ANTHROPIC_FOUNDRY_BASE_URL = "https://test.services.ai.azure.com/anthropic";
+process.env.ANTHROPIC_FOUNDRY_API_KEY = "test-api-key";
+process.env.ANTHROPIC_FOUNDRY_DEPLOYMENT = "claude-sonnet-stub";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 process.env.POSTHOG_API_KEY = "phc_test_key";
 process.env.POSTHOG_HOST = "https://app.posthog.com";
@@ -18,7 +18,7 @@ process.env.ADMIN_SESSION_SECRET = "test-admin-session-secret";
 
 function createChain() {
   const chain: Record<string, jest.Mock> & { then?: unknown } = {};
-  const chainMethods = ["from", "where", "orderBy", "offset", "set"];
+  const chainMethods = ["from", "where", "orderBy", "offset", "set", "for"];
   const terminalMethods = ["limit", "returning", "onConflictDoUpdate", "onConflictDoNothing"];
 
   // Chain methods return the chain for further chaining
@@ -49,12 +49,18 @@ const mockDrizzleDb = {
   insert: jest.fn().mockReturnValue(_insertChain),
   update: jest.fn().mockReturnValue(_updateChain),
   delete: jest.fn().mockReturnValue(_deleteChain),
+  transaction: jest.fn(),
   query: {},
   _selectChain,
   _insertChain,
   _updateChain,
   _deleteChain,
 };
+
+mockDrizzleDb.transaction.mockImplementation(
+  async (callback: (tx: typeof mockDrizzleDb) => Promise<unknown>) =>
+    callback(mockDrizzleDb),
+);
 
 jest.mock("@/db", () => ({
   db: mockDrizzleDb,

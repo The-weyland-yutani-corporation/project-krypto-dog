@@ -1,13 +1,10 @@
 import { NextResponse } from "next/server";
-import crypto from "crypto";
-import { getAdminSessionSecret } from "@/lib/admin-auth";
-
-function signToken(secret: string): string {
-  return crypto
-    .createHmac("sha256", secret)
-    .update("admin-authenticated")
-    .digest("hex");
-}
+import {
+  ADMIN_SESSION_TTL_SECONDS,
+  createAdminSessionToken,
+  getAdminSessionSecret,
+} from "@/lib/admin-auth";
+import { timingSafeStringEqual } from "@/lib/secure-compare";
 
 // ---------------------------------------------------------------------------
 // In-memory rate limit (per-instance). 5 attempts / 15 min per source IP.
@@ -89,12 +86,16 @@ export async function POST(request: Request) {
   const { password } = await request.json();
   const adminPassword = process.env.ADMIN_PASSWORD;
 
-  if (!adminPassword || password !== adminPassword) {
+  if (
+    typeof password !== "string" ||
+    !adminPassword ||
+    !timingSafeStringEqual(password, adminPassword)
+  ) {
     recordFailedAttempt(ip);
     return NextResponse.json({ error: "Invalid password" }, { status: 401 });
   }
 
-  const token = signToken(getAdminSessionSecret());
+  const token = await createAdminSessionToken(getAdminSessionSecret());
 
   const response = NextResponse.json({ success: true });
   response.cookies.set("krypto-admin-token", token, {
@@ -102,7 +103,7 @@ export async function POST(request: Request) {
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24,
+    maxAge: ADMIN_SESSION_TTL_SECONDS,
   });
 
   return response;

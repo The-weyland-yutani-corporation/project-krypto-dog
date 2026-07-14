@@ -1,16 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { timingSafeEqual } from "crypto";
 import { executeAgentRun } from "@/agent/run-flow";
+import { flushPostHog } from "@/lib/posthog";
+import { timingSafeStringEqual } from "@/lib/secure-compare";
 
 function isValidCronSecret(provided: string | null): boolean {
   const expected = process.env.CRON_SECRET;
   if (!provided || !expected) return false;
 
-  const providedBuffer = Buffer.from(provided);
-  const expectedBuffer = Buffer.from(expected);
-  if (providedBuffer.length !== expectedBuffer.length) return false;
-
-  return timingSafeEqual(providedBuffer, expectedBuffer);
+  return timingSafeStringEqual(provided, expected);
 }
 
 export async function POST(request: NextRequest) {
@@ -18,14 +15,37 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const outcome = await executeAgentRun({ triggerSource: "cron" });
+  try {
+    const outcome = await executeAgentRun({
+      triggerSource: "cron",
+      idempotencyKey:
+        request.headers.get("x-idempotency-key") ?? undefined,
+    });
 
-  switch (outcome.kind) {
-    case "mutex":
-      return NextResponse.json({ error: outcome.message }, { status: 409 });
-    case "upstream_error":
-      return NextResponse.json(outcome.result, { status: outcome.httpStatus });
-    case "ok":
-      return NextResponse.json(outcome.result, { status: 200 });
+    switch (outcome.kind) {
+      case "mutex":
+        return NextResponse.json(
+          { error: outcome.message, result: outcome.result },
+          { status: 409 },
+        );
+      case "upstream_error":
+        return NextResponse.json(outcome.result, {
+          status: outcome.httpStatus,
+        });
+      case "ok":
+        return NextResponse.json(outcome.result, { status: 200 });
+    }
+  } catch (error) {
+    console.error("[api/agent/run] Unhandled orchestration failure:", error);
+    return NextResponse.json(
+      { error: "Agent orchestration failed before a result was available" },
+      { status: 500 },
+    );
+  } finally {
+    try {
+      await flushPostHog();
+    } catch (error) {
+      console.error("[api/agent/run] Failed to flush analytics:", error);
+    }
   }
 }

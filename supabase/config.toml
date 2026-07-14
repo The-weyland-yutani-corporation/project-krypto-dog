@@ -40,12 +40,9 @@ default_pool_size = 20
 max_client_conn = 100
 
 [db.seed]
-# If enabled, seeds the database after migrations during a db reset.
-enabled = true
-# Specifies an ordered list of seed files to load during db reset.
-# Supports glob patterns relative to supabase directory. For example:
-# sql_paths = ['./seeds/*.sql', '../project-src/seeds/*-load-testing.sql']
-sql_paths = ['./migrations/20260322000001_seed_data.sql']
+# Application schema and initialization are owned by Drizzle. Supabase reset
+# must never load fabricated trading history.
+enabled = false
 
 [realtime]
 enabled = true

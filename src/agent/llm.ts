@@ -1,50 +1,63 @@
 import { ChatAnthropic } from "@langchain/anthropic";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { resolveFoundryConfig } from "@/lib/config";
+import { TradingConfigurationError } from "@/trading/errors";
 
 let llmInstance: BaseChatModel | null = null;
 
-const DEFAULT_AZURE_API_VERSION = "2024-10-21";
+const DEFAULT_FOUNDRY_API_VERSION = "2024-10-21";
 
 /**
- * Build the LLM client.
+ * Build the LLM client for Azure AI Foundry-hosted Anthropic.
  *
- * Project Krypto runs against an Azure AI Foundry resource (the endpoint is on
- * the `*.openai.azure.com` domain, but that domain now also hosts non-OpenAI
- * partner models such as Anthropic Claude under `/anthropic/v1/messages`).
+ * Azure AI Foundry exposes Claude models via Anthropic's native Messages API
+ * at a `services.ai.azure.com/anthropic` endpoint (preferred) or the older
+ * `*.openai.azure.com/anthropic` path.  The Anthropic SDK authenticates with
+ * the subscription key sent as `x-api-key`.
  *
- * Because Azure exposes the partner-model surface using Anthropic's native
- * Messages API — *not* the OpenAI Chat Completions API — we authenticate with
- * the Anthropic SDK pointed at the Azure base URL. The Azure subscription key
- * is sent as `x-api-key` (which is what the Anthropic SDK does by default when
- * given `anthropicApiKey`).
+ * Preferred env vars (set these for new deployments):
+ *   ANTHROPIC_FOUNDRY_BASE_URL    – e.g. https://your-resource.services.ai.azure.com/anthropic
+ *   ANTHROPIC_FOUNDRY_API_KEY     – Azure subscription key
+ *   ANTHROPIC_FOUNDRY_DEPLOYMENT  – Claude model deployment name
+ *   ANTHROPIC_FOUNDRY_API_VERSION – optional, defaults to 2024-10-21
  *
- * If you ever switch back to a real OpenAI deployment on this resource, wire
- * `AzureChatOpenAI` here instead and key off the deployment name prefix.
+ * Legacy fallbacks (still accepted for already-deployed environments):
+ *   AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY + AZURE_OPENAI_DEPLOYMENT_NAME
+ *   (AZURE_OPENAI_ENDPOINT has /anthropic appended automatically)
  */
 export function getLLM(): BaseChatModel {
   if (!llmInstance) {
-    const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
-    const apiKey = process.env.AZURE_OPENAI_API_KEY;
-    const deployment = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-
-    if (!endpoint || !apiKey || !deployment) {
-      throw new Error(
-        "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and AZURE_OPENAI_DEPLOYMENT_NAME are all required",
-      );
-    }
-
-    const apiVersion =
-      process.env.AZURE_OPENAI_API_VERSION ?? DEFAULT_AZURE_API_VERSION;
-    const baseURL = `${endpoint.replace(/\/$/, "")}/anthropic`;
-
-    llmInstance = new ChatAnthropic({
-      model: deployment,
-      anthropicApiKey: apiKey,
-      anthropicApiUrl: baseURL,
-      clientOptions: {
-        defaultQuery: { "api-version": apiVersion },
-      },
-    });
+    llmInstance = buildLLM();
   }
   return llmInstance;
+}
+
+/** Exported for testing; creates a fresh instance without the singleton cache. */
+export function buildLLM(): BaseChatModel {
+  const config = resolveFoundryConfig(
+    process.env as Record<string, string | undefined>,
+  );
+
+  if (!config) {
+    throw new TradingConfigurationError(
+      "LLM credentials missing or incomplete. Provide " +
+        "ANTHROPIC_FOUNDRY_BASE_URL + ANTHROPIC_FOUNDRY_API_KEY + " +
+        "ANTHROPIC_FOUNDRY_DEPLOYMENT, or the legacy " +
+        "AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY + AZURE_OPENAI_DEPLOYMENT_NAME.",
+    );
+  }
+
+  return new ChatAnthropic({
+    model: config.deployment,
+    anthropicApiKey: config.apiKey,
+    anthropicApiUrl: config.baseURL,
+    temperature: 0,
+    maxRetries: 0,
+    clientOptions: {
+      defaultQuery: {
+        "api-version": config.apiVersion ?? DEFAULT_FOUNDRY_API_VERSION,
+      },
+      maxRetries: 0,
+    },
+  });
 }

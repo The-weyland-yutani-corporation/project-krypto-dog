@@ -1,32 +1,44 @@
 # 🐕 Project Krypto
 
 > **Autonomous LLM-driven swing-trading agent for ETH/USDC.**
-> Currently in **v2: paper trading on a $200 notional pool**, with v3 (live execution on Base L2 via Coinbase AgentKit) scoped as a separate RFC.
+> v2.1 safety core is implemented and locally verified. **NOT production-ready**
+> until the target database is inventoried/backed up and target smoke,
+> controlled rollout, and evidence gates pass.
 
 | | |
 |---|---|
-| **Status** | v2 hardening complete, deployment in progress |
+| **Status** | v2.1 safety core verified locally -- production inventory and release gates remain |
 | **Hosting** | Vercel + Supabase + Azure AI Foundry-hosted Anthropic + PostHog + Resend |
-| **Stack** | Next.js 16 (App Router) · TypeScript · LangChain (LangGraph ReAct) · Drizzle ORM · PostgreSQL |
-| **Trigger** | Supabase `pg_cron` + `pg_net` calling `/api/agent/run` hourly |
+| **Stack** | Next.js 16 (App Router) · TypeScript · structured Anthropic output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
+| **Trigger** | Restricted fixed Supabase `pg_cron` + `pg_net` functions; scheduling remains disabled until production smoke checks pass |
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
 | **Deploy** | [`specs/deployment.md`](./specs/deployment.md) |
 | **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |
 | **Monitoring** | [`specs/monitoring.md`](./specs/monitoring.md) |
+| **Readiness** | [`specs/readiness.md`](./specs/readiness.md) |
+| **Evaluation** | [`specs/evaluation.md`](./specs/evaluation.md) |
 | **Design** | [`DESIGN.md`](./DESIGN.md) |
 | **Decisions** | [`specs/decisions/`](./specs/decisions/) (ADRs) |
-| **Future work** | [`specs/rfcs/0001-v3-live-trading.md`](./specs/rfcs/0001-v3-live-trading.md) |
+| **Future work** | [`specs/rfcs/`](./specs/rfcs/) (RFC 0001: v3 live trading · RFC 0002: Evidence-Grade Paper Trading) |
 
 ## What it does
 
 Every hour, a cron job hits `POST /api/agent/run`. The route:
 
-1. Acquires a DB-level mutex so concurrent runs can't interleave.
-2. Runs **pre-flight guardrails** — drawdown killswitch ($150 portfolio floor) and 2-hour trade cooldown.
-3. Builds a context: portfolio state, the last 3 journal entries (long-term memory), and pre-computed RSI(14) + EMA(12/26) on 4h candles.
-4. Hands the context to a LangGraph ReAct agent (Azure-hosted Anthropic via Azure AI Foundry's `/anthropic` API surface) with a strict system prompt and 6 tools (`safe_trade`, `get_eth_price`, `get_rsi`, `get_ema`, `get_portfolio_state`, `write_journal_entry`).
-5. The agent reasons, optionally calls `safe_trade` (which enforces $50 max size, ETH/USDC whitelist, balance validation), and **always** writes a journal entry.
-6. Logs everything to PostHog. Fires email alerts on guardrail trips. Writes a fallback journal entry if the model failed to journal. Releases the mutex.
+1. Creates or idempotently recovers an `AgentRun`, then claims an owned,
+   expiring account lease.
+2. Applies the configured `disabled`, `shadow`, or `paper` rollout mode.
+3. Fetches validated Coinbase data, marks the account to market, and computes
+   deterministic cold-start, stop-loss, drawdown, cooldown, sizing, DCA,
+   exposure, and take-profit eligibility.
+4. Executes mandatory safety exits without the model. For optional actions,
+   requests exactly one structured `HOLD`, `BUY`, or `SELL` proposal from the
+   Foundry-hosted Anthropic model with bounded timeout/retry behavior.
+5. Re-authorizes every invariant against a freshly locked database row. In
+   paper mode, the trade, fixed-point accounting transition, run outcome, and
+   reconciliation state commit atomically and idempotently.
+6. Persists the journal/run result, emits and flushes telemetry, and releases
+   only the lease owned by that invocation.
 
 A separate daily-summary cron emails the previous 24h of trades + PnL.
 
@@ -42,13 +54,13 @@ docker compose up -d
 
 # 3. Configure env
 cp .env.example .env
-# Fill in AZURE_OPENAI_*, POSTHOG_API_KEY, CRON_SECRET, ADMIN_PASSWORD, ADMIN_SESSION_SECRET.
-# CDP_API_KEY_* must be present (validated at startup) but unused in paper trading.
+# Fill in ANTHROPIC_FOUNDRY_* (or legacy AZURE_OPENAI_*), POSTHOG_API_KEY,
+# CRON_SECRET, ADMIN_PASSWORD, ADMIN_SESSION_SECRET.
 # Resend vars are optional — emails fall back to console logs.
 
-# 4. Apply schema + seed singleton
-npm run db:push
-npm run db:seed
+# 4. Apply reviewed schema migrations + initialize singleton
+npm run db:migrate
+npm run db:init
 
 # 5. Run dev server
 npm run dev
@@ -71,13 +83,18 @@ open http://localhost:3000/admin/login
 | `npm run start` | Run the production build |
 | `npm run lint` | ESLint over the project |
 | `npm test` | Jest unit + integration tests |
+| `npm run test:unit` | Deterministic Jest suite in one process |
+| `npm run test:coverage` | Jest plus enforced critical-module coverage gates |
+| `npm run test:integration` | Real-PostgreSQL migration and execution suite |
 | `npm run test:watch` | Jest watch mode |
 | `npm run db:generate` | Generate Drizzle migration SQL from schema changes |
-| `npm run db:push` | Apply schema to the configured `DATABASE_URL` |
-| `npm run db:migrate` | Run committed migrations |
+| `npm run db:migrate` | Run committed migrations using `DIRECT_URL` |
+| `npm run db:init` | Idempotently initialize the `AgentState` singleton |
+| `npm run test:migrations` | Real-PostgreSQL migration, privilege, decimal, transaction, lease, and run-flow tests |
 | `npm run db:studio` | Drizzle Studio (browse the DB) |
-| `npm run db:seed` | Seed the `AgentState` singleton |
+| `npm run smoke:llm` | Verify Foundry model access without tools or trading |
 | `npm run backtest -- --scenario scenarios/dip-recovery.json` | Run deterministic paper scenario evaluation |
+| `npm run backtest:all` | Emit aggregate JSON for every engineering scenario |
 
 ## Project layout
 
@@ -87,16 +104,16 @@ src/
     api/agent/run/        # POST /api/agent/run    — main agent loop entry
     api/agent/daily-summary/  # POST — daily PnL email
     api/auth/{login,logout}/  # Admin cookie auth
-    api/admin/*              # Admin operations: run, pause, release lease
+    api/admin/*              # Admin operations: run, pause, lease recovery, audited unlock
     admin/{,trades,journal,login}/  # Server-rendered dashboard
-  agent/                  # LangGraph ReAct agent + system prompt
+  agent/                  # Structured decision generation and run orchestration
+  trading/                # Deterministic policy, fixed-point accounting, paper executor
   db/                     # Drizzle schema + client
-  guardrails/             # Pre-flight checks (drawdown, cooldown)
+  guardrails/             # Legacy/admin guardrail helpers
   lib/                    # Indicators, analytics, email, config, types
-  tools/                  # LangChain tools the LLM can call
-  middleware.ts           # Admin route protection
+  proxy.ts                # Admin route protection
 drizzle/                  # Generated migrations
-supabase/migrations/      # Supabase-flavoured schema + seed + cron
+supabase/operations/      # Separate reviewed cron enable/disable operations
 specs/                    # Product spec, ADRs, RFCs, deployment runbook
 scripts/                  # One-shot scripts (seed, etc.)
 tests/                    # Jest unit + integration tests
@@ -104,7 +121,16 @@ tests/                    # Jest unit + integration tests
 
 ## Deploying
 
-Don't `vercel --prod` blind — there are 7 ordered steps including DB migrations, Vault secrets, smoke tests, and cron enablement. Follow [`specs/deployment.md`](./specs/deployment.md).
+> **WARNING:** Do not promote the current source to production paper mode yet.
+> The local safety core is verified, but the production database remains
+> uninventoried because its configured credentials are stale. Target-environment
+> smoke checks and controlled disabled/shadow/paper rollout also remain. See
+> [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
+
+Don't `vercel --prod` blind -- there are ordered steps including backup,
+schema reconciliation, reviewed Drizzle migrations, Vault secrets, smoke
+tests, and cron enablement. Follow
+[`specs/deployment.md`](./specs/deployment.md).
 
 ## Local testing
 

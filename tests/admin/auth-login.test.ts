@@ -1,4 +1,5 @@
 import { POST as login } from "@/app/api/auth/login/route";
+import { verifyAdminSessionToken } from "@/lib/admin-auth";
 
 function makeLoginReq(password: string, ip: string): Request {
   return new Request("http://localhost:3000/api/auth/login", {
@@ -40,7 +41,16 @@ describe("POST /api/auth/login", () => {
     const res = await login(makeLoginReq("correct-password", "203.0.113.10"));
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("set-cookie")).toContain("krypto-admin-token=");
+    const cookie = res.headers.get("set-cookie");
+    expect(cookie).toContain("krypto-admin-token=");
+    const token = /krypto-admin-token=([^;]+)/.exec(cookie ?? "")?.[1];
+    expect(token).toBeDefined();
+    await expect(
+      verifyAdminSessionToken(
+        token as string,
+        "test-admin-session-secret",
+      ),
+    ).resolves.toBe(true);
   });
 
   it("does not count successful logins toward the failed-attempt rate limit", async () => {

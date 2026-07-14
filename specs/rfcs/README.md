@@ -55,4 +55,5 @@ Things to resolve during review or in follow-up RFCs.
 
 | # | Title | Status |
 |---|---|---|
-| [0001](./0001-v3-live-trading.md) | v3 — Live Coinbase AgentKit execution | Draft (stub) |
+| [0001](./0001-v3-live-trading.md) | v3 -- Live Coinbase AgentKit execution | Draft (stub) |
+| [0002](./0002-evidence-grade-paper-trading.md) | Evidence-Grade Paper Trading (v2.1 + v2.2) | Draft |

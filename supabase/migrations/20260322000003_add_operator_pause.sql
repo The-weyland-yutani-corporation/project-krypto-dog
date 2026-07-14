@@ -1,2 +1,0 @@
-ALTER TABLE "AgentState"
-ADD COLUMN IF NOT EXISTS "isOperatorPaused" BOOLEAN NOT NULL DEFAULT false;

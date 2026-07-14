@@ -1,0 +1,107 @@
+import fs from "node:fs";
+import path from "node:path";
+
+const root = path.resolve(__dirname, "../..");
+const drizzleDir = path.join(root, "drizzle");
+const supabaseMigrationDir = path.join(root, "supabase", "migrations");
+
+function read(relativePath: string): string {
+  return fs.readFileSync(path.join(root, relativePath), "utf8");
+}
+
+describe("production migration safety", () => {
+  const migrationFiles = fs
+    .readdirSync(drizzleDir)
+    .filter((file) => file.endsWith(".sql"))
+    .sort();
+
+  it("uses only the Drizzle production migration history", () => {
+    const supabaseSqlFiles = fs.existsSync(supabaseMigrationDir)
+      ? fs
+          .readdirSync(supabaseMigrationDir)
+          .filter((file) => file.endsWith(".sql"))
+      : [];
+
+    expect(migrationFiles.length).toBeGreaterThan(0);
+    expect(supabaseSqlFiles).toEqual([]);
+  });
+
+  it.each(migrationFiles)("%s contains no destructive data operation", (file) => {
+    const sql = fs.readFileSync(path.join(drizzleDir, file), "utf8");
+
+    expect(sql).not.toMatch(/\bDELETE\s+FROM\b/i);
+    expect(sql).not.toMatch(/\bTRUNCATE\b/i);
+    expect(sql).not.toMatch(/\bDROP\s+TABLE\b/i);
+  });
+
+  it("adopts a pre-existing v2 schema idempotently", () => {
+    const baseline = read("drizzle/0000_powerful_thundra.sql");
+    const operatorPause = read("drizzle/0001_add_is_operator_paused.sql");
+
+    expect(baseline).toMatch(/CREATE TABLE IF NOT EXISTS/);
+    expect(baseline).toContain("AgentJournal_tradeExecutionId_fkey");
+    expect(operatorPause).toMatch(/ADD COLUMN IF NOT EXISTS/);
+  });
+
+  it("moves application data out of the exposed public schema", () => {
+    const secureSchema = read("drizzle/0002_secure_private_schema.sql");
+
+    expect(secureSchema).toContain('CREATE SCHEMA IF NOT EXISTS "krypto"');
+    expect(secureSchema).toContain('SET SCHEMA "krypto"');
+    expect(secureSchema).toContain(
+      'REVOKE ALL ON SCHEMA "krypto" FROM PUBLIC',
+    );
+    expect(secureSchema).toContain(
+      'REVOKE ALL ON FUNCTION "krypto"."invoke_agent_run"() FROM PUBLIC',
+    );
+    expect(secureSchema).toContain(
+      "REVOKE ALL PRIVILEGES ON TABLE vault.decrypted_secrets FROM PUBLIC",
+    );
+    expect(secureSchema).not.toMatch(
+      /FUNCTION\s+"?public"?\."?krypto_invoke_endpoint"?\s*\(\s*[^)]/i,
+    );
+  });
+
+  it("keeps cron activation separate and fixed-path", () => {
+    const enableCron = read("supabase/operations/enable-krypto-cron.sql");
+
+    expect(enableCron).toContain("SELECT krypto.invoke_agent_run();");
+    expect(enableCron).toContain("SELECT krypto.invoke_daily_summary();");
+    expect(enableCron).not.toContain("endpoint_path");
+    expect(enableCron).not.toContain("krypto_invoke_endpoint");
+  });
+
+  it("expands the ledger with decimal and idempotency boundaries", () => {
+    const ledger = read("drizzle/0003_expand_ledger.sql");
+
+    expect(ledger).toContain('CREATE TABLE "krypto"."AgentRun"');
+    expect(ledger).toContain("numeric(28, 18)");
+    expect(ledger).toContain("AgentRun_idempotencyKey_uidx");
+    expect(ledger).toContain("TradeExecution_agentRunId_uidx");
+    expect(ledger).toContain("'QUARANTINED'");
+    expect(ledger).toContain("legacy ETH balance mismatch");
+    expect(ledger).not.toMatch(/\bDELETE\s+FROM\b/i);
+  });
+
+  it("requires the direct database URL for migration commands", () => {
+    const config = read("drizzle.config.ts");
+
+    expect(config).toContain("process.env.DIRECT_URL");
+    expect(config).not.toContain("process.env.DATABASE_URL");
+  });
+
+  it("keeps Supabase reset from loading application fixtures", () => {
+    const config = read("supabase/config.toml");
+
+    expect(config).toMatch(/\[db\.seed\][\s\S]*enabled = false/);
+    expect(config).not.toMatch(/sql_paths\s*=/);
+  });
+
+  it("keeps initialization idempotent and non-destructive", () => {
+    const initializer = read("scripts/seed.ts");
+
+    expect(initializer).toContain(".onConflictDoNothing()");
+    expect(initializer).not.toMatch(/\.delete\s*\(/);
+    expect(initializer).not.toMatch(/\bDELETE\s+FROM\b/i);
+  });
+});

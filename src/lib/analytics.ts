@@ -38,6 +38,8 @@ export function trackAgentRunCompleted(
         promptTokens: result.tokenUsage?.promptTokens ?? null,
         completionTokens: result.tokenUsage?.completionTokens ?? null,
         totalTokens: result.tokenUsage?.totalTokens ?? null,
+        llmAttemptCount: result.tokenUsage?.attemptCount ?? null,
+        llmLatencyMs: result.tokenUsage?.latencyMs ?? null,
         journalWritten: result.journalWritten ?? null,
         journalFallbackWritten: result.journalFallbackWritten ?? false,
         timestamp: new Date().toISOString(),
@@ -100,6 +102,8 @@ export function trackLLMTokenUsage(usage: {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  attemptCount: number;
+  latencyMs: number;
 }): void {
   try {
     getPostHogClient().capture({
@@ -109,6 +113,8 @@ export function trackLLMTokenUsage(usage: {
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
         totalTokens: usage.totalTokens,
+        attemptCount: usage.attemptCount,
+        latencyMs: usage.latencyMs,
         timestamp: new Date().toISOString(),
       },
     });

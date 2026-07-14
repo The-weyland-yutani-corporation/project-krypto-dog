@@ -15,6 +15,20 @@
       "when": 1777757136027,
       "tag": "0001_add_is_operator_paused",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784051729303,
+      "tag": "0002_secure_private_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784054175971,
+      "tag": "0003_expand_ledger",
+      "breakpoints": true
     }
   ]
 }
