@@ -15,18 +15,29 @@ import { POST } from "@/app/api/agent/daily-summary/route";
 const mockedSendDailySummary = sendDailySummary as jest.MockedFunction<
   typeof sendDailySummary
 >;
+const originalRolloutMode = process.env.ROLLOUT_MODE;
 
-function request(secret = "test-cron-secret"): NextRequest {
+function request(
+  secret = "test-cron-secret",
+  requiredMode: string | null = "disabled",
+): NextRequest {
+  const headers: Record<string, string> = {
+    "x-cron-secret": secret,
+  };
+  if (requiredMode) {
+    headers["x-required-rollout-mode"] = requiredMode;
+  }
   return new NextRequest(
     new Request("http://localhost:3000/api/agent/daily-summary", {
       method: "POST",
-      headers: { "x-cron-secret": secret },
+      headers,
     }),
   );
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
+  process.env.ROLLOUT_MODE = "disabled";
   mockDb.select.mockReturnValue(mockDb._selectChain);
   mockDb.insert.mockReturnValue(mockDb._insertChain);
   mockDb._selectChain.from.mockReturnValue(mockDb._selectChain);
@@ -39,6 +50,14 @@ beforeEach(() => {
     },
   ]);
   mockDb._insertChain.values.mockReturnValue(mockDb._insertChain);
+});
+
+afterAll(() => {
+  if (originalRolloutMode === undefined) {
+    delete process.env.ROLLOUT_MODE;
+  } else {
+    process.env.ROLLOUT_MODE = originalRolloutMode;
+  }
 });
 
 describe("POST /api/agent/daily-summary", () => {
@@ -115,6 +134,18 @@ describe("POST /api/agent/daily-summary", () => {
     const response = await POST(request("wrong-secret"));
 
     expect(response.status).toBe(401);
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expect(mockedSendDailySummary).not.toHaveBeenCalled();
+  });
+
+  it("requires a matching rollout mode before querying the database", async () => {
+    const missing = await POST(request("test-cron-secret", null));
+    expect(missing.status).toBe(400);
+
+    const mismatched = await POST(
+      request("test-cron-secret", "paper"),
+    );
+    expect(mismatched.status).toBe(409);
     expect(mockDb.select).not.toHaveBeenCalled();
     expect(mockedSendDailySummary).not.toHaveBeenCalled();
   });

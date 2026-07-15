@@ -1,0 +1,803 @@
+{
+  "id": "0d71eb80-69e6-4aef-b0aa-c76b6b0e66e5",
+  "prevId": "842967df-0256-473a-bd82-50b55c021a8b",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "krypto.AgentJournal": {
+      "name": "AgentJournal",
+      "schema": "krypto",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "entryText": {
+          "name": "entryText",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "marketConditions": {
+          "name": "marketConditions",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tradeExecutionId": {
+          "name": "tradeExecutionId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agentRunId": {
+          "name": "agentRunId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp (3)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "AgentJournal_createdAt_idx": {
+          "name": "AgentJournal_createdAt_idx",
+          "columns": [
+            {
+              "expression": "createdAt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "AgentJournal_agentRunId_idx": {
+          "name": "AgentJournal_agentRunId_idx",
+          "columns": [
+            {
+              "expression": "agentRunId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "AgentJournal_tradeExecutionId_TradeExecution_id_fk": {
+          "name": "AgentJournal_tradeExecutionId_TradeExecution_id_fk",
+          "tableFrom": "AgentJournal",
+          "columnsFrom": [
+            "tradeExecutionId"
+          ],
+          "tableTo": "TradeExecution",
+          "schemaTo": "krypto",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "set null"
+        },
+        "AgentJournal_agentRunId_AgentRun_id_fk": {
+          "name": "AgentJournal_agentRunId_AgentRun_id_fk",
+          "tableFrom": "AgentJournal",
+          "columnsFrom": [
+            "agentRunId"
+          ],
+          "tableTo": "AgentRun",
+          "schemaTo": "krypto",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "set null"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "krypto.AgentRun": {
+      "name": "AgentRun",
+      "schema": "krypto",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "idempotencyKey": {
+          "name": "idempotencyKey",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "triggerSource": {
+          "name": "triggerSource",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tradingMode": {
+          "name": "tradingMode",
+          "type": "TradingMode",
+          "typeSchema": "krypto",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "AgentRunOutcome",
+          "typeSchema": "krypto",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'RUNNING'"
+        },
+        "strategyVersion": {
+          "name": "strategyVersion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "modelVersion": {
+          "name": "modelVersion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "marketSnapshot": {
+          "name": "marketSnapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accountSnapshotBefore": {
+          "name": "accountSnapshotBefore",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accountSnapshotAfter": {
+          "name": "accountSnapshotAfter",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "proposedDecision": {
+          "name": "proposedDecision",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "authorizationResult": {
+          "name": "authorizationResult",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tokenUsage": {
+          "name": "tokenUsage",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "latencyMs": {
+          "name": "latencyMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "errorType": {
+          "name": "errorType",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "errorMessage": {
+          "name": "errorMessage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "startedAt": {
+          "name": "startedAt",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completedAt": {
+          "name": "completedAt",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "AgentRun_idempotencyKey_uidx": {
+          "name": "AgentRun_idempotencyKey_uidx",
+          "columns": [
+            {
+              "expression": "idempotencyKey",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "AgentRun_startedAt_idx": {
+          "name": "AgentRun_startedAt_idx",
+          "columns": [
+            {
+              "expression": "startedAt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "AgentRun_outcome_startedAt_idx": {
+          "name": "AgentRun_outcome_startedAt_idx",
+          "columns": [
+            {
+              "expression": "outcome",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "startedAt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "krypto.AgentState": {
+      "name": "AgentState",
+      "schema": "krypto",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "'singleton'"
+        },
+        "lastTradePrice": {
+          "name": "lastTradePrice",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "currentPositionETH": {
+          "name": "currentPositionETH",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "currentPositionUSDC": {
+          "name": "currentPositionUSDC",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 200
+        },
+        "portfolioValueUSD": {
+          "name": "portfolioValueUSD",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 200
+        },
+        "isLocked": {
+          "name": "isLocked",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "isOperatorPaused": {
+          "name": "isOperatorPaused",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "isRunning": {
+          "name": "isRunning",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "lastRunAt": {
+          "name": "lastRunAt",
+          "type": "timestamp (3)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "initialCapitalUSD": {
+          "name": "initialCapitalUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'200'"
+        },
+        "lastTradePriceDecimal": {
+          "name": "lastTradePriceDecimal",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "currentPositionETHDecimal": {
+          "name": "currentPositionETHDecimal",
+          "type": "numeric(28, 18)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "currentPositionUSDCDecimal": {
+          "name": "currentPositionUSDCDecimal",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "portfolioValueUSDDecimal": {
+          "name": "portfolioValueUSDDecimal",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weightedCostBasisUSD": {
+          "name": "weightedCostBasisUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "referencePriceUSD": {
+          "name": "referencePriceUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lastBuyPriceUSD": {
+          "name": "lastBuyPriceUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dcaCount": {
+          "name": "dcaCount",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "peakPortfolioValueUSD": {
+          "name": "peakPortfolioValueUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "drawdownPct": {
+          "name": "drawdownPct",
+          "type": "numeric(12, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "strategyVersion": {
+          "name": "strategyVersion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'v2-legacy'"
+        },
+        "strategySnapshot": {
+          "name": "strategySnapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "accountingStatus": {
+          "name": "accountingStatus",
+          "type": "AccountingStatus",
+          "typeSchema": "krypto",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'UNINITIALIZED'"
+        },
+        "accountingIssue": {
+          "name": "accountingIssue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lockReason": {
+          "name": "lockReason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lockedAt": {
+          "name": "lockedAt",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "leaseOwner": {
+          "name": "leaseOwner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "leaseExpiresAt": {
+          "name": "leaseExpiresAt",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lastCompletedRunAt": {
+          "name": "lastCompletedRunAt",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updatedAt": {
+          "name": "updatedAt",
+          "type": "timestamp (3)",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "krypto.TradeExecution": {
+      "name": "TradeExecution",
+      "schema": "krypto",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "direction": {
+          "name": "direction",
+          "type": "TradeDirection",
+          "typeSchema": "krypto",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "asset": {
+          "name": "asset",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amountUSD": {
+          "name": "amountUSD",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amountAsset": {
+          "name": "amountAsset",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "executionPrice": {
+          "name": "executionPrice",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "feesUSD": {
+          "name": "feesUSD",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "slippage": {
+          "name": "slippage",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "pnlUSD": {
+          "name": "pnlUSD",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agentReasoning": {
+          "name": "agentReasoning",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agentRunId": {
+          "name": "agentRunId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pair": {
+          "name": "pair",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ETH/USDC'"
+        },
+        "requestedNotionalUSD": {
+          "name": "requestedNotionalUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "observedMarketPriceUSD": {
+          "name": "observedMarketPriceUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "modeledExecutionPriceUSD": {
+          "name": "modeledExecutionPriceUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quantityAssetDecimal": {
+          "name": "quantityAssetDecimal",
+          "type": "numeric(28, 18)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "feeRateBps": {
+          "name": "feeRateBps",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "feesUSDDecimal": {
+          "name": "feesUSDDecimal",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "slippageBps": {
+          "name": "slippageBps",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "slippageUSD": {
+          "name": "slippageUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ethBalanceBefore": {
+          "name": "ethBalanceBefore",
+          "type": "numeric(28, 18)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ethBalanceAfter": {
+          "name": "ethBalanceAfter",
+          "type": "numeric(28, 18)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "usdcBalanceBefore": {
+          "name": "usdcBalanceBefore",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "usdcBalanceAfter": {
+          "name": "usdcBalanceAfter",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "costBasisBeforeUSD": {
+          "name": "costBasisBeforeUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "costBasisAfterUSD": {
+          "name": "costBasisAfterUSD",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "realizedPnlUSDDecimal": {
+          "name": "realizedPnlUSDDecimal",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "strategyVersion": {
+          "name": "strategyVersion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'v2-legacy'"
+        },
+        "signalSnapshot": {
+          "name": "signalSnapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp (3)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "TradeExecution_createdAt_idx": {
+          "name": "TradeExecution_createdAt_idx",
+          "columns": [
+            {
+              "expression": "createdAt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "TradeExecution_agentRunId_uidx": {
+          "name": "TradeExecution_agentRunId_uidx",
+          "columns": [
+            {
+              "expression": "agentRunId",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "TradeExecution_agentRunId_AgentRun_id_fk": {
+          "name": "TradeExecution_agentRunId_AgentRun_id_fk",
+          "tableFrom": "TradeExecution",
+          "columnsFrom": [
+            "agentRunId"
+          ],
+          "tableTo": "AgentRun",
+          "schemaTo": "krypto",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "krypto.AccountingStatus": {
+      "name": "AccountingStatus",
+      "schema": "krypto",
+      "values": [
+        "UNINITIALIZED",
+        "RECONCILED",
+        "QUARANTINED"
+      ]
+    },
+    "krypto.AgentRunOutcome": {
+      "name": "AgentRunOutcome",
+      "schema": "krypto",
+      "values": [
+        "RUNNING",
+        "DISABLED",
+        "SHADOW",
+        "HOLD",
+        "REJECTED",
+        "EXECUTED",
+        "LOCKED",
+        "CONFLICT",
+        "UPSTREAM_ERROR",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "krypto.TradeDirection": {
+      "name": "TradeDirection",
+      "schema": "krypto",
+      "values": [
+        "BUY",
+        "SELL"
+      ]
+    },
+    "krypto.TradingMode": {
+      "name": "TradingMode",
+      "schema": "krypto",
+      "values": [
+        "DISABLED",
+        "SHADOW",
+        "PAPER"
+      ]
+    }
+  },
+  "schemas": {
+    "krypto": "krypto"
+  },
+  "views": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

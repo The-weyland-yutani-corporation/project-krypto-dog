@@ -13,12 +13,12 @@ For the proposed architecture changes see `specs/rfcs/0002-evidence-grade-paper-
 
 ### Test suite
 
-- 198 Jest tests pass across 25 suites.
+- 256 Jest tests pass across 29 suites.
 - Critical safety modules are collected explicitly for coverage. Current
-  aggregate coverage is 91.72% statements, 82.71% branches, 94.87% functions,
-  and 91.80% lines, with per-module thresholds enforced for runtime
-  configuration, admin-route authentication, decision, market-data,
-  accounting, policy, and shared execution code.
+  aggregate coverage is 92.75% statements, 82.68% branches, 95.55% functions,
+  and 93.05% lines, with per-module thresholds enforced for deployment
+  preflight, runtime configuration, admin-route authentication, decision,
+  market-data, accounting, policy, and shared execution code.
 - All 8 synthetic fixture scenarios pass: the deterministic execution layer
   produces the correct trade sequences and equity curves given known inputs.
 - The fixture runner is aligned to production policy, fixed-point accounting,
@@ -78,6 +78,12 @@ project IDs, or internal URLs are recorded here.
 
 **Classification: preserve-required, unknown DB data.**
 
+A repository-local `deployment:preflight` run on 2026-07-14 produced exit `2`:
+the currently loaded URLs both target an unavailable localhost database, so
+this shell does not contain usable deployment credentials. The redacted report
+is retained outside the repository. No target inventory or backup claim is
+made from that failed probe.
+
 A production Supabase project exists and its internal state is unknown. All of
 the following steps are REQUIRED before any migration, seed, schema change, or
 env-var update targeting the production DB:
@@ -90,8 +96,9 @@ env-var update targeting the production DB:
       history (`__drizzle_migrations` and/or Supabase migration ledger).
       Document what is present before touching anything.
 - [ ] **Backup:** Take a point-in-time backup (Supabase dashboard backup or
-      `pg_dump` over the direct URL) before any schema or data change. Verify
-      the backup is readable.
+      provider equivalent) before any schema or data change. Also run
+      `deployment:backup`; require a checksummed/readable manifest and, for
+      preserve-required data, a successful loopback restore/count comparison.
 - [ ] **Open-position check:** Confirm whether `AgentState.currentPositionETH`
       is non-zero. A non-zero value means the agent has an open paper ETH
       position whose cost basis and PnL history must be preserved.
@@ -114,8 +121,18 @@ Verified locally; no production database mutation has occurred:
   existing-v2 adoption, row preservation, and idempotent singleton
   initialization pass against temporary real PostgreSQL clusters.
 - Application tables and the enum move into the private `krypto` schema.
-  Anonymous/authenticated table and fixed-function privileges are denied in
-  migration tests; cron scheduling is a separate reviewed operation.
+  `PUBLIC`/anonymous/authenticated table, column, schema, sequence, Krypto
+  routine, and Vault schema/relation/routine privileges are denied in real
+  migration tests and inventoried across every protected relation by preflight.
+  Protected public views and every executable public `SECURITY DEFINER`
+  routine are also blocked. The migration removes the unsafe legacy
+  arbitrary-path helper. Cron scheduling is a separate
+  transactional reviewed operation that rejects canonical-function drift and
+  verifies the latest passing smoke approval against decrypted Vault URL/secret
+  values, rejects unexpected jobs or queued endpoint requests, and verifies
+  both final job definitions before commit. Every cron request carries its
+  Vault-selected shadow/paper mode, so delayed requests fail across promotion
+  boundaries.
 - Unused AgentKit/OpenAI packages and CDP requirements are removed. A same-major
   PostCSS override removes Next.js's vulnerable nested copy; `npm audit
   --omit=dev` reports zero production vulnerabilities.
@@ -157,8 +174,9 @@ Verified locally; no production database mutation has occurred:
   audit, real-PostgreSQL migration/executor/orchestration tests, and migration
   drift. A protected manual no-trade Foundry smoke workflow is included.
 - Current local validation: lint passes with one pre-existing PostCSS config
-  warning; 25 Jest suites / 198 tests pass; script/test typecheck and production
+  warning; 29 Jest suites / 256 tests pass; script/test typecheck and production
   build pass; critical coverage gates pass; the real-PostgreSQL suite passes;
+  deliberate cron-function tampering and `PUBLIC` table exposure are rejected;
   migration generation reports no drift; and the production dependency audit
   is clean. The 8-scenario aggregate reports 8 engineering assertion passes,
   3/8 beating cash, 2/8 beating buy-and-hold, and 0/8 beating both.
@@ -166,6 +184,29 @@ Verified locally; no production database mutation has occurred:
 Production remains blocked by target database credential repair,
 inventory/backup, target-environment smoke checks, controlled disabled/shadow/
 paper rollout, and evidence collection.
+
+The v2.2 branch includes:
+
+- read-only `deployment:preflight`, so repaired credentials can immediately
+  prove runtime/direct cluster identity and produce redacted schema,
+  canonical-function, pending-HTTP-request, privilege, and blocker evidence
+  without mutating the target;
+- `deployment:backup`, which creates non-overwriting, checksummed custom-format
+  application archives, binds runtime/direct URLs to one database and
+  PostgreSQL system identifier, and can prove them by restoring into a
+  disposable loopback database and comparing critical row counts. Legacy
+  public backups include the required enum bootstrap and are restore-tested
+  before migration. Migration-only databases cannot produce a verified
+  application bundle, and queued Krypto HTTP work blocks backup.
+- `smoke:target`, which binds the deployed runtime to `DIRECT_URL`, enforces
+  disabled mode inside each run before lease acquisition, proves a mismatched
+  authenticated no-mutation mode probe creates no run/trade/lease mutation
+  even if its requested mode matches, rejects queued Krypto HTTP work, and
+  proves
+  target authentication, two persisted disabled runs, unchanged trades, lease
+  release, admin login/logout, sent email audit, and no-trade
+  Foundry/Coinbase/PostHog access. A successful report persists the target
+  origin/cron-secret-fingerprint approval required by cron activation.
 
 ---
 
@@ -226,7 +267,7 @@ All criteria must be met before any production deployment:
       status code and prevents candle misalignment (issue #10).
 - [x] PostHog event schema, email paths, and admin dashboard consistent and
       covered by tests (issue #11).
-- [x] All existing tests still pass; current local suite is 25 suites / 198
+- [x] All existing tests still pass; current local suite is 29 suites / 256
       tests, with enforced critical-module coverage and additional
       real-PostgreSQL migration, privilege, transaction, accounting, lease, and
       orchestration tests.

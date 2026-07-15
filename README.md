@@ -68,7 +68,8 @@ npm run dev
 
 # 6. Trigger an agent run manually
 curl -X POST http://localhost:3000/api/agent/run \
-  -H "x-cron-secret: $(grep CRON_SECRET .env | cut -d= -f2-)"
+  -H "x-cron-secret: $(grep CRON_SECRET .env | cut -d= -f2-)" \
+  -H "x-required-rollout-mode: $(grep ROLLOUT_MODE .env | cut -d= -f2-)"
 
 # 7. Open the admin dashboard
 open http://localhost:3000/admin/login
@@ -90,9 +91,12 @@ open http://localhost:3000/admin/login
 | `npm run db:generate` | Generate Drizzle migration SQL from schema changes |
 | `npm run db:migrate` | Run committed migrations using `DIRECT_URL` |
 | `npm run db:init` | Idempotently initialize the `AgentState` singleton |
-| `npm run test:migrations` | Real-PostgreSQL migration, privilege, decimal, transaction, lease, and run-flow tests |
+| `npm run test:migrations` | Real-PostgreSQL migration, privilege/tamper, decimal, transaction, lease, run-flow, preflight, and backup tests |
 | `npm run db:studio` | Drizzle Studio (browse the DB) |
 | `npm run smoke:llm` | Verify Foundry model access without tools or trading |
+| `npm run deployment:preflight` | Prove runtime/direct DB identity and exact schema/migration, lease, cron/queued HTTP, function-integrity, table/column, and Vault privilege state |
+| `npm run deployment:backup -- --out <dir>` | Bind `DATABASE_URL`/`DIRECT_URL`, refuse active cron/queued HTTP and migration-only targets, create checksummed archives, and optionally prove a local restore |
+| `npm run smoke:target -- --base-url <url> --confirm-host <host>` | Bind runtime/direct DB and cron configuration, prove mismatched-mode rejection plus disabled runs, auth, postconditions, email, Foundry, Coinbase, and PostHog |
 | `npm run backtest -- --scenario scenarios/dip-recovery.json` | Run deterministic paper scenario evaluation |
 | `npm run backtest:all` | Emit aggregate JSON for every engineering scenario |
 

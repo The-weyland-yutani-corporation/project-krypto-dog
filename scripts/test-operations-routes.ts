@@ -160,6 +160,7 @@ async function main(): Promise<void> {
         method: "POST",
         headers: {
           "x-cron-secret": "operations-route-test-secret",
+          "x-required-rollout-mode": "disabled",
         },
       }),
     ),

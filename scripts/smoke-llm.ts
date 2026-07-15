@@ -12,11 +12,8 @@
  */
 
 import "dotenv/config";
-import { buildLLM } from "../src/agent/llm.js";
-import { resolveFoundryBaseURL } from "../src/lib/config.js";
-import { HumanMessage } from "@langchain/core/messages";
-
-const TIMEOUT_MS = 30_000;
+import { smokeFoundry } from "@/deployment/provider-smoke";
+import { resolveFoundryBaseURL } from "@/lib/config";
 
 function redactURL(url: string): string {
   // Replace everything between the scheme and the host with [...]
@@ -54,50 +51,23 @@ async function main() {
   console.log(`   endpoint  : ${baseURL ? redactURL(baseURL) : "(not set)"}`);
   console.log(`   deployment: ${deployment ?? "(not set)"}`);
   console.log(`   api-version: ${apiVersion}`);
-  console.log(`   timeout   : ${TIMEOUT_MS}ms`);
+  console.log("   timeout   : 30000ms");
   console.log();
 
-  let llm;
+  let result;
   try {
-    llm = buildLLM();
-  } catch (err) {
-    console.error(`❌ LLM construction failed — ${classifyError(err)}`);
-    process.exit(1);
-  }
-
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error("Request timed out")), TIMEOUT_MS),
-  );
-
-  let response;
-  try {
-    response = await Promise.race([
-      llm.invoke([new HumanMessage("Reply with exactly: OK")]),
-      timeoutPromise,
-    ]);
+    result = await smokeFoundry();
   } catch (err) {
     console.error(`❌ LLM invocation failed — ${classifyError(err)}`);
     process.exit(1);
   }
 
-  // Extract response text
-  const content =
-    typeof response.content === "string"
-      ? response.content
-      : JSON.stringify(response.content);
-
-  if (!content || content.trim().length === 0) {
-    console.error("❌ LLM returned an empty response");
-    process.exit(1);
-  }
-
-  // Surface token usage metadata without printing credentials
-  const usage = (response as unknown as { usage_metadata?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } }).usage_metadata;
-  if (usage) {
-    console.log(`   tokens    : in=${usage.input_tokens ?? "?"} out=${usage.output_tokens ?? "?"} total=${usage.total_tokens ?? "?"}`);
-  }
-
-  console.log(`✅ LLM responded (${content.length} chars): ${content.trim().slice(0, 120)}`);
+  console.log(
+    `   tokens    : in=${result.inputTokens ?? "?"} out=${result.outputTokens ?? "?"} total=${result.totalTokens ?? "?"}`,
+  );
+  console.log(
+    `✅ LLM responded (${result.responseLength} chars, ${result.latencyMs}ms)`,
+  );
 }
 
 main().catch((err) => {

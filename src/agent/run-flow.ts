@@ -48,6 +48,7 @@ import {
 import { executePaperTrade } from "@/trading/paper-executor";
 import {
   AgentUpstreamError,
+  RequiredRolloutModeError,
   TradeConflictError,
   TradingConfigurationError,
   TradingDomainError,
@@ -75,6 +76,7 @@ const LEASE_DURATION_MS = 90_000;
 export interface ExecuteAgentRunOptions {
   triggerSource: AgentTriggerSource;
   idempotencyKey?: string;
+  requiredMode?: TradingMode;
 }
 
 export type ExecuteAgentRunOutcome =
@@ -661,6 +663,12 @@ export async function executeAgentRun(
     // Persist invalid rollout configuration as the fail-closed DISABLED mode;
     // the terminal run record still carries the typed configuration error.
     modeError = error;
+  }
+  if (modeError && options.requiredMode) {
+    throw modeError;
+  }
+  if (options.requiredMode && mode !== options.requiredMode) {
+    throw new RequiredRolloutModeError(options.requiredMode, mode);
   }
   const acquisition = await acquireInvocation(
     options,

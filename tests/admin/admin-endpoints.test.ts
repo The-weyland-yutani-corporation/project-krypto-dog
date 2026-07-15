@@ -14,6 +14,7 @@ import { POST as releaseLease } from "@/app/api/admin/release-run-lease/route";
 import { POST as unlock } from "@/app/api/admin/unlock/route";
 import { executeAgentRun } from "@/agent/run-flow";
 import { requireAdminSession } from "@/lib/admin-route-auth";
+import { RequiredRolloutModeError } from "@/trading/errors";
 
 const mockedExecuteAgentRun = executeAgentRun as jest.MockedFunction<
   typeof executeAgentRun
@@ -23,7 +24,11 @@ const mockedRequireAdminSession =
 
 function makeReq(
   url: string,
-  init: { body?: unknown; origin?: string | null } = {},
+  init: {
+    body?: unknown;
+    origin?: string | null;
+    requiredMode?: string;
+  } = {},
 ): NextRequest {
   const headers: Record<string, string> = {};
   if (init.origin !== null) {
@@ -31,6 +36,9 @@ function makeReq(
   }
   if (init.body !== undefined) {
     headers["content-type"] = "application/json";
+  }
+  if (init.requiredMode) {
+    headers["x-required-rollout-mode"] = init.requiredMode;
   }
   return new NextRequest(
     new Request(url, {
@@ -114,6 +122,46 @@ describe("POST /api/admin/run-agent", () => {
       makeReq("http://localhost:3000/api/admin/run-agent"),
     );
     expect(res.status).toBe(409);
+  });
+
+  it("passes and enforces a required rollout mode", async () => {
+    mockedExecuteAgentRun.mockResolvedValueOnce({
+      kind: "ok",
+      result: {
+        status: "skipped",
+        action: "disabled",
+        durationMs: 1,
+      },
+    });
+    const accepted = await runAgent(
+      makeReq("http://localhost:3000/api/admin/run-agent", {
+        requiredMode: "disabled",
+      }),
+    );
+    expect(accepted.status).toBe(200);
+    expect(mockedExecuteAgentRun).toHaveBeenCalledWith({
+      triggerSource: "admin",
+      requiredMode: "disabled",
+    });
+
+    mockedExecuteAgentRun.mockClear();
+    const invalid = await runAgent(
+      makeReq("http://localhost:3000/api/admin/run-agent", {
+        requiredMode: "live",
+      }),
+    );
+    expect(invalid.status).toBe(400);
+    expect(mockedExecuteAgentRun).not.toHaveBeenCalled();
+
+    mockedExecuteAgentRun.mockRejectedValueOnce(
+      new RequiredRolloutModeError("disabled", "paper"),
+    );
+    const changed = await runAgent(
+      makeReq("http://localhost:3000/api/admin/run-agent", {
+        requiredMode: "disabled",
+      }),
+    );
+    expect(changed.status).toBe(409);
   });
 
   it("returns the upstream HTTP status on upstream_error outcome", async () => {
