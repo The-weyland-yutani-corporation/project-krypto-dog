@@ -15,6 +15,7 @@ import {
   type MarketDataProvider,
 } from "../src/lib/market-data-provider";
 import { executePaperTrade } from "../src/trading/paper-executor";
+import { RequiredRolloutModeError } from "../src/trading/errors";
 import { DEFAULT_STRATEGY_CONFIG } from "../src/trading/strategy-config";
 
 const ACCOUNT_ID = "singleton";
@@ -133,6 +134,32 @@ async function main(): Promise<void> {
   delete process.env.AZURE_OPENAI_ENDPOINT;
   delete process.env.AZURE_OPENAI_API_KEY;
   delete process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
+
+  await resetAccount();
+  process.env.ROLLOUT_MODE = "paper";
+  await assert.rejects(
+    executeAgentRun({
+      triggerSource: "admin",
+      idempotencyKey: "run-flow-required-disabled",
+      requiredMode: "disabled",
+    }),
+    RequiredRolloutModeError,
+  );
+  assert.equal(
+    (
+      await db
+        .select()
+        .from(agentRun)
+        .where(
+          eq(
+            agentRun.idempotencyKey,
+            "run-flow-required-disabled",
+          ),
+        )
+    ).length,
+    0,
+  );
+  assert.equal((await loadState()).leaseOwner, null);
 
   await resetAccount();
   process.env.ROLLOUT_MODE = "disabled";

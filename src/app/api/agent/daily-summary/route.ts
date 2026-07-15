@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { agentState, tradeExecution, agentJournal } from "@/db/schema";
 import { eq, gte, desc } from "drizzle-orm";
+import { isValidCronSecret } from "@/lib/cron-auth";
 import { EmailDeliveryError, sendDailySummary } from "@/lib/email";
-import { timingSafeStringEqual } from "@/lib/secure-compare";
+import { readRequiredRolloutMode } from "@/lib/required-rollout-mode";
+import { resolveTradingMode } from "@/trading/strategy-config";
 
 async function recordDelivery(
   status: "sent" | "skipped" | "failed",
@@ -38,14 +40,45 @@ async function failureResponse(error: unknown): Promise<NextResponse> {
 
 export async function POST(request: NextRequest) {
   // Auth — same CRON_SECRET as agent run
-  const cronSecret = request.headers.get("x-cron-secret");
-  const expectedSecret = process.env.CRON_SECRET;
-  if (
-    !cronSecret ||
-    !expectedSecret ||
-    !timingSafeStringEqual(cronSecret, expectedSecret)
-  ) {
+  if (!isValidCronSecret(request.headers.get("x-cron-secret"))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let requiredMode: ReturnType<typeof readRequiredRolloutMode>;
+  try {
+    requiredMode = readRequiredRolloutMode(request);
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid required rollout mode" },
+      { status: 400 },
+    );
+  }
+  if (!requiredMode) {
+    return NextResponse.json(
+      { error: "Required rollout mode is missing" },
+      { status: 400 },
+    );
+  }
+  let actualMode: ReturnType<typeof resolveTradingMode>;
+  try {
+    actualMode = resolveTradingMode();
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+      { status: 500 },
+    );
+  }
+  if (requiredMode !== actualMode) {
+    return NextResponse.json(
+      {
+        error: "Rollout mode changed before summary generation",
+        expectedMode: requiredMode,
+        actualMode,
+      },
+      { status: 409 },
+    );
   }
 
   try {

@@ -30,5 +30,8 @@ next-env.d.ts
 backtest-output/
 /coverage/
 
+# production preflight/backup evidence may contain infrastructure metadata
+/deployment-evidence/
+
 # prisma generated client
 src/generated/

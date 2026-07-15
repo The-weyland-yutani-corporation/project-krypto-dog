@@ -36,6 +36,18 @@ export class TradingConfigurationError extends TradingDomainError {
   }
 }
 
+export class RequiredRolloutModeError extends TradingConfigurationError {
+  constructor(
+    readonly expectedMode: string,
+    readonly actualMode: string,
+  ) {
+    super(
+      `Required rollout mode ${expectedMode} does not match ${actualMode}`,
+    );
+    this.name = "RequiredRolloutModeError";
+  }
+}
+
 export type AgentErrorType =
   | "CONFIGURATION"
   | "MARKET_DATA"

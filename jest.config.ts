@@ -19,6 +19,7 @@ const config: Config = {
   setupFiles: ["<rootDir>/tests/setup.ts"],
   collectCoverageFrom: [
     "src/agent/decision.ts",
+    "src/deployment/preflight.ts",
     "src/lib/admin-auth.ts",
     "src/lib/admin-route-auth.ts",
     "src/lib/config.ts",
@@ -42,6 +43,12 @@ const config: Config = {
       branches: 75,
       functions: 100,
       lines: 95,
+    },
+    "./src/deployment/preflight.ts": {
+      statements: 90,
+      branches: 65,
+      functions: 90,
+      lines: 90,
     },
     "./src/lib/market-data-provider.ts": {
       statements: 88,

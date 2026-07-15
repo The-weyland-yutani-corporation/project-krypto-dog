@@ -21,7 +21,10 @@
     "db:reset": "npx tsx scripts/reset-state.ts",
     "test:migrations": "bash scripts/test-migrations.sh",
     "backtest": "npx tsx scripts/backtest.ts",
-    "backtest:all": "npx tsx scripts/backtest.ts --all --json"
+    "backtest:all": "npx tsx scripts/backtest.ts --all --json",
+    "deployment:preflight": "npx tsx scripts/deployment-preflight.ts",
+    "deployment:backup": "npx tsx scripts/create-verified-backup.ts",
+    "smoke:target": "npx tsx scripts/target-smoke.ts"
   },
   "repository": {
     "type": "git",

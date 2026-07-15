@@ -29,6 +29,20 @@
       "when": 1784054175971,
       "tag": "0003_expand_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784074873207,
+      "tag": "0004_restrict_vault_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784123377223,
+      "tag": "0005_bind_cron_rollout_mode",
+      "breakpoints": true
     }
   ]
 }

@@ -7,9 +7,10 @@
 Implementation note (2026-07-14): the v2.1 deterministic policy, structured
 decision boundary, exact transactional paper executor, AgentRun ledger, and
 owned lease orchestration, operations controls/health, production-aligned
-backtesting, and expanded CI gates are implemented and locally verified. This
-RFC remains Draft because target deployment and the v2.2 evidence phase are not
-complete.
+backtesting, expanded CI gates, and v2.2 preflight/backup/disabled-target-smoke
+tooling are implemented and locally verified. This RFC remains Draft because
+target credentials, deployment, shadow/paper observation, and financial
+evidence are not complete.
 
 ## Summary
 
@@ -149,41 +150,109 @@ the DCA count while a position remains.
 
 ## Gates
 
+### Gate 0 -- target deployment eligible
+
+All v2.1 criteria from `specs/readiness.md` must be satisfied, and the following
+artifacts must be retained outside source control:
+
+- [ ] Passing redacted `deployment:preflight` report.
+      Runtime/direct database name and system identifier must match; private
+      schema completeness with no extra Krypto relation, required Drizzle
+      history fingerprint, migration/layout consistency, protected public
+      wrapper checks, canonical
+      cron-function integrity, absence of queued Krypto HTTP requests,
+      table/column ACLs, and Vault
+      schema/relation/routine privilege checks must pass.
+- [ ] Provider backup identifier plus a verified `deployment:backup` manifest.
+- [ ] Successful restore/count comparison for preserve-required data.
+      Legacy public-schema evidence must prove restoration of the required enum
+      bootstrap as well as all application tables.
+- [ ] Reviewed migration and singleton-initialization logs.
+- [ ] Deployment configured with `ROLLOUT_MODE=disabled`, cron unscheduled,
+      and no matching `pg_net` request queued.
+- [ ] Passing `smoke:target` report, including unchanged trade count, two
+      persisted disabled runs, a runtime/direct database-binding challenge,
+      an authenticated no-mutation mismatched-mode rejection that cannot enter
+      orchestration, per-request disabled-mode enforcement, idle lease, sent
+      email audit, admin auth, no-trade Foundry/Coinbase/PostHog checks, and an
+      immutable target-origin/cron-secret-fingerprint approval.
+- [ ] PostHog event, mailbox delivery, Vercel logs, and admin health manually
+      confirmed.
+- [ ] At least 30 minutes of disabled observation after the smoke with no
+      unexplained 5xx, configuration, lease, or database errors.
+
 ### Gate 1 -- shadow mode eligible
 
-All v2.1 criteria from `specs/readiness.md` §4 must be satisfied:
-
-- [ ] Seed migration replaced with idempotent script (ADR 0006).
-- [ ] No critical advisory or undocumented reachable high-severity direct
-      advisory.
-- [ ] All risk rules in `authorizeTradeIntent` (ADR 0005), with unit tests.
-- [ ] Trade execution atomic (single DB transaction).
-- [ ] Execution path idempotent (idempotency key per run).
-- [ ] Owned expiring run lease with owner-checked release and stale recovery.
-- [ ] Weighted-average cost basis PnL.
-- [ ] Integer cent / Drizzle numeric money storage.
-- [ ] LLM retry metadata in PostHog.
-- [ ] Market-data error handling corrected.
-- [ ] PostHog / email / admin dashboard consistent.
-- [ ] 108 existing tests pass; new tests cover each fixed issue.
+- [ ] Gate 0 satisfied.
+- [ ] Operator records the exact commit, deployment ID, strategy version,
+      model deployment, migration count, and promotion timestamp.
+- [ ] Rollout mode changes only through a reviewed Vercel environment update
+      and fresh deployment; APIs cannot promote it.
+- [ ] First manual shadow invocation completes as `SHADOW`, writes no
+      `TradeExecution`, releases its lease, and produces a coherent journal.
+- [ ] Fixed cron jobs are enabled only after that manual invocation.
+- [ ] Shadow runs for at least 72 consecutive hours with at least 95% of
+      expected scheduled invocations persisted and no unexplained gaps.
+- [ ] Every shadow run is terminal; zero executions are recorded; accounting
+      remains `RECONCILED`; no stale/overlapping lease or duplicate run exists.
+- [ ] Daily summary delivery is `sent` on at least two consecutive days.
+- [ ] All proposals, authorization decisions, holds, rejections, provider
+      failures, and journals in the window are reviewed. No production state
+      fault injection is permitted; deterministic guardrail fault cases remain
+      proven by the real-PostgreSQL integration suite.
 
 ### Gate 2 -- paper mode eligible
 
 - [ ] Gate 1 satisfied.
-- [ ] Shadow-mode run, authorization, rejection, journal, alert, and accounting
-      evidence reviewed with no unexplained errors.
-- [ ] Guardrails (drawdown, cooldown, operator pause) fire as expected under real
-      cron traffic in shadow mode.
-- [ ] Operator approval to promote to paper mode.
+- [ ] A versioned shadow evidence report records run reliability, model usage,
+      proposal/authorization counts, error taxonomy, market-data freshness,
+      alert delivery, reconciliation, and zero trade-count delta.
+- [ ] A fresh pre-promotion preflight confirms no active lease, quarantine,
+      open position, unsafe function, exposed role, or active cron.
+- [ ] Cron is paused for the mode-changing deployment.
+- [ ] Named operator approval records accepted risk, rollback owner, and the
+      exact paper evidence-window start.
+- [ ] Paper mode begins with a 24-hour attended observation period. Any
+      execution is reconciled immediately against balances and ledger history.
+- [ ] Cron is re-enabled only after the paper deployment reports the expected
+      mode and the account remains reconciled.
 
 ### Gate 3 -- v3 RFC eligible (requires paper mode results)
 
 - [ ] Gate 2 satisfied.
-- [ ] Paper mode ran for >= 30 calendar days.
+- [ ] One unchanged strategy/model/cost configuration ran in paper mode for at
+      least 30 calendar days; configuration changes start a new evidence
+      attribution window.
+- [ ] At least 95% of expected scheduled runs have terminal persisted outcomes;
+      all missing windows and provider outages are classified.
+- [ ] Every execution reconciles, no duplicate execution exists, and no
+      unresolved alert, lease, authorization, or accounting incident remains.
 - [ ] At least one evaluation window (per `specs/evaluation.md` §4) completed and
-      documented with results beating the cash baseline.
+      documented with capital preservation and positive risk-adjusted evidence
+      versus both cash and buy-and-hold under the declared methodology.
 - [ ] Manual journal review shows coherent LLM reasoning; no prompt gaming detected.
 - [ ] All v3 preconditions in `specs/rfcs/0001-v3-live-trading.md` satisfied.
+
+### Immediate rollback triggers
+
+Any one of the following ends the current observation/evidence window and
+requires cron disablement plus `ROLLOUT_MODE=disabled`:
+
+- any `TradeExecution` in disabled or shadow mode;
+- negative balance, duplicate execution, ledger/state mismatch, or accounting
+  status other than `RECONCILED`;
+- an active lease beyond expiry, overlapping owner, or ownerless running flag;
+- an unauthorized route succeeding, a fixed function becoming broadly
+  executable, or the legacy arbitrary-path function reappearing;
+- stale/invalid market data reaching model inference or execution;
+- two consecutive missed scheduled runs or two consecutive unclassified
+  upstream/internal failures;
+- failed daily-summary delivery for more than 24 hours;
+- drawdown lock, operator safety concern, suspected credential exposure, or
+  migration drift.
+
+Rollback preserves all run, journal, and trade evidence. It never deletes or
+rewrites history; remediation and re-promotion require a new operator approval.
 
 ## Drawbacks / risks
 

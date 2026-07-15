@@ -12,7 +12,7 @@
 | **v1** | Paper-trading scaffolding: agent loop, guardrails, schema, tools, admin dashboard | ✅ Shipped (tag `spec/v1`) |
 | **v2** | Hardening: admin auth, balance validation, full PostHog/email wiring, env validation, Drizzle consolidation | ⚠️ Code baseline shipped (tag `spec/v2`) -- NOT production-ready. See §14. |
 | **v2.1** | Safety and Correctness: atomic execution, deterministic authorization, non-destructive migrations, cost-basis PnL, owned expiring run leases, dependency remediation | ✅ Implemented and locally verified -- hosted CI and target-environment evidence remain before deployment |
-| **v2.2** | Evidence-Grade Paper Trading: shadow and paper rollout modes, 30-day evidence collection | 📋 Proposed -- see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
+| **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Active deployment preparation -- target credentials/inventory remain blocked; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
 | **v3** | Live Coinbase AgentKit execution on Base L2, sentiment, advanced orders, scaling | 📋 RFC stub only -- see [`rfcs/0001-v3-live-trading.md`](./rfcs/0001-v3-live-trading.md) |
 
 ---
@@ -173,6 +173,11 @@ that would persist a paper trade.
 
 ### `POST /api/agent/run`
 - **Auth:** `x-cron-secret` header matched against `CRON_SECRET`.
+- **Deployment safety:** `x-required-rollout-mode` is mandatory and the
+  effective mode must match before any `AgentRun` or lease is created.
+  Target smoke proves this with an authenticated no-mutation mismatched-mode
+  probe that cannot enter orchestration plus direct database evidence before
+  sending disabled runs.
 - **Flow:** create/idempotently recover `AgentRun` → acquire owned lease → honor
   disabled/shadow/paper mode → fetch and validate market data → mark account to
   market → apply deterministic policy and mandatory exits → optionally request
@@ -181,10 +186,19 @@ that would persist a paper trade.
   telemetry → owner-checked lease release.
 - **Response:** `AgentRunResult` JSON (`status`, `action`, `reasoning`, `trade`, `portfolioState`, `tokenUsage`, `durationMs`).
 
+### `GET /api/agent/status`
+- Uses timing-safe `CRON_SECRET` auth and returns the effective rollout mode
+  with `Cache-Control: no-store`. An optional deployment-smoke challenge checks
+  for an exact immutable journal marker written through `DIRECT_URL`.
+- It never acquires a lease, fetches market data, calls the model, or mutates
+  the database. Deployment smoke uses it to prove both `disabled` mode and
+  runtime/direct database binding before invoking a run.
+
 ### `POST /api/agent/daily-summary`
-- Uses the same timing-safe `CRON_SECRET` auth. Aggregates exact ledger values,
-  escapes journal content, and returns an explicit `sent` or `skipped` delivery
-  result; provider failures return HTTP 502.
+- Uses the same timing-safe `CRON_SECRET` auth and mandatory required-mode
+  binding before any query or email. Aggregates exact ledger values, escapes
+  journal content, and returns an explicit `sent` or `skipped` delivery result;
+  provider failures return HTTP 502.
 
 ### `POST /api/auth/login`, `GET|POST /api/auth/logout`
 - Timing-safe password check against `ADMIN_PASSWORD`. Sets an HMAC-signed
@@ -294,10 +308,15 @@ deployable default even before model credentials are installed.
   privilege-restricted functions:
   - hourly → `POST https://<vercel-host>/api/agent/run`
   - daily 00:00 UTC → `POST https://<vercel-host>/api/agent/daily-summary`
+  - both require the Vault-selected `shadow` or `paper` mode in
+    `x-required-rollout-mode`
 - **Current cron status:** the unsafe v2 arbitrary-path migration has been
   removed. The Drizzle history installs fixed restricted functions, while
   `supabase/operations/enable-krypto-cron.sql` performs the separate post-smoke
-  schedule operation.
+  transaction and verifies exact function configuration, reviewed body
+  digests, the latest smoke-approved Vault URL/secret fingerprint, and both
+  final job definitions before commit. Activation rejects unexpected matching
+  jobs and queued endpoint requests; disablement removes and verifies both.
 - **Smoke test + rollback:** see [`specs/deployment.md`](./deployment.md).
 
 ADR `0003-pg-cron-over-vercel-cron.md` records why we chose Supabase `pg_cron` over Vercel Cron.
@@ -323,12 +342,15 @@ ADR `0003-pg-cron-over-vercel-cron.md` records why we chose Supabase `pg_cron` o
   model retry/error classification, market data, route status mapping, admin
   controls, migrations, CSRF, and legacy guardrail behavior.
 - Real PostgreSQL: `npm run test:migrations` proves fresh install, existing-v2
-  upgrade, private-schema privileges, decimal round trips, quarantine,
+  upgrade, table/column/Krypto/Vault privileges, decimal round trips,
+  quarantine,
   transactional rollback, parallel idempotency, lease ownership/recovery,
-  disabled/shadow/paper orchestration, cold start, and mandatory stop-loss.
+  disabled/shadow/paper orchestration, required-mode fail-closed behavior,
+  cold start, mandatory stop-loss, deployment preflight, function/privilege
+  tamper detection, and verified private plus legacy-enum backup restoration.
 - Local paper smoke: [`specs/local-testing.md`](./local-testing.md) covers local Postgres setup, no-LLM route checks, optional live local paper runs, admin checks, daily summary, reset/reseed, and current profitability-testing limits.
 - Deterministic evaluation: `npm run backtest -- --scenario scenarios/dip-recovery.json` replays fixture prices through a no-LLM rules policy with fees, slippage, cooldown, DCA, drawdown, weighted-average cost basis, and cash / buy-and-hold benchmarks.
-- Current local suite: 25 Jest suites / 198 tests. `npm run test:coverage`
+- Current local suite: 29 Jest suites / 256 tests. `npm run test:coverage`
   enforces explicit global and critical-module thresholds.
 - CI runs lint, script/test typecheck, production build, critical coverage,
   aggregate backtests with an uploaded artifact, production dependency audit,

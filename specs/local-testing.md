@@ -84,6 +84,9 @@ npm run typecheck:scripts
 npm run test:coverage
 npm run build
 npm run test:integration
+npm run deployment:preflight
+npm run deployment:backup -- --out deployment-evidence/local-backup
+npm run smoke:target -- --base-url http://localhost:3000 --confirm-host localhost
 npm run backtest:all
 npm audit --omit=dev
 ```
@@ -92,6 +95,36 @@ The coverage command collects runtime configuration, the decision boundary,
 market-data/indicator, admin-auth/route-auth/operations-health, accounting,
 policy, strategy configuration, and shared paper-execution modules. Global and
 critical per-module thresholds are enforced in `jest.config.ts`.
+
+`deployment:preflight` is read-only and accepts `DIRECT_URL` plus
+`DATABASE_URL`. It requires both URLs to identify the same database cluster and
+provides the same complete schema, row-count, position, lease, migration, cron,
+queued-HTTP, canonical-function, table/column ACL, and Vault
+schema/relation/routine
+privilege evidence used by the production pre-migration gate. It also
+fingerprints the ordered Drizzle history and detects protected public views or
+any executable public `SECURITY DEFINER` routine.
+
+`deployment:backup` requires `DIRECT_URL` and `DATABASE_URL`, proves they name
+the same PostgreSQL database and cluster, writes that binding into the
+manifest, and refuses active Krypto cron, queued endpoint requests, or an
+existing output path. Add
+`--restore-test-url postgresql://postgres@127.0.0.1:<port>/postgres` to prove
+the bundle in a disposable loopback database and compare critical row counts.
+Legacy public-schema bundles include and automatically apply the required enum
+bootstrap before restoring their custom-format table archive. A database with
+only migration metadata and no Krypto application table is refused.
+
+`smoke:target` requires an already-running application, explicit
+`ROLLOUT_MODE=disabled`, `DIRECT_URL`, target cron/admin credentials, and
+Foundry/PostHog configuration. It binds `DIRECT_URL` to the deployed runtime
+with a unique immutable journal challenge, requires disabled mode inside both
+run requests before lease acquisition, first proves a valid mismatched mode is
+rejected through a no-mutation route probe that cannot enter orchestration,
+rejects queued endpoint requests, writes only smoke-evidence records, verifies
+the trade count is unchanged, and accepts HTTP only for loopback targets. A
+passing run finishes by recording an immutable target
+origin/cron-secret-fingerprint approval that cron enablement must match.
 
 ## 3. Apply schema and seed
 
@@ -145,6 +178,7 @@ Trigger the agent route:
 ```bash
 curl -i -X POST http://localhost:3000/api/agent/run \
   -H "x-cron-secret: $(grep '^CRON_SECRET=' .env | cut -d= -f2-)" \
+  -H "x-required-rollout-mode: disabled" \
   -H "Content-Type: application/json"
 ```
 
@@ -190,6 +224,7 @@ no-op path and returns an explicit skipped delivery result.
 ```bash
 curl -i -X POST http://localhost:3000/api/agent/daily-summary \
   -H "x-cron-secret: $(grep '^CRON_SECRET=' .env | cut -d= -f2-)" \
+  -H "x-required-rollout-mode: disabled" \
   -H "Content-Type: application/json"
 ```
 
@@ -224,6 +259,7 @@ Trigger the run:
 ```bash
 curl -i -X POST http://localhost:3000/api/agent/run \
   -H "x-cron-secret: $(grep '^CRON_SECRET=' .env | cut -d= -f2-)" \
+  -H "x-required-rollout-mode: paper" \
   -H "Content-Type: application/json"
 ```
 
@@ -269,6 +305,7 @@ npm run db:init
 | `500 AgentState singleton not found` | Singleton not initialized | `npm run db:init` |
 | `409 Agent is already running` | Active owned lease | Inspect `leaseOwner`/`leaseExpiresAt`; wait for expiry or use the admin recovery path only after expiry |
 | `401 Unauthorized` | Wrong or missing `x-cron-secret` | Use the exact `CRON_SECRET` from `.env` |
+| `400 Required rollout mode is missing` | Cron request omitted its deployment binding | Send `x-required-rollout-mode` with the exact current mode |
 | Rollout configuration error | Invalid `ROLLOUT_MODE` | Use `disabled`, `shadow`, or `paper` |
 | LLM auth/model error | Stub Foundry values used while unpaused | Pause for no-LLM smoke, or provide real Azure AI Foundry Anthropic values |
 | `Cooldown active` | A trade happened within 2 hours | Wait, reset DB, or test a non-trade route |
