@@ -125,13 +125,26 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
     createdAt: "1784123377223",
     hash: "6c2224452bafb07b0bd7ecaa3fcc6a45690abef61944b487571e900f11d7c43a",
   },
+  {
+    createdAt: "1784174542964",
+    hash: "a614858a8a9e85ae5ece4b9f3046e865e3ed46d780581c1a2843ff8a5ccfde3d",
+  },
 ] as const;
 const EXPECTED_FUNCTION_HASHES = {
+  invoke_agent_run:
+    "6b4d47233622db9cbdc453735f8287f665fe9b4552fa1e68bc1dfbf31891a69b",
+  invoke_daily_summary:
+    "67630778c4a679858d4a94e69ceb61dbf258eab34a4b3ff9ada90517c9a205d8",
+} as const;
+const NULLABLE_MODE_BOUND_FUNCTION_HASHES: Record<
+  keyof typeof EXPECTED_FUNCTION_HASHES,
+  string
+> = {
   invoke_agent_run:
     "285886232696f74e79de21b9b3b305d4016d01902bdeefc583db76598e47a80d",
   invoke_daily_summary:
     "e2cdbc1608903e7147734c9b51a79130c2a41fc47575c8979300a0f7640e78a5",
-} as const;
+};
 const LEGACY_FUNCTION_HASHES: Record<
   keyof typeof EXPECTED_FUNCTION_HASHES,
   string
@@ -929,9 +942,12 @@ export async function runDeploymentPreflight(
           functionByName.get("invoke_daily_summary");
         const expectedFunctionHashes =
           inventory.drizzleMigrationCount ===
-            EXPECTED_DRIZZLE_MIGRATIONS.length
+          EXPECTED_DRIZZLE_MIGRATIONS.length
             ? EXPECTED_FUNCTION_HASHES
-            : LEGACY_FUNCTION_HASHES;
+            : inventory.drizzleMigrationCount ===
+                EXPECTED_DRIZZLE_MIGRATIONS.length - 1
+              ? NULLABLE_MODE_BOUND_FUNCTION_HASHES
+              : LEGACY_FUNCTION_HASHES;
         inventory.fixedFunctions = {
           agentRun: agentRunFunction !== undefined,
           dailySummary: dailySummaryFunction !== undefined,
@@ -1004,8 +1020,11 @@ export async function runDeploymentPreflight(
               inventory.fixedFunctions.integrityVerified,
             definitionProfile:
               expectedFunctionHashes === EXPECTED_FUNCTION_HASHES
-                ? "mode-bound"
-                : "pre-mode-binding",
+                ? "mode-bound-null-safe"
+                : expectedFunctionHashes ===
+                    NULLABLE_MODE_BOUND_FUNCTION_HASHES
+                  ? "mode-bound-nullable"
+                  : "pre-mode-binding",
           },
         });
         checks.push({

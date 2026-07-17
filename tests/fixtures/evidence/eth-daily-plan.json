@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "1.0.0",
+  "planId": "eth-evidence-fixture-plan",
+  "datasetId": "eth-evidence-fixture",
+  "datasetCanonicalContentSha256": "7cbe494cfa6f4041e027c2ea0c6996c83acdc5613901e8bf3629ec8364df54a6",
+  "datasetSourceFileSha256": "aba066f8647e51caf10bda9f3d0a632f10956996b164c28c1a7036ca0b69031b",
+  "datasetMaterializedSha256": "5a96a72b89212131e0d8d29702fd250c4a50e9108539c7fa4bce23011a25f09b",
+  "declaredAt": "2025-12-31T00:00:00.000Z",
+  "implementationCommitSha": "0123456789abcdef0123456789abcdef01234567",
+  "declaredBy": "evidence-pipeline-test",
+  "notes": "Two predeclared non-overlapping engineering windows.",
+  "policy": "rules-basic",
+  "expectedVersions": {
+    "strategyVersion": "v2.1-default",
+    "configurationVersion": "sha256:6e1b9b615226e533aab2ce2cbe357d73149eccc2b65ae417f5a111a4f58e4f49",
+    "costModelVersion": "paper-execution-v1:fee-30bps:slippage-15bps",
+    "costModel": {
+      "feeBps": 30,
+      "paperSlippageBps": 15
+    },
+    "codeVersion": "align-backtesting-v1",
+    "backtestReportSchemaVersion": "1.0.0",
+    "evidenceReportSchemaVersion": "1.0.0"
+  },
+  "windows": [
+    {
+      "windowId": "drawdown-window",
+      "start": "2026-01-01T00:00:00.000Z",
+      "end": "2026-01-04T00:00:00.000Z",
+      "notes": "Falling-price window retained even when unfavorable."
+    },
+    {
+      "windowId": "uptrend-window",
+      "start": "2026-01-06T00:00:00.000Z",
+      "end": "2026-01-09T00:00:00.000Z",
+      "notes": "Fresh isolated state with no warmup from the earlier window."
+    }
+  ]
+}

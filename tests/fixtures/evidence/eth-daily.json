@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "1.0.0",
+  "manifest": {
+    "datasetId": "eth-evidence-fixture",
+    "assetPair": "ETH/USDC",
+    "source": {
+      "kind": "fixture",
+      "name": "Tiny deterministic ETH evidence fixture",
+      "locator": "tests/fixtures/evidence/eth-daily.json",
+      "notes": "Synthetic values for evidence-pipeline engineering tests only."
+    },
+    "acquisitionWindow": {
+      "start": "2026-01-01T00:00:00.000Z",
+      "end": "2026-01-09T00:00:00.000Z"
+    },
+    "intendedRole": "validation",
+    "expectedIntervalSeconds": 86400
+  },
+  "observations": [
+    {
+      "timestamp": "2026-01-01T00:00:00.000Z",
+      "priceUSD": 100
+    },
+    {
+      "timestamp": "2026-01-02T00:00:00.000Z",
+      "priceUSD": 97
+    },
+    {
+      "timestamp": "2026-01-03T00:00:00.000Z",
+      "priceUSD": 94
+    },
+    {
+      "timestamp": "2026-01-04T00:00:00.000Z",
+      "priceUSD": 90
+    },
+    {
+      "timestamp": "2026-01-06T00:00:00.000Z",
+      "priceUSD": 95
+    },
+    {
+      "timestamp": "2026-01-07T00:00:00.000Z",
+      "priceUSD": 100
+    },
+    {
+      "timestamp": "2026-01-08T00:00:00.000Z",
+      "priceUSD": 105
+    },
+    {
+      "timestamp": "2026-01-09T00:00:00.000Z",
+      "priceUSD": 110
+    }
+  ],
+  "gaps": [
+    {
+      "afterTimestamp": "2026-01-04T00:00:00.000Z",
+      "beforeTimestamp": "2026-01-06T00:00:00.000Z",
+      "reason": "Deliberate missing daily fixture observation."
+    }
+  ],
+  "paperExecutions": [
+    {
+      "executionId": "paper-fixture-1",
+      "timestamp": "2026-01-03T00:00:00.000Z",
+      "side": "BUY",
+      "quantityETH": 0.1,
+      "notionalUSD": 9.4,
+      "observedPriceUSD": 94,
+      "executionPriceUSD": 94.141,
+      "feesUSD": 0.0282,
+      "slippageUSD": 0.0141,
+      "sourceReference": "fixture-ledger-row-1"
+    }
+  ]
+}

@@ -71,6 +71,30 @@ jobs:
           path: artifacts/backtest-all.json
           if-no-files-found: error
 
+      - name: Generate evidence fixture artifacts
+        run: |
+          mkdir -p artifacts/evidence
+          npm run --silent evidence:import -- \
+            --input tests/fixtures/evidence/eth-daily.json \
+            --out artifacts/evidence/dataset.json
+          jq --arg sha "$GITHUB_SHA" \
+            '.implementationCommitSha = $sha' \
+            tests/fixtures/evidence/eth-daily-plan.json \
+            > artifacts/evidence/plan.json
+          npm run --silent evidence:evaluate -- \
+            --dataset artifacts/evidence/dataset.json \
+            --plan artifacts/evidence/plan.json \
+            --json-out artifacts/evidence/report.json \
+            --html-out artifacts/evidence/report.html
+
+      - name: Upload evidence fixture artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-2-evidence-fixture-${{ github.sha }}
+          path: artifacts/evidence/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate
 
@@ -80,7 +104,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -106,8 +130,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install PostgreSQL client
-        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+      - name: Install PostgreSQL 17 client
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          curl --fail --silent --show-error \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo tee /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc >/dev/null
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version
 
       - name: Run migration and transactional integration suite
         env:

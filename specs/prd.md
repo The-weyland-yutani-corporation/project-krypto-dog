@@ -12,7 +12,7 @@
 | **v1** | Paper-trading scaffolding: agent loop, guardrails, schema, tools, admin dashboard | ✅ Shipped (tag `spec/v1`) |
 | **v2** | Hardening: admin auth, balance validation, full PostHog/email wiring, env validation, Drizzle consolidation | ⚠️ Code baseline shipped (tag `spec/v2`) -- NOT production-ready. See §14. |
 | **v2.1** | Safety and Correctness: atomic execution, deterministic authorization, non-destructive migrations, cost-basis PnL, owned expiring run leases, dependency remediation | ✅ Implemented and locally verified -- hosted CI and target-environment evidence remain before deployment |
-| **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Active deployment preparation -- target credentials/inventory remain blocked; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
+| **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Active deployment preparation -- clean target inventory passed; migration, backup, disabled smoke, and rollout remain; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
 | **v3** | Live Coinbase AgentKit execution on Base L2, sentiment, advanced orders, scaling | 📋 RFC stub only -- see [`rfcs/0001-v3-live-trading.md`](./rfcs/0001-v3-live-trading.md) |
 
 ---
@@ -350,11 +350,12 @@ ADR `0003-pg-cron-over-vercel-cron.md` records why we chose Supabase `pg_cron` o
   tamper detection, and verified private plus legacy-enum backup restoration.
 - Local paper smoke: [`specs/local-testing.md`](./local-testing.md) covers local Postgres setup, no-LLM route checks, optional live local paper runs, admin checks, daily summary, reset/reseed, and current profitability-testing limits.
 - Deterministic evaluation: `npm run backtest -- --scenario scenarios/dip-recovery.json` replays fixture prices through a no-LLM rules policy with fees, slippage, cooldown, DCA, drawdown, weighted-average cost basis, and cash / buy-and-hold benchmarks.
-- Current local suite: 29 Jest suites / 256 tests. `npm run test:coverage`
+- Current local suite: 30 Jest suites / 279 tests. `npm run test:coverage`
   enforces explicit global and critical-module thresholds.
 - CI runs lint, script/test typecheck, production build, critical coverage,
-  aggregate backtests with an uploaded artifact, production dependency audit,
-  real-PostgreSQL migration/execution tests, and migration drift detection.
+  aggregate backtests and engineering-only evidence artifacts, production
+  dependency audit, real-PostgreSQL migration/execution tests, and migration
+  drift detection.
 
 ---
 
@@ -382,23 +383,26 @@ The following are not goals of this project at any phase:
 
 ## 14. Current baseline and known limitations
 
-The local v2.1 safety core now has 198 passing Jest tests plus real-PostgreSQL
+The local v2.1/v2.2 release candidate now has 279 passing Jest tests plus real-PostgreSQL
 migration, transaction, accounting, lease, and orchestration evidence.
 Deterministic authorization, mandatory stop-loss, exact accounting,
 transactional/idempotent execution, owned expiring leases, structured model
-output, and disabled/shadow/paper modes are implemented.
+output, disabled/shadow/paper modes, additive NULL-safe cron migration, and the
+engineering-only evidence-pipeline foundation are implemented.
 
 Production is still blocked by:
 
-- **Unknown production database state:** deployed credentials are stale, so
-  inventory, cron status, backup, open-position state, and migration history
-  remain unverified. No production mutation has occurred.
+- **Replacement initialization:** the clean PostgreSQL 17 target passed
+  read-only inventory with no application tables, migrations, cron, queued
+  requests, or retained position. The reviewed migration, initialization,
+  baseline backup, and Vault steps remain.
 - **Production smoke/evidence:** Foundry, Coinbase, email, analytics, admin,
   disabled/shadow/paper, cron, backup, and rollback have not been proven on the
   target Vercel/Supabase deployment.
-- **Historical and paper evidence:** the production-aligned backtest publishes
-  aggregate cost-adjusted engineering metrics, but historical walk-forward
-  datasets and the required 30-day production paper window do not exist yet.
+- **Historical and paper evidence:** imported walk-forward reports are
+  deliberately classified engineering-only and cannot satisfy release gates.
+  Real holdout datasets and the required 30-day production paper window do not
+  exist yet.
 - **Synthetic scenario shortfall:** 3 of 8 fixture scenarios beat cash and 0 of
   8 beat both cash and buy-and-hold; these remain engineering tests rather than
   financial evidence.
