@@ -94,4 +94,10 @@ describe("agentic SDLC workflow contracts", () => {
     expect(e2e).toContain('message.includes("[self-heal]")');
     expect(e2e).toContain("selfHealCommits.length <= 2");
   });
+
+  it("allows only trusted factory bots to activate manual code review", () => {
+    expect(codeReview).toContain(
+      'bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]',
+    );
+  });
 });
