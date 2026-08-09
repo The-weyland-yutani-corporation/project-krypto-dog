@@ -395,7 +395,7 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
             pull_number: number,
             per_page: 100,
           }),
-          github.rest.checks.listForRef({
+          github.paginate(github.rest.checks.listForRef, {
             owner,
             repo,
             ref: sha,
@@ -464,9 +464,7 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
       }
 
       const ciFailure = hasFailedCiRun(ciRuns);
-      const reviewFailure = hasFailedReviewCheck(
-        checkRuns.data.check_runs,
-      );
+      const reviewFailure = hasFailedReviewCheck(checkRuns);
       if (!ciFailure && !reviewFailure) {
         continue;
       }

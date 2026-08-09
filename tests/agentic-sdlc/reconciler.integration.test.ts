@@ -192,6 +192,16 @@ function createHarness(options: HarnessOptions = {}) {
       if (method === listCommitStatusesForRef) {
         return options.statusesBySha?.[params.ref ?? ""] ?? [];
       }
+      if (method === listForRef) {
+        return options.checksBySha?.[params.ref ?? ""] ?? [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+        ];
+      }
       throw new Error("Unexpected paginated method");
     },
   );
@@ -219,19 +229,7 @@ function createHarness(options: HarnessOptions = {}) {
     };
   });
 
-  const listForRef = jest.fn(async (params: ApiParams) => ({
-    data: {
-      check_runs:
-        options.checksBySha?.[params.ref ?? ""] ?? [
-          {
-            id: 40,
-            name: "Agentic code review",
-            status: "completed",
-            conclusion: "success",
-          },
-        ],
-    },
-  }));
+  const listForRef = jest.fn();
   const createCommitStatus = jest.fn(async (_params: ApiParams) => ({}));
   const createWorkflowDispatch = jest.fn(
     async (_params: ApiParams) => ({}),
@@ -278,7 +276,9 @@ function createHarness(options: HarnessOptions = {}) {
       approveWorkflowRun,
       createCommitStatus,
       createWorkflowDispatch,
+      listForRef,
       listWorkflowRuns,
+      paginate,
     },
   };
 }
@@ -486,6 +486,46 @@ describe("agentic PR reconciler integration", () => {
       });
     },
   );
+
+  it("paginates check runs before selecting the latest review result", async () => {
+    const fillerChecks = Array.from({ length: 101 }, (_, index) => ({
+      id: index + 1,
+      name: `Unrelated check ${index + 1}`,
+      status: "completed",
+      conclusion: "success",
+    }));
+    const { mocks } = await reconcile({
+      runs: {
+        [runKey("pr-self-heal.lock.yml", "sha-1")]: [],
+      },
+      checksBySha: {
+        "sha-1": [
+          ...fillerChecks,
+          {
+            id: 1000,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "failure",
+          },
+        ],
+      },
+    });
+
+    expect(mocks.paginate).toHaveBeenCalledWith(
+      mocks.listForRef,
+      expect.objectContaining({
+        owner: "VeVarunSharma",
+        repo: "project-krypto-dog",
+        ref: "sha-1",
+        per_page: 100,
+      }),
+    );
+    expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflow_id: "pr-self-heal.lock.yml",
+      }),
+    );
+  });
 
   it("never routes action_required CI or review runs to self-heal", async () => {
     const { mocks } = await reconcile({
