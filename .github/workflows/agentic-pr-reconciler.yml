@@ -1,0 +1,374 @@
+name: Agentic PR Reconciler
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+  workflow_run:
+    workflows: [CI, Code Review, PR Self Heal]
+    types: [completed]
+
+concurrency:
+  group: agentic-pr-reconciler
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+  statuses: write
+
+jobs:
+  reconcile:
+    name: Reconcile agentic pull requests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Reconcile checks, policy, and repair
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const repository = `${owner}/${repo}`;
+            const repositoryLower = repository.toLowerCase();
+            const mergeContext = "Agentic merge policy";
+            const reviewCheckName = "Agentic code review";
+            const autoMergeLabel = "agentic-automerge";
+            const exhaustedLabel = "self-heal-exhausted";
+            const blockedLabel = "blocked";
+            const trustedAgentAuthors = new Set([
+              "github-actions[bot]",
+              "copilot-swe-agent[bot]",
+            ]);
+            const trustedReviewAssociations = new Set([
+              "OWNER",
+              "MEMBER",
+              "COLLABORATOR",
+            ]);
+            const blockingLabels = new Set([
+              blockedLabel,
+              exhaustedLabel,
+              "needs-qa",
+              "security-review",
+              "trading-safety",
+              "ready-for-human-review",
+            ]);
+            const failingConclusions = new Set([
+              "action_required",
+              "cancelled",
+              "failure",
+              "startup_failure",
+              "timed_out",
+            ]);
+            const lowRiskStatuses = new Set(["added", "changed", "modified"]);
+
+            const pullRequests = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: "open",
+              per_page: 100,
+            });
+
+            const listRuns = async (workflowId, headSha) => {
+              try {
+                const response = await github.rest.actions.listWorkflowRuns({
+                  owner,
+                  repo,
+                  workflow_id: workflowId,
+                  head_sha: headSha,
+                  per_page: 100,
+                });
+                return response.data.workflow_runs;
+              } catch (error) {
+                if (error.status === 404) {
+                  core.warning(`Workflow ${workflowId} is not available yet.`);
+                  return [];
+                }
+                throw error;
+              }
+            };
+
+            const dispatch = async (workflowId, ref, inputs = {}) => {
+              core.info(`Dispatching ${workflowId} on ${ref}.`);
+              await github.rest.actions.createWorkflowDispatch({
+                owner,
+                repo,
+                workflow_id: workflowId,
+                ref,
+                inputs,
+              });
+            };
+
+            const listReviews = async (pullNumber) => {
+              try {
+                return await github.paginate(
+                  github.rest.pulls.listReviews,
+                  {
+                    owner,
+                    repo,
+                    pull_number: pullNumber,
+                    per_page: 100,
+                  },
+                );
+              } catch (error) {
+                if (error.status === 403 || error.status === 404) {
+                  core.warning(
+                    `Could not read reviews for PR #${pullNumber}; keeping the merge policy fail-closed.`,
+                  );
+                  return [];
+                }
+                throw error;
+              }
+            };
+
+            const ensureStatus = async (sha, state, description, targetUrl) => {
+              const statuses = await github.paginate(
+                github.rest.repos.listCommitStatusesForRef,
+                {
+                  owner,
+                  repo,
+                  ref: sha,
+                  per_page: 100,
+                },
+              );
+              const current = statuses.find(
+                (status) => status.context === mergeContext,
+              );
+              if (
+                current?.state === state &&
+                current?.description === description
+              ) {
+                return;
+              }
+              await github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha,
+                state,
+                context: mergeContext,
+                description,
+                target_url: targetUrl,
+              });
+            };
+
+            const addLabels = async (pullRequest, labels) => {
+              const present = new Set(
+                pullRequest.labels.map((label) => label.name),
+              );
+              const missing = labels.filter((label) => !present.has(label));
+              if (missing.length === 0) {
+                return;
+              }
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: pullRequest.number,
+                labels: missing,
+              });
+            };
+
+            const isLowRiskPath = (filename) => {
+              if (
+                !/^docs\/.*\.(gif|jpe?g|md|png|txt|webp)$/i.test(filename)
+              ) {
+                return false;
+              }
+              return !/(^|\/)(agentic|auth|backup|database|deploy(?:ment)?|env|guardrails?|incident|migrations?|oncall|operator|policy|production|release|rollback|runbooks?|secrets?|security|trading|workflows?)(\/|[-_.])/i.test(
+                filename,
+              );
+            };
+
+            for (const pullRequest of pullRequests) {
+              try {
+              const number = pullRequest.number;
+              const sha = pullRequest.head.sha;
+              const labels = new Set(
+                pullRequest.labels.map((label) => label.name),
+              );
+              const sameRepository =
+                pullRequest.head.repo?.full_name?.toLowerCase() ===
+                repositoryLower;
+              const trustedAgent =
+                sameRepository &&
+                trustedAgentAuthors.has(pullRequest.user?.login) &&
+                labels.has(autoMergeLabel) &&
+                (pullRequest.title.startsWith("[ai-dev] ") ||
+                  pullRequest.title.startsWith("[docs-sync] "));
+
+              const [files, reviews, commits, checkRuns, ciRuns, reviewRuns] =
+                await Promise.all([
+                  github.paginate(github.rest.pulls.listFiles, {
+                    owner,
+                    repo,
+                    pull_number: number,
+                    per_page: 100,
+                  }),
+                  listReviews(number),
+                  github.paginate(github.rest.pulls.listCommits, {
+                    owner,
+                    repo,
+                    pull_number: number,
+                    per_page: 100,
+                  }),
+                  github.rest.checks.listForRef({
+                    owner,
+                    repo,
+                    ref: sha,
+                    per_page: 100,
+                  }),
+                  listRuns("ci.yml", sha),
+                  listRuns("code-review.lock.yml", sha),
+                ]);
+
+              const latestDecisiveReview = new Map();
+              for (const review of reviews) {
+                if (review.state === "COMMENTED") {
+                  continue;
+                }
+                latestDecisiveReview.set(review.user?.login, review);
+              }
+              const isCurrentTrustedHumanReview = (review) =>
+                review.commit_id === sha &&
+                review.user?.type === "User" &&
+                review.user?.login !== pullRequest.user?.login &&
+                trustedReviewAssociations.has(review.author_association);
+              const hasCurrentHumanApproval = [
+                ...latestDecisiveReview.values(),
+              ].some(
+                (review) =>
+                  review.state === "APPROVED" &&
+                  isCurrentTrustedHumanReview(review),
+              );
+              const hasCurrentHumanChangesRequested = [
+                ...latestDecisiveReview.values(),
+              ].some(
+                (review) =>
+                  review.state === "CHANGES_REQUESTED" &&
+                  isCurrentTrustedHumanReview(review),
+              );
+
+              const lowRisk =
+                files.length > 0 &&
+                files.every(
+                  (file) =>
+                    lowRiskStatuses.has(file.status) &&
+                    isLowRiskPath(file.filename) &&
+                    (!file.previous_filename ||
+                      isLowRiskPath(file.previous_filename)),
+                );
+              const hasBlockingLabel = [...blockingLabels].some((label) =>
+                labels.has(label),
+              ) || (
+                labels.has("docs-sync") &&
+                !pullRequest.title.startsWith("[docs-sync] ")
+              );
+
+              let policyState = "pending";
+              let policyDescription = "A current human approval is required";
+              if (pullRequest.draft) {
+                policyDescription = "Draft pull requests cannot merge";
+              } else if (hasCurrentHumanChangesRequested) {
+                policyDescription =
+                  "A current human review requests changes";
+              } else if (hasCurrentHumanApproval) {
+                policyState = "success";
+                policyDescription = "Current human approval satisfies policy";
+              } else if (trustedAgent && lowRisk && !hasBlockingLabel) {
+                policyState = "success";
+                policyDescription =
+                  "Allowlisted low-risk agent pull request";
+              } else if (trustedAgent && hasBlockingLabel) {
+                policyDescription =
+                  "A blocking review label requires human approval";
+              } else if (trustedAgent) {
+                policyDescription =
+                  "Non-allowlisted changes require human approval";
+              }
+
+              await ensureStatus(
+                sha,
+                policyState,
+                policyDescription,
+                pullRequest.html_url,
+              );
+
+              if (!sameRepository || pullRequest.draft) {
+                continue;
+              }
+
+              if (ciRuns.length === 0) {
+                await dispatch("ci.yml", pullRequest.head.ref);
+              }
+
+              if (reviewRuns.length === 0) {
+                await dispatch("code-review.lock.yml", pullRequest.head.ref, {
+                  pr: String(number),
+                });
+              }
+
+              if (!trustedAgent || hasBlockingLabel) {
+                continue;
+              }
+
+              const reviewCheck = checkRuns.data.check_runs
+                .filter((check) => check.name === reviewCheckName)
+                .sort((left, right) => right.id - left.id)[0];
+              const ciFailure = ciRuns.find(
+                (run) =>
+                  run.status === "completed" &&
+                  failingConclusions.has(run.conclusion),
+              );
+              const reviewFailure =
+                reviewCheck?.status === "completed" &&
+                !["neutral", "skipped", "success"].includes(
+                  reviewCheck.conclusion,
+                );
+              if (!ciFailure && !reviewFailure) {
+                continue;
+              }
+
+              const repairAttempts = commits.filter((commit) =>
+                commit.commit.message.includes("[self-heal]"),
+              ).length;
+              if (repairAttempts >= 2) {
+                await addLabels(pullRequest, [
+                  exhaustedLabel,
+                  blockedLabel,
+                ]);
+                continue;
+              }
+
+              const healRuns = await listRuns(
+                "pr-self-heal.lock.yml",
+                sha,
+              );
+              if (healRuns.length === 0) {
+                await dispatch(
+                  "pr-self-heal.lock.yml",
+                  pullRequest.head.ref,
+                  {
+                    pr: String(number),
+                  },
+                );
+                continue;
+              }
+
+              if (healRuns[0].status === "completed") {
+                await addLabels(pullRequest, [
+                  exhaustedLabel,
+                  blockedLabel,
+                ]);
+              }
+              } catch (error) {
+                core.warning(
+                  `Failed to reconcile PR #${pullRequest.number}: ${error.message}`,
+                );
+              }
+            }

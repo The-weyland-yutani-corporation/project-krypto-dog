@@ -19,6 +19,7 @@ safe-outputs:
   create-issue:
     title-prefix: "[factory-status] "
     labels: [agentic-factory, report]
+    allowed-labels: [agentic-factory, report]
     max: 1
     close-older-issues: true
   noop:
