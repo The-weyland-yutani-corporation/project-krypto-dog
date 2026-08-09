@@ -98,5 +98,5 @@ npm test -- --ci
 - Live execution requires a separate RFC, architecture review, security review, trading-safety review, and human approval.
 - Changes to trading, guardrails, auth, secrets, workflows, tests, database state, deployment procedure, or operator behavior require current human approval.
 - The required `Agentic merge policy` status enforces the low-risk allowlist independently of agent output and labels.
-- Self-heal is limited to two repair commits and cannot edit protected workflow or dependency files.
+- Self-heal is limited to two repair commits and structurally restricted to the same non-sensitive documentation scope eligible for autonomous merge.
 - Opportunity discovery creates software tickets and experiments behind rubber-duck review; it does not provide trading advice, execute trades, or bypass safety review.

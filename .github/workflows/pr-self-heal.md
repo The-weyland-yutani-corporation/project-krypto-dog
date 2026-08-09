@@ -64,14 +64,28 @@ safe-outputs:
     fallback-as-pull-request: false
     commit-title-suffix: "[self-heal]"
     allowed-files:
-      - "src/**"
-      - "tests/**"
-      - "scripts/**"
-      - "drizzle/**"
-      - "supabase/migrations/**"
-      - "specs/**"
       - "docs/**"
-      - "public/**"
+    excluded-files:
+      - "docs/**/*agentic*"
+      - "docs/**/*auth*"
+      - "docs/**/*backup*"
+      - "docs/**/*database*"
+      - "docs/**/*deploy*"
+      - "docs/**/*env*"
+      - "docs/**/*guardrail*"
+      - "docs/**/*incident*"
+      - "docs/**/*migration*"
+      - "docs/**/*oncall*"
+      - "docs/**/*operator*"
+      - "docs/**/*policy*"
+      - "docs/**/*production*"
+      - "docs/**/*release*"
+      - "docs/**/*rollback*"
+      - "docs/**/*runbook*"
+      - "docs/**/*secret*"
+      - "docs/**/*security*"
+      - "docs/**/*trading*"
+      - "docs/**/*workflow*"
     protected-files: blocked
     max-patch-size: 2048
   add-comment:
@@ -98,6 +112,7 @@ Repair failed checks on pull request `${{ github.event.inputs.pr }}`.
 ## Eligibility
 
 - Confirm the PR is open, comes from this repository, has both `agentic-factory` and `agentic-automerge`, and has an `[ai-dev] ` or `[docs-sync] ` title.
+- Confirm every changed file is an added or modified non-sensitive `docs/**` file accepted by the repository merge-policy allowlist. Do not repair code, tests, config, migrations, specs, deployment docs, workflow docs, or policy docs.
 - Do not repair a PR carrying `blocked`, `self-heal-exhausted`, `needs-qa`, `security-review`, `trading-safety`, or `ready-for-human-review`. A `docs-sync` label is eligible only on a `[docs-sync] ` PR.
 - Count commits containing `[self-heal]`. If there are already two, add `self-heal-exhausted` and `blocked`, comment with the remaining failure, and do not push.
 - If any eligibility check fails, use `noop`.
@@ -106,7 +121,7 @@ Repair failed checks on pull request `${{ github.event.inputs.pr }}`.
 
 1. Inspect the current PR head, failed CI jobs and logs, the `Agentic code review` check, review comments, and changed files.
 2. Check out the exact PR head branch before editing.
-3. Fix only the demonstrated root cause. Do not expand scope, weaken tests, remove assertions, bypass required checks, or relax trading, guardrail, mutex, auth, CSRF, journaling, paper/live, database, deployment, or workflow protections.
+3. Fix only the demonstrated documentation root cause. Do not rename or delete files, expand scope, weaken tests, remove assertions, bypass required checks, or relax trading, guardrail, mutex, auth, CSRF, journaling, paper/live, database, deployment, or workflow protections.
 4. Run the narrowest relevant validation. Use the repository baseline when the failure spans multiple areas.
 5. Push at most one focused repair commit to the triggering PR branch.
 6. If a safe repair is not possible, add `blocked` and `ready-for-human-review` and explain the blocker in one PR comment.

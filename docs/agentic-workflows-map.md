@@ -270,7 +270,7 @@ The factory is designed to automate work without letting the agent directly muta
 - **Safe outputs:** comments, labels, issues, and PRs are applied by separate safe-output jobs.
 - **Native auto-merge:** implementation/docs PRs enroll in auto-merge, but branch protection still requires CI, agentic review, conversation resolution, and the deterministic merge-policy status.
 - **Autonomous low-risk boundary:** only non-sensitive docs and static image assets can pass merge policy without a current human approval.
-- **Bounded self-heal:** failed eligible PRs receive at most two focused repair commits before being blocked.
+- **Bounded self-heal:** failed eligible low-risk docs PRs receive at most two focused repair commits before being blocked; production code, tests, migrations, specs, workflows, and sensitive documentation are excluded structurally.
 - **Allowed files:** implementation PRs are constrained to app, tests, scripts, schema/migrations, specs, and config files that are safe for the workflow to touch.
 - **Protected files:** protected file changes fall back to issues instead of being silently committed.
 - **Specialist reviews:** QA, security, docs, and trading safety are label-triggered to control cost/noise; `code-review` can add those labels when needed.

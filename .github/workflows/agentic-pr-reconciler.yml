@@ -315,7 +315,7 @@ jobs:
                 });
               }
 
-              if (!trustedAgent || hasBlockingLabel) {
+              if (!trustedAgent || hasBlockingLabel || !lowRisk) {
                 continue;
               }
 
@@ -337,6 +337,7 @@ jobs:
               }
 
               const repairAttempts = commits.filter((commit) =>
+                trustedAgentAuthors.has(commit.author?.login) &&
                 commit.commit.message.includes("[self-heal]"),
               ).length;
               if (repairAttempts >= 2) {
