@@ -93,6 +93,55 @@ npm run build
 npm test -- --ci
 ```
 
+## Agentic SDLC test suite
+
+Run the deterministic unit, mocked-Octokit integration, and workflow-contract
+tests locally:
+
+```bash
+npm run test:agentic-sdlc
+```
+
+These tests execute the production reconciler module used by
+`agentic-pr-reconciler.yml`. They cover trusted identity and same-repository
+checks, the docs allowlist and sensitive-name denylist, current-head review
+state, blocking labels, held/missing workflow runs, isolated API failures, and
+the two-commit self-heal cap. Workflow-contract tests keep the reconciler on a
+trusted default-branch checkout and keep the E2E workflow manual-only.
+
+After changing a GH-AW source or compiled workflow, also run:
+
+```bash
+gh aw compile --strict
+```
+
+### Manual end-to-end canary
+
+The traditional `Agentic SDLC E2E` workflow is intentionally
+`workflow_dispatch`-only. Run either mode from `main`:
+
+```bash
+gh workflow run agentic-sdlc-e2e.yml --ref main -f mode=happy-path
+gh workflow run agentic-sdlc-e2e.yml --ref main -f mode=self-heal
+```
+
+- `happy-path` creates a same-repository `github-actions[bot]` PR that changes
+  only `docs/e2e/factory-heartbeat.md`, enrolls it with `agentic-factory`,
+  `docs-sync`, and `agentic-automerge`, enables native auto-merge, invokes the
+  reconciler, and requires all four protected contexts to pass before merge.
+- `self-heal` adds the exact deterministic E2E marker. Code review must fail
+  the initial head, `pr-self-heal` must remove only that marker in a
+  `[self-heal]` commit, and all checks must pass on the repaired head before
+  native auto-merge.
+
+A successful run updates the stable heartbeat file on `main`, providing
+auditable evidence without accumulating files. Cleanup deletes the canary
+branch after success and closes any still-open PR before deleting the branch
+on failure. A blocked label, missing required context, missing repair evidence,
+or non-merged PR fails the run. The canary depends on the repository settings
+listed above and never touches trading, auth, database, deployment, policy, or
+workflow files.
+
 ## Safety invariants
 
 - v2 remains paper trading only.
