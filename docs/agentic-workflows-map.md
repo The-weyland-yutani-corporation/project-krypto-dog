@@ -52,6 +52,7 @@ flowchart TD
     doctor["ci-doctor<br/>CI incident issue/comment"]
     reconcile["agentic-pr-reconciler<br/>checks / dispatch / policy"]
     heal["pr-self-heal<br/>max 2 repair commits"]
+    e2e["agentic-sdlc-e2e<br/>manual docs canary"]
   end
 
   subgraph Safety["Safety boundaries"]
@@ -72,6 +73,7 @@ flowchart TD
   manual --> em
   manual --> impl
   manual --> rel
+  manual --> e2e
   slash --> discover
   slash --> research
   slash --> duck
@@ -111,6 +113,7 @@ flowchart TD
   code --> trade
   code --> docs
   draftpr --> reconcile
+  e2e --> reconcile
   reconcile --> heal
   heal --> draftpr
   code --> policy
@@ -143,7 +146,7 @@ flowchart TD
 
 This is why workflow markdown is the source of truth, while lock files are committed generated artifacts for transparency.
 
-`agentic-pr-reconciler.yml` is intentionally a traditional deterministic Actions workflow: it performs policy checks and dispatch only, and never executes pull-request code.
+`agentic-pr-reconciler.yml` is intentionally a traditional deterministic Actions workflow: it performs policy checks and dispatch only, loads its tested implementation from the trusted default branch, and never executes pull-request code. `agentic-sdlc-e2e.yml` is a second traditional workflow; it is manual-only and creates a constrained same-repository docs canary to verify the complete native auto-merge path.
 
 ## SDLC lifecycle
 
@@ -164,6 +167,7 @@ This is why workflow markdown is the source of truth, while lock files are commi
 | CI incident | Failed/cancelled/timed-out `CI` workflow run | `ci-doctor` | CI Doctor | Incident issue/comment |
 | PR reconciliation | PR/review/workflow events, 5-minute schedule | `agentic-pr-reconciler` | Deterministic Actions gate | Dispatch missing checks, publish merge policy, cap repair attempts |
 | PR self-heal | Reconciler dispatch after a failed required check | `pr-self-heal` | Project Krypto Developer | One focused repair commit or blocked handoff |
+| Factory E2E | Manual `happy-path` or `self-heal` dispatch | `agentic-sdlc-e2e` | Deterministic Actions canary | Required-context, repair, native auto-merge, and cleanup evidence |
 | Status | Daily schedule/manual | `daily-repo-status` | Repo Status Reporter | Daily factory status issue |
 | Governance | Weekly schedule/manual | `agentic-governance` | Governance Reporter | Cost/outcome/noise report issue |
 
@@ -194,6 +198,7 @@ This is why workflow markdown is the source of truth, while lock files are commi
 | PR high-risk paths | `trading-safety-review` | Automatic for agent, guardrail, DB, migration, and RFC paths. PR label events are still path-scoped. |
 | CI workflow failure | `ci-doctor` | Watches `CI` on `main` and `develop/**`. |
 | PR/check/review event or 5-minute schedule | `agentic-pr-reconciler` | Restores missed CI/review dispatches, publishes merge policy, and dispatches bounded repair. |
+| Manual factory E2E | `agentic-sdlc-e2e` | Updates one stable docs heartbeat through the happy path or deterministic self-heal path; never runs on a schedule or PR event. |
 | Daily schedule | `daily-repo-status` | Creates or replaces daily factory status issue. |
 | Weekly schedule | `agentic-governance` | Reports workflow health, cost, outcomes, and noise. |
 
@@ -235,6 +240,7 @@ QA and docs-sync intentionally do not have slash commands. They are label-trigge
 | `agentic-governance` | Built-in prompt | `schedule: weekly on monday`, manual | `create-issue`, `noop` |
 | `pr-self-heal` | `project-krypto-dev.md` | Reconciler `workflow_dispatch` | `push-to-pull-request-branch`, `add-comment`, `add-labels`, `noop` |
 | `agentic-pr-reconciler` | Deterministic GitHub Script | PR/review/workflow events, 5-minute schedule | Commit status, workflow dispatch, exhausted-repair labels |
+| `agentic-sdlc-e2e` | Deterministic GitHub Script | Manual only | Constrained docs canary PR, native auto-merge enrollment, assertions, cleanup |
 
 ## Label state model
 
@@ -325,6 +331,21 @@ GitHub Actions must be allowed to create pull requests while default workflow pe
 2. `pr-self-heal` inspects the evidence and may push one focused repair commit.
 3. CI and review rerun on the new head.
 4. After two repair commits, or one no-change repair run, the PR is labeled `self-heal-exhausted` and `blocked`.
+
+### Manual factory E2E
+
+1. An operator dispatches `agentic-sdlc-e2e.yml` from `main` in
+   `happy-path` or `self-heal` mode.
+2. The workflow creates an enrolled `github-actions[bot]` PR that changes only
+   `docs/e2e/factory-heartbeat.md`, enables native auto-merge, and invokes the
+   reconciler.
+3. It requires successful `Quality and evidence gates`,
+   `PostgreSQL migrations and execution`, `Agentic code review`, and
+   `Agentic merge policy` contexts on the current head.
+4. Self-heal mode additionally requires an initial review failure, a
+   `[self-heal]` commit, and removal of the deterministic marker.
+5. Success leaves one updated heartbeat on `main`; cleanup deletes the branch,
+   and failure also closes any open canary PR.
 
 ### Operational reporting
 

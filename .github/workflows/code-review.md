@@ -1,6 +1,7 @@
 ---
 description: High-signal automated PR review for correctness and maintainability.
 on:
+  bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]
   workflow_dispatch:
     inputs:
       pr:
@@ -52,6 +53,7 @@ Review the PR for real defects only.
 - Inspect the PR diff, changed files, tests, and CI status.
 - Resolve the PR from the pull request event or the `pr` workflow-dispatch input.
 - For manual dispatch, verify the workflow ref is the target PR head and include the PR number as `item_number` in comments or labels.
+- Treat the exact marker `<!-- agentic-e2e:self-heal -->` in `docs/e2e/factory-heartbeat.md` as a deterministic required fix: create a failing `Agentic code review` check, ask for that marker to be removed, and do not add a specialist label for this known canary. After the marker is absent, review the file normally.
 - Report only correctness, reliability, maintainability, or product-behavior issues that matter.
 - For frontend/admin/chart changes, check that the PR follows root `DESIGN.md`, uses shadcn/ui + Tailwind primitives, and avoids default unstyled chart output.
 - Do not comment on style or formatting unless it causes a real defect.
