@@ -127,8 +127,8 @@ gh workflow run agentic-sdlc-e2e.yml --ref main -f mode=self-heal
 
 - `happy-path` creates a same-repository `github-actions[bot]` PR that changes
   only `docs/e2e/factory-heartbeat.md`, enrolls it with `agentic-factory`,
-  `docs-sync`, and `agentic-automerge`, enables native auto-merge, invokes the
-  reconciler, and requires all four protected contexts to pass before merge.
+  `docs-sync`, and `agentic-automerge`, invokes the reconciler, verifies all
+  four protected contexts, and only then enables native auto-merge.
 - `self-heal` adds the exact deterministic E2E marker. Code review must fail
   the initial head, `pr-self-heal` must remove only that marker in a
   `[self-heal]` commit, and all checks must pass on the repaired head before
