@@ -80,6 +80,7 @@ The autonomous path is fail-closed unless the repository is configured with:
 - required conversation resolution and admin enforcement enabled
 - force pushes and protected-branch deletion disabled
 - default Actions workflow permissions set to read
+- Actions allowed to create pull requests; agent workflows still cannot approve reviews because no approval safe output is configured
 
 ## Validation baseline
 
