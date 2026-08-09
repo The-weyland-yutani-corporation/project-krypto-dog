@@ -71,9 +71,13 @@ describe("agentic SDLC workflow contracts", () => {
 
   it("asserts merge and always cleans up the branch and failed PR", () => {
     expect(e2e).toContain("pull.merged_at");
-    expect(e2e).toContain("contextsPrecededMerge");
+    expect(e2e).toContain("readyForAutoMerge");
+    expect(e2e).toContain("autoMergeEnabledAt");
     expect(e2e).toContain(
-      "Date.parse(mergePolicy.updated_at) <= mergedAt",
+      "merged before required contexts were verified",
+    );
+    expect(e2e.indexOf("readyForAutoMerge")).toBeLessThan(
+      e2e.indexOf("enablePullRequestAutoMerge"),
     );
     expect(e2e).toContain("if: always()");
     expect(e2e).toContain(

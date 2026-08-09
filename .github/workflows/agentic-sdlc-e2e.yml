@@ -147,7 +147,7 @@ jobs:
             });
             core.setOutput("pr", String(pull.number));
 
-      - name: Enroll canary in native auto-merge
+      - name: Enroll canary for reconciliation
         uses: actions/github-script@v9
         env:
           PR_NUMBER: ${{ steps.create.outputs.pr }}
@@ -166,24 +166,6 @@ jobs:
                 "agentic-automerge",
               ],
             });
-            const { data: pull } = await github.rest.pulls.get({
-              owner,
-              repo,
-              pull_number: pullNumber,
-            });
-            await github.graphql(
-              `mutation EnableAutoMerge($pullRequestId: ID!) {
-                enablePullRequestAutoMerge(
-                  input: {
-                    pullRequestId: $pullRequestId
-                    mergeMethod: SQUASH
-                  }
-                ) {
-                  pullRequest { number }
-                }
-              }`,
-              { pullRequestId: pull.node_id },
-            );
 
       - name: Invoke reconciler
         id: dispatch
@@ -262,6 +244,8 @@ jobs:
             ];
             const deadline = Date.now() + 75 * 60 * 1000;
             let previousSummary = "";
+            let verifiedHead = "";
+            let autoMergeEnabledAt = null;
 
             const latestByName = (checks, name) =>
               checks
@@ -276,6 +260,32 @@ jobs:
               });
               if (pull.state === "closed" && !pull.merged_at) {
                 throw new Error(`Canary PR #${pullNumber} closed without merging.`);
+              }
+              if (pull.merged_at) {
+                if (!autoMergeEnabledAt) {
+                  throw new Error(
+                    `Canary PR #${pullNumber} merged before E2E enabled auto-merge.`,
+                  );
+                }
+                if (pull.head.sha !== verifiedHead) {
+                  throw new Error(
+                    `Canary PR #${pullNumber} changed head after context verification.`,
+                  );
+                }
+                if (Date.parse(pull.merged_at) < autoMergeEnabledAt) {
+                  throw new Error(
+                    `Canary PR #${pullNumber} merged before required contexts were verified.`,
+                  );
+                }
+                core.info(
+                  `Canary PR #${pullNumber} passed all contexts and merged.`,
+                );
+                return;
+              }
+              if (autoMergeEnabledAt && pull.head.sha !== verifiedHead) {
+                throw new Error(
+                  `Canary PR #${pullNumber} changed head after auto-merge was enabled.`,
+                );
               }
 
               const [checkResponse, statuses, commits, files] =
@@ -348,24 +358,6 @@ jobs:
                   trustedAgents.has(commit.author?.login) &&
                   commit.commit.message.includes("[self-heal]"),
               );
-              const mergedAt = pull.merged_at
-                ? Date.parse(pull.merged_at)
-                : null;
-              const contextsPrecededMerge =
-                mergedAt === null ||
-                (requiredChecks.every((name) => {
-                  const completedAt = latestByName(
-                    checks,
-                    name,
-                  )?.completed_at;
-                  return (
-                    typeof completedAt === "string" &&
-                    Date.parse(completedAt) <= mergedAt
-                  );
-                }) &&
-                  typeof mergePolicy?.updated_at === "string" &&
-                  Date.parse(mergePolicy.updated_at) <= mergedAt);
-
               let repairVerified = mode === "happy-path";
               let initialReviewFailed = mode === "happy-path";
               if (mode === "self-heal") {
@@ -407,6 +399,32 @@ jobs:
                   "Happy-path canary unexpectedly received a self-heal commit.",
                 );
               }
+              const readyForAutoMerge =
+                allContextsPass &&
+                initialReviewFailed &&
+                repairVerified;
+
+              if (readyForAutoMerge && !autoMergeEnabledAt) {
+                verifiedHead = pull.head.sha;
+                autoMergeEnabledAt =
+                  Math.floor(Date.now() / 1000) * 1000;
+                await github.graphql(
+                  `mutation EnableAutoMerge($pullRequestId: ID!) {
+                    enablePullRequestAutoMerge(
+                      input: {
+                        pullRequestId: $pullRequestId
+                        mergeMethod: SQUASH
+                      }
+                    ) {
+                      pullRequest { number }
+                    }
+                  }`,
+                  { pullRequestId: pull.node_id },
+                );
+                core.info(
+                  `Verified all required contexts on ${verifiedHead}; enabled native auto-merge.`,
+                );
+              }
 
               const summary = JSON.stringify({
                 head: pull.head.sha,
@@ -415,25 +433,11 @@ jobs:
                 initialReviewFailed,
                 repairVerified,
                 selfHealCommits: selfHealCommits.length,
-                contextsPrecededMerge,
-                merged: Boolean(pull.merged_at),
+                autoMergeEnabled: Boolean(autoMergeEnabledAt),
               });
               if (summary !== previousSummary) {
                 core.info(summary);
                 previousSummary = summary;
-              }
-
-              if (
-                allContextsPass &&
-                initialReviewFailed &&
-                repairVerified &&
-                contextsPrecededMerge &&
-                pull.merged_at
-              ) {
-                core.info(
-                  `Canary PR #${pullNumber} passed all contexts and merged.`,
-                );
-                return;
               }
 
               const labels = new Set(
