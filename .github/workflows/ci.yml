@@ -62,6 +62,9 @@ jobs:
           ADMIN_SESSION_SECRET: stub
         run: npm run build
 
+      - name: Test agentic SDLC automation
+        run: npm run test:agentic-sdlc
+
       - name: Test critical coverage
         run: npm run test:coverage
 
