@@ -14,7 +14,7 @@ on:
 
 concurrency:
   group: agentic-pr-reconciler
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   actions: write
@@ -85,7 +85,9 @@ jobs:
                   head_sha: headSha,
                   per_page: 100,
                 });
-                return response.data.workflow_runs;
+                return response.data.workflow_runs.sort(
+                  (left, right) => right.id - left.id,
+                );
               } catch (error) {
                 if (error.status === 404) {
                   core.warning(`Workflow ${workflowId} is not available yet.`);
