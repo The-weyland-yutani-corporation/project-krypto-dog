@@ -61,7 +61,6 @@ jobs:
               "ready-for-human-review",
             ]);
             const failingConclusions = new Set([
-              "action_required",
               "cancelled",
               "failure",
               "startup_failure",
@@ -105,6 +104,15 @@ jobs:
                 workflow_id: workflowId,
                 ref,
                 inputs,
+              });
+            };
+
+            const approveHeldRun = async (run) => {
+              core.info(`Approving held ${run.name} run ${run.id}.`);
+              await github.rest.actions.approveWorkflowRun({
+                owner,
+                repo,
+                run_id: run.id,
               });
             };
 
@@ -305,17 +313,38 @@ jobs:
                 continue;
               }
 
-              if (ciRuns.length === 0) {
+              const ciNeedsDispatch = ciRuns.length === 0;
+              const reviewNeedsDispatch = reviewRuns.length === 0;
+              const ciHeld =
+                ciRuns[0]?.conclusion === "action_required";
+              const reviewHeld =
+                reviewRuns[0]?.conclusion === "action_required";
+              const reviewShouldDispatch =
+                reviewNeedsDispatch || (trustedAgent && reviewHeld);
+
+              if (ciNeedsDispatch) {
                 await dispatch("ci.yml", pullRequest.head.ref);
               }
 
-              if (reviewRuns.length === 0) {
+              if (reviewShouldDispatch) {
                 await dispatch("code-review.lock.yml", pullRequest.head.ref, {
                   pr: String(number),
                 });
               }
 
-              if (!trustedAgent || hasBlockingLabel || !lowRisk) {
+              if (trustedAgent && ciHeld) {
+                await approveHeldRun(ciRuns[0]);
+              }
+
+              if (
+                ciNeedsDispatch ||
+                reviewShouldDispatch ||
+                ciHeld ||
+                reviewHeld ||
+                !trustedAgent ||
+                hasBlockingLabel ||
+                !lowRisk
+              ) {
                 continue;
               }
 

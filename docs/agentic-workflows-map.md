@@ -282,6 +282,8 @@ The factory is designed to automate work without letting the agent directly muta
 
 Required repository configuration: native auto-merge enabled; strict required checks for both CI jobs, `Agentic code review`, and `Agentic merge policy`; zero unconditional approving reviews; required conversation resolution and admin enforcement enabled; force pushes and protected-branch deletion disabled. Conditional current-head human approval is enforced by `Agentic merge policy`.
 
+GitHub Actions must be allowed to create pull requests while default workflow permissions remain read-only. For trusted enrolled same-repository agent PRs, held CI runs are approved and held agentic-review runs are replaced by a PR-head manual review dispatch; neither condition is treated as a code failure or sent to self-heal.
+
 ## Typical paths
 
 ### Feature or bug

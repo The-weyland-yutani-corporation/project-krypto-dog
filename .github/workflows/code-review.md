@@ -51,12 +51,12 @@ Review the PR for real defects only.
 
 - Inspect the PR diff, changed files, tests, and CI status.
 - Resolve the PR from the pull request event or the `pr` workflow-dispatch input.
-- For manual dispatch, verify the workflow ref is the target PR head before creating the check and target all PR comments/labels to that PR number.
+- For manual dispatch, verify the workflow ref is the target PR head and include the PR number as `item_number` in comments or labels.
 - Report only correctness, reliability, maintainability, or product-behavior issues that matter.
 - For frontend/admin/chart changes, check that the PR follows root `DESIGN.md`, uses shadcn/ui + Tailwind primitives, and avoids default unstyled chart output.
 - Do not comment on style or formatting unless it causes a real defect.
 - Use `add-labels` to escalate trading, auth/security, QA, or docs/spec concerns to specialized review labels.
-- Always create exactly one `Agentic code review` check on the reviewed head SHA.
+- Always create exactly one `Agentic code review` check on the target PR's current head SHA.
 - Set the check to `success` only when there are no required fixes and no specialist escalation is needed.
 - Set the check to `failure` for any required fix, unresolved correctness concern, or specialist escalation.
 

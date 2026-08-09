@@ -54,6 +54,11 @@ max-daily-ai-credits: 3000
 
 Check whether docs and specs need updates.
 
+## Context
+
+- For manual runs, use this target exactly: `${{ github.event.inputs.target }}`.
+- For issue or PR label events, use the triggering item.
+
 ## Task
 
 - Inspect the target issue or PR.
