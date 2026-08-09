@@ -1,8 +1,7 @@
 # Agentic factory E2E heartbeat
 
-This stable canary is updated only by successful manual runs of the
-`Agentic SDLC E2E` workflow. Each run replaces this file rather than creating
-additional canary files.
+This stable canary is updated by the manual Agentic SDLC E2E workflow.
 
-- Baseline: test suite installation
-- Mode: `not-run`
+- Last successful candidate: [run 31334764048](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31334764048)
+- Mode: `happy-path`
+- Requested at: `2026-08-09T20:38:36.226Z`
