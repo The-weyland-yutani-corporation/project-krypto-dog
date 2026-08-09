@@ -1,5 +1,5 @@
 ---
-description: Draft-PR implementation workflow for ready tickets.
+description: Auto-merge-enabled implementation workflow for ready tickets.
 on:
   workflow_dispatch:
     inputs:
@@ -49,8 +49,9 @@ network:
 safe-outputs:
   create-pull-request:
     title-prefix: "[ai-dev] "
-    labels: [agentic-factory, needs-ai-review]
-    draft: true
+    labels: [agentic-factory, needs-ai-review, agentic-automerge]
+    draft: false
+    auto-merge: true
     max: 1
     allowed-files:
       - "src/**"
@@ -82,7 +83,7 @@ timeout-minutes: 30
 
 # Implement Ticket
 
-Implement a ready issue and open a draft PR.
+Implement a ready issue and open an auto-merge-enabled PR.
 
 ## Task
 
@@ -93,7 +94,9 @@ Implement a ready issue and open a draft PR.
 - For frontend/admin/chart work, read `DESIGN.md` and use shadcn/ui + Tailwind. Use EvilCharts-inspired Recharts components for charts/graphs.
 - If the task unexpectedly requires dependency, README, workflow, agent, or skill changes outside the requested scope, create a blocked/follow-up issue instead of expanding silently.
 - Run the narrowest relevant validation, escalating to the baseline commands when appropriate.
-- Open one draft PR with a concise description, validation performed, risks, and linked issue.
+- Open one PR with a concise description, validation performed, risks, and linked issue.
+- Native auto-merge must remain enabled. Required CI, agentic review, conversation resolution, and merge-policy checks decide whether it can merge.
+- Never describe a code, test, config, migration, trading, auth, database, deployment, workflow, or operator-console change as low risk. The deterministic merge policy requires human approval for those paths.
 
 ## Safe outputs
 
