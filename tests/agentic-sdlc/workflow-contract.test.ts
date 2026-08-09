@@ -72,6 +72,7 @@ describe("agentic SDLC workflow contracts", () => {
   it("asserts merge and always cleans up the branch and failed PR", () => {
     expect(e2e).toContain("pull.merged_at");
     expect(e2e).toContain("readyForAutoMerge");
+    expect(e2e).toContain("headIsStable");
     expect(e2e).toContain("autoMergeEnabledAt");
     expect(e2e).toContain(
       "merged before required contexts were verified",
@@ -79,6 +80,10 @@ describe("agentic SDLC workflow contracts", () => {
     expect(e2e.indexOf("readyForAutoMerge")).toBeLessThan(
       e2e.indexOf("enablePullRequestAutoMerge"),
     );
+    expect(e2e.indexOf('state: "pending"')).toBeLessThan(
+      e2e.indexOf("enablePullRequestAutoMerge"),
+    );
+    expect(e2e).toContain("statuses: write");
     expect(e2e).toContain("if: always()");
     expect(e2e).toContain(
       "CANARY_BRANCH: agentic-e2e/${{ github.run_id }}-${{ github.run_attempt }}",
