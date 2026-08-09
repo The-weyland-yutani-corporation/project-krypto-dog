@@ -22,7 +22,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
-  statuses: read
+  statuses: write
 
 jobs:
   canary:
@@ -227,6 +227,7 @@ jobs:
       - name: Assert required contexts, repair, and merge
         uses: actions/github-script@v9
         env:
+          BASE_BRANCH: ${{ steps.create.outputs.base_branch }}
           INITIAL_SHA: ${{ steps.create.outputs.initial_sha }}
           MODE: ${{ inputs.mode }}
           PR_NUMBER: ${{ steps.create.outputs.pr }}
@@ -349,6 +350,16 @@ jobs:
                     latestByName(checks, name)?.status === "completed" &&
                     latestByName(checks, name)?.conclusion === "success",
                 ) && mergePolicy?.state === "success";
+              const passingConclusions = new Set([
+                "neutral",
+                "skipped",
+                "success",
+              ]);
+              const headIsStable = checks.every(
+                (check) =>
+                  check.status === "completed" &&
+                  passingConclusions.has(check.conclusion),
+              );
               const trustedAgents = new Set([
                 "github-actions[bot]",
                 "copilot-swe-agent[bot]",
@@ -402,25 +413,69 @@ jobs:
               const readyForAutoMerge =
                 allContextsPass &&
                 initialReviewFailed &&
-                repairVerified;
+                repairVerified &&
+                headIsStable;
 
               if (readyForAutoMerge && !autoMergeEnabledAt) {
                 verifiedHead = pull.head.sha;
                 autoMergeEnabledAt =
                   Math.floor(Date.now() / 1000) * 1000;
-                await github.graphql(
-                  `mutation EnableAutoMerge($pullRequestId: ID!) {
-                    enablePullRequestAutoMerge(
-                      input: {
-                        pullRequestId: $pullRequestId
-                        mergeMethod: SQUASH
-                      }
+                await github.rest.repos.createCommitStatus({
+                  owner,
+                  repo,
+                  sha: verifiedHead,
+                  state: "pending",
+                  context: "Agentic merge policy",
+                  description: "E2E hold while native auto-merge is enabled",
+                  target_url: pull.html_url,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 2000));
+
+                let enabled = false;
+                let lastError;
+                for (let attempt = 1; attempt <= 6; attempt += 1) {
+                  try {
+                    await github.graphql(
+                      `mutation EnableAutoMerge($pullRequestId: ID!) {
+                        enablePullRequestAutoMerge(
+                          input: {
+                            pullRequestId: $pullRequestId
+                            mergeMethod: SQUASH
+                          }
+                        ) {
+                          pullRequest { number }
+                        }
+                      }`,
+                      { pullRequestId: pull.node_id },
+                    );
+                    enabled = true;
+                    break;
+                  } catch (error) {
+                    lastError = error;
+                    const message = String(error?.message ?? error);
+                    if (
+                      !message.includes("clean status") &&
+                      !message.includes("unstable status")
                     ) {
-                      pullRequest { number }
+                      throw error;
                     }
-                  }`,
-                  { pullRequestId: pull.node_id },
-                );
+                    core.info(
+                      `Auto-merge state has not settled (attempt ${attempt}/6); retrying.`,
+                    );
+                    await new Promise((resolve) =>
+                      setTimeout(resolve, 2000),
+                    );
+                  }
+                }
+                if (!enabled) {
+                  throw lastError;
+                }
+                await github.rest.actions.createWorkflowDispatch({
+                  owner,
+                  repo,
+                  workflow_id: "agentic-pr-reconciler.yml",
+                  ref: process.env.BASE_BRANCH,
+                });
                 core.info(
                   `Verified all required contexts on ${verifiedHead}; enabled native auto-merge.`,
                 );
@@ -433,6 +488,7 @@ jobs:
                 initialReviewFailed,
                 repairVerified,
                 selfHealCommits: selfHealCommits.length,
+                headIsStable,
                 autoMergeEnabled: Boolean(autoMergeEnabledAt),
               });
               if (summary !== previousSummary) {
