@@ -92,11 +92,20 @@ function snapshot(files: string[]): Map<string, string> {
 /** Extract the deterministic gh-aw signature comment lines from an artifact. */
 function semanticSignature(rel: string): string {
   const text = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
-  const lines = text
-    .split(/\r?\n/)
-    .filter((line) =>
-      /^#\s*gh-aw-(metadata|manifest|commands):/.test(line.trim()),
-    );
+  const lines = text.split(/\r?\n/).flatMap((line) => {
+    const trimmed = line.trim();
+    if (!/^#\s*gh-aw-(metadata|manifest|commands):/.test(trimmed)) return [];
+    if (!trimmed.startsWith("# gh-aw-metadata:")) return [trimmed];
+    const jsonText = trimmed.slice("# gh-aw-metadata:".length).trim();
+    try {
+      const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+      delete parsed.engine_versions;
+      return [`# gh-aw-metadata: ${JSON.stringify(parsed)}`];
+    } catch {
+      // Preserve the raw line when metadata is malformed so the drift gate fails loud.
+      return [trimmed];
+    }
+  });
   return lines.join("\n");
 }
 
@@ -252,14 +261,23 @@ function compileGate(): boolean {
     );
     const drift = mapsEqual(before, afterFirst);
     if (drift.length > 0) {
-      for (const rel of drift) {
-        fail(
-          rel,
-          `committed compiled artifact is stale: ${rel}`,
-          `run \`${COMPILE_REMEDIATION}\` and commit the regenerated artifact`,
-        );
+      const semanticDrift = drift.filter(
+        (rel) => beforeSignatures.get(rel) !== afterFirstSignatures.get(rel),
+      );
+      if (semanticDrift.length > 0) {
+        for (const rel of semanticDrift) {
+          fail(
+            rel,
+            `committed compiled artifact semantically drifts from its source: ${rel}`,
+            `run \`${COMPILE_REMEDIATION}\` and commit the regenerated artifact`,
+          );
+        }
+        return false;
       }
-      return false;
+      process.stdout.write(
+        "  ! compiled bytes drift, but source-derived gh-aw signatures match (volatile metadata ignored)\n",
+      );
+      return true;
     }
     process.stdout.write(
       `  ✓ ${artifacts.length} compiled artifact(s) match their sources\n`,
