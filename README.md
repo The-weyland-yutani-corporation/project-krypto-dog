@@ -1,5 +1,25 @@
 # 🐕 Project Krypto
 
+```text
++--------------------------------------------------------------------------------------+
+|                            P R O J E C T   K R Y P T O                               |
+|                                                                                      |
+|          /^-----^\                              /\                    |       |      |
+|         V  o o  V                             /  \              |    |   |   |       |
+|          |  Y  |                             / /\ \            _|_  _|_ _|_ _|_      |
+|           \ Q /             __              / /  \ \            |    |   |   |       |
+|       ____/ - \____     _.-'  `-._         /_/____\_\      _____|____|___|___|_____  |
+|    .-' ___| K |___ `---'          `-.     <___ ETH ___>    MARKET: ETH / USDC        |
+|   /_.-'   |___|   `-._               \     \ \    / /                                |
+|         _/ / \ \_      `---------------'     \ \  / /     PAPER ONLY // SAFETY FIRST |
+|        (__/   \__)                            \ \/ /                                 |
+|                                                \  /                                  |
+|                                                 \/                                   |
+|                                                                                      |
+|                    SUPER-DOG INSTINCTS. HARD-CODED GUARDRAILS.                       |
++--------------------------------------------------------------------------------------+
+```
+
 > **Autonomous LLM-driven swing-trading agent for ETH/USDC.**
 > v2.1 safety core is implemented and locally verified. **NOT production-ready**
 > until the clean target is migrated, initialized, backed up, deployed in
