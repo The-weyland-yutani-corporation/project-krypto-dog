@@ -13,7 +13,11 @@ describe("agentic SDLC workflow contracts", () => {
   );
   const e2e = read(".github/workflows/agentic-sdlc-e2e.yml");
   const codeReview = read(".github/workflows/code-review.md");
+  const securityReview = read(".github/workflows/security-review.md");
   const selfHeal = read(".github/workflows/pr-self-heal.md");
+  const tradingSafetyReview = read(
+    ".github/workflows/trading-safety-review.md",
+  );
 
   it("loads the tested reconciler implementation only from the trusted base", () => {
     expect(reconciler).toContain(
@@ -108,5 +112,21 @@ describe("agentic SDLC workflow contracts", () => {
     expect(codeReview).toContain(
       'bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]',
     );
+  });
+
+  it("requires trusted-bot specialist checks for high-risk PRs", () => {
+    for (const workflow of [securityReview, tradingSafetyReview]) {
+      expect(workflow).toContain(
+        'bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]',
+      );
+      expect(workflow).toContain("create-check-run:");
+      expect(workflow).toContain("For every pull request");
+    }
+    expect(securityReview).toContain("name: Security review");
+    expect(tradingSafetyReview).toContain(
+      "name: Trading safety review",
+    );
+    expect(reconciler).toContain("Security Review");
+    expect(reconciler).toContain("Trading Safety Review");
   });
 });
