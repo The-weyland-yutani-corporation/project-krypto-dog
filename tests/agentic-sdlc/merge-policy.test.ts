@@ -40,6 +40,13 @@ interface Commit {
   commit: { message: string };
 }
 
+interface CheckRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+
 interface PolicyResult {
   state: string;
   description: string;
@@ -70,8 +77,19 @@ interface ReconcilerModule {
     pullRequest: PullRequest;
     files: ChangedFile[];
     reviews: Review[];
+    checkRuns?: CheckRun[];
     repository: string;
   }): PolicyResult;
+  getAgentApprovalState(
+    files: ChangedFile[],
+    checkRuns: CheckRun[],
+  ): {
+    approved: boolean;
+    failedCheck?: string;
+    waitingCheck?: string;
+    requiredSpecialistChecks: string[];
+  };
+  getRequiredSpecialistChecks(files: ChangedFile[]): string[];
   hasFailedCiRun(
     runs: Array<{
       id: number;
@@ -99,6 +117,8 @@ const {
   canAttemptSelfHeal,
   countRepairAttempts,
   evaluateMergePolicy,
+  getAgentApprovalState,
+  getRequiredSpecialistChecks,
   hasFailedCiRun,
   hasFailedReviewCheck,
   isLowRiskChange,
@@ -157,6 +177,7 @@ function policy(
     pullRequest?: PullRequest;
     files?: ChangedFile[];
     reviews?: Review[];
+    checkRuns?: CheckRun[];
   } = {},
 ): PolicyResult {
   return evaluateMergePolicy({
@@ -168,6 +189,14 @@ function policy(
       },
     ],
     reviews: overrides.reviews ?? [],
+    checkRuns: overrides.checkRuns ?? [
+      {
+        id: 1,
+        name: "Agentic code review",
+        status: "completed",
+        conclusion: "success",
+      },
+    ],
     repository,
   });
 }
@@ -322,7 +351,7 @@ describe("deterministic merge policy", () => {
   it("allows an enrolled trusted agent only for a low-risk change", () => {
     expect(policy()).toMatchObject({
       state: "success",
-      description: "Allowlisted low-risk agent pull request",
+      description: "Current-head agent reviews approve this PR",
       sameRepository: true,
       trustedAgent: true,
       lowRisk: true,
@@ -335,12 +364,12 @@ describe("deterministic merge policy", () => {
       }),
     ).toMatchObject({
       state: "pending",
-      description: "Non-allowlisted changes require human approval",
+      description: "Waiting for Trading safety review",
       lowRisk: false,
     });
   });
 
-  it("requires approval for an untrusted or cross-repository author", () => {
+  it("accepts agent approval for a same-repository human author", () => {
     expect(
       policy({
         pullRequest: pullRequest({
@@ -348,10 +377,13 @@ describe("deterministic merge policy", () => {
         }),
       }),
     ).toMatchObject({
-      state: "pending",
+      state: "success",
+      description: "Current-head agent reviews approve this PR",
       trustedAgent: false,
     });
+  });
 
+  it("still requires human approval for a fork", () => {
     expect(
       policy({
         pullRequest: pullRequest({
@@ -364,6 +396,7 @@ describe("deterministic merge policy", () => {
       }),
     ).toMatchObject({
       state: "pending",
+      description: "A current human approval is required for forked changes",
       sameRepository: false,
       trustedAgent: false,
     });
@@ -460,7 +493,7 @@ describe("deterministic merge policy", () => {
 
     expect(result).toMatchObject({
       state: "pending",
-      description: "A blocking review label requires human approval",
+      description: "A blocking review label requires changes",
       hasBlockingLabel: true,
     });
   });
@@ -493,6 +526,134 @@ describe("deterministic merge policy", () => {
     ).toMatchObject({
       state: "pending",
       description: "Draft pull requests cannot merge",
+    });
+  });
+});
+
+describe("conditional specialist agent approval", () => {
+  const passingCheck = (name: string, id: number): CheckRun => ({
+    id,
+    name,
+    status: "completed",
+    conclusion: "success",
+  });
+
+  it("maps security and workflow paths to Security review", () => {
+    expect(
+      getRequiredSpecialistChecks([
+        {
+          filename: ".github/workflows/ci.yml",
+          status: "modified",
+        },
+        {
+          filename: "src/app/api/auth/login/route.ts",
+          status: "modified",
+        },
+      ]),
+    ).toEqual(["Security review"]);
+  });
+
+  it("maps trading and database paths to Trading safety review", () => {
+    expect(
+      getRequiredSpecialistChecks([
+        {
+          filename: "src/trading/policy.ts",
+          status: "modified",
+        },
+        {
+          filename: "drizzle/0007_example.sql",
+          status: "added",
+        },
+      ]),
+    ).toEqual(["Trading safety review"]);
+  });
+
+  it("requires both specialists for cross-cutting agent changes", () => {
+    const files = [
+      {
+        filename: ".github/workflows/ci.yml",
+        status: "modified",
+      },
+      {
+        filename: "src/agent/run-flow.ts",
+        status: "modified",
+      },
+    ];
+    const codeReview = passingCheck("Agentic code review", 1);
+    const securityReview = passingCheck("Security review", 2);
+    const tradingReview = passingCheck("Trading safety review", 3);
+
+    expect(getAgentApprovalState(files, [codeReview])).toMatchObject({
+      approved: false,
+      waitingCheck: "Security review",
+      requiredSpecialistChecks: [
+        "Security review",
+        "Trading safety review",
+      ],
+    });
+    expect(
+      getAgentApprovalState(files, [codeReview, securityReview]),
+    ).toMatchObject({
+      approved: false,
+      waitingCheck: "Trading safety review",
+    });
+    expect(
+      getAgentApprovalState(files, [
+        codeReview,
+        securityReview,
+        tradingReview,
+      ]),
+    ).toMatchObject({
+      approved: true,
+      requiredSpecialistChecks: [
+        "Security review",
+        "Trading safety review",
+      ],
+    });
+  });
+
+  it("keeps policy pending when a required specialist fails", () => {
+    const result = policy({
+      files: [
+        {
+          filename: ".github/workflows/ci.yml",
+          status: "modified",
+        },
+      ],
+      checkRuns: [
+        passingCheck("Agentic code review", 1),
+        {
+          id: 2,
+          name: "Security review",
+          status: "completed",
+          conclusion: "failure",
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      state: "pending",
+      description: "Security review requires changes",
+    });
+  });
+
+  it("allows policy when all current-head specialist checks pass", () => {
+    const result = policy({
+      files: [
+        {
+          filename: "src/db/schema.ts",
+          status: "modified",
+        },
+      ],
+      checkRuns: [
+        passingCheck("Agentic code review", 1),
+        passingCheck("Trading safety review", 2),
+      ],
+    });
+
+    expect(result).toMatchObject({
+      state: "success",
+      description: "Current-head agent reviews approve this PR",
     });
   });
 });

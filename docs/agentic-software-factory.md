@@ -16,8 +16,8 @@ Work flows through small, safe automation loops:
 6. Implementation agents open auto-merge-enabled PRs.
 7. CI and agentic code review run on every current PR head.
 8. A capped self-heal loop may repair failed checks on eligible agent PRs.
-9. A deterministic merge policy allows autonomous merge only for allowlisted low-risk docs/assets; all other paths require current human approval.
-10. QA, security, docs-sync, and trading-safety run by label or high-risk path.
+9. A deterministic merge policy approves same-repository PRs after current-head code review and any path-selected specialist checks pass.
+10. QA and docs-sync remain label-driven; security and trading-safety are selected from changed paths.
 11. Release readiness and governance workflows prepare operator handoff and track factory health.
 
 ## State labels
@@ -45,11 +45,18 @@ Use labels as workflow state:
 | `agentic-automerge` | Agent-created PR opted into native auto-merge and reconciliation |
 | `self-heal-exhausted` | Automatic repair stopped after the retry cap |
 
-## Human gates
+## Approval model
 
-Automation may create issues, comments, labels, and PRs. Allowlisted low-risk agent PRs may merge automatically after every required check passes. Humans retain control over:
+Automation may create issues, comments, labels, and PRs. Same-repository PRs
+are approved by current-head agent checks:
 
-- merging all code, test, config, migration, trading, auth, database, deployment, workflow, operator-console, and policy changes
+- every PR requires CI and `Agentic code review`
+- auth, dependency, deployment, agent, skill, and workflow changes also require `Security review`
+- trading, guardrail, agent, backtest, database, migration, and trading RFC changes also require `Trading safety review`
+
+Humans may still veto a PR with a current-head change request or blocking label,
+and retain control over:
+
 - production deployment
 - live-trading enablement
 - secrets and external account configuration
@@ -76,11 +83,11 @@ The autonomous path is fail-closed unless the repository is configured with:
 
 - native auto-merge enabled
 - strict required checks for `Quality and evidence gates`, `PostgreSQL migrations and execution`, `Agentic code review`, and `Agentic merge policy`
-- zero unconditional approving reviews, because `Agentic merge policy` conditionally requires a current-head human approval for every non-low-risk change
+- zero unconditional approving reviews, because `Agentic merge policy` combines the current-head code-review and conditional specialist checks
 - required conversation resolution and admin enforcement enabled
 - force pushes and protected-branch deletion disabled
 - default Actions workflow permissions set to read
-- Actions allowed to create pull requests; agent workflows still cannot approve reviews because no approval safe output is configured
+- Actions allowed to create pull requests; approval is represented by required check runs and the deterministic merge-policy status rather than a GitHub review from the PR author
 
 ## Validation baseline
 
@@ -148,7 +155,7 @@ workflow files.
 
 - v2 remains paper trading only.
 - Live execution requires a separate RFC, architecture review, security review, trading-safety review, and human approval.
-- Changes to trading, guardrails, auth, secrets, workflows, tests, database state, deployment procedure, or operator behavior require current human approval.
-- The required `Agentic merge policy` status enforces the low-risk allowlist independently of agent output and labels.
+- Changes to trading, guardrails, auth, secrets, workflows, database state, deployment procedure, or operator behavior require current-head specialist agent checks selected from deterministic path rules.
+- The required `Agentic merge policy` status remains pending until all applicable agent checks pass; a human change request or blocking label still vetoes approval.
 - Self-heal is limited to two repair commits and structurally restricted to the same non-sensitive documentation scope eligible for autonomous merge.
 - Opportunity discovery creates software tickets and experiments behind rubber-duck review; it does not provide trading advice, execute trades, or bypass safety review.
