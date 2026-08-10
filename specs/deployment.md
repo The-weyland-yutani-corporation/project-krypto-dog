@@ -1,5 +1,10 @@
 # Deployment Runbook
 
+> This runbook implements PR-G1 through PR-G3 in
+> [`production-readiness-prd.v1.md`](./production-readiness-prd.v1.md).
+> Following a procedure does not itself grant deployment, target-mutation, or
+> promotion authorization.
+>
 > **STOP: Do NOT deploy until the target-environment gates are satisfied.**
 > The historical v2 baseline had blocking safety and correctness issues. v2.1
 > resolves the atomicity and deterministic-policy defects locally; current

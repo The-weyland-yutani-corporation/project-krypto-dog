@@ -1,8 +1,10 @@
 # Release Readiness
 
-This document records the current evidence baseline and defines the gates that must
-be satisfied before each release milestone. It does not contain secrets or
-credentials.
+This document records the current evidence baseline and gate disposition. The
+normative production-paper controls, authorization rules, and gate thresholds
+are defined in
+[`specs/production-readiness-prd.v1.md`](./production-readiness-prd.v1.md).
+This document does not contain secrets or credentials.
 
 For metric definitions see `specs/evaluation.md`.
 For the proposed architecture changes see `specs/rfcs/0002-evidence-grade-paper-trading.md`.
@@ -232,6 +234,11 @@ must be resolved in v2.1 before any production deployment.
 ---
 
 ## 4. Release gates
+
+> This section records current gate disposition. PR-G0 through PR-G4 ordering,
+> authorization, durations, and completeness thresholds in
+> [`production-readiness-prd.v1.md`](./production-readiness-prd.v1.md) are
+> authoritative.
 
 ### v2.1 -- Safety and Correctness
 

@@ -3,6 +3,7 @@
 > **This document is the single source of truth for the current state of Project Krypto.**
 > Historical PRDs are preserved in [`specs/archive/`](./archive/). Architectural decisions are logged in [`specs/decisions/`](./decisions/). Future proposals live in [`specs/rfcs/`](./rfcs/).
 > Current evidence baseline and release gates: [`specs/readiness.md`](./readiness.md).
+> Production-paper controls and authorization contract: [`specs/production-readiness-prd.v1.md`](./production-readiness-prd.v1.md).
 > Evaluation methodology: [`specs/evaluation.md`](./evaluation.md).
 
 ## Status
