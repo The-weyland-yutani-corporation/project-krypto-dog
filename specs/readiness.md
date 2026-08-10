@@ -39,75 +39,67 @@ See `specs/evaluation.md` §3 for the distinction.
 
 ### Out-of-sample paper trading evidence
 
-None verified. A hosted deployment exists, but its database configuration is
-stale and the remote database/run history could not be inspected. No production
-paper record currently qualifies as financial evidence.
+None verified. The replacement database is intentionally fresh and the hosted
+deployment still runs the historical application build. No production paper
+record currently qualifies as financial evidence.
 
 ### Production infrastructure inventory
 
-Directly observed on 2026-07-14. Remote Supabase internals (schema, table
-contents, migration history, pg_cron state) have NOT been verified. No secrets,
-project IDs, or internal URLs are recorded here.
+Directly observed on 2026-07-15. No secrets, project IDs, database identities,
+or internal URLs are recorded here.
 
 **Vercel**
 
-- Project exists; production deployment status: Ready (app is live).
+- Project exists; production deployment status: Ready, but the deployment is
+  approximately 115 days old and `/api/agent/status` returns 404. It is not the
+  current release candidate.
+- Project runtime is now configured for Node 22.
 - GitHub records no deployments; no GitHub Actions deployment workflow has fired.
-- Production environment variables -- present: `DATABASE_URL`, `DIRECT_URL`,
+- Production environment variables -- present or staged: `DATABASE_URL`, `DIRECT_URL`,
   Azure AI Foundry vars (`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`,
   `AZURE_OPENAI_DEPLOYMENT_NAME`), `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY`,
-  `POSTHOG_API_KEY`, `CRON_SECRET`.
+  `POSTHOG_API_KEY`, `CRON_SECRET`, `ROLLOUT_MODE=disabled`,
+  `ADMIN_PASSWORD`, and `ADMIN_SESSION_SECRET`.
 - Production environment variables -- absent: `RESEND_API_KEY`, `ALERT_EMAIL_TO`,
-  `ALERT_EMAIL_FROM`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`.
-- Consequence: the latest application build would not have working email alerts
-  or the required authenticated admin configuration. The exact revision and
-  behavior of the currently hosted deployment have not been verified.
+  and `ALERT_EMAIL_FROM`.
+- Consequence: the next application build has database/admin/disabled-rollout
+  configuration staged, but target smoke cannot pass until real email delivery
+  is configured.
 - The current v2.1 source prefers `ANTHROPIC_FOUNDRY_*`, accepts the observed
   `AZURE_OPENAI_*` names only as a compatibility path, and no longer requires
   CDP variables for paper mode. These source changes have not been deployed.
 
 **Supabase**
 
-- Project exists.
-- DB credential status: read-only connection attempts using both the Vercel
-  production `DATABASE_URL` (pooler port 6543) and `DIRECT_URL` (pooler port
-  5432) failed with "tenant/user ... not found". The DB configuration in Vercel
-  appears stale or invalid; the credentials do not match the live project.
-- Schema, tables, row counts, migration history, pg_cron jobs, and Vault secrets:
-  NOT verified (connection attempts failed before inspection was possible).
+- A clean replacement project is active and healthy on PostgreSQL 17.
+- Runtime and session/direct pooler connections succeed and report the same
+  database cluster.
+- A redacted fresh-target `deployment:preflight` report passed with zero
+  blockers. It found no application tables, Drizzle history, Krypto cron jobs,
+  queued Krypto HTTP requests, unsafe legacy function, exposed restricted role,
+  or configured Krypto Vault secret.
+- The inactive legacy project remains quarantined until the replacement passes
+  disabled target smoke.
 
-**Classification: preserve-required, unknown DB data.**
+**Classification: intentionally fresh replacement; no retained trading data.**
 
-A repository-local `deployment:preflight` run on 2026-07-14 produced exit `2`:
-the currently loaded URLs both target an unavailable localhost database, so
-this shell does not contain usable deployment credentials. The redacted report
-is retained outside the repository. No target inventory or backup claim is
-made from that failed probe.
+The following steps remain REQUIRED before the replacement can serve the
+current application:
 
-A production Supabase project exists and its internal state is unknown. All of
-the following steps are REQUIRED before any migration, seed, schema change, or
-env-var update targeting the production DB:
+- [x] **Fresh inventory:** read-only preflight passed and documented the empty
+      target before schema mutation.
+- [ ] **Corrective release:** merge the additive NULL-safe cron migration and
+      evidence/toolchain release through the protected `main` branch.
+- [ ] **Migrate and initialize:** apply the reviewed Drizzle history and
+      idempotently initialize `AgentState`.
+- [ ] **Baseline backup:** create and restore-verify a checksummed application
+      backup after initialization.
+- [ ] **Vault:** store the rotated cron secret, canonical Vercel origin, and
+      reviewed rollout mode.
+- [ ] **Disabled deployment and smoke:** deploy the exact release SHA with cron
+      unscheduled and pass automated plus manual target checks.
 
-- [ ] **Credential repair:** Obtain valid connection credentials for the live
-      Supabase project (re-generate pooler URL and password from the Supabase
-      dashboard). Confirm read access from a trusted client before proceeding.
-- [ ] **Remote inventory:** Inspect the live DB -- check which tables exist, row
-      counts in `AgentState`, `TradeExecution`, and `AgentJournal`, and migration
-      history (`__drizzle_migrations` and/or Supabase migration ledger).
-      Document what is present before touching anything.
-- [ ] **Backup:** Take a point-in-time backup (Supabase dashboard backup or
-      provider equivalent) before any schema or data change. Also run
-      `deployment:backup`; require a checksummed/readable manifest and, for
-      preserve-required data, a successful loopback restore/count comparison.
-- [ ] **Open-position check:** Confirm whether `AgentState.currentPositionETH`
-      is non-zero. A non-zero value means the agent has an open paper ETH
-      position whose cost basis and PnL history must be preserved.
-- [ ] **Cron pause:** Check whether pg_cron jobs are registered and active
-      (`SELECT jobid, jobname, active FROM cron.job`). If active, pause them
-      before any migration or env-var change to prevent the agent from firing
-      against an inconsistent state.
-
-See `specs/deployment.md` §0a for the runbook steps that implement these checks.
+See `specs/deployment.md` for the ordered runbook.
 
 ---
 
@@ -173,6 +165,15 @@ Verified locally; no production database mutation has occurred:
   critical-module coverage, all engineering backtests, production dependency
   audit, real-PostgreSQL migration/executor/orchestration tests, and migration
   drift. A protected manual no-trade Foundry smoke workflow is included.
+- The evidence-pipeline foundation imports strict versioned CSV/JSON datasets,
+  binds dataset and plan provenance, evaluates isolated predeclared windows
+  through the production-aligned runner, suppresses invalid gap-spanning risk
+  metrics, and emits deterministic JSON plus dark standalone HTML reports.
+  Imported reports are always classified `engineering-only` and cannot satisfy
+  v2.2 or v3 production evidence gates.
+- The cron rollout-mode NULL fix is an additive migration after the original
+  immutable `0005` history. Real-PostgreSQL tests prove an existing database at
+  `0005` receives the corrected functions through normal Drizzle migration.
 - Current local validation: lint passes with one pre-existing PostCSS config
   warning; the coverage-gated Jest suite, script/test typecheck, production
   build, and real-PostgreSQL suite pass;
@@ -181,13 +182,13 @@ Verified locally; no production database mutation has occurred:
   is clean. The 8-scenario aggregate reports 8 engineering assertion passes,
   3/8 beating cash, 2/8 beating buy-and-hold, and 0/8 beating both.
 
-Production remains blocked by target database credential repair,
-inventory/backup, target-environment smoke checks, controlled disabled/shadow/
-paper rollout, and evidence collection.
+Production remains blocked by corrective-release merge, target migrations and
+initialization, baseline backup/restore evidence, Vault and Resend configuration,
+disabled target smoke, controlled shadow/paper rollout, and evidence collection.
 
 The current v2.2 preparation includes:
 
-- read-only `deployment:preflight`, so repaired credentials can immediately
+- read-only `deployment:preflight`, so verified credentials can immediately
   prove runtime/direct cluster identity and produce redacted schema,
   canonical-function, pending-HTTP-request, privilege, and blocker evidence
   without mutating the target;
@@ -219,7 +220,7 @@ must be resolved in v2.1 before any production deployment.
 | # | Category | Issue | Blocks |
 |---|---|---|---|
 | 1 | Security | Resolved locally: unused live-execution packages are removed, reachable direct packages are upgraded, and a same-major PostCSS override removes the vulnerable nested dependency. `npm audit --omit=dev` reports zero vulnerabilities. | [CI/PROD SMOKE PENDING] |
-| 2 | Data integrity | The destructive v2 Supabase seed has been removed. The local Drizzle path preserves fresh and existing-v2 data, but the unknown production schema/history must be inventoried and backed up before migration. (ADR 0006) | [BLOCKS PROD: INVENTORY] |
+| 2 | Data integrity | The destructive v2 Supabase seed has been removed. The replacement target is intentionally fresh and passed read-only inventory; reviewed migration, initialization, and post-migration backup remain. (ADR 0006) | [BLOCKS PROD: MIGRATION/BACKUP] |
 | 3 | Risk enforcement | Resolved locally: pure policy and in-transaction reauthorization enforce cold start, stop-loss, DCA, thresholds, cooldown, sizing, balances, dust, exposure, pause, lock, and drawdown. | [PROD SMOKE PENDING] |
 | 4 | Atomicity | Resolved locally: immutable trade insert, account transition, reconciliation fields, and `AgentRun` execution outcome commit in one locked transaction. Injected post-insert failure rolls back. | [PROD MIGRATION PENDING] |
 | 5 | Idempotency | Resolved locally: unique idempotency key and unique `TradeExecution.agentRunId`; parallel same-run execution produces one trade and one idempotent result. | [PROD SMOKE PENDING] |

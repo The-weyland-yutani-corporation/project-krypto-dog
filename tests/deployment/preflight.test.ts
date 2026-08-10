@@ -22,6 +22,10 @@ const rolloutModeMigration = readFileSync(
   "drizzle/0005_bind_cron_rollout_mode.sql",
   "utf8",
 );
+const nullSafeRolloutMigration = readFileSync(
+  "drizzle/0006_reject_null_cron_rollout_mode.sql",
+  "utf8",
+);
 const canonicalMigrationRows = [
   ["drizzle/0000_powerful_thundra.sql", "1775960372035"],
   ["drizzle/0001_add_is_operator_paused.sql", "1777757136027"],
@@ -29,6 +33,10 @@ const canonicalMigrationRows = [
   ["drizzle/0003_expand_ledger.sql", "1784054175971"],
   ["drizzle/0004_restrict_vault_access.sql", "1784074873207"],
   ["drizzle/0005_bind_cron_rollout_mode.sql", "1784123377223"],
+  [
+    "drizzle/0006_reject_null_cron_rollout_mode.sql",
+    "1784174542964",
+  ],
 ].map(([path, createdAt]) => ({
   hash: createHash("sha256")
     .update(readFileSync(path!, "utf8"))
@@ -38,11 +46,17 @@ const canonicalMigrationRows = [
 
 function installedFunctionSource(
   name: string,
-  modeBound = true,
+  profile:
+    | "null-safe"
+    | "mode-bound-nullable"
+    | "pre-mode-binding" = "null-safe",
 ): string {
-  const migration = modeBound
-    ? rolloutModeMigration
-    : secureSchemaMigration;
+  const migration =
+    profile === "null-safe"
+      ? nullSafeRolloutMigration
+      : profile === "mode-bound-nullable"
+        ? rolloutModeMigration
+        : secureSchemaMigration;
   const declaration =
     `CREATE OR REPLACE FUNCTION "krypto"."${name}"()`;
   const functionStart = migration.indexOf(declaration);
@@ -63,6 +77,7 @@ function createSqlMock(
     | "extra-krypto"
     | "missing-history"
     | "migration-drift"
+    | "pre-null-rejection"
     | "pre-mode-binding"
     | "pre-vault-migration"
     | "missing-functions"
@@ -194,6 +209,8 @@ function createSqlMock(
               ? canonicalMigrationRows.slice(0, 4)
               : scenario === "pre-mode-binding"
                 ? canonicalMigrationRows.slice(0, 5)
+                : scenario === "pre-null-rejection"
+                  ? canonicalMigrationRows.slice(0, 6)
             : canonicalMigrationRows;
         return scenario === "migration-drift"
           ? [
@@ -257,10 +274,14 @@ function createSqlMock(
                 ? "unsafe"
                 : installedFunctionSource(
                     "invoke_agent_run",
-                    ![
-                      "pre-vault-migration",
-                      "pre-mode-binding",
-                    ].includes(scenario),
+                    scenario === "pre-null-rejection"
+                      ? "mode-bound-nullable"
+                      : [
+                            "pre-vault-migration",
+                            "pre-mode-binding",
+                          ].includes(scenario)
+                        ? "pre-mode-binding"
+                        : "null-safe",
                   ),
             resultType: "bigint",
           },
@@ -272,10 +293,14 @@ function createSqlMock(
             configuration: ["search_path=pg_catalog"],
             source: installedFunctionSource(
               "invoke_daily_summary",
-              ![
-                "pre-vault-migration",
-                "pre-mode-binding",
-              ].includes(scenario),
+              scenario === "pre-null-rejection"
+                ? "mode-bound-nullable"
+                : [
+                      "pre-vault-migration",
+                      "pre-mode-binding",
+                    ].includes(scenario)
+                  ? "pre-mode-binding"
+                  : "null-safe",
             ),
             resultType: "bigint",
           },
@@ -465,7 +490,7 @@ describe("deployment preflight helpers", () => {
     expect(report.blockers).toEqual([]);
     expect(report.databasePreflightPassed).toBe(true);
     expect(report.inventory.database).toBe("krypto");
-    expect(report.inventory.drizzleMigrationCount).toBe(6);
+    expect(report.inventory.drizzleMigrationCount).toBe(7);
     expect(report.inventory.supabaseMigrationCount).toBe(2);
     expect(report.inventory.openPaperPosition).toBe(false);
     expect(report.inventory.restrictedRolePrivileges).toHaveLength(2);
@@ -686,6 +711,29 @@ describe("deployment preflight helpers", () => {
       runtimeUrl: "******pooler.example.com/postgres",
     });
 
+    expect(report.blockers).not.toContain(
+      "fixed-cron-function-integrity",
+    );
+    expect(
+      report.checks.find((check) => check.id === "migration-current"),
+    ).toEqual(expect.objectContaining({ status: "warn" }));
+  });
+
+  it("recognizes the original 0005 prefix before NULL rejection is applied", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(
+        createSqlMock("pre-null-rejection") as never,
+      );
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+    });
+
+    expect(report.blockers).not.toContain(
+      "drizzle-history-integrity",
+    );
     expect(report.blockers).not.toContain(
       "fixed-cron-function-integrity",
     );

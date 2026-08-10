@@ -43,7 +43,7 @@ BEGIN
 		OR v_configuration IS DISTINCT FROM
 			ARRAY['search_path=pg_catalog']
 		OR v_result_type <> 'bigint'
-		OR md5(v_source) <> 'e4328c1c001787b6f0a28cd6830f7c2d'
+		OR md5(v_source) <> '3cb03ace0e82bee3f8b755701a10ea6b'
 	THEN
 		RAISE EXCEPTION 'Agent-run cron function failed integrity verification';
 	END IF;
@@ -73,7 +73,7 @@ BEGIN
 		OR v_configuration IS DISTINCT FROM
 			ARRAY['search_path=pg_catalog']
 		OR v_result_type <> 'bigint'
-		OR md5(v_source) <> '585324cdb2b9f0ddfc0d53938f791ba1'
+		OR md5(v_source) <> '68aee98c8c762497b1b0cf016ea6d25d'
 	THEN
 		RAISE EXCEPTION 'Daily-summary cron function failed integrity verification';
 	END IF;
@@ -141,6 +141,7 @@ BEGIN
 	IF v_secret IS NULL OR v_secret = ''
 		OR v_url_base IS NULL
 		OR v_url_base !~ '^https://[^/]+/?$'
+		OR v_required_mode IS NULL
 		OR v_required_mode NOT IN ('shadow', 'paper') THEN
 		RAISE EXCEPTION 'Required Krypto Vault secrets are not configured';
 	END IF;

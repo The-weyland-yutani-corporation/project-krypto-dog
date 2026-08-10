@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     container_name: krypto-postgres
     restart: unless-stopped
     ports:
@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: krypto_local
       POSTGRES_DB: krypto
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata17:/var/lib/postgresql/data
 
 volumes:
-  pgdata:
+  pgdata17:

@@ -22,12 +22,12 @@
 
 > **Autonomous LLM-driven swing-trading agent for ETH/USDC.**
 > v2.1 safety core is implemented and locally verified. **NOT production-ready**
-> until the target database is inventoried/backed up and target smoke,
-> controlled rollout, and evidence gates pass.
+> until the clean target is migrated, initialized, backed up, deployed in
+> disabled mode, and passes target smoke, controlled rollout, and evidence gates.
 
 | | |
 |---|---|
-| **Status** | v2.1 safety core verified locally -- production inventory and release gates remain |
+| **Status** | v2.1 safety core verified; clean PostgreSQL 17 target inventory passed -- migration and release gates remain |
 | **Hosting** | Vercel + Supabase + Azure AI Foundry-hosted Anthropic + PostHog + Resend |
 | **Stack** | Next.js 16 (App Router) · TypeScript · structured Anthropic output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
 | **Trigger** | Restricted fixed Supabase `pg_cron` + `pg_net` functions; scheduling remains disabled until production smoke checks pass |
@@ -120,6 +120,25 @@ open http://localhost:3000/admin/login
 | `npm run smoke:target -- --base-url <url> --confirm-host <host>` | Bind runtime/direct DB and cron configuration, prove mismatched-mode rejection plus disabled runs, auth, postconditions, email, Foundry, Coinbase, and PostHog |
 | `npm run backtest -- --scenario scenarios/dip-recovery.json` | Run deterministic paper scenario evaluation |
 | `npm run backtest:all` | Emit aggregate JSON for every engineering scenario |
+| `npm run evidence:import -- --input <dataset.json> --out <materialized.json>` | Strictly validate and hash a versioned JSON evidence dataset |
+| `npm run evidence:import -- --input <observations.csv> --manifest <manifest.json> --out <materialized.json>` | Import strict `timestamp,priceUSD` CSV observations with an explicit manifest/gap descriptor |
+| `npm run evidence:evaluate -- --dataset <materialized.json> --plan <plan.json> --json-out <report.json> --html-out <report.html>` | Run predeclared isolated walk-forward windows through the production-aligned backtest runner |
+
+Evidence datasets and reports are internal simulation artifacts. Keep real or
+large source datasets and generated reports outside git; only tiny deterministic
+fixtures belong in `tests/fixtures/evidence/`. Holdout datasets may be evaluated
+but are rejected by the parameter-sweep/tuning guard. Evaluation plans require
+the raw source-file hash, deterministic complete-materialization hash, a
+lowercase 40-hex implementation commit SHA, and a `declaredAt` timestamp
+strictly before the first evaluation window. The materialization hash binds the
+recorded JSON/CSV import format and both dataset hashes while preserving semantic
+canonical equivalence. The commit and declaration time are operator-declared
+unless externally bound by retained CI artifact metadata; the evaluator never
+shells out to Git. Source metadata and `sourceFileSha256` are likewise
+importer/operator-declared because standalone evaluation does not retain the raw
+bytes needed for independent recomputation or authenticity verification.
+Imported reports are always `engineering-only` and `releaseGateEligible: false`,
+regardless of performance.
 
 ## Project layout
 
@@ -147,9 +166,10 @@ tests/                    # Jest unit + integration tests
 ## Deploying
 
 > **WARNING:** Do not promote the current source to production paper mode yet.
-> The local safety core is verified, but the production database remains
-> uninventoried because its configured credentials are stale. Target-environment
-> smoke checks and controlled disabled/shadow/paper rollout also remain. See
+> The local safety core is verified and the clean replacement database passed
+> fresh-target inventory, but migration, initialization, baseline backup,
+> Vault/email configuration, target smoke, and controlled disabled/shadow/paper
+> rollout remain. See
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
 Don't `vercel --prod` blind -- there are ordered steps including backup,

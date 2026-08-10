@@ -4,6 +4,7 @@ import { execFileSync } from "child_process";
 import {
   BACKTEST_REPORT_SCHEMA_VERSION,
   runBacktest,
+  runBacktestObservations,
 } from "@/backtest/runner";
 import type { ScenarioInput } from "@/backtest/types";
 import {
@@ -274,6 +275,109 @@ describe("deterministic backtest runner", () => {
     expect(noTrades.metrics.profitFactor).toBeNull();
     expect(noTrades.metrics.llmCostAdjustedPnlUSD).toBeNull();
   });
+
+  it("does not compute daily returns across missing UTC calendar dates", () => {
+    const prices = [100, 97, 82, 79, 85];
+    const consecutive = runBacktestObservations({
+      name: "consecutive-daily-spacing",
+      observations: prices.map((price, index) => ({
+        timestamp: new Date(
+          Date.parse("2026-01-01T00:00:00.000Z") +
+            index * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+        price,
+      })),
+    });
+    const missingDay = runBacktestObservations({
+      name: "missing-daily-spacing",
+      observations: prices.map((price, index) => ({
+        timestamp: new Date(
+          Date.parse("2026-01-01T00:00:00.000Z") +
+            [0, 1, 3, 4, 5][index] * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+        price,
+      })),
+    });
+
+    expect(
+      missingDay.equitySnapshots.map(
+        (snapshot) => snapshot.agentEquityUSD,
+      ),
+    ).toEqual(
+      consecutive.equitySnapshots.map(
+        (snapshot) => snapshot.agentEquityUSD,
+      ),
+    );
+    expect(consecutive.metrics.returnObservations).toBe(4);
+    expect(missingDay.metrics.returnObservations).toBe(3);
+
+    const equity = missingDay.equitySnapshots.map(
+      (snapshot) => snapshot.agentEquityUSD,
+    );
+    const consecutiveOnlyReturns = [
+      equity[1] / equity[0] - 1,
+      equity[3] / equity[2] - 1,
+      equity[4] / equity[3] - 1,
+    ];
+    const mean =
+      consecutiveOnlyReturns.reduce(
+        (sum, value) => sum + value,
+        0,
+      ) / consecutiveOnlyReturns.length;
+    const sampleVariance =
+      consecutiveOnlyReturns.reduce(
+        (sum, value) => sum + (value - mean) ** 2,
+        0,
+      ) /
+      (consecutiveOnlyReturns.length - 1);
+    expect(missingDay.metrics.sharpe).toBeCloseTo(
+      (mean / Math.sqrt(sampleVariance)) * Math.sqrt(252),
+      10,
+    );
+  });
+
+  it.each([
+    [
+      "exact 24-hour spacing",
+      "2026-01-01T12:00:00.000Z",
+      "2026-01-02T12:00:00.000Z",
+      1,
+    ],
+    [
+      "16-hour adjacent-date spacing",
+      "2026-01-01T20:00:00.000Z",
+      "2026-01-02T12:00:00.000Z",
+      0,
+    ],
+    [
+      "32-hour adjacent-date spacing",
+      "2026-01-01T12:00:00.000Z",
+      "2026-01-02T20:00:00.000Z",
+      0,
+    ],
+    [
+      "47-hour adjacent-date spacing",
+      "2026-01-01T00:00:00.000Z",
+      "2026-01-02T23:00:00.000Z",
+      0,
+    ],
+  ] as Array<[string, string, string, number]>)(
+    "counts daily returns only for %s",
+    (_description, firstTimestamp, secondTimestamp, expectedReturns) => {
+      const result = runBacktestObservations({
+        name: "close-spacing-check",
+        policy: "always-hold",
+        observations: [
+          { timestamp: firstTimestamp, price: 100 },
+          { timestamp: secondTimestamp, price: 101 },
+        ],
+      });
+
+      expect(result.metrics.returnObservations).toBe(
+        expectedReturns,
+      );
+    },
+  );
 
   it("emits a machine-readable all-scenario aggregate", () => {
     const output = execFileSync(

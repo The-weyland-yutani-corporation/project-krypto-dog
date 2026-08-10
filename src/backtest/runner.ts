@@ -23,11 +23,14 @@ import type {
   BacktestAggregateReport,
   BacktestDecisionSource,
   BacktestMetrics,
+  BacktestObservation,
   BacktestOptions,
   BacktestResult,
   BacktestTrade,
+  ExplicitBacktestInput,
   ScenarioInput,
 } from "./types";
+import { canonicalSha256 } from "./canonical";
 
 interface BacktestState {
   ethBalance: bigint;
@@ -51,9 +54,15 @@ interface NormalizedPoint {
   priceUSD: bigint;
 }
 
+type BacktestDefinition = Pick<
+  ScenarioInput,
+  "name" | "datasetId" | "policy" | "expected"
+>;
+
 const DEFAULT_INTERVAL_HOURS = 4;
 export const BACKTEST_CODE_VERSION = "align-backtesting-v1";
 export const BACKTEST_REPORT_SCHEMA_VERSION = "1.0.0";
+export const BACKTEST_COST_MODEL_VERSION = "paper-execution-v1";
 
 function decimalNumber(value: bigint, scale: number): number {
   return Number(formatDecimal(value, scale));
@@ -103,6 +112,42 @@ function normalizeScenario(scenario: ScenarioInput): NormalizedPoint[] {
   });
 }
 
+function normalizeObservations(
+  observations: BacktestObservation[],
+): NormalizedPoint[] {
+  if (observations.length < 2) {
+    throw new Error("Backtest observations require at least two prices");
+  }
+  let previousTimestamp = -Infinity;
+  return observations.map((observation, index) => {
+    const timestamp = new Date(observation.timestamp);
+    if (!Number.isFinite(timestamp.getTime())) {
+      throw new Error(
+        `Invalid observation timestamp at index ${index}: ${observation.timestamp}`,
+      );
+    }
+    if (timestamp.getTime() <= previousTimestamp) {
+      throw new Error(
+        "Backtest observation timestamps must be strictly ascending without duplicates",
+      );
+    }
+    previousTimestamp = timestamp.getTime();
+    if (!Number.isFinite(observation.price) || observation.price <= 0) {
+      throw new Error(
+        `Invalid observation price at index ${index}: ${observation.price}`,
+      );
+    }
+    return {
+      timestamp,
+      price: observation.price,
+      priceUSD: usd(
+        observation.price,
+        `observation price at index ${index}`,
+      ),
+    };
+  });
+}
+
 function resolveStrategy(options: BacktestOptions): StrategyConfig {
   const initialCapitalUSD =
     options.initialCapitalUSD ?? DEFAULT_STRATEGY_CONFIG.initialCapitalUSD;
@@ -144,6 +189,18 @@ function resolveStrategy(options: BacktestOptions): StrategyConfig {
       options.maximumDrawdownPct ??
       DEFAULT_STRATEGY_CONFIG.maximumDrawdownPct,
   };
+}
+
+function configurationVersion(strategy: StrategyConfig): string {
+  return `sha256:${canonicalSha256(strategy)}`;
+}
+
+function costModelVersion(strategy: StrategyConfig): string {
+  return [
+    BACKTEST_COST_MODEL_VERSION,
+    `fee-${strategy.feeBps}bps`,
+    `slippage-${strategy.paperSlippageBps}bps`,
+  ].join(":");
 }
 
 function portfolioValue(state: BacktestState, priceUSD: bigint): bigint {
@@ -246,15 +303,31 @@ function calculateMetrics(
   ) {
     throw new Error("llmCostUSD must be finite and non-negative");
   }
-  const dailyCloses = new Map<string, number>();
+  const dailyCloses = new Map<
+    string,
+    { timestampMs: number; equity: number }
+  >();
   for (const snapshot of result.equitySnapshots) {
-    dailyCloses.set(snapshot.timestamp.slice(0, 10), snapshot.agentEquityUSD);
+    dailyCloses.set(snapshot.timestamp.slice(0, 10), {
+      timestampMs: Date.parse(snapshot.timestamp),
+      equity: snapshot.agentEquityUSD,
+    });
   }
   const dailyEquity = [...dailyCloses.values()];
-  const returns = dailyEquity.slice(1).map((value, index) => {
-    const prior = dailyEquity[index];
-    return prior > 0 ? value / prior - 1 : 0;
-  });
+  const returns: number[] = [];
+  for (let index = 1; index < dailyEquity.length; index++) {
+    const prior = dailyEquity[index - 1];
+    const current = dailyEquity[index];
+    if (
+      current.timestampMs - prior.timestampMs !==
+      24 * 60 * 60 * 1000
+    ) {
+      continue;
+    }
+    returns.push(
+      prior.equity > 0 ? current.equity / prior.equity - 1 : 0,
+    );
+  }
   const meanReturn =
     returns.length > 0
       ? returns.reduce((sum, value) => sum + value, 0) / returns.length
@@ -338,7 +411,7 @@ function calculateMetrics(
 }
 
 function evaluateAssertions(
-  scenario: ScenarioInput,
+  scenario: BacktestDefinition,
   result: Omit<BacktestResult, "assertionFailures">,
 ): string[] {
   const expected = scenario.expected;
@@ -378,11 +451,11 @@ function evaluateAssertions(
   return failures;
 }
 
-export function runBacktest(
-  scenario: ScenarioInput,
-  options: BacktestOptions = {},
+function runBacktestPoints(
+  scenario: BacktestDefinition,
+  points: NormalizedPoint[],
+  options: BacktestOptions,
 ): BacktestResult {
-  const points = normalizeScenario(scenario);
   const strategy = resolveStrategy(options);
   const decisionSource =
     options.policy ?? scenario.policy ?? "rules-basic";
@@ -594,6 +667,8 @@ export function runBacktest(
   > = {
     metadata: {
       strategyVersion: strategy.version,
+      configurationVersion: configurationVersion(strategy),
+      costModelVersion: costModelVersion(strategy),
       costModel: {
         feeBps: strategy.feeBps,
         paperSlippageBps: strategy.paperSlippageBps,
@@ -629,6 +704,28 @@ export function runBacktest(
       resultWithoutAssertions,
     ),
   };
+}
+
+export function runBacktest(
+  scenario: ScenarioInput,
+  options: BacktestOptions = {},
+): BacktestResult {
+  return runBacktestPoints(
+    scenario,
+    normalizeScenario(scenario),
+    options,
+  );
+}
+
+export function runBacktestObservations(
+  input: ExplicitBacktestInput,
+  options: BacktestOptions = {},
+): BacktestResult {
+  return runBacktestPoints(
+    input,
+    normalizeObservations(input.observations),
+    options,
+  );
 }
 
 export function createAggregateReport(
