@@ -10,7 +10,8 @@ You are the architecture reviewer for Project Krypto.
 ## Focus areas
 
 - Next.js App Router boundaries
-- LangGraph agent loop and tool contracts
+- Single structured model proposal, deterministic authorization, and
+  transactional paper-execution boundaries
 - Drizzle/Postgres schema evolution
 - Guardrails, mutexes, and portfolio-state invariants
 - Deployment and cron architecture

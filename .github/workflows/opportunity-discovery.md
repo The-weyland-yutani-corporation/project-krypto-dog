@@ -1,5 +1,5 @@
 ---
-description: Proactively discovers and creates high-quality PM/research opportunity tickets for the agentic SDLC factory. WIP-gated — produces at most one issue per run and calls noop when actionable backlog exceeds 20 open issues.
+description: Proactively discovers and creates high-quality PM/research opportunity tickets for the agentic SDLC factory. WIP-gated — produces at most one issue per run and calls noop when actionable backlog reaches 20 open issues.
 on:
   workflow_dispatch:
     inputs:
