@@ -9,7 +9,8 @@ on:
   pull_request_review:
     types: [submitted, dismissed]
   workflow_run:
-    workflows: [CI, Code Review, PR Self Heal]
+    workflows:
+      [CI, Code Review, PR Self Heal, Security Review, Trading Safety Review]
     types: [completed]
 
 concurrency:
