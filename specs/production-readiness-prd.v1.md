@@ -64,6 +64,22 @@ Production-paper operation also requires:
 Without these controls, passing CI or merging code can be mistaken for
 authorization to mutate a target or promote trading.
 
+### Current NO-GO baseline
+
+At the authoring baseline:
+
+- PR #78 is not part of protected `main` and requires reconciliation before its
+  migration/runtime/evidence changes can become release evidence;
+- issues #72 through #76 and SRC-01 through ROLL-01 remain open;
+- no protected approval record authorizes target mutation, shadow, or PAPER;
+- target, recovery, alert, absolute-stop, and accounting-attestation evidence
+  is incomplete; and
+- the only safe posture is rollout `disabled` with Krypto cron unscheduled.
+
+This section records the baseline used to design the contract. Current
+disposition belongs in `readiness.md` and issue #76 rather than being updated
+here.
+
 ## 3. Required outcome
 
 Project Krypto is **production-paper operational** when:
