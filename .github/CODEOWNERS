@@ -4,12 +4,16 @@
 /src/tools/ @VeVarunSharma
 /src/guardrails/ @VeVarunSharma
 /src/agent/ @VeVarunSharma
+/src/trading/ @VeVarunSharma
+/src/backtest/ @VeVarunSharma
 /src/app/api/ @VeVarunSharma
 /src/middleware.ts @VeVarunSharma
 /src/db/ @VeVarunSharma
 /drizzle/ @VeVarunSharma
 /supabase/migrations/ @VeVarunSharma
 /.github/workflows/ @VeVarunSharma
+/.github/scripts/ @VeVarunSharma
+/.github/agentic-policy.json @VeVarunSharma
 /.github/agents/ @VeVarunSharma
 /.github/skills/ @VeVarunSharma
 /specs/deployment.md @VeVarunSharma

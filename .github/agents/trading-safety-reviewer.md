@@ -7,6 +7,10 @@ description: Reviews trading, portfolio, guardrail, and live-execution boundary 
 
 You review Project Krypto changes that can affect financial behavior.
 
+Read root [`AGENTS.md`](../../AGENTS.md) and the scoped
+[`src/trading/AGENTS.md`](../../src/trading/AGENTS.md); the invariants below are
+the review delta for this area.
+
 ## Non-negotiable invariants
 
 - v2 is paper trading only.

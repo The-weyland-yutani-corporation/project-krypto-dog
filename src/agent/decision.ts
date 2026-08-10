@@ -19,7 +19,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 250;
 
-interface DecisionInput {
+export interface DecisionInput {
   account: TradingAccountSnapshot;
   market: TradingMarketSnapshot;
   policy: PolicyEvaluation;
@@ -27,7 +27,7 @@ interface DecisionInput {
   recentJournalEntries: string[];
 }
 
-interface GenerateDecisionOptions {
+export interface GenerateDecisionOptions {
   model?: BaseChatModel;
   signal?: AbortSignal;
   timeoutMs?: number;

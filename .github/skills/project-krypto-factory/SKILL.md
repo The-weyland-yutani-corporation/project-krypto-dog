@@ -15,7 +15,10 @@ Use this skill when designing, debugging, or extending the Project Krypto GH-AW 
 3. Keep agent jobs read-only; use GH-AW safe outputs for issues, comments, labels, and PRs.
 4. Treat labels as state transitions.
 5. Open implementation and docs-sync PRs ready for review (`draft: false`) with native auto-merge enabled; auto-merge is not authorization to bypass policy.
-6. Allow merge without current human approval only through the deterministic low-risk exception. Require current human approval for every other merge and for any production/live-trading decision.
+6. Allow same-repository merges only after current-head code review and every
+   deterministically selected specialist check pass. Forks require current human
+   approval; humans retain production, live-trading, secrets, and architecture
+   authority.
 7. Route risky changes through security, trading-safety, QA, and architecture reviews.
 8. Let proactive PM/research discovery originate software opportunities, but never bypass trading safety.
 
@@ -89,17 +92,22 @@ That path filter is not a complete risk classification. Explicitly route other
 risky changes, including `src/trading/**`, auth/admin APIs, `src/proxy.ts`,
 deployment procedures, workflow/policy files, and future live-execution paths,
 to the appropriate specialist review. The deterministic merge policy keeps all
-of these paths human-gated even when no path-triggered review runs.
+of these paths gated on the applicable current-head agent checks.
 
 ## Merge and self-heal policy
 
 - `implement-ticket` and `docs-sync` create non-draft PRs with
   `agentic-automerge` and native auto-merge enabled.
-- Merge without a current human approval is limited to a same-repository PR
-  from `github-actions[bot]` or `copilot-swe-agent[bot]`, with an `[ai-dev] ` or
-  `[docs-sync] ` title, `agentic-automerge`, and only added or modified
-  non-sensitive `docs/**` files using `.gif`, `.jpg`, `.jpeg`, `.md`, `.png`,
-  `.txt`, or `.webp`. Both the current path and any previous path must be
+- Same-repository PRs may pass merge policy when `Agentic code review` and every
+  specialist check selected from changed paths pass on the current head.
+- Forked PRs require a current approval from a trusted human reviewer. A current
+  trusted human change request remains a veto.
+- Trusted enrolled agent PRs are same-repository PRs from
+  `github-actions[bot]` or `copilot-swe-agent[bot]`, with an `[ai-dev] ` or
+  `[docs-sync] ` title and `agentic-automerge`.
+- Self-heal is further limited to trusted enrolled agent PRs that contain only
+  added or modified non-sensitive `docs/**` files using `.gif`, `.jpg`, `.jpeg`,
+  `.md`, `.png`, `.txt`, or `.webp`. Both current and previous paths must be
   allowlisted.
 - The reconciler denies docs paths with these sensitive segment/name tokens:
   `agentic`, `auth`, `backup`, `database`, `deploy`, `deployment`, `env`,
@@ -108,16 +116,16 @@ of these paths human-gated even when no path-triggered review runs.
   `runbooks`, `secret`, `secrets`, `security`, `trading`, `workflow`, and
   `workflows`. Renames and deletions are also outside the allowlist.
 - `blocked`, `self-heal-exhausted`, `needs-qa`, `security-review`,
-  `trading-safety`, and `ready-for-human-review` block the autonomous exception.
+  `trading-safety`, and `ready-for-human-review` keep merge policy pending.
   A `docs-sync` label on a PR without the `[docs-sync] ` title is also blocking.
-- Every other path requires an approval from a trusted human reviewer on the
-  current head. A current human change request keeps the merge policy pending.
 - Required contexts are `Quality and evidence gates`,
   `PostgreSQL migrations and execution`, `Agentic code review`, and
   `Agentic merge policy`; required conversation resolution still applies.
 - Self-heal uses the same low-risk boundary, never treats missing or held checks
   as repairable failures, and stops after two trusted `[self-heal]` commits or
   a completed no-change repair run.
+- Humans retain control over production deployment, live-trading enablement,
+  secrets and external accounts, and accepting architecture decisions.
 
 ## Proactive opportunity discovery
 

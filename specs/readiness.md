@@ -171,6 +171,11 @@ Verified locally; no production database mutation has occurred:
   critical-module coverage, all engineering backtests, production dependency
   audit, real-PostgreSQL migration/executor/orchestration tests, and migration
   drift. A protected manual no-trade Foundry smoke workflow is included.
+- Harness integrity now enforces canonical agentic policy, instruction/reference
+  integrity, deterministic SDLC safety fixtures, report-only entropy contracts,
+  and byte-stable GH-AW source/lock generation. A mock-first per-worktree app
+  harness proves isolated database/app startup and operator-console safety states
+  without production credentials or provider calls.
 - Current local validation: lint passes with one pre-existing PostCSS config
   warning; the coverage-gated Jest suite, script/test typecheck, production
   build, and real-PostgreSQL suite pass;

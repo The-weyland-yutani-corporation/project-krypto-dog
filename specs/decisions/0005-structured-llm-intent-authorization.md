@@ -1,6 +1,6 @@
 # 0005 -- Structured LLM intent + hard deterministic authorization
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-14
 - **Deciders:** @VeVarunSharma
 
@@ -57,8 +57,9 @@ See RFC 0002 for the full proposed design.
   LLM output must be handled gracefully (treat as HOLD, not crash).
 - Negative: Implicit prompt rules must be made explicit in code before this
   architecture can be adopted; ambiguous rules must be clarified first.
-- Follow-ups: Define `TradeIntent` and `AuthorizationResult` TypeScript types.
-  Migrate all prompt-level rules into `authorizeTradeIntent`. Update test suite.
+- Implemented by the structured decision schema, deterministic
+  `evaluateTradePolicy` / `authorizeTradeIntent` boundary, transactional paper
+  executor, and their test suites.
 
 ## Alternatives considered
 

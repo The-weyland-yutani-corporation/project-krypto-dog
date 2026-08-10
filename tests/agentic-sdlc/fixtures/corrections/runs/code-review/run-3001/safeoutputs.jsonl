@@ -1,0 +1,3 @@
+{"type":"add-comment","item_number":42,"body_present":true}
+{"type":"add-labels","item_number":42,"labels":["security-review","trading-safety"]}
+{"type":"create-check-run","name":"Agentic code review"}

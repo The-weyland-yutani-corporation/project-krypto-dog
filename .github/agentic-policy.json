@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "merge": {
+    "context": "Agentic merge policy",
+    "requiredContexts": [
+      "Quality and evidence gates",
+      "PostgreSQL migrations and execution",
+      "Agentic code review",
+      "Agentic merge policy"
+    ],
+    "reviewCheck": "Agentic code review",
+    "securityCheck": "Security review",
+    "tradingSafetyCheck": "Trading safety review"
+  },
+  "identities": {
+    "trustedAgentAuthors": [
+      "github-actions[bot]",
+      "copilot-swe-agent[bot]"
+    ],
+    "trustedReviewAssociations": [
+      "OWNER",
+      "MEMBER",
+      "COLLABORATOR"
+    ]
+  },
+  "labels": {
+    "autoMerge": "agentic-automerge",
+    "blocked": "blocked",
+    "selfHealExhausted": "self-heal-exhausted",
+    "blocking": [
+      "blocked",
+      "self-heal-exhausted",
+      "needs-qa",
+      "security-review",
+      "trading-safety",
+      "ready-for-human-review"
+    ]
+  },
+  "conclusions": {
+    "failing": [
+      "cancelled",
+      "failure",
+      "startup_failure",
+      "timed_out"
+    ],
+    "passingChecks": [
+      "success"
+    ]
+  },
+  "lowRiskDocs": {
+    "statuses": [
+      "added",
+      "modified"
+    ],
+    "pathPattern": "^docs/.*\\.(gif|jpe?g|md|png|txt|webp)$",
+    "sensitiveTokenPattern": "(^|/)(agentic|auth|backup|database|deploy(?:ment)?|env|guardrails?|incident|migrations?|oncall|operator|policy|production|release|rollback|runbooks?|secrets?|security|trading|workflows?)(/|[-_.])"
+  },
+  "specialistRouting": {
+    "security": {
+      "exactPaths": [
+        "src/proxy.ts",
+        ".env.example",
+        "specs/deployment.md"
+      ],
+      "patterns": [
+        "^\\.github/",
+        "^src/app/api/(admin|auth)/",
+        "^src/deployment/",
+        "^src/lib/.*(?:auth|csrf|secure-compare).*\\.ts$",
+        "^(?:docker-compose\\.yml|next\\.config\\.[^/]+|package(?:-lock)?\\.json)$"
+      ]
+    },
+    "tradingSafety": {
+      "exactPaths": [],
+      "patterns": [
+        "^src/(?:agent|backtest|db|guardrails|tools|trading)/",
+        "^src/app/api/agent/",
+        "^(?:drizzle|supabase/migrations)/",
+        "^specs/rfcs/"
+      ]
+    }
+  },
+  "selfHeal": {
+    "maxRepairCommits": 2,
+    "nonRepairableReviewConclusions": [
+      "action_required",
+      "neutral",
+      "skipped",
+      "success"
+    ]
+  },
+  "wip": {
+    "maxOpenActionableOpportunities": 20
+  },
+  "authority": {
+    "forksRequireHumanApproval": true,
+    "humanOnly": [
+      "production_deployment",
+      "live_trading_enablement",
+      "secrets_and_external_accounts",
+      "architecture_acceptance"
+    ],
+    "paperOnly": true
+  }
+}

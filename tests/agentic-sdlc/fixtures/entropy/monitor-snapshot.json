@@ -1,0 +1,37 @@
+{
+  "_comment": "Synthetic, public-safe MonitorOps snapshot subset used to drive the entropy collector deterministically. No real issue bodies, secrets, or production data.",
+  "schemaVersion": 1,
+  "mode": "governance",
+  "generatedAt": "2026-08-10T00:15:37.000Z",
+  "workflows": [],
+  "issues": {
+    "wipCap": 20,
+    "openActionableOpportunities": 22,
+    "openedInWindow": 3,
+    "closedInWindow": 1,
+    "netOpened": 2,
+    "staleWip": [],
+    "blocked": []
+  },
+  "telemetry": {
+    "activeWorkflows": 18,
+    "workflowsWithRunData": 18,
+    "workflowsWithCostData": 1,
+    "costCoverage": 0.0555
+  },
+  "thresholds": {
+    "breaches": [
+      {
+        "id": "repeated_workflow_failure",
+        "workflow": "pm-triage",
+        "evidence": { "consecutiveFailures": 2, "threshold": 2 }
+      },
+      {
+        "id": "ai_credits_over_run_cap",
+        "workflow": "pm-triage",
+        "evidence": { "aiCredits": 3000, "cap": 1000 }
+      }
+    ]
+  },
+  "materialState": { "hash": "abc123" }
+}

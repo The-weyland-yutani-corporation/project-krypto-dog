@@ -29,6 +29,9 @@ function withEnv(vars: Record<string, string | undefined>, fn: () => void) {
     "CRON_SECRET",
     "ADMIN_PASSWORD",
     "ADMIN_SESSION_SECRET",
+    "AGENT_HARNESS_MODE",
+    "AGENT_HARNESS_SCENARIO",
+    "AGENT_HARNESS_DECISION",
     "NODE_ENV",
   ];
 
@@ -161,6 +164,19 @@ describe("validateEnv", () => {
     });
   });
 
+  it("permits a mock harness without LLM or PostHog credentials", () => {
+    withEnv(
+      {
+        NODE_ENV: "development",
+        AGENT_HARNESS_MODE: "mock",
+        POSTHOG_API_KEY: undefined,
+      },
+      () => {
+        expect(() => validateEnv()).not.toThrow();
+      },
+    );
+  });
+
   it("throws when the preferred base URL is not a Foundry Anthropic endpoint", () => {
     withEnv(
       {
@@ -222,6 +238,38 @@ describe("validateEnv", () => {
       {
         NODE_ENV: "production",
         ADMIN_SESSION_SECRET: undefined,
+        ANTHROPIC_FOUNDRY_BASE_URL:
+          "https://res.services.ai.azure.com/anthropic",
+        ANTHROPIC_FOUNDRY_API_KEY: "key",
+        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude-stub",
+      },
+      () => {
+        expect(() => validateEnv()).toThrow("Invalid environment variables");
+      },
+    );
+  });
+
+  it("forbids harness provider modes in production", () => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        AGENT_HARNESS_MODE: "mock",
+        ANTHROPIC_FOUNDRY_BASE_URL:
+          "https://res.services.ai.azure.com/anthropic",
+        ANTHROPIC_FOUNDRY_API_KEY: "key",
+        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude-stub",
+      },
+      () => {
+        expect(() => validateEnv()).toThrow("Invalid environment variables");
+      },
+    );
+  });
+
+  it("requires PostHog in production", () => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        POSTHOG_API_KEY: undefined,
         ANTHROPIC_FOUNDRY_BASE_URL:
           "https://res.services.ai.azure.com/anthropic",
         ANTHROPIC_FOUNDRY_API_KEY: "key",

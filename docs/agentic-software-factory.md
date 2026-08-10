@@ -19,6 +19,8 @@ Work flows through small, safe automation loops:
 9. A deterministic merge policy approves same-repository PRs after current-head code review and any path-selected specialist checks pass.
 10. QA and docs-sync remain label-driven; security and trading-safety are selected from changed paths.
 11. Release readiness and governance workflows prepare operator handoff and track factory health.
+12. Deterministic SDLC evals, report-only entropy, and staged CorrectionOps
+    measure the factory without gaining implementation authority.
 
 ## State labels
 
@@ -53,6 +55,10 @@ are approved by current-head agent checks:
 - every PR requires CI and `Agentic code review`
 - auth, dependency, deployment, agent, skill, and workflow changes also require `Security review`
 - trading, guardrail, agent, backtest, database, migration, and trading RFC changes also require `Trading safety review`
+
+The non-sensitive documentation allowlist is narrower than this merge policy:
+it limits which enrolled agent PRs may receive self-heal commits, not which
+same-repository PRs may be authorized by current-head agent checks.
 
 Humans may still veto a PR with a current-head change request or blocking label,
 and retain control over:
@@ -121,6 +127,107 @@ After changing a GH-AW source or compiled workflow, also run:
 ```bash
 gh aw compile --strict
 ```
+
+### Agentic SDLC evaluations
+
+The factory's own behavior (PM triage and specialist routing) is evaluated by a
+deterministic, model-free scorer over a versioned, public-safe fixture corpus:
+
+```bash
+npm run agentic:evals          # score committed baselines, print a summary
+npm run agentic:evals:check    # deterministic safety/contract gate (in harness:check + CI)
+```
+
+The gate is blocking: every `critical` safety/routing fixture must pass 100% and
+the forbidden-action rate must be zero. Routing fixtures are scored by invoking
+the canonical reconciler helpers, so the real routing policy is under test.
+Scoring baseline observations verifies the scorer and the data contract only —
+it does **not** run a model. Semantic prompt quality requires manual TrialOps
+(`gh aw trial --repeat 3`) plus `npm run agentic:evals:compare`. The full
+criteria, metrics, versioning, no-cherry-picking rules, and safety exclusions
+are in [`../specs/agentic-sdlc-evaluation.md`](../specs/agentic-sdlc-evaluation.md).
+
+### Report-only entropy
+
+A weekly `harness-entropy` workflow scans the factory's governance surfaces and
+publishes a single recurring report issue. The scan is deterministic and
+dependency-free:
+
+```bash
+npm run entropy:collect        # write the JSON entropy manifest (stdout or --out)
+npm run entropy:check          # fail only on zero-tolerance rules (in harness:check)
+```
+
+It reuses existing authorities (the canonical policy loader, the MonitorOps
+workflow inventory, and the supplied MonitorOps snapshot) and reports across
+explicit dimensions — policy consistency, source/lock consistency,
+instruction/reference integrity, architecture integrity, observability coverage,
+backlog hygiene, and maintainability hotspots — with per-rule evidence and no
+single aggregate score. Zero-tolerance rules (policy valid, sources compiled,
+references resolve, imports exist, no prohibited live executor, generated doc
+markers present) run in `harness:check`; advisory findings (duplicated policy
+literals, stale WIP, telemetry gaps, boundary hotspots, files over the documented
+500-line advisory threshold, and TODO/FIXME/HACK markers) are report-only and
+never block CI. The workflow is strictly report-only: it has no create-pull-request,
+push, edit, or deletion output, publishes at most one issue, and never proposes or
+applies a code, policy, or trading change. See
+[`agentic-workflows-map.md`](./agentic-workflows-map.md) (Report-only entropy).
+
+### Staged CorrectionOps
+
+A weekly `agentic-corrections` workflow measures how often the factory's
+PM-triage and specialist-routing label decisions were later corrected by a
+trusted human. The scan is deterministic and dependency-free:
+
+```bash
+npm run corrections:collect    # write the JSON correction report (stdout or --out)
+npm run corrections:check      # deterministic contract over committed fixtures (no gh)
+```
+
+The collector reconstructs each prediction from the real
+`gh aw logs --artifacts all` artifact shape (`aw_info.json`, `safeoutputs.jsonl`,
+`safe-outputs-items/safe-output-items.jsonl`, and the
+`aw-prompts/prompt-import-tree.json` + `prompt.txt` instruction fingerprint) and
+reconciles it against later GitHub label events authored by a trusted
+`User` collaborator (`admin`/`maintain`/`write`) after the prediction was applied.
+Bots and untrusted users are provenance-only and never scored; a record with no
+trusted human action is `pending`, never a `match`. Semantic specialist routes
+(from `security-review`/`trading-safety` labels) are kept separate from the
+*immutable* routes derived from the PR's changed paths via the canonical
+reconciler, and a human disagreement can never weaken an immutable route — it is
+surfaced as a safety-warning conflict. The report tracks match/mismatch/pending,
+correction rate (or `null` at sample size `0`), immutable-route conflicts, and
+instruction/workflow/model groupings, storing no raw issue/comment/prompt/event
+body. It is staged and report-only: no create-pull-request, push, edit,
+`add-labels`, or
+deletion output, at most one recurring issue, and it never scores or learns around
+trading authorization, guardrails, leases, reconciliation, operator pause, or the
+paper/live boundary. Confirmed corrections feed the eval corpus only through the
+reviewed process in [`../specs/agentic-sdlc-evaluation.md`](../specs/agentic-sdlc-evaluation.md)
+(§9). See [`../specs/decisions/0010-staged-correction-ops.md`](../specs/decisions/0010-staged-correction-ops.md).
+
+Neither report-only loop can promote itself. Any future write authority must
+satisfy the evidence and explicit human-decision gate in
+[`../specs/decisions/0012-evidence-gated-automation-authority.md`](../specs/decisions/0012-evidence-gated-automation-authority.md).
+
+### Mock-first application harness
+
+The per-worktree application harness boots an isolated PostgreSQL database and
+Next.js server with deterministic providers by default:
+
+```bash
+npm run harness:up
+npm run harness:status
+npm run harness:browser
+npm run harness:down
+```
+
+Default mode is `disabled` with no Foundry, Coinbase, PostHog, or email calls.
+Deterministic shadow scenarios remain no-trade. Real-provider smoke requires
+`--allow-network-smoke`, stays `shadow`, calls only Foundry and Coinbase, and
+never invokes execution. See
+[`../specs/decisions/0011-mock-first-worktree-harness.md`](../specs/decisions/0011-mock-first-worktree-harness.md)
+and [`../specs/local-testing.md`](../specs/local-testing.md).
 
 ### Manual end-to-end canary
 

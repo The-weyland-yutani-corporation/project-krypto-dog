@@ -24,7 +24,9 @@ describe("agentic SDLC workflow contracts", () => {
       "ref: ${{ github.event.repository.default_branch }}",
     );
     expect(reconciler).toContain("persist-credentials: false");
-    expect(reconciler).toContain("sparse-checkout: .github/scripts");
+    expect(reconciler).toContain("sparse-checkout: |");
+    expect(reconciler).toContain(".github/scripts");
+    expect(reconciler).toContain(".github/agentic-policy.json");
     expect(reconciler).toContain(
       '".github/scripts/agentic-pr-reconciler.cjs"',
     );

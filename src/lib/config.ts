@@ -110,7 +110,7 @@ const envSchema = z
     AZURE_OPENAI_API_VERSION: z.string().min(1).optional(),
     // Other runtime config
     DATABASE_URL: z.string().url(),
-    POSTHOG_API_KEY: z.string().min(1),
+    POSTHOG_API_KEY: z.string().min(1).optional(),
     POSTHOG_HOST: z.string().url().optional(),
     CRON_SECRET: z.string().min(1),
     ROLLOUT_MODE: z.enum(["disabled", "shadow", "paper"]).optional(),
@@ -119,6 +119,9 @@ const envSchema = z
     ALERT_EMAIL_FROM: z.email().optional(),
     ADMIN_PASSWORD: z.string().min(1),
     ADMIN_SESSION_SECRET: z.string().min(1).optional(),
+    AGENT_HARNESS_MODE: z.enum(["mock", "smoke"]).optional(),
+    AGENT_HARNESS_SCENARIO: z.enum(["steady", "dip", "crash"]).optional(),
+    AGENT_HARNESS_DECISION: z.enum(["HOLD", "BUY", "SELL"]).optional(),
     NODE_ENV: z.enum(["development", "test", "production"]).optional(),
   })
   .check((ctx) => {
@@ -134,7 +137,8 @@ const envSchema = z
     const hasAnyNew = !!(newBaseURL || newKey || newDeployment);
     const hasNew = !!(newBaseURL && newKey && newDeployment);
     const hasLegacy = !!(legacyEndpoint && legacyKey && legacyDeployment);
-    if ((hasAnyNew && !hasNew) || (!hasAnyNew && !hasLegacy)) {
+    const mockHarness = env.AGENT_HARNESS_MODE === "mock";
+    if (!mockHarness && ((hasAnyNew && !hasNew) || (!hasAnyNew && !hasLegacy))) {
       ctx.issues.push({
         code: "custom",
         message:
@@ -160,6 +164,22 @@ const envSchema = z
       ctx.issues.push({
         code: "custom",
         message: "ADMIN_SESSION_SECRET is required in production.",
+        input: ctx.value,
+      });
+    }
+
+    if (env.NODE_ENV === "production" && !env.POSTHOG_API_KEY) {
+      ctx.issues.push({
+        code: "custom",
+        message: "POSTHOG_API_KEY is required in production.",
+        input: ctx.value,
+      });
+    }
+
+    if (env.NODE_ENV === "production" && env.AGENT_HARNESS_MODE) {
+      ctx.issues.push({
+        code: "custom",
+        message: "AGENT_HARNESS_MODE is forbidden in production.",
         input: ctx.value,
       });
     }

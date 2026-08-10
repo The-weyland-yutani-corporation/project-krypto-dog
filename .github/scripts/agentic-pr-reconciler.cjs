@@ -1,42 +1,30 @@
 "use strict";
 
-const MERGE_CONTEXT = "Agentic merge policy";
-const REVIEW_CHECK_NAME = "Agentic code review";
-const SECURITY_CHECK_NAME = "Security review";
-const TRADING_SAFETY_CHECK_NAME = "Trading safety review";
-const AUTO_MERGE_LABEL = "agentic-automerge";
-const EXHAUSTED_LABEL = "self-heal-exhausted";
-const BLOCKED_LABEL = "blocked";
+const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 
-const TRUSTED_AGENT_AUTHORS = new Set([
-  "github-actions[bot]",
-  "copilot-swe-agent[bot]",
-]);
-const TRUSTED_REVIEW_ASSOCIATIONS = new Set([
-  "OWNER",
-  "MEMBER",
-  "COLLABORATOR",
-]);
-const BLOCKING_LABELS = new Set([
-  BLOCKED_LABEL,
-  EXHAUSTED_LABEL,
-  "needs-qa",
-  "security-review",
-  "trading-safety",
-  "ready-for-human-review",
-]);
-const FAILING_CONCLUSIONS = new Set([
-  "cancelled",
-  "failure",
-  "startup_failure",
-  "timed_out",
-]);
-const LOW_RISK_STATUSES = new Set(["added", "modified"]);
-const PASSING_CHECK_CONCLUSIONS = new Set([
-  "neutral",
-  "skipped",
-  "success",
-]);
+const {
+  autoMergeLabel: AUTO_MERGE_LABEL,
+  blockedLabel: BLOCKED_LABEL,
+  blockingLabels: BLOCKING_LABELS,
+  exhaustedLabel: EXHAUSTED_LABEL,
+  failingConclusions: FAILING_CONCLUSIONS,
+  lowRiskPathPattern: LOW_RISK_PATH_PATTERN,
+  lowRiskStatuses: LOW_RISK_STATUSES,
+  maxRepairCommits: MAX_REPAIR_COMMITS,
+  mergeContext: MERGE_CONTEXT,
+  nonRepairableReviewConclusions: NON_REPAIRABLE_REVIEW_CONCLUSIONS,
+  passingCheckConclusions: PASSING_CHECK_CONCLUSIONS,
+  reviewCheckName: REVIEW_CHECK_NAME,
+  securityCheckName: SECURITY_CHECK_NAME,
+  securityExactPaths: SECURITY_EXACT_PATHS,
+  securityPathPatterns: SECURITY_PATH_PATTERNS,
+  sensitiveTokenPattern: SENSITIVE_DOC_TOKEN_PATTERN,
+  tradingSafetyCheckName: TRADING_SAFETY_CHECK_NAME,
+  tradingSafetyExactPaths: TRADING_SAFETY_EXACT_PATHS,
+  tradingSafetyPathPatterns: TRADING_SAFETY_PATH_PATTERNS,
+  trustedAgentAuthors: TRUSTED_AGENT_AUTHORS,
+  trustedReviewAssociations: TRUSTED_REVIEW_ASSOCIATIONS,
+} = AGENTIC_POLICY;
 
 function getLabels(pullRequest) {
   return new Set(
@@ -71,14 +59,12 @@ function isTrustedAgentPullRequest(pullRequest, repository) {
 function isLowRiskPath(filename) {
   if (
     typeof filename !== "string" ||
-    !/^docs\/.*\.(gif|jpe?g|md|png|txt|webp)$/i.test(filename)
+    !LOW_RISK_PATH_PATTERN.test(filename)
   ) {
     return false;
   }
 
-  return !/(^|\/)(agentic|auth|backup|database|deploy(?:ment)?|env|guardrails?|incident|migrations?|oncall|operator|policy|production|release|rollback|runbooks?|secrets?|security|trading|workflows?)(\/|[-_.])/i.test(
-    filename,
-  );
+  return !SENSITIVE_DOC_TOKEN_PATTERN.test(filename);
 }
 
 function isLowRiskChange(files) {
@@ -94,26 +80,18 @@ function isLowRiskChange(files) {
 }
 
 function requiresSecurityReview(filename) {
-  return (
-    /^\.github\//.test(filename) ||
-    /^src\/app\/api\/(admin|auth)\//.test(filename) ||
-    /^src\/deployment\//.test(filename) ||
-    /^src\/lib\/.*(?:auth|csrf|secure-compare).*\.ts$/.test(filename) ||
-    filename === "src/proxy.ts" ||
-    filename === ".env.example" ||
-    /^(?:docker-compose\.yml|next\.config\.[^/]+|package(?:-lock)?\.json)$/.test(
-      filename,
-    ) ||
-    filename === "specs/deployment.md"
+  return Boolean(
+    typeof filename === "string" &&
+      (SECURITY_EXACT_PATHS.has(filename) ||
+        SECURITY_PATH_PATTERNS.some((pattern) => pattern.test(filename))),
   );
 }
 
 function requiresTradingSafetyReview(filename) {
-  return (
-    /^src\/(?:agent|backtest|db|guardrails|tools|trading)\//.test(filename) ||
-    /^src\/app\/api\/agent\//.test(filename) ||
-    /^(?:drizzle|supabase\/migrations)\//.test(filename) ||
-    /^specs\/rfcs\//.test(filename)
+  return Boolean(
+    typeof filename === "string" &&
+      (TRADING_SAFETY_EXACT_PATHS.has(filename) ||
+        TRADING_SAFETY_PATH_PATTERNS.some((pattern) => pattern.test(filename))),
   );
 }
 
@@ -350,9 +328,7 @@ function hasFailedReviewCheck(checkRuns) {
   return (
     reviewCheck &&
     reviewCheck.status === "completed" &&
-    !["action_required", "neutral", "skipped", "success"].includes(
-      reviewCheck.conclusion,
-    )
+    !NON_REPAIRABLE_REVIEW_CONCLUSIONS.has(reviewCheck.conclusion)
   );
 }
 
@@ -621,7 +597,7 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
         continue;
       }
 
-      if (countRepairAttempts(commits) >= 2) {
+      if (countRepairAttempts(commits) >= MAX_REPAIR_COMMITS) {
         await addLabels(pullRequest, [EXHAUSTED_LABEL, BLOCKED_LABEL]);
         continue;
       }
@@ -648,11 +624,13 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
 }
 
 module.exports = {
+  AGENTIC_POLICY,
   AUTO_MERGE_LABEL,
   BLOCKED_LABEL,
   BLOCKING_LABELS,
   EXHAUSTED_LABEL,
   LOW_RISK_STATUSES,
+  MAX_REPAIR_COMMITS,
   MERGE_CONTEXT,
   REVIEW_CHECK_NAME,
   SECURITY_CHECK_NAME,

@@ -96,7 +96,10 @@ Implement a ready issue and open an auto-merge-enabled PR.
 - Run the narrowest relevant validation, escalating to the baseline commands when appropriate.
 - Open one PR with a concise description, validation performed, risks, and linked issue.
 - Native auto-merge must remain enabled. Required CI, agentic review, conversation resolution, and merge-policy checks decide whether it can merge.
-- Never describe a code, test, config, migration, trading, auth, database, deployment, workflow, or operator-console change as low risk. The deterministic merge policy requires human approval for those paths.
+- Never describe a code, test, config, migration, trading, auth, database,
+  deployment, workflow, or operator-console change as low risk. The
+  deterministic merge policy routes those paths through the applicable
+  current-head code, security, and trading-safety checks.
 
 ## Safe outputs
 
