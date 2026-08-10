@@ -12,6 +12,7 @@
     "test:unit": "jest --runInBand",
     "test:coverage": "jest --coverage --runInBand --silent",
     "test:integration": "npm run test:migrations",
+    "test:agentic-sdlc": "jest --runInBand tests/agentic-sdlc",
     "test:watch": "jest --watch",
     "smoke:llm": "npx tsx scripts/smoke-llm.ts",
     "db:generate": "drizzle-kit generate",

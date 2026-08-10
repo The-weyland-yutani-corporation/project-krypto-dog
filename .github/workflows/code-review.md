@@ -1,6 +1,7 @@
 ---
 description: High-signal automated PR review for correctness and maintainability.
 on:
+  bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]
   workflow_dispatch:
     inputs:
       pr:
@@ -22,11 +23,16 @@ tools:
 network: defaults
 safe-outputs:
   add-comment:
+    target: "*"
     max: 1
     hide-older-comments: true
   add-labels:
+    target: "*"
     allowed: [needs-qa, security-review, trading-safety, docs-sync, ready-for-human-review]
     max: 5
+  create-check-run:
+    name: Agentic code review
+    max: 1
   create-issue:
     title-prefix: "[review-followup] "
     labels: [agentic-factory, needs-ai-review]
@@ -45,14 +51,21 @@ Review the PR for real defects only.
 ## Task
 
 - Inspect the PR diff, changed files, tests, and CI status.
+- Resolve the PR from the pull request event or the `pr` workflow-dispatch input.
+- For manual dispatch, verify the workflow ref is the target PR head and include the PR number as `item_number` in comments or labels.
+- Treat the exact marker `<!-- agentic-e2e:self-heal -->` in `docs/e2e/factory-heartbeat.md` as a deterministic required fix: create a failing `Agentic code review` check, ask for that marker to be removed, and do not add a specialist label for this known canary. After the marker is absent, review the file normally.
 - Report only correctness, reliability, maintainability, or product-behavior issues that matter.
 - For frontend/admin/chart changes, check that the PR follows root `DESIGN.md`, uses shadcn/ui + Tailwind primitives, and avoids default unstyled chart output.
 - Do not comment on style or formatting unless it causes a real defect.
 - Use `add-labels` to escalate trading, auth/security, QA, or docs/spec concerns to specialized review labels.
+- Always create exactly one `Agentic code review` check on the target PR's current head SHA.
+- Set the check to `success` only when there are no required fixes and no specialist escalation is needed.
+- Set the check to `failure` for any required fix, unresolved correctness concern, or specialist escalation.
 
 ## Safe outputs
 
 - Use `add-comment` for PR findings.
 - Use `add-labels` for specialized review escalation.
 - Use `create-issue` only for cross-cutting follow-up beyond the PR.
-- Use `noop` when there are no actionable findings.
+- Use `create-check-run` for the required pass/fail result.
+- Use `noop` only when no open PR can be resolved from the trigger.

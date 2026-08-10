@@ -30,6 +30,7 @@ safe-outputs:
   create-issue:
     title-prefix: "[opportunity] "
     labels: [agentic-factory, opportunity, needs-rubber-duck]
+    allowed-labels: [agentic-factory, opportunity, needs-rubber-duck]
     max: 1
     deduplicate-by-title: 1
   add-comment:

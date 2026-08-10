@@ -1,0 +1,51 @@
+name: Agentic PR Reconciler
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+  workflow_run:
+    workflows: [CI, Code Review, PR Self Heal]
+    types: [completed]
+
+concurrency:
+  group: agentic-pr-reconciler
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+  statuses: write
+
+jobs:
+  reconcile:
+    name: Reconcile agentic pull requests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out trusted reconciler implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Reconcile checks, policy, and repair
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const path = require("node:path");
+            const reconcilerPath = path.join(
+              process.env.GITHUB_WORKSPACE,
+              ".github/scripts/agentic-pr-reconciler.cjs",
+            );
+            const { reconcileAgenticPullRequests } = require(reconcilerPath);
+            await reconcileAgenticPullRequests({ github, context, core });
