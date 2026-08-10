@@ -2,6 +2,8 @@
 
 const MERGE_CONTEXT = "Agentic merge policy";
 const REVIEW_CHECK_NAME = "Agentic code review";
+const SECURITY_CHECK_NAME = "Security review";
+const TRADING_SAFETY_CHECK_NAME = "Trading safety review";
 const AUTO_MERGE_LABEL = "agentic-automerge";
 const EXHAUSTED_LABEL = "self-heal-exhausted";
 const BLOCKED_LABEL = "blocked";
@@ -30,6 +32,11 @@ const FAILING_CONCLUSIONS = new Set([
   "timed_out",
 ]);
 const LOW_RISK_STATUSES = new Set(["added", "modified"]);
+const PASSING_CHECK_CONCLUSIONS = new Set([
+  "neutral",
+  "skipped",
+  "success",
+]);
 
 function getLabels(pullRequest) {
   return new Set(
@@ -86,6 +93,45 @@ function isLowRiskChange(files) {
   );
 }
 
+function requiresSecurityReview(filename) {
+  return (
+    /^\.github\//.test(filename) ||
+    /^src\/app\/api\/(admin|auth)\//.test(filename) ||
+    /^src\/deployment\//.test(filename) ||
+    /^src\/lib\/.*(?:auth|csrf|secure-compare).*\.ts$/.test(filename) ||
+    filename === "src/proxy.ts" ||
+    filename === ".env.example" ||
+    /^(?:docker-compose\.yml|next\.config\.[^/]+|package(?:-lock)?\.json)$/.test(
+      filename,
+    ) ||
+    filename === "specs/deployment.md"
+  );
+}
+
+function requiresTradingSafetyReview(filename) {
+  return (
+    /^src\/(?:agent|backtest|db|guardrails|tools|trading)\//.test(filename) ||
+    /^src\/app\/api\/agent\//.test(filename) ||
+    /^(?:drizzle|supabase\/migrations)\//.test(filename) ||
+    /^specs\/rfcs\//.test(filename)
+  );
+}
+
+function getRequiredSpecialistChecks(files) {
+  const required = [];
+  const filenames = files.flatMap((file) =>
+    [file.filename, file.previous_filename].filter(Boolean),
+  );
+
+  if (filenames.some(requiresSecurityReview)) {
+    required.push(SECURITY_CHECK_NAME);
+  }
+  if (filenames.some(requiresTradingSafetyReview)) {
+    required.push(TRADING_SAFETY_CHECK_NAME);
+  }
+  return required;
+}
+
 function getReviewState(pullRequest, reviews, sha) {
   const latestDecisiveReview = new Map();
 
@@ -131,7 +177,53 @@ function hasBlockingLabel(pullRequest) {
   );
 }
 
-function evaluateMergePolicy({ pullRequest, files, reviews, repository }) {
+function getCheckState(checkRuns, name) {
+  const check = latestNamedCheck(checkRuns, name);
+  if (!check) {
+    return "missing";
+  }
+  if (check.status !== "completed") {
+    return "pending";
+  }
+  return PASSING_CHECK_CONCLUSIONS.has(check.conclusion)
+    ? "success"
+    : "failure";
+}
+
+function getAgentApprovalState(files, checkRuns) {
+  const requiredSpecialistChecks = getRequiredSpecialistChecks(files);
+  const requiredChecks = [
+    REVIEW_CHECK_NAME,
+    ...requiredSpecialistChecks,
+  ];
+  const checkStates = Object.fromEntries(
+    requiredChecks.map((name) => [name, getCheckState(checkRuns, name)]),
+  );
+  const failedCheck = requiredChecks.find(
+    (name) => checkStates[name] === "failure",
+  );
+  const waitingCheck = requiredChecks.find(
+    (name) =>
+      checkStates[name] === "missing" ||
+      checkStates[name] === "pending",
+  );
+
+  return {
+    approved: !failedCheck && !waitingCheck,
+    checkStates,
+    failedCheck,
+    waitingCheck,
+    requiredSpecialistChecks,
+  };
+}
+
+function evaluateMergePolicy({
+  pullRequest,
+  files,
+  reviews,
+  checkRuns = [],
+  repository,
+}) {
   const sha = pullRequest.head.sha;
   const sameRepository = isSameRepositoryPullRequest(
     pullRequest,
@@ -140,6 +232,7 @@ function evaluateMergePolicy({ pullRequest, files, reviews, repository }) {
   const trustedAgent = isTrustedAgentPullRequest(pullRequest, repository);
   const lowRisk = isLowRiskChange(files);
   const blockingLabel = hasBlockingLabel(pullRequest);
+  const agentApproval = getAgentApprovalState(files, checkRuns);
   const {
     hasCurrentHumanApproval,
     hasCurrentHumanChangesRequested,
@@ -155,13 +248,17 @@ function evaluateMergePolicy({ pullRequest, files, reviews, repository }) {
   } else if (hasCurrentHumanApproval) {
     state = "success";
     description = "Current human approval satisfies policy";
-  } else if (trustedAgent && lowRisk && !blockingLabel) {
+  } else if (blockingLabel) {
+    description = "A blocking review label requires changes";
+  } else if (!sameRepository) {
+    description = "A current human approval is required for forked changes";
+  } else if (agentApproval.failedCheck) {
+    description = `${agentApproval.failedCheck} requires changes`;
+  } else if (agentApproval.waitingCheck) {
+    description = `Waiting for ${agentApproval.waitingCheck}`;
+  } else if (agentApproval.approved) {
     state = "success";
-    description = "Allowlisted low-risk agent pull request";
-  } else if (trustedAgent && blockingLabel) {
-    description = "A blocking review label requires human approval";
-  } else if (trustedAgent) {
-    description = "Non-allowlisted changes require human approval";
+    description = "Current-head agent reviews approve this PR";
   }
 
   return {
@@ -173,6 +270,9 @@ function evaluateMergePolicy({ pullRequest, files, reviews, repository }) {
     hasBlockingLabel: blockingLabel,
     hasCurrentHumanApproval,
     hasCurrentHumanChangesRequested,
+    agentApproved: agentApproval.approved,
+    agentCheckStates: agentApproval.checkStates,
+    requiredSpecialistChecks: agentApproval.requiredSpecialistChecks,
   };
 }
 
@@ -213,6 +313,16 @@ function countRepairAttempts(commits) {
 function pullRequestDispatchInputs(number) {
   return {
     pr: String(number),
+    aw_context: JSON.stringify({
+      item_type: "pull_request",
+      item_number: number,
+    }),
+  };
+}
+
+function targetDispatchInputs(number) {
+  return {
+    target: String(number),
     aw_context: JSON.stringify({
       item_type: "pull_request",
       item_number: number,
@@ -380,8 +490,16 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
     try {
       const number = pullRequest.number;
       const sha = pullRequest.head.sha;
-      const [files, reviews, commits, checkRuns, ciRuns, reviewRuns] =
-        await Promise.all([
+      const [
+        files,
+        reviews,
+        commits,
+        checkRuns,
+        ciRuns,
+        reviewRuns,
+        securityRuns,
+        tradingSafetyRuns,
+      ] = await Promise.all([
           github.paginate(github.rest.pulls.listFiles, {
             owner,
             repo,
@@ -403,12 +521,15 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
           }),
           listRuns("ci.yml", sha),
           listRuns("code-review.lock.yml", sha),
+          listRuns("security-review.lock.yml", sha),
+          listRuns("trading-safety-review.lock.yml", sha),
         ]);
 
       const policy = evaluateMergePolicy({
         pullRequest,
         files,
         reviews,
+        checkRuns,
         repository,
       });
 
@@ -428,8 +549,23 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
       const ciHeld = ciRuns[0] && ciRuns[0].conclusion === "action_required";
       const reviewHeld =
         reviewRuns[0] && reviewRuns[0].conclusion === "action_required";
-      const reviewShouldDispatch =
-        reviewNeedsDispatch || (policy.trustedAgent && reviewHeld);
+      const reviewShouldDispatch = reviewNeedsDispatch || reviewHeld;
+      const securityRequired =
+        policy.requiredSpecialistChecks.includes(SECURITY_CHECK_NAME);
+      const tradingSafetyRequired =
+        policy.requiredSpecialistChecks.includes(
+          TRADING_SAFETY_CHECK_NAME,
+        );
+      const securityShouldDispatch =
+        securityRequired &&
+        policy.agentCheckStates[SECURITY_CHECK_NAME] !== "success" &&
+        (securityRuns.length === 0 ||
+          securityRuns[0].conclusion === "action_required");
+      const tradingSafetyShouldDispatch =
+        tradingSafetyRequired &&
+        policy.agentCheckStates[TRADING_SAFETY_CHECK_NAME] !== "success" &&
+        (tradingSafetyRuns.length === 0 ||
+          tradingSafetyRuns[0].conclusion === "action_required");
 
       if (ciNeedsDispatch) {
         await dispatch("ci.yml", pullRequest.head.ref);
@@ -440,6 +576,22 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
           "code-review.lock.yml",
           pullRequest.head.ref,
           pullRequestDispatchInputs(number),
+        );
+      }
+
+      if (securityShouldDispatch) {
+        await dispatch(
+          "security-review.lock.yml",
+          pullRequest.head.ref,
+          targetDispatchInputs(number),
+        );
+      }
+
+      if (tradingSafetyShouldDispatch) {
+        await dispatch(
+          "trading-safety-review.lock.yml",
+          pullRequest.head.ref,
+          targetDispatchInputs(number),
         );
       }
 
@@ -503,10 +655,15 @@ module.exports = {
   LOW_RISK_STATUSES,
   MERGE_CONTEXT,
   REVIEW_CHECK_NAME,
+  SECURITY_CHECK_NAME,
   TRUSTED_AGENT_AUTHORS,
+  TRADING_SAFETY_CHECK_NAME,
   canAttemptSelfHeal,
   countRepairAttempts,
   evaluateMergePolicy,
+  getAgentApprovalState,
+  getCheckState,
+  getRequiredSpecialistChecks,
   getReviewState,
   hasBlockingLabel,
   hasFailedCiRun,
@@ -516,5 +673,8 @@ module.exports = {
   isSameRepositoryPullRequest,
   isTrustedAgentPullRequest,
   pullRequestDispatchInputs,
+  requiresSecurityReview,
+  requiresTradingSafetyReview,
   reconcileAgenticPullRequests,
+  targetDispatchInputs,
 };

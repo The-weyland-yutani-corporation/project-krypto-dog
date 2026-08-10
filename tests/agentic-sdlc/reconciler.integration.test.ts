@@ -140,6 +140,16 @@ function pullRequestInputs(number: number) {
   };
 }
 
+function targetInputs(number: number) {
+  return {
+    target: String(number),
+    aw_context: JSON.stringify({
+      item_type: "pull_request",
+      item_number: number,
+    }),
+  };
+}
+
 function successRun(
   id: number,
   name: string,
@@ -319,7 +329,7 @@ describe("agentic PR reconciler integration", () => {
       sha: "sha-1",
       state: "success",
       context: "Agentic merge policy",
-      description: "Allowlisted low-risk agent pull request",
+      description: "Current-head agent reviews approve this PR",
       target_url: `https://github.com/${repository}/pull/1`,
     });
   });
@@ -331,7 +341,7 @@ describe("agentic PR reconciler integration", () => {
           {
             context: "Agentic merge policy",
             state: "success",
-            description: "Allowlisted low-risk agent pull request",
+            description: "Current-head agent reviews approve this PR",
           },
         ],
       },
@@ -370,6 +380,110 @@ describe("agentic PR reconciler integration", () => {
     ).toBe(false);
   });
 
+  it("dispatches required security and trading specialist reviews", async () => {
+    const { mocks } = await reconcile({
+      filesByPull: {
+        1: [
+          {
+            filename: ".github/workflows/ci.yml",
+            status: "modified",
+          },
+          {
+            filename: "src/db/schema.ts",
+            status: "modified",
+          },
+        ],
+      },
+    });
+
+    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "pending",
+        description: "Waiting for Security review",
+      }),
+    );
+    expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
+      owner: "VeVarunSharma",
+      repo: "project-krypto-dog",
+      workflow_id: "security-review.lock.yml",
+      ref: "docs/agent-update-1",
+      inputs: targetInputs(1),
+    });
+    expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
+      owner: "VeVarunSharma",
+      repo: "project-krypto-dog",
+      workflow_id: "trading-safety-review.lock.yml",
+      ref: "docs/agent-update-1",
+      inputs: targetInputs(1),
+    });
+  });
+
+  it("approves a high-risk PR after every required agent check passes", async () => {
+    const { mocks } = await reconcile({
+      filesByPull: {
+        1: [
+          {
+            filename: ".github/workflows/ci.yml",
+            status: "modified",
+          },
+          {
+            filename: "src/db/schema.ts",
+            status: "modified",
+          },
+        ],
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "Security review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 42,
+            name: "Trading safety review",
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+      runs: {
+        [runKey("security-review.lock.yml", "sha-1")]: [
+          successRun(50, "Security Review"),
+        ],
+        [runKey("trading-safety-review.lock.yml", "sha-1")]: [
+          successRun(51, "Trading Safety Review"),
+        ],
+      },
+    });
+
+    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "success",
+        description: "Current-head agent reviews approve this PR",
+      }),
+    );
+    expect(
+      dispatchedWorkflow(
+        mocks.createWorkflowDispatch,
+        "security-review.lock.yml",
+      ),
+    ).toBe(false);
+    expect(
+      dispatchedWorkflow(
+        mocks.createWorkflowDispatch,
+        "trading-safety-review.lock.yml",
+      ),
+    ).toBe(false);
+  });
+
   it("approves held CI only for a trusted enrolled agent PR", async () => {
     const trusted = pullRequest(1);
     const untrusted = pullRequest(2, {
@@ -404,7 +518,7 @@ describe("agentic PR reconciler integration", () => {
     ).toBe(false);
   });
 
-  it("manually redispatches a held agentic review only for a trusted PR", async () => {
+  it("manually redispatches held agentic review for same-repository PRs", async () => {
     const trusted = pullRequest(1);
     const untrusted = pullRequest(2, {
       labels: [{ name: "agentic-factory" }],
@@ -437,6 +551,15 @@ describe("agentic PR reconciler integration", () => {
           workflow_id: "code-review.lock.yml",
           ref: "docs/agent-update-1",
           inputs: pullRequestInputs(1),
+        },
+      ],
+      [
+        {
+          owner: "VeVarunSharma",
+          repo: "project-krypto-dog",
+          workflow_id: "code-review.lock.yml",
+          ref: "docs/agent-update-2",
+          inputs: pullRequestInputs(2),
         },
       ],
     ]);

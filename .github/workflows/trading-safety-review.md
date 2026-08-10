@@ -1,6 +1,7 @@
 ---
 description: Trading and guardrail safety review for risky changes.
 on:
+  bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]
   workflow_dispatch:
     inputs:
       target:
@@ -10,9 +11,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
     paths:
+      - "src/trading/**"
       - "src/tools/**"
       - "src/guardrails/**"
       - "src/agent/**"
+      - "src/backtest/**"
       - "src/app/api/agent/**"
       - "src/db/**"
       - "drizzle/**"
@@ -36,11 +39,16 @@ tools:
 network: defaults
 safe-outputs:
   add-comment:
+    target: "*"
     max: 1
     hide-older-comments: true
   add-labels:
+    target: "*"
     allowed: [trading-safety, ready-for-human-review, needs-qa, blocked]
     max: 4
+  create-check-run:
+    name: Trading safety review
+    max: 1
   create-issue:
     title-prefix: "[trading-safety] "
     labels: [agentic-factory, trading-safety]
@@ -58,14 +66,19 @@ Review changes for paper-trading, portfolio, guardrail, and live-execution bound
 
 ## Task
 
+- Resolve whether the target is an issue or pull request. For manual PR dispatch, use the `target` input, verify the workflow ref is that PR's current head, and use its number as `item_number` in comments or labels.
 - Inspect the target issue or PR and relevant files.
 - Verify v2 remains paper trading only.
 - Check `safe_trade`, guardrails, mutex behavior, portfolio state, journaling, and alerting invariants.
 - Classify the result as `safe`, `safe-with-required-fixes`, or `unsafe`.
+- For every pull request, create exactly one `Trading safety review` check on the current head.
+- Set the check to `success` only for `safe`.
+- Set the check to `failure` for `safe-with-required-fixes`, `unsafe`, or an incomplete review.
 
 ## Safe outputs
 
 - Use `add-comment` for the review result.
 - Use `add-labels` only for clear next-state labels.
+- Use `create-check-run` for every pull-request result.
 - Use `create-issue` for separate safety follow-up work.
-- Use `noop` when the target cannot affect trading behavior.
+- Use `noop` only for a non-PR target that cannot affect trading behavior.
