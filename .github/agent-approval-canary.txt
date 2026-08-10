@@ -1,0 +1,2 @@
+Agent approval canary.
+This file exists only on the temporary validation branch.
