@@ -2,7 +2,10 @@
 
 Project Krypto's software factory is a GitHub Agentic Workflows (GH-AW) system that turns proactive opportunity discovery, issues, labels, slash commands, pull requests, CI events, and schedules into a controlled SDLC loop.
 
-The factory is intentionally event-driven: each workflow has a narrow job, read-only agent permissions, and safe outputs for all repository writes.
+The GH-AW workflows are intentionally event-driven: each has a narrow job,
+read-only agent permissions, and safe outputs for repository writes. The
+deterministic reconciler and E2E canary are traditional Actions workflows with
+their own explicitly scoped permissions.
 
 ## End-to-end flow
 
@@ -195,7 +198,7 @@ This is why workflow markdown is the source of truth, while lock files are commi
 | `/implement` | `implement-ticket` | Centralized slash command for issues/comments. |
 | `/release-readiness` | `release-readiness` | Centralized slash command for issues/PRs/comments. |
 | PR opened/synchronize/reopened/ready | `code-review` | Lightweight automatic review; can add specialist labels. |
-| PR high-risk paths | `trading-safety-review` | Automatic for agent, guardrail, DB, migration, and RFC paths. PR label events are still path-scoped. |
+| PR high-risk paths | `trading-safety-review` | Automatic for `src/tools/**`, `src/guardrails/**`, `src/agent/**`, `src/app/api/agent/**`, `src/db/**`, `drizzle/**`, `supabase/migrations/**`, and `specs/rfcs/**`. PR label events are still path-scoped. |
 | CI workflow failure | `ci-doctor` | Watches `CI` on `main` and `develop/**`. |
 | PR/check/review event or 5-minute schedule | `agentic-pr-reconciler` | Restores missed CI/review dispatches, publishes merge policy, and dispatches bounded repair. |
 | Manual factory E2E | `agentic-sdlc-e2e` | Updates one stable docs heartbeat through the happy path or deterministic self-heal path; never runs on a schedule or PR event. |
@@ -280,7 +283,11 @@ The factory is designed to automate work without letting the agent directly muta
 - **Allowed files:** implementation PRs are constrained to app, tests, scripts, schema/migrations, specs, and config files that are safe for the workflow to touch.
 - **Protected files:** protected file changes fall back to issues instead of being silently committed.
 - **Specialist reviews:** QA, security, docs, and trading safety are label-triggered to control cost/noise; `code-review` can add those labels when needed.
-- **High-risk paths:** trading-safety review runs automatically for changes to agent, guardrail, trading, DB, migration, or RFC paths.
+- **High-risk paths:** trading-safety review runs automatically only for the
+  path filters listed in the trigger catalog. Other risky paths, including
+  `src/trading/**`, auth/admin APIs, deployment, and workflow policy, need an
+  explicit specialist label when relevant and remain human-gated by merge
+  policy.
 - **CODEOWNERS:** high-risk surfaces remain owned by `@VeVarunSharma`; merge policy independently treats every non-allowlisted path as human-gated.
 - **Human gates:** humans retain approval for code, tests, config, migrations, trading, auth, database, deployment, workflow, operator-console, secret, and architecture-decision changes.
 - **Opportunity discovery:** creates software tickets and experiments behind rubber-duck review; it does not provide trading advice, execute trades, or bypass safety review.
@@ -314,7 +321,9 @@ GitHub Actions must be allowed to create pull requests while default workflow pe
 
 ### High-risk trading change
 
-1. PR touches high-risk paths such as `src/tools/**`, `src/guardrails/**`, `src/agent/**`, `src/db/**`, migrations, or RFCs.
+1. PR touches an automatic trading-safety path: `src/tools/**`,
+   `src/guardrails/**`, `src/agent/**`, `src/app/api/agent/**`, `src/db/**`,
+   `drizzle/**`, `supabase/migrations/**`, or `specs/rfcs/**`.
 2. `trading-safety-review` runs automatically.
 3. It classifies the change as safe, safe-with-required-fixes, or unsafe.
 4. The required merge-policy status keeps the PR pending until a current human approval exists.
@@ -337,14 +346,16 @@ GitHub Actions must be allowed to create pull requests while default workflow pe
 1. An operator dispatches `agentic-sdlc-e2e.yml` from `main` in
    `happy-path` or `self-heal` mode.
 2. The workflow creates an enrolled `github-actions[bot]` PR that changes only
-   `docs/e2e/factory-heartbeat.md`, enables native auto-merge, and invokes the
-   reconciler.
+   `docs/e2e/factory-heartbeat.md`, then invokes the reconciler.
 3. It requires successful `Quality and evidence gates`,
    `PostgreSQL migrations and execution`, `Agentic code review`, and
    `Agentic merge policy` contexts on the current head.
 4. Self-heal mode additionally requires an initial review failure, a
    `[self-heal]` commit, and removal of the deterministic marker.
-5. Success leaves one updated heartbeat on `main`; cleanup deletes the branch,
+5. Only after those assertions and the full check suite settle does the E2E
+   workflow place a temporary pending merge-policy hold and enable native
+   auto-merge; the reconciler must restore the passing policy status.
+6. Success leaves one updated heartbeat on `main`; cleanup deletes the branch,
    and failure also closes any open canary PR.
 
 ### Operational reporting

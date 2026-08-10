@@ -241,18 +241,21 @@ Seed data or real paper runs will change the counts and PnL.
 Use this only after no-LLM smoke passes and real Azure-hosted Anthropic
 credentials are present in `.env`.
 
-Resume the agent:
-
-```bash
-docker exec -i krypto-postgres psql -U krypto -d krypto -c \
-  'UPDATE "krypto"."AgentState" SET "isOperatorPaused" = false WHERE id = '\''singleton'\'';'
-```
-
 Reset to a clean paper account if needed:
 
 ```bash
 npm run db:reset
 ```
+
+First rehearse with `ROLLOUT_MODE=shadow` and a matching
+`x-required-rollout-mode: shadow` header; any authorized proposal is recorded
+without a trade, and HOLD/rejected proposals also remain non-mutating. Before
+using the paper command below, set
+`ROLLOUT_MODE=paper` in `.env` and restart the app so the deployed mode matches
+the required-mode header.
+
+If the agent is paused, resume it with **Resume Agent** on the admin dashboard.
+Do not bypass the audited pause/resume path with a direct SQL update.
 
 Trigger the run:
 
@@ -267,7 +270,7 @@ Healthy outcomes:
 
 - `200 {"status":"executed",...}` — paper trade was recorded.
 - `200 {"status":"skipped","action":"hold",...}` — model held.
-- `200 {"status":"skipped","guardrailTriggered":"Cooldown active..."}` —
+- `200 {"status":"skipped","guardrailTriggered":"Execution cooldown is active"}` —
   expected after a recent trade.
 - `200 {"status":"locked",...}` — drawdown lock engaged; investigate.
 
@@ -308,8 +311,8 @@ npm run db:init
 | `400 Required rollout mode is missing` | Cron request omitted its deployment binding | Send `x-required-rollout-mode` with the exact current mode |
 | Rollout configuration error | Invalid `ROLLOUT_MODE` | Use `disabled`, `shadow`, or `paper` |
 | LLM auth/model error | Stub Foundry values used while unpaused | Pause for no-LLM smoke, or provide real Azure AI Foundry Anthropic values |
-| `Cooldown active` | A trade happened within 2 hours | Wait, reset DB, or test a non-trade route |
-| `System locked` | Drawdown safety threshold was reached | Inspect trades/journals, then use the audited **Clear Safety Lock** admin action with a reason |
+| `Execution cooldown is active` | A trade happened within 2 hours | Wait, reset DB, or test a non-trade route |
+| `Account safety lock is active` or `Maximum drawdown reached (...)` | Drawdown safety threshold was reached | Inspect trades/journals, then use the audited **Clear Safety Lock** admin action with a reason |
 | Coinbase API error | Network/Coinbase transient or invalid/stale candles | Retry later and inspect the typed market-data error |
 
 ## 10. Testing profitability

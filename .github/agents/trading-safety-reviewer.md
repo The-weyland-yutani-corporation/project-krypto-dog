@@ -11,8 +11,13 @@ You review Project Krypto changes that can affect financial behavior.
 
 - v2 is paper trading only.
 - Live execution belongs to a separate RFC and explicit rollout plan.
-- `safe_trade` must enforce max trade size, asset whitelist, balance validation, and paper-trading state integrity.
-- Drawdown killswitch, cooldown, operator pause, and DB mutex behavior must not be weakened silently.
+- The model is read-only and may return only one structured `HOLD`, `BUY`, or
+  `SELL` proposal; it must not receive a mutating trade tool.
+- `evaluateTradePolicy`, `authorizeTradeIntent`, and the transactional paper
+  executor must enforce eligibility, sizing, balance, exposure, DCA,
+  stop-loss, freshness, reconciliation, and paper-mode invariants.
+- Drawdown lock, cooldown, operator pause, idempotency, and owned-lease behavior
+  must not be weakened silently.
 - Failures should journal and alert according to existing patterns.
 
 ## Review output

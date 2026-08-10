@@ -60,7 +60,7 @@ Review changes for paper-trading, portfolio, guardrail, and live-execution bound
 
 - Inspect the target issue or PR and relevant files.
 - Verify v2 remains paper trading only.
-- Check `safe_trade`, guardrails, mutex behavior, portfolio state, journaling, and alerting invariants.
+- Check deterministic policy and authorization, transactional paper execution, owned-lease behavior, portfolio state, journaling, and alerting invariants.
 - Classify the result as `safe`, `safe-with-required-fixes`, or `unsafe`.
 
 ## Safe outputs
