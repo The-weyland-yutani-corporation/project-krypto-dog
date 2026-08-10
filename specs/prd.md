@@ -67,8 +67,10 @@ create application tables.
 | `dcaCount` | `integer` | BUY executions since the last full exit |
 | `peakPortfolioValueUSD`, `drawdownPct` | `numeric` | deterministic drawdown state |
 | `isLocked` | `boolean` | set true when drawdown breach occurs; manual reset only |
+| `lockReason`, `lockedAt` | `text`, `timestamptz` | persisted cause and time of the first active safety lock |
 | `isOperatorPaused` | `boolean` | operator-controlled pause switch; can be toggled from admin without clearing drawdown lock |
 | `leaseOwner`, `leaseExpiresAt` | `text`, `timestamptz` | owned expiring run lease |
+| `isRunning`, `lastRunAt`, `lastCompletedRunAt` | `boolean`, timestamps | lease compatibility flag and persisted run-health timestamps |
 | `accountingStatus`, `accountingIssue` | enum, `text` | reconciliation state or quarantine reason |
 | `strategyVersion`, `strategySnapshot` | `text`, `jsonb` | exact strategy attribution |
 | `updatedAt` | `timestamp(3)` | auto on update |
@@ -96,7 +98,7 @@ compatibility. New orchestration and execution use the numeric columns.
 | `asset`, `pair` | `text` | fixed to `ETH` and `ETH/USDC` |
 | exact execution fields | `numeric` | requested/gross notional, quantity, observed/modeled price, fee, slippage, balances, cost basis, and realized PnL |
 | strategy fields | `text`, `jsonb` | strategy version and signal snapshot |
-| `agentReasoning` | `text` | snapshot of LLM output |
+| `agentReasoning` | `text` | reasoning on the authorized intent; model-supplied for optional trades and deterministic for mandatory safety exits |
 | `createdAt` | `timestamp(3)` | indexed |
 
 ### `AgentJournal`
@@ -104,8 +106,8 @@ compatibility. New orchestration and execution use the numeric columns.
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `text` PK | UUID |
-| `entryText` | `text` | LLM-written reasoning |
-| `marketConditions` | `jsonb` | full snapshot: `{ ethPrice, rsi, emaShort, emaLong, emaCrossover, timestamp }` |
+| `entryText` | `text` | application-written decision, authorization, operator-audit, or delivery narrative; not a model-authored free-form journal |
+| `marketConditions` | `jsonb` | run journals store `{ spotPriceUSD, observedAt, rsi, emaShort, emaLong }`; audit and delivery journals use typed event payloads |
 | `tradeExecutionId` | `text` (FK, nullable) | links journal to the trade it caused, if any |
 | `agentRunId` | `text` (FK, nullable) | links journal to the originating run |
 | `createdAt` | `timestamp(3)` | indexed |
@@ -250,10 +252,14 @@ that would persist a paper trade.
 | `trade_executed` | After the paper transaction commits |
 | `llm_token_usage` | Token counts plus bounded attempt count and model latency |
 
-### Email alerts (Resend)
+### Email delivery (Resend)
 
-- `sendGuardrailAlert(...)` — fired from `checkDrawdown` when system locks.
 - `sendDailySummary(...)` — fired from the daily-summary cron route.
+- `sendGuardrailAlert(...)` remains wired to the legacy `checkDrawdown` helper,
+  but the current `executeAgentRun` path does not call that helper. The current
+  path persists drawdown locks and emits guardrail telemetry, so drawdown
+  alerting currently relies on the PostHog monitoring rule rather than a direct
+  email from the run path.
 
 Dynamic model/error/journal content is HTML-escaped. Missing configuration
 returns an explicit skipped result and logs locally; Resend failures throw a
@@ -350,8 +356,9 @@ ADR `0003-pg-cron-over-vercel-cron.md` records why we chose Supabase `pg_cron` o
   tamper detection, and verified private plus legacy-enum backup restoration.
 - Local paper smoke: [`specs/local-testing.md`](./local-testing.md) covers local Postgres setup, no-LLM route checks, optional live local paper runs, admin checks, daily summary, reset/reseed, and current profitability-testing limits.
 - Deterministic evaluation: `npm run backtest -- --scenario scenarios/dip-recovery.json` replays fixture prices through a no-LLM rules policy with fees, slippage, cooldown, DCA, drawdown, weighted-average cost basis, and cash / buy-and-hold benchmarks.
-- Current local suite: 30 Jest suites / 279 tests. `npm run test:coverage`
-  enforces explicit global and critical-module thresholds.
+- `npm run test:coverage` validates the current Jest suite and enforces explicit
+  global and critical-module thresholds without relying on a hard-coded test
+  count.
 - CI runs lint, script/test typecheck, production build, critical coverage,
   aggregate backtests and engineering-only evidence artifacts, production
   dependency audit, real-PostgreSQL migration/execution tests, and migration
@@ -383,8 +390,9 @@ The following are not goals of this project at any phase:
 
 ## 14. Current baseline and known limitations
 
-The local v2.1/v2.2 release candidate now has 279 passing Jest tests plus real-PostgreSQL
-migration, transaction, accounting, lease, and orchestration evidence.
+The local v2.1/v2.2 release candidate has passing coverage-gated Jest validation
+plus real-PostgreSQL migration, transaction, accounting, lease, and orchestration
+evidence.
 Deterministic authorization, mandatory stop-loss, exact accounting,
 transactional/idempotent execution, owned expiring leases, structured model
 output, disabled/shadow/paper modes, additive NULL-safe cron migration, and the

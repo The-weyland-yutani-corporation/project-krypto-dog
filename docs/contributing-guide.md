@@ -13,7 +13,8 @@
 npm install
 ```
 
-Copy `.env.example` to `.env.local` and fill in the required values before running any dev commands.
+Copy `.env.example` to `.env` and fill in the required values before running
+the app or repository scripts.
 
 ## Validation Commands
 

@@ -9,16 +9,14 @@ For the proposed architecture changes see `specs/rfcs/0002-evidence-grade-paper-
 
 ---
 
-## 1. Current baseline
+## 1. Current evidence baseline
 
 ### Test suite
 
-- 279 Jest tests pass across 30 suites.
-- Critical safety modules are collected explicitly for coverage. Current
-  aggregate coverage is 92.76% statements, 82.78% branches, 95.55% functions,
-  and 93.05% lines, with per-module thresholds enforced for deployment
-  preflight, runtime configuration, admin-route authentication, decision,
-  market-data, accounting, policy, and shared execution code.
+- `npm run test:coverage` passes with global and critical-module thresholds.
+- Critical safety modules are collected explicitly for deployment preflight,
+  runtime configuration, admin-route authentication, decision, market data,
+  accounting, policy, and shared execution code.
 - All 8 synthetic fixture scenarios pass: the deterministic execution layer
   produces the correct trade sequences and equity curves given known inputs.
 - The fixture runner is aligned to production policy, fixed-point accounting,
@@ -175,8 +173,8 @@ Verified locally; no production database mutation has occurred:
   immutable `0005` history. Real-PostgreSQL tests prove an existing database at
   `0005` receives the corrected functions through normal Drizzle migration.
 - Current local validation: lint passes with one pre-existing PostCSS config
-  warning; 30 Jest suites / 279 tests pass; script/test typecheck and production
-  build pass; critical coverage gates pass; the real-PostgreSQL suite passes;
+  warning; the coverage-gated Jest suite, script/test typecheck, production
+  build, and real-PostgreSQL suite pass;
   deliberate cron-function tampering and `PUBLIC` table exposure are rejected;
   migration generation reports no drift; and the production dependency audit
   is clean. The 8-scenario aggregate reports 8 engineering assertion passes,
@@ -186,7 +184,7 @@ Production remains blocked by corrective-release merge, target migrations and
 initialization, baseline backup/restore evidence, Vault and Resend configuration,
 disabled target smoke, controlled shadow/paper rollout, and evidence collection.
 
-The v2.2 release candidate includes:
+The current v2.2 preparation includes:
 
 - read-only `deployment:preflight`, so verified credentials can immediately
   prove runtime/direct cluster identity and produce redacted schema,
@@ -229,7 +227,7 @@ must be resolved in v2.1 before any production deployment.
 | 8 | Lease recovery | Resolved locally: owner/expiry lease acquisition, active-owner conflict, automatic expired recovery, owner-checked execution/release, and active-lease admin refusal are tested. | [PROD SMOKE PENDING] |
 | 9 | Retry visibility | Resolved locally: model calls have a 20-second attempt timeout, at most two attempts, typed auth/rate/timeout/model failures, and persisted/emitted attempt count plus latency. | [FOUNDRY SMOKE PENDING] |
 | 10 | Market data | Resolved locally: paginated retrieval, UTC alignment, complete-bucket filtering, freshness/gap validation, bounded retries, and timeouts are implemented and tested. Production smoke remains pending. | [BLOCKS PROD: SMOKE] |
-| 11 | Observability | Resolved locally: per-request PostHog flush, typed/escaped email delivery, persisted delivery status, expiring admin sessions/logout, correct EMA rendering, AgentRun-backed health, atomic operator-action audits, and explicit safety-lock override are implemented and tested. | [BLOCKS PROD: TARGET SMOKE] |
+| 11 | Observability | Mostly resolved locally: per-request PostHog flush, typed/escaped daily-summary delivery, persisted delivery status, expiring admin sessions/logout, correct EMA rendering, AgentRun-backed health, atomic operator-action audits, and explicit safety-lock override are implemented and tested. The structured run path persists drawdown locks and emits guardrail telemetry but does not invoke the legacy guardrail-email helper; the PostHog drawdown alert remains required. | [BLOCKS PROD: TARGET SMOKE] |
 
 ---
 
@@ -266,16 +264,18 @@ All criteria must be met before any production deployment:
       (issue #9).
 - [x] Coinbase market-data error handling returns a structured error with HTTP
       status code and prevents candle misalignment (issue #10).
-- [x] PostHog event schema, email paths, and admin dashboard consistent and
-      covered by tests (issue #11).
-- [x] All existing tests still pass; current local suite is 30 suites / 279
-      tests, with enforced critical-module coverage and additional
-      real-PostgreSQL migration, privilege, transaction, accounting, lease, and
-      orchestration tests.
+- [x] PostHog event schema, daily-summary email path, and admin dashboard are
+      consistent and covered by tests; drawdown alerting uses the required
+      PostHog monitoring rule (issue #11).
+- [x] The coverage-gated Jest suite and the real-PostgreSQL migration,
+      privilege, transaction, accounting, lease, and orchestration suites pass.
 
 ### v2.2 -- Evidence-Grade Paper Trading
 
-Status: Proposed. Depends on v2.1. See RFC 0002 Gates 2 and 3.
+Status: Draft deployment/evidence phase. The local preflight, backup, target
+smoke, and evaluation tooling is implemented; target inventory, controlled
+shadow/paper rollout, and the evidence window remain incomplete. See RFC 0002
+Gates 2 and 3.
 
 - [ ] All v2.1 gates satisfied.
 - [ ] Schema reconciliation: confirm the production Supabase DB schema matches

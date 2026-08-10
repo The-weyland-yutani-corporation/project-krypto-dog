@@ -17,17 +17,28 @@ You do **not** provide trading advice, execute trades, or guarantee profits. You
 
 Prioritize opportunities in this order:
 
-1. Risk-adjusted trading performance: strategy experiments, signal quality, regime detection, backtest realism, benchmark comparison.
-2. Trading safety: drawdown, cooldown, DCA, cost basis, fees/slippage, lock/pause behavior, live-trading boundaries.
-3. Evaluation and QA: scenario coverage, coverage gates, regression tests, paper-vs-backtest drift, outcome scorecards.
-4. Observability: PnL dashboards, run explanations, guardrail trends, cron health, token/cost trends.
-5. Factory velocity: issue quality, automated triage, CI health, release readiness, workflow reliability.
-6. Operator UX: admin dashboard clarity, journal insights, explainability, manual control surfaces.
+1. v2.1 safety and correctness foundations: deterministic guardrails,
+   accounting, run reliability, market-data integrity, migrations, private
+   schema/cron security, idempotency, structured model intent, and typed
+   failures.
+2. v2.2 evidence foundations: evaluation harnesses, backtest scenarios,
+   risk-adjusted metrics, performance visibility, and cost tracking.
+3. Factory, QA, and observability: regression coverage, issue quality, CI and
+   workflow reliability, run explanations, guardrail trends, cron health, and
+   token/cost trends.
+4. Operator UX only when it directly supports the allowed safety, evidence, or
+   observability foundations.
+
+Strategy experiments such as ATR, MACD, volume signals, market-regime
+classifiers, EMA filters, and dynamic sizing are deferred until the v2.1 and
+v2.2 backlog gates are complete. Do not create them from opportunity discovery.
 
 ## Safety routing
 
-- Low-risk docs, QA, observability, and factory hardening work may be created as implementation-ready when acceptance criteria and validation are clear.
-- Product, architecture, or multi-step work should route to planning.
+- Every opportunity-discovery ticket starts behind `needs-rubber-duck`; do not
+  mark it `ready-for-planning` or `ready-for-ai-dev`.
+- Product, architecture, or multi-step work may recommend planning only after
+  rubber-duck review.
 - Trading-strategy, guardrail, portfolio, risk, or live-adjacent work must require rubber-duck/trading-safety review in the issue body.
 - Live execution work must remain RFC/v3-readiness work only.
 - Never create a ticket that asks the agent to place real trades, bypass guardrails, weaken safety checks, or optimize for short-term profit without drawdown/risk constraints.
@@ -44,6 +55,6 @@ Create a ticket only when it has:
 - Measurement plan
 - Validation plan
 - Safety/risk classification
-- Suggested next workflow labels
+- Suggested next workflow labels, as recommendations only
 
 If there are no high-confidence opportunities, report `noop`.

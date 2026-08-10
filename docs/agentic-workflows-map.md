@@ -2,7 +2,10 @@
 
 Project Krypto's software factory is a GitHub Agentic Workflows (GH-AW) system that turns proactive opportunity discovery, issues, labels, slash commands, pull requests, CI events, and schedules into a controlled SDLC loop.
 
-The factory is intentionally event-driven: each workflow has a narrow job, read-only agent permissions, and safe outputs for all repository writes.
+The GH-AW workflows are intentionally event-driven: each has a narrow job,
+read-only agent permissions, and safe outputs for repository writes. The
+deterministic reconciler and E2E canary are traditional Actions workflows with
+their own explicitly scoped permissions.
 
 ## End-to-end flow
 
@@ -195,7 +198,7 @@ This is why workflow markdown is the source of truth, while lock files are commi
 | `/implement` | `implement-ticket` | Centralized slash command for issues/comments. |
 | `/release-readiness` | `release-readiness` | Centralized slash command for issues/PRs/comments. |
 | PR opened/synchronize/reopened/ready | `code-review` | Lightweight automatic review; can add specialist labels. |
-| PR high-risk paths | `trading-safety-review` | Automatic for agent, guardrail, DB, migration, and RFC paths. PR label events are still path-scoped. |
+| PR high-risk paths | `trading-safety-review` | Automatic for `src/trading/**`, `src/tools/**`, `src/guardrails/**`, `src/agent/**`, `src/backtest/**`, `src/app/api/agent/**`, `src/db/**`, `drizzle/**`, `supabase/migrations/**`, and `specs/rfcs/**`. PR label events are still path-scoped. |
 | CI workflow failure | `ci-doctor` | Watches `CI` on `main` and `develop/**`. |
 | PR/check/review event or 5-minute schedule | `agentic-pr-reconciler` | Restores missed CI/review dispatches, publishes merge policy, and dispatches bounded repair. |
 | Manual factory E2E | `agentic-sdlc-e2e` | Updates one stable docs heartbeat through the happy path or deterministic self-heal path; never runs on a schedule or PR event. |
@@ -313,7 +316,10 @@ GitHub Actions must be allowed to create pull requests while default workflow pe
 
 ### High-risk trading change
 
-1. PR touches high-risk paths such as `src/tools/**`, `src/guardrails/**`, `src/agent/**`, `src/db/**`, migrations, or RFCs.
+1. PR touches an automatic trading-safety path: `src/trading/**`,
+   `src/tools/**`, `src/guardrails/**`, `src/agent/**`, `src/backtest/**`,
+   `src/app/api/agent/**`, `src/db/**`, `drizzle/**`,
+   `supabase/migrations/**`, or `specs/rfcs/**`.
 2. `trading-safety-review` runs automatically.
 3. It classifies the change as safe, safe-with-required-fixes, or unsafe.
 4. The required merge-policy status stays pending until the current-head trading-safety check is `safe`.
@@ -344,7 +350,10 @@ GitHub Actions must be allowed to create pull requests while default workflow pe
    native auto-merge, and lets the reconciler restore success. Self-heal mode
    additionally requires an initial review failure, a
    `[self-heal]` commit, and removal of the deterministic marker.
-5. Success leaves one updated heartbeat on `main`; cleanup deletes the branch,
+5. Only after those assertions and the full check suite settle does the E2E
+   workflow place a temporary pending merge-policy hold and enable native
+   auto-merge; the reconciler must restore the passing policy status.
+6. Success leaves one updated heartbeat on `main`; cleanup deletes the branch,
    and failure also closes any open canary PR.
 
 ### Operational reporting

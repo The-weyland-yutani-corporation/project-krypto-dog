@@ -69,7 +69,7 @@ Review changes for paper-trading, portfolio, guardrail, and live-execution bound
 - Resolve whether the target is an issue or pull request. For manual PR dispatch, use the `target` input, verify the workflow ref is that PR's current head, and use its number as `item_number` in comments or labels.
 - Inspect the target issue or PR and relevant files.
 - Verify v2 remains paper trading only.
-- Check `safe_trade`, guardrails, mutex behavior, portfolio state, journaling, and alerting invariants.
+- Check deterministic policy and authorization, transactional paper execution, owned-lease behavior, portfolio state, journaling, and alerting invariants.
 - Classify the result as `safe`, `safe-with-required-fixes`, or `unsafe`.
 - For every pull request, create exactly one `Trading safety review` check on the current head.
 - Set the check to `success` only for `safe`.
