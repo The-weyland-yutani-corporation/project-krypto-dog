@@ -4,7 +4,11 @@ This document defines how Project Krypto measures strategy performance. It gover
 what counts as evidence, how datasets are versioned, and what comparisons are
 required before advancing to the next rollout phase.
 
-See `specs/readiness.md` for the current baseline results and release gates.
+See `specs/readiness.md` for current evidence and gate disposition. Production
+paper gate thresholds and authorization are defined in
+[`production-readiness-prd.v1.md`](./production-readiness-prd.v1.md); the
+metric definitions and evaluation methodology in this document remain
+authoritative for PR-G4.
 
 ---
 

@@ -36,6 +36,7 @@
 | **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |
 | **Monitoring** | [`specs/monitoring.md`](./specs/monitoring.md) |
 | **Readiness** | [`specs/readiness.md`](./specs/readiness.md) |
+| **Production readiness contract** | [`specs/production-readiness-prd.v1.md`](./specs/production-readiness-prd.v1.md) — paper-only controls, ownership, authorization, and gate thresholds |
 | **Evaluation** | [`specs/evaluation.md`](./specs/evaluation.md) |
 | **Design** | [`DESIGN.md`](./DESIGN.md) |
 | **Decisions** | [`specs/decisions/`](./specs/decisions/) (ADRs) |

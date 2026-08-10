@@ -4,6 +4,10 @@
 - **Date opened:** 2026-07-14
 - **Author:** @VeVarunSharma
 
+> This RFC remains architectural design context. Production-paper controls,
+> acceptance thresholds, and authorization are governed by
+> [`../production-readiness-prd.v1.md`](../production-readiness-prd.v1.md).
+
 Implementation note (2026-07-14): the v2.1 deterministic policy, structured
 decision boundary, exact transactional paper executor, AgentRun ledger, and
 owned lease orchestration, operations controls/health, production-aligned
