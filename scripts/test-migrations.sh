@@ -48,6 +48,7 @@ executor_url="$url_prefix/executor"
 orchestration_url="$url_prefix/orchestration"
 operations_url="$url_prefix/operations"
 migration_only_url="$url_prefix/migration_only"
+rollout_upgrade_url="$url_prefix/rollout_upgrade"
 
 create_database() {
   psql "$admin_url" -v ON_ERROR_STOP=1 \
@@ -72,6 +73,19 @@ SQL
 
 create_database fresh
 DIRECT_URL="$fresh_url" npx drizzle-kit migrate >/dev/null
+
+fresh_migration_result="$(psql "$fresh_url" -Atc \
+  'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
+          (SELECT hash FROM drizzle.__drizzle_migrations
+            ORDER BY created_at DESC, id DESC LIMIT 1) || '\''|'\'' ||
+          (SELECT md5(prosrc) FROM pg_proc
+            WHERE oid = '\''krypto.invoke_agent_run()'\''::regprocedure) || '\''|'\'' ||
+          (SELECT md5(prosrc) FROM pg_proc
+            WHERE oid = '\''krypto.invoke_daily_summary()'\''::regprocedure);')"
+if [[ "$fresh_migration_result" != "7|a614858a8a9e85ae5ece4b9f3046e865e3ed46d780581c1a2843ff8a5ccfde3d|3cb03ace0e82bee3f8b755701a10ea6b|68aee98c8c762497b1b0cf016ea6d25d" ]]; then
+  echo "Fresh migration did not install canonical 0006 functions: $fresh_migration_result" >&2
+  exit 1
+fi
 
 psql "$fresh_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 INSERT INTO "krypto"."AgentState" (
@@ -144,7 +158,7 @@ SQL
 psql "$fresh_url" -v ON_ERROR_STOP=1 \
   -f drizzle/0002_secure_private_schema.sql >/dev/null
 psql "$fresh_url" -v ON_ERROR_STOP=1 \
-  -f drizzle/0005_bind_cron_rollout_mode.sql >/dev/null
+  -f drizzle/0006_reject_null_cron_rollout_mode.sql >/dev/null
 
 fresh_counts="$(psql "$fresh_url" -Atc \
   'SELECT (SELECT count(*) FROM "krypto"."AgentState") || '\''|'\'' ||
@@ -170,10 +184,11 @@ if [[ "$security_result" != "false|false|false|true" ]]; then
 fi
 mode_binding_result="$(psql "$fresh_url" -Atc \
   'SELECT (prosrc LIKE '\''%x-required-rollout-mode%'\'')::text || '\''|'\'' ||
-          (prosrc LIKE '\''%krypto_rollout_mode%'\'')::text
+          (prosrc LIKE '\''%krypto_rollout_mode%'\'')::text || '\''|'\'' ||
+          (prosrc LIKE '\''%v_required_mode IS NULL%'\'')::text
      FROM pg_proc
     WHERE oid = '\''krypto.invoke_agent_run()'\''::regprocedure;')"
-if [[ "$mode_binding_result" != "true|true" ]]; then
+if [[ "$mode_binding_result" != "true|true|true" ]]; then
   echo "Cron function is not bound to the queued rollout mode: $mode_binding_result" >&2
   exit 1
 fi
@@ -226,6 +241,109 @@ GRANT SELECT ("currentPositionUSDCDecimal")
 GRANT EXECUTE ON FUNCTION public.read_vault_secret()
   TO PUBLIC, authenticated;
 SQL
+
+psql "$fresh_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+CREATE SCHEMA test_support;
+CREATE VIEW test_support.pg_extension AS
+SELECT 'pg_cron'::name AS extname
+UNION ALL
+SELECT 'pg_net'::name AS extname;
+
+CREATE SCHEMA cron;
+CREATE TABLE cron.job (
+  jobid bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  jobname text,
+  schedule text NOT NULL DEFAULT '0 * * * *',
+  command text,
+  active boolean NOT NULL DEFAULT true
+);
+
+CREATE SCHEMA net;
+CREATE TABLE net.http_request_queue (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  url text NOT NULL
+);
+
+INSERT INTO vault.secrets (name, secret)
+VALUES
+  ('krypto_cron_secret', 'migration-test-secret'),
+  ('krypto_vercel_url', 'https://example.test');
+
+DO $$
+DECLARE
+  function_call text;
+BEGIN
+  FOREACH function_call IN ARRAY ARRAY[
+    'krypto.invoke_agent_run()',
+    'krypto.invoke_daily_summary()'
+  ]
+  LOOP
+    BEGIN
+      EXECUTE format('SELECT %s', function_call);
+      RAISE EXCEPTION '% accepted an absent krypto_rollout_mode', function_call;
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM IS DISTINCT FROM
+        'Vault secret krypto_rollout_mode must be shadow or paper' THEN
+        RAISE;
+      END IF;
+    END;
+  END LOOP;
+END
+$$;
+SQL
+
+if absent_mode_error="$(PGOPTIONS="-c search_path=test_support,pg_catalog,public" \
+  psql "$fresh_url" -v ON_ERROR_STOP=1 \
+  -f supabase/operations/enable-krypto-cron.sql 2>&1)"; then
+  echo "Cron enablement accepted an absent Vault rollout mode." >&2
+  exit 1
+fi
+if [[ "$absent_mode_error" != *"Required Krypto Vault secrets are not configured"* ]]; then
+  echo "Cron enablement did not fail closed for an absent Vault rollout mode." >&2
+  exit 1
+fi
+
+psql "$fresh_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+INSERT INTO vault.secrets (name, secret)
+VALUES ('krypto_rollout_mode', NULL);
+
+DO $$
+DECLARE
+  function_call text;
+BEGIN
+  FOREACH function_call IN ARRAY ARRAY[
+    'krypto.invoke_agent_run()',
+    'krypto.invoke_daily_summary()'
+  ]
+  LOOP
+    BEGIN
+      EXECUTE format('SELECT %s', function_call);
+      RAISE EXCEPTION '% accepted a NULL krypto_rollout_mode', function_call;
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM IS DISTINCT FROM
+        'Vault secret krypto_rollout_mode must be shadow or paper' THEN
+        RAISE;
+      END IF;
+    END;
+  END LOOP;
+END
+$$;
+SQL
+
+if null_mode_error="$(PGOPTIONS="-c search_path=test_support,pg_catalog,public" \
+  psql "$fresh_url" -v ON_ERROR_STOP=1 \
+  -f supabase/operations/enable-krypto-cron.sql 2>&1)"; then
+  echo "Cron enablement accepted a NULL Vault rollout mode." >&2
+  exit 1
+fi
+if [[ "$null_mode_error" != *"Required Krypto Vault secrets are not configured"* ]]; then
+  echo "Cron enablement did not fail closed for a NULL Vault rollout mode." >&2
+  exit 1
+fi
+
+psql "$fresh_url" -v ON_ERROR_STOP=1 \
+  -c "DELETE FROM vault.secrets;" >/dev/null
+
 psql "$fresh_url" -v ON_ERROR_STOP=1 \
   -f drizzle/0004_restrict_vault_access.sql >/dev/null
 
@@ -243,6 +361,156 @@ if [[ "$expanded_security_result" != "false|false|false|false|false|false|false|
   echo "Column-level or Vault privileges remain exposed: $expanded_security_result" >&2
   exit 1
 fi
+
+rollout_upgrade_migrations="$TEMP_DIR/drizzle-through-0005"
+rollout_upgrade_config="$TEMP_DIR/drizzle-through-0005.config.ts"
+node - "$ROOT_DIR" "$rollout_upgrade_migrations" "$rollout_upgrade_config" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = process.argv[2];
+const migrationDir = process.argv[3];
+const configPath = process.argv[4];
+const sourceDir = path.join(root, "drizzle");
+const journal = JSON.parse(
+  fs.readFileSync(path.join(sourceDir, "meta", "_journal.json"), "utf8"),
+);
+
+journal.entries = journal.entries.filter((entry) => entry.idx <= 5);
+fs.mkdirSync(path.join(migrationDir, "meta"), { recursive: true });
+for (const entry of journal.entries) {
+  fs.copyFileSync(
+    path.join(sourceDir, `${entry.tag}.sql`),
+    path.join(migrationDir, `${entry.tag}.sql`),
+  );
+  const snapshot = `${String(entry.idx).padStart(4, "0")}_snapshot.json`;
+  fs.copyFileSync(
+    path.join(sourceDir, "meta", snapshot),
+    path.join(migrationDir, "meta", snapshot),
+  );
+}
+fs.writeFileSync(
+  path.join(migrationDir, "meta", "_journal.json"),
+  JSON.stringify(journal, null, 2),
+);
+fs.writeFileSync(
+  configPath,
+  `export default {
+  schema: ${JSON.stringify(path.join(root, "src", "db", "schema.ts"))},
+  out: ${JSON.stringify(migrationDir)},
+  dialect: "postgresql",
+  dbCredentials: { url: process.env.DIRECT_URL },
+};
+`,
+);
+NODE
+
+create_database rollout_upgrade
+DIRECT_URL="$rollout_upgrade_url" \
+  npx drizzle-kit migrate --config "$rollout_upgrade_config" >/dev/null
+
+pre_0006_result="$(psql "$rollout_upgrade_url" -Atc \
+  'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
+          (SELECT hash FROM drizzle.__drizzle_migrations
+            ORDER BY created_at DESC, id DESC LIMIT 1) || '\''|'\'' ||
+          (SELECT md5(prosrc) FROM pg_proc
+            WHERE oid = '\''krypto.invoke_agent_run()'\''::regprocedure) || '\''|'\'' ||
+          (SELECT md5(prosrc) FROM pg_proc
+            WHERE oid = '\''krypto.invoke_daily_summary()'\''::regprocedure) || '\''|'\'' ||
+          (SELECT (prosrc LIKE '\''%v_required_mode IS NULL%'\'')::text
+             FROM pg_proc
+            WHERE oid = '\''krypto.invoke_agent_run()'\''::regprocedure) || '\''|'\'' ||
+          (SELECT (prosrc LIKE '\''%v_required_mode IS NULL%'\'')::text
+             FROM pg_proc
+            WHERE oid = '\''krypto.invoke_daily_summary()'\''::regprocedure);')"
+if [[ "$pre_0006_result" != "6|6c2224452bafb07b0bd7ecaa3fcc6a45690abef61944b487571e900f11d7c43a|e4328c1c001787b6f0a28cd6830f7c2d|585324cdb2b9f0ddfc0d53938f791ba1|false|false" ]]; then
+  echo "Original 0005 fixture is not canonical: $pre_0006_result" >&2
+  exit 1
+fi
+
+DIRECT_URL="$rollout_upgrade_url" npx drizzle-kit migrate >/dev/null
+
+post_0006_result="$(psql "$rollout_upgrade_url" -Atc \
+  'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
+          (SELECT hash FROM drizzle.__drizzle_migrations
+            ORDER BY created_at DESC, id DESC LIMIT 1) || '\''|'\'' ||
+          (SELECT md5(prosrc) FROM pg_proc
+            WHERE oid = '\''krypto.invoke_agent_run()'\''::regprocedure) || '\''|'\'' ||
+          (SELECT md5(prosrc) FROM pg_proc
+            WHERE oid = '\''krypto.invoke_daily_summary()'\''::regprocedure) || '\''|'\'' ||
+          (SELECT (prosrc LIKE '\''%v_required_mode IS NULL%'\'')::text
+             FROM pg_proc
+            WHERE oid = '\''krypto.invoke_agent_run()'\''::regprocedure) || '\''|'\'' ||
+          (SELECT (prosrc LIKE '\''%v_required_mode IS NULL%'\'')::text
+             FROM pg_proc
+            WHERE oid = '\''krypto.invoke_daily_summary()'\''::regprocedure);')"
+if [[ "$post_0006_result" != "7|a614858a8a9e85ae5ece4b9f3046e865e3ed46d780581c1a2843ff8a5ccfde3d|3cb03ace0e82bee3f8b755701a10ea6b|68aee98c8c762497b1b0cf016ea6d25d|true|true" ]]; then
+  echo "Drizzle upgrade from original 0005 did not install 0006: $post_0006_result" >&2
+  exit 1
+fi
+
+psql "$rollout_upgrade_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+CREATE SCHEMA vault;
+CREATE TABLE vault.secrets (
+  name text,
+  secret text
+);
+CREATE VIEW vault.decrypted_secrets AS
+SELECT name, secret AS decrypted_secret
+FROM vault.secrets;
+
+INSERT INTO vault.secrets (name, secret)
+VALUES
+  ('krypto_cron_secret', 'migration-upgrade-secret'),
+  ('krypto_vercel_url', 'https://example.test');
+
+DO $$
+DECLARE
+  function_call text;
+BEGIN
+  FOREACH function_call IN ARRAY ARRAY[
+    'krypto.invoke_agent_run()',
+    'krypto.invoke_daily_summary()'
+  ]
+  LOOP
+    BEGIN
+      EXECUTE format('SELECT %s', function_call);
+      RAISE EXCEPTION '% accepted an absent krypto_rollout_mode after 0006', function_call;
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM IS DISTINCT FROM
+        'Vault secret krypto_rollout_mode must be shadow or paper' THEN
+        RAISE;
+      END IF;
+    END;
+  END LOOP;
+END
+$$;
+
+INSERT INTO vault.secrets (name, secret)
+VALUES ('krypto_rollout_mode', NULL);
+
+DO $$
+DECLARE
+  function_call text;
+BEGIN
+  FOREACH function_call IN ARRAY ARRAY[
+    'krypto.invoke_agent_run()',
+    'krypto.invoke_daily_summary()'
+  ]
+  LOOP
+    BEGIN
+      EXECUTE format('SELECT %s', function_call);
+      RAISE EXCEPTION '% accepted a NULL krypto_rollout_mode after 0006', function_call;
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM IS DISTINCT FROM
+        'Vault secret krypto_rollout_mode must be shadow or paper' THEN
+        RAISE;
+      END IF;
+    END;
+  END LOOP;
+END
+$$;
+SQL
 
 create_database upgrade
 psql "$upgrade_url" -v ON_ERROR_STOP=1 \
@@ -508,7 +776,7 @@ NODE
 psql "$operations_url" -v ON_ERROR_STOP=1 \
   -f drizzle/0002_secure_private_schema.sql >/dev/null
 psql "$operations_url" -v ON_ERROR_STOP=1 \
-  -f drizzle/0005_bind_cron_rollout_mode.sql >/dev/null
+  -f drizzle/0006_reject_null_cron_rollout_mode.sql >/dev/null
 DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
   npx tsx scripts/test-deployment-preflight.ts
 
@@ -610,4 +878,4 @@ if (
 }
 NODE
 
-echo "Migration tests passed for fresh install, private-schema security, decimal round-trip, idempotency constraints, v2 reconciliation, quarantine, transactional execution, run orchestration, operations routes, target-smoke evidence, deployment preflight, and verified backup restoration."
+echo "Migration tests passed for fresh install, original-0005-to-0006 rollout upgrade, private-schema security, cron rollout-mode fail-closed validation, decimal round-trip, idempotency constraints, v2 reconciliation, quarantine, transactional execution, run orchestration, operations routes, target-smoke evidence, deployment preflight, and verified backup restoration."

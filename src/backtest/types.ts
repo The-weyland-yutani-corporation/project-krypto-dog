@@ -20,6 +20,18 @@ export interface ScenarioInput {
   };
 }
 
+export interface BacktestObservation {
+  timestamp: string;
+  price: number;
+}
+
+export type ExplicitBacktestInput = Omit<
+  ScenarioInput,
+  "prices" | "start" | "intervalHours"
+> & {
+  observations: BacktestObservation[];
+};
+
 export interface BacktestOptions {
   initialCapitalUSD?: number;
   maxTradeSizeUSD?: number;
@@ -76,6 +88,8 @@ export interface BacktestMetrics {
 
 export interface BacktestVersionMetadata {
   strategyVersion: string;
+  configurationVersion: string;
+  costModelVersion: string;
   costModel: {
     feeBps: number;
     paperSlippageBps: number;

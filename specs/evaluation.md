@@ -108,6 +108,130 @@ RFC 0002) and before v3 live trading can be considered.
 
 ## 4. Dataset and versioning rules
 
+### Imported evidence datasets and manifests
+
+The Phase 2 evidence-pipeline foundation uses `EvidenceDataset` schema `1.0.0`.
+Each materialized dataset contains:
+
+- strictly ascending, duplicate-free, timezone-aware ETH/USDC price observations;
+- a manifest with dataset ID, source/provenance, exact acquisition window,
+  intended role (`training`, `validation`, or `holdout`), expected cadence, and
+  importer-recorded source format (`json` or `csv`);
+- explicit gap declarations that connect adjacent observations around every
+  missing expected interval; undeclared, overlapping, irregular, or unnecessary
+  gaps are rejected;
+- optional externally supplied paper executions. These rows are validated and
+  retained as provenance only. They are not replayed and do not mutate or emulate
+  production execution, balances, fees, slippage, or policy decisions.
+
+The acquisition-window boundaries must equal the first and last observation.
+Execution timestamps must fall inside those same data bounds. Prices, quantities,
+and notionals must be finite and positive; fees and slippage must be finite and
+non-negative.
+
+Three hashes have deliberately separate meanings:
+
+- `sourceFileSha256` is computed by the importer over the raw input data-file
+  bytes it receives. Once only the materialized dataset remains, the standalone
+  evaluator has no retained raw bytes from which to recompute that value.
+  Reports therefore classify the hash and associated source name, locator, and
+  notes as importer/operator-declared, not independently verified source
+  authenticity.
+- `canonicalContentSha256` covers the UTF-8 bytes, with no BOM or trailing
+  newline, of canonical JSON containing `schemaVersion`, the manifest excluding
+  both hash fields, `observations`, `gaps`, and `paperExecutions`. Object keys are
+  sorted lexicographically at every level; array order is preserved. Importer
+  source-format metadata is excluded so equivalent JSON/CSV imports retain
+  semantic equality. The loader recomputes this hash and rejects modified
+  semantic content.
+- `datasetMaterializedSha256` is stored in the evaluation plan rather than the
+  dataset. It covers the exact UTF-8 bytes emitted by
+  `serializeEvidenceDataset`: recursively key-sorted, two-space-indented JSON
+  with one trailing newline, including importer source format,
+  `sourceFileSha256`, and `canonicalContentSha256`. Evaluation recomputes this
+  hash from the parsed materialized dataset and rejects a mismatch.
+
+JSON imports embed the manifest and data. CSV imports use the exact header
+`timestamp,priceUSD` plus a separate JSON manifest/gap descriptor. Store large or
+real datasets and generated reports outside source control; only tiny engineering
+fixtures belong in `tests/fixtures/evidence/`.
+
+### Predeclared walk-forward plans
+
+Evaluation-plan schema `1.0.0` binds a plan to the dataset ID, semantic canonical
+content hash, declared raw source-file hash, and deterministic
+materialized-dataset hash. JSON and CSV imports of the same semantic observations
+intentionally retain the same canonical content hash, while their declared
+raw-source, source-format, and materialized hashes differ. A CSV materialization
+therefore cannot satisfy a JSON-bound plan merely by replacing its mutable
+`sourceFileSha256`: evaluation recomputes the complete materialized hash and
+rejects it. This binds the declared provenance fields to the reviewed plan; it
+does not authenticate the raw source without separately retained raw bytes and
+external verification. The plan also records the declaration timestamp,
+deterministic decision policy, a lowercase 40-hex implementation Git commit SHA
+supplied by the operator, exact expected
+strategy/configuration/cost/code/report-schema versions, and ordered
+non-overlapping windows. `declaredAt` must be strictly earlier than the first
+evaluation-window start; equal or post-hoc declarations are rejected. Evaluation
+rejects dataset/hash or active-version mismatches.
+
+`declaredAt` and `implementationCommitSha` remain **operator-declared
+provenance**. The standalone evaluator validates their format and chronology but
+does not execute Git, provide an immutable timestamp, prove which checkout
+executed, or create a cryptographic attestation. A GitHub Actions artifact can
+gain a separate external commit binding from workflow/artifact metadata such as
+`github.sha`; that external binding is outside the standalone evaluator and must
+be retained with the artifact. The report records these declarations and a
+canonical SHA-256 of the complete normalized plan so later mutation is
+detectable, not so the original declaration time or executing checkout is
+independently proven. Every window boundary must exactly match an observation,
+remain within the acquisition/data bounds, and contain at least two observations.
+
+Each window is passed to the existing production-aligned backtest execution loop
+as an exact isolated slice. Backtest state starts fresh at the first observation;
+observations and warmup state outside the declared window cannot enter the run.
+Declared gaps inside a window are listed in its report. All planned windows are
+reported in order, including losses and benchmark underperformance.
+
+Imported file evaluation is always classified `engineering-only` with
+`releaseGateEligible: false`. This classification cannot be overridden by plan
+content, dataset role, favorable returns, benchmark outperformance, or a
+hand-picked slice. Imported windows start from isolated fresh state and do not
+prove continuous production `AgentRun` / `TradeExecution` history,
+reconciliation, or scheduled-run completeness. They therefore cannot satisfy
+the v2.2 or v3 production evidence gates. Those gates require separately retained
+production continuity evidence described by RFC 0002 and the readiness runbook.
+
+Evaluation is allowed for validation and holdout datasets. Any parameter-sweep or
+tuning path must call the role guard first; `holdout` is rejected unconditionally.
+The Phase 2 tuning command is intentionally a guard-only, not-implemented stub.
+
+The evaluator emits byte-deterministic JSON and escaped, operator-readable HTML.
+It does not add runtime generation timestamps or execute git commands. Reports
+include dataset/provenance hashes, strategy/configuration/cost/code/schema
+versions, cash and buy-and-hold comparisons, drawdown, Sharpe, Sortino, Calmar,
+turnover, fee efficiency, fees/slippage, all predeclared results, and explicit
+engineering/simulation disclaimers.
+
+The generic backtest runner forms a daily return only when the two selected UTC
+daily closes are exactly 24 elapsed hours apart. Adjacent date labels alone are
+insufficient: 16-, 32-, 47-, or multi-day spacing is excluded. Evidence reports
+additionally suppress Sharpe, Sortino, and Calmar to `null` when a window contains
+any declared gap, begins after the first expected observation of its first UTC
+day, ends before the final expected observation of its last UTC day, uses a
+cadence that cannot evenly produce complete UTC days, or contains daily closes
+that are not exactly 24 hours apart. Every window remains in the report, with
+per-metric availability and an explicit suppression reason.
+
+The HTML report is a narrow portability exception to the application UI rule
+requiring React, shadcn/ui, and Tailwind: it must remain a single standalone file
+that operators can archive and open offline without a build or runtime. Its
+embedded CSS therefore directly applies the root `DESIGN.md` trading-terminal
+tokens (`#05070a` canvas, `#0d1117` panels, `#243044` borders, tabular numeric
+tables, amber disclaimers, green favorable states, and red unfavorable states).
+This exception applies only to the generated evidence artifact; application UI
+continues to require the documented shadcn/Tailwind primitives.
+
 ### Paper trading data
 
 Each evaluation run is identified by:

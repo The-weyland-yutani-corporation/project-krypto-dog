@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 const root = path.resolve(__dirname, "../..");
 const drizzleDir = path.join(root, "drizzle");
@@ -51,6 +52,9 @@ describe("production migration safety", () => {
     const rolloutBinding = read(
       "drizzle/0005_bind_cron_rollout_mode.sql",
     );
+    const nullSafeRollout = read(
+      "drizzle/0006_reject_null_cron_rollout_mode.sql",
+    );
 
     expect(secureSchema).toContain('CREATE SCHEMA IF NOT EXISTS "krypto"');
     expect(secureSchema).toContain('SET SCHEMA "krypto"');
@@ -66,6 +70,22 @@ describe("production migration safety", () => {
     expect(rolloutBinding).toContain(
       "WHERE name = 'krypto_rollout_mode'",
     );
+    expect(
+      createHash("sha256").update(rolloutBinding).digest("hex"),
+    ).toBe(
+      "6c2224452bafb07b0bd7ecaa3fcc6a45690abef61944b487571e900f11d7c43a",
+    );
+    expect(rolloutBinding).not.toContain(
+      "v_required_mode IS NULL",
+    );
+    expect(nullSafeRollout).toContain(
+      "'x-required-rollout-mode', v_required_mode",
+    );
+    expect(
+      nullSafeRollout.match(
+        /IF v_required_mode IS NULL\s+OR v_required_mode NOT IN \('shadow', 'paper'\) THEN/g,
+      ),
+    ).toHaveLength(2);
     expect(secureSchema).toContain(
       "REVOKE ALL PRIVILEGES ON TABLE vault.decrypted_secrets FROM PUBLIC",
     );
@@ -96,10 +116,13 @@ describe("production migration safety", () => {
     expect(enableCron).toContain("SELECT krypto.invoke_agent_run();");
     expect(enableCron).toContain("SELECT krypto.invoke_daily_summary();");
     expect(enableCron).toContain(
-      "md5(v_source) <> 'e4328c1c001787b6f0a28cd6830f7c2d'",
+      "md5(v_source) <> '3cb03ace0e82bee3f8b755701a10ea6b'",
     );
     expect(enableCron).toContain(
-      "md5(v_source) <> '585324cdb2b9f0ddfc0d53938f791ba1'",
+      "md5(v_source) <> '68aee98c8c762497b1b0cf016ea6d25d'",
+    );
+    expect(enableCron).toMatch(
+      /OR v_required_mode IS NULL\s+OR v_required_mode NOT IN \('shadow', 'paper'\) THEN/,
     );
     expect(enableCron).toContain("v_owner <> current_user");
     expect(enableCron).toContain(

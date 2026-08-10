@@ -28,6 +28,7 @@ next-env.d.ts
 
 # local backtest artifacts
 backtest-output/
+/artifacts/
 /coverage/
 
 # production preflight/backup evidence may contain infrastructure metadata
