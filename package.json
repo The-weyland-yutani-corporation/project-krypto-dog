@@ -45,6 +45,9 @@
     "agentic:evals:compare": "npx tsx scripts/compare-agentic-trials.ts",
     "backtest": "npx tsx scripts/backtest.ts",
     "backtest:all": "npx tsx scripts/backtest.ts --all --json",
+    "evidence": "npx tsx scripts/evidence.ts",
+    "evidence:import": "npx tsx scripts/evidence.ts import",
+    "evidence:evaluate": "npx tsx scripts/evidence.ts evaluate",
     "deployment:preflight": "npx tsx scripts/deployment-preflight.ts",
     "deployment:backup": "npx tsx scripts/create-verified-backup.ts",
     "smoke:target": "npx tsx scripts/target-smoke.ts"

@@ -7,7 +7,7 @@
 # defaults so a plain `docker compose up -d` still works for single-worktree use.
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     restart: unless-stopped
     ports:
       # Host port is configurable per worktree; container port stays 5432.
@@ -17,8 +17,8 @@ services:
       POSTGRES_PASSWORD: "${KRYPTO_DB_PASSWORD:-krypto_local}"
       POSTGRES_DB: "${KRYPTO_DB_NAME:-krypto}"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata17:/var/lib/postgresql/data
 
 volumes:
   # Named relative to the Compose project, so each worktree gets its own volume.
-  pgdata:
+  pgdata17:

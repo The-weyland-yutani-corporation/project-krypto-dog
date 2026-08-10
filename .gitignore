@@ -28,6 +28,7 @@ next-env.d.ts
 
 # local backtest artifacts
 backtest-output/
+/artifacts/
 /coverage/
 
 # local application harness artifacts (logs, screenshots, manifests)

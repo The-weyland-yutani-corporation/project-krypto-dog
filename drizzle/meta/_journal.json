@@ -43,6 +43,13 @@
       "when": 1784123377223,
       "tag": "0005_bind_cron_rollout_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784174542964,
+      "tag": "0006_reject_null_cron_rollout_mode",
+      "breakpoints": true
     }
   ]
 }

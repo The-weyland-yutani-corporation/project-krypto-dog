@@ -1,16 +1,23 @@
 # Deployment Runbook
 
+> This runbook implements PR-G1 through PR-G3 in
+> [`production-readiness-prd.v1.md`](./production-readiness-prd.v1.md).
+> Following a procedure does not itself grant deployment, target-mutation, or
+> promotion authorization.
+>
 > **STOP: Do NOT deploy until the target-environment gates are satisfied.**
 > The historical v2 baseline had blocking safety and correctness issues. v2.1
 > resolves the atomicity and deterministic-policy defects locally; current
 > deployment risks are:
 >
-> - The destructive v2 Supabase seed has been removed locally, but the remote
->   database and migration history remain unknown. Never recover or apply that
->   deleted file. See ADR 0006.
-> - **The production DB credentials in Vercel are stale** (connection attempts failed
->   with "tenant/user ... not found"). Credential repair and a full pre-migration
->   safety check (§0a) are required before any schema work.
+> - The destructive v2 Supabase seed has been removed. Never recover or apply
+>   that deleted file. See ADR 0006.
+> - A clean PostgreSQL 17 replacement target is active and passed the read-only
+>   fresh-database preflight. It remains empty: the corrected release migration,
+>   initialization, backup, Vault, disabled deployment, and target smoke gates
+>   are still required.
+> - The inactive legacy Supabase project remains quarantined until the
+>   replacement completes disabled target smoke.
 >
 > See `specs/readiness.md` §3 for the full issue list, `specs/readiness.md` §1
 > (Production infrastructure inventory) for the known production state, and
@@ -24,14 +31,16 @@ End-to-end recipe for deploying Project Krypto (paper-trading v2) to **Vercel + 
 
 ## 0. Pre-flight checklist
 
-Infrastructure status as of 2026-07-14: a Vercel project and a Supabase project
-both exist. The steps below confirm readiness; they do not start from scratch.
+Infrastructure status as of 2026-07-15: the Vercel project and a clean
+replacement Supabase project both exist. The steps below complete the release;
+they do not start from scratch.
 
-- [ ] **Vercel** project: already exists. Confirm local linkage with `vercel link`.
-  Do not re-create. Verify the production deployment status in the Vercel dashboard.
-- [ ] **Supabase** project: already exists. DB credentials in Vercel are stale
-  (connection failed -- see §0a). Obtain fresh credentials from the Supabase
-  dashboard before proceeding.
+- [x] **Vercel** project: already exists and is configured for Node 22. The
+  current production deployment is still the historical build; do not redeploy
+  until migrations and the disabled release are ready.
+- [x] **Supabase** replacement: active on PostgreSQL 17. Runtime and session
+  pooler credentials were connection-tested, identify the same cluster, and
+  passed a fresh-layout `deployment:preflight`.
   - Pooler URL (port `6543`, append `?pgbouncer=true&connection_limit=1`) -> `DATABASE_URL`
   - Direct URL (port `5432`) -> `DIRECT_URL` (used by drizzle-kit migrations)
 - [ ] **Azure AI Foundry**: env vars present in Vercel. Confirm they still resolve
@@ -40,29 +49,32 @@ both exist. The steps below confirm readiness; they do not start from scratch.
 - [ ] **Resend**: `RESEND_API_KEY`, `ALERT_EMAIL_TO`, `ALERT_EMAIL_FROM` are
   ABSENT from Vercel production. The live app cannot send email alerts. Add these
   before re-enabling the agent (see §4 -- Configure Vercel environment variables).
-- [ ] **Admin dashboard secrets**: `ADMIN_PASSWORD` and `ADMIN_SESSION_SECRET` are
-  ABSENT from Vercel production. The admin dashboard login will fail. Add these
-  before enabling the agent (see §4).
+- [x] **Admin dashboard secrets**: dedicated `ADMIN_PASSWORD` and
+  `ADMIN_SESSION_SECRET` values are staged in Vercel production for the next
+  deployment.
 - [ ] **Startup validation**: the Next.js instrumentation hook validates runtime
   configuration on process startup. Production deployment must fail fast if
   required database, Foundry, cron, analytics, password, or dedicated admin
   session values are absent or malformed.
-- [ ] **CRON_SECRET**: present in Vercel. Confirm the value stored in Supabase Vault
-  as `krypto_cron_secret` matches (Vault state not yet verified -- see §0a).
+- [x] **CRON_SECRET**: rotated and staged in Vercel production.
+- [ ] **Supabase Vault**: create matching `krypto_cron_secret`,
+  `krypto_vercel_url`, and `krypto_rollout_mode` values after migrations.
 
 ---
 
-## 0a. Pre-migration safety check (required for existing deployment)
+## 0a. Pre-migration safety check
 
-A Vercel project and a Supabase project are known to exist. The internal state of
-the production DB is unknown. **Complete every item in this section before
-touching §1 (migrations) or §4 (env vars).** Do not skip or reorder these steps.
+A clean replacement target passed this section as an intentionally empty
+PostgreSQL 17 database with no application tables, migration history, Krypto
+cron jobs, queued Krypto HTTP requests, unsafe function, exposed role, or Vault
+secret. The redacted report is retained outside source control. Keep this
+procedure for future replacement or recovery work and do not skip or reorder it.
 
 ### Step 1 -- Credential repair
 
-The production `DATABASE_URL` and `DIRECT_URL` stored in Vercel do not connect to
-the live Supabase project (both pooler connections fail with "tenant/user ... not
-found"). The credentials must be repaired first.
+For a replacement or recovered target, obtain a matched runtime pooler and
+session/direct connection first. The current replacement credentials have
+already passed this step.
 
 1. Open the Supabase dashboard for the live project.
 2. Navigate to Settings -> Database -> Connection string.
@@ -648,9 +660,10 @@ incident; never reset the ledger to make a promotion window appear clean.
 
 See `specs/readiness.md` §3 for the full blocking issue list. Summary:
 
-- **Unknown remote migration/data state.** The destructive v2 Supabase seed was
-  removed locally, but production inventory and backup are still blocked by
-  stale credentials. (ADR 0006)
+- **Replacement initialization and backup.** The destructive v2 Supabase seed
+  was removed, and the fresh replacement target passed inventory. The corrected
+  migration history, singleton initialization, and verified baseline backup
+  still need to run. (ADR 0006)
 - **Target smoke evidence.** Foundry, Coinbase, email, analytics, admin,
   disabled/shadow/paper transitions, cron, backup, and rollback are unproven on
   the target deployment.

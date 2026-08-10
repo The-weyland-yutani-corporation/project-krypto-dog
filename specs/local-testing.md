@@ -29,6 +29,16 @@ deterministic backtest/scenario harness is described in
 
 - Node.js 22.13.0 (see `.nvmrc`).
 - Docker running locally.
+- PostgreSQL 17 client tools (`psql`, `pg_dump`, and `pg_restore`) for the
+  migration and verified-backup suites. The Docker Compose database also runs
+  PostgreSQL 17 to match the production Supabase target.
+  On Homebrew systems where another PostgreSQL major is linked, use:
+  ```bash
+  export PATH="$(brew --prefix postgresql@17)/bin:$PATH"
+  ```
+- Supabase CLI 2.109.1 or newer for commands that read `supabase/config.toml`.
+  Older 1.x clients reject the PostgreSQL 17 setting. Without upgrading a
+  global install, use `npx --yes supabase@2.109.1 <command>`.
 - Dependencies installed:
   ```bash
   npm install
@@ -99,6 +109,10 @@ npm run harness:down
 ```bash
 docker compose up -d
 ```
+
+The PostgreSQL 17 Compose service uses a new `pgdata17` volume so an existing
+PostgreSQL 15/16 development volume is left untouched rather than opened by an
+incompatible server major version.
 
 The local database runs on:
 

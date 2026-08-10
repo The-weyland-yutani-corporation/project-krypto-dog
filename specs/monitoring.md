@@ -3,6 +3,10 @@
 This runbook defines the minimum observability needed before production cron is
 enabled and before any future live-trading RFC can move beyond draft.
 
+These signals supply evidence for PR-G2 through PR-G4 in
+[`production-readiness-prd.v1.md`](./production-readiness-prd.v1.md). The PRD
+remains authoritative for gate thresholds and authorization.
+
 ## Goals
 
 - Detect broken cron/API runs quickly.
