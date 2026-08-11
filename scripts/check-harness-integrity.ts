@@ -100,6 +100,7 @@ function semanticSignature(rel: string): string {
     try {
       const parsed = JSON.parse(jsonText) as Record<string, unknown>;
       delete parsed.engine_versions;
+      delete parsed.agent_id;
       return [`# gh-aw-metadata: ${JSON.stringify(parsed)}`];
     } catch {
       // Preserve the raw line when metadata is malformed so the drift gate fails loud.
