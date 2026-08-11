@@ -24,10 +24,10 @@
  * Compile-drift strategy: two consecutive strict compiles are compared. When
  * they are byte-identical (the proven, hermetic case) a byte-level diff gate
  * runs. If byte determinism cannot be proven at runtime, the gate falls back to
- * a semantic comparison of each artifact's embedded gh-aw signature
- * (`gh-aw-metadata` / `gh-aw-manifest` / `gh-aw-commands`), which encodes the
- * source frontmatter/body hashes and pinned action manifest, so source→lock
- * drift is still caught without a flaky byte gate.
+ * a semantic comparison of source-derived metadata. Workflow locks compare
+ * frontmatter/body hashes; command routing compares its generated payload; the
+ * maintenance workflow compares normalized behavior with volatile action SHAs
+ * and container digests removed.
  *
  * Usage: tsx scripts/check-harness-integrity.ts
  */
@@ -36,6 +36,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { REPO_ROOT, WORKFLOWS_DIR, listSourceWorkflowIds } from "./agentic/frontmatter";
+import { generatedArtifactSignature } from "./agentic/generated-artifact-signature";
 
 const PINNED_GH_AW = "v0.81.6";
 const COMPILE_REMEDIATION = "npm run agentic:compile";
@@ -89,24 +90,9 @@ function snapshot(files: string[]): Map<string, string> {
   return map;
 }
 
-/** Extract the deterministic gh-aw signature comment lines from an artifact. */
 function semanticSignature(rel: string): string {
   const text = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
-  const lines = text.split(/\r?\n/).flatMap((line) => {
-    const trimmed = line.trim();
-    if (!/^#\s*gh-aw-(metadata|manifest|commands):/.test(trimmed)) return [];
-    if (!trimmed.startsWith("# gh-aw-metadata:")) return [trimmed];
-    const jsonText = trimmed.slice("# gh-aw-metadata:".length).trim();
-    try {
-      const parsed = JSON.parse(jsonText) as Record<string, unknown>;
-      delete parsed.engine_versions;
-      return [`# gh-aw-metadata: ${JSON.stringify(parsed)}`];
-    } catch {
-      // Preserve the raw line when metadata is malformed so the drift gate fails loud.
-      return [trimmed];
-    }
-  });
-  return lines.join("\n");
+  return generatedArtifactSignature(rel, text);
 }
 
 function ghAwAvailable(): boolean {

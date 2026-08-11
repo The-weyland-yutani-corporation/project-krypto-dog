@@ -56,6 +56,9 @@ are approved by current-head agent checks:
 - auth, dependency, deployment, agent, skill, and workflow changes also require `Security review`
 - trading, guardrail, agent, backtest, database, migration, and trading RFC changes also require `Trading safety review`
 
+The `security-review` and `trading-safety` labels route those specialist checks;
+the labels are not permanent merge holds after their current-head checks pass.
+
 The non-sensitive documentation allowlist is narrower than this merge policy:
 it limits which enrolled agent PRs may receive self-heal commits, not which
 same-repository PRs may be authorized by current-head agent checks.

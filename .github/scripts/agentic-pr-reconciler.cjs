@@ -5,12 +5,12 @@ const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const {
   autoMergeLabel: AUTO_MERGE_LABEL,
   blockedLabel: BLOCKED_LABEL,
-  blockingLabels: BLOCKING_LABELS,
   exhaustedLabel: EXHAUSTED_LABEL,
   failingConclusions: FAILING_CONCLUSIONS,
   lowRiskPathPattern: LOW_RISK_PATH_PATTERN,
   lowRiskStatuses: LOW_RISK_STATUSES,
   maxRepairCommits: MAX_REPAIR_COMMITS,
+  mergeBlockingLabels: MERGE_BLOCKING_LABELS,
   mergeContext: MERGE_CONTEXT,
   nonRepairableReviewConclusions: NON_REPAIRABLE_REVIEW_CONCLUSIONS,
   passingCheckConclusions: PASSING_CHECK_CONCLUSIONS,
@@ -18,6 +18,7 @@ const {
   securityCheckName: SECURITY_CHECK_NAME,
   securityExactPaths: SECURITY_EXACT_PATHS,
   securityPathPatterns: SECURITY_PATH_PATTERNS,
+  selfHealBlockingLabels: SELF_HEAL_BLOCKING_LABELS,
   sensitiveTokenPattern: SENSITIVE_DOC_TOKEN_PATTERN,
   tradingSafetyCheckName: TRADING_SAFETY_CHECK_NAME,
   tradingSafetyExactPaths: TRADING_SAFETY_EXACT_PATHS,
@@ -145,14 +146,22 @@ function getReviewState(pullRequest, reviews, sha) {
   };
 }
 
-function hasBlockingLabel(pullRequest) {
+function hasAnyBlockingLabel(pullRequest, blockingLabels) {
   const labels = getLabels(pullRequest);
   const title = pullRequest.title || "";
 
   return (
-    [...BLOCKING_LABELS].some((label) => labels.has(label)) ||
+    [...blockingLabels].some((label) => labels.has(label)) ||
     (labels.has("docs-sync") && !title.startsWith("[docs-sync] "))
   );
+}
+
+function hasBlockingLabel(pullRequest) {
+  return hasAnyBlockingLabel(pullRequest, MERGE_BLOCKING_LABELS);
+}
+
+function hasSelfHealBlockingLabel(pullRequest) {
+  return hasAnyBlockingLabel(pullRequest, SELF_HEAL_BLOCKING_LABELS);
 }
 
 function getCheckState(checkRuns, name) {
@@ -210,6 +219,7 @@ function evaluateMergePolicy({
   const trustedAgent = isTrustedAgentPullRequest(pullRequest, repository);
   const lowRisk = isLowRiskChange(files);
   const blockingLabel = hasBlockingLabel(pullRequest);
+  const selfHealBlockingLabel = hasSelfHealBlockingLabel(pullRequest);
   const agentApproval = getAgentApprovalState(files, checkRuns);
   const {
     hasCurrentHumanApproval,
@@ -246,6 +256,7 @@ function evaluateMergePolicy({
     trustedAgent,
     lowRisk,
     hasBlockingLabel: blockingLabel,
+    hasSelfHealBlockingLabel: selfHealBlockingLabel,
     hasCurrentHumanApproval,
     hasCurrentHumanChangesRequested,
     agentApproved: agentApproval.approved,
@@ -581,7 +592,7 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
           draft: pullRequest.draft,
           trustedAgent: policy.trustedAgent,
           lowRisk: policy.lowRisk,
-          hasBlockingLabel: policy.hasBlockingLabel,
+          hasBlockingLabel: policy.hasSelfHealBlockingLabel,
           ciNeedsDispatch,
           reviewShouldDispatch,
           ciHeld,
@@ -627,7 +638,8 @@ module.exports = {
   AGENTIC_POLICY,
   AUTO_MERGE_LABEL,
   BLOCKED_LABEL,
-  BLOCKING_LABELS,
+  MERGE_BLOCKING_LABELS,
+  SELF_HEAL_BLOCKING_LABELS,
   EXHAUSTED_LABEL,
   LOW_RISK_STATUSES,
   MAX_REPAIR_COMMITS,
@@ -644,6 +656,7 @@ module.exports = {
   getRequiredSpecialistChecks,
   getReviewState,
   hasBlockingLabel,
+  hasSelfHealBlockingLabel,
   hasFailedCiRun,
   hasFailedReviewCheck,
   isLowRiskChange,

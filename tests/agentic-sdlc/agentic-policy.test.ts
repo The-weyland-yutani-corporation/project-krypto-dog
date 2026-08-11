@@ -4,6 +4,8 @@ import path from "node:path";
 
 interface AgenticPolicy {
   requiredContexts: readonly string[];
+  mergeBlockingLabels: Set<string>;
+  selfHealBlockingLabels: Set<string>;
   maxRepairCommits: number;
   maxOpenActionableOpportunities: number;
   forksRequireHumanApproval: boolean;
@@ -44,6 +46,17 @@ describe("canonical agentic policy", () => {
       "Agentic code review",
       "Agentic merge policy",
     ]);
+    expect(
+      policyModule.AGENTIC_POLICY.mergeBlockingLabels,
+    ).not.toContain("security-review");
+    expect(
+      policyModule.AGENTIC_POLICY.mergeBlockingLabels,
+    ).not.toContain("trading-safety");
+    expect(
+      [...policyModule.AGENTIC_POLICY.selfHealBlockingLabels],
+    ).toEqual(
+      expect.arrayContaining(["security-review", "trading-safety"]),
+    );
   });
 
   it.each(["neutral", "skipped"])(

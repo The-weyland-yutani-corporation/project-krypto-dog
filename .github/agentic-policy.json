@@ -27,7 +27,13 @@
     "autoMerge": "agentic-automerge",
     "blocked": "blocked",
     "selfHealExhausted": "self-heal-exhausted",
-    "blocking": [
+    "mergeBlocking": [
+      "blocked",
+      "self-heal-exhausted",
+      "needs-qa",
+      "ready-for-human-review"
+    ],
+    "selfHealBlocking": [
       "blocked",
       "self-heal-exhausted",
       "needs-qa",

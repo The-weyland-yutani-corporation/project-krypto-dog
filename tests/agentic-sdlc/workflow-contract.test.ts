@@ -116,6 +116,18 @@ describe("agentic SDLC workflow contracts", () => {
     );
   });
 
+  it("keeps specialist escalation independent from the code-review result", () => {
+    expect(codeReview).toContain(
+      "Adding a specialist label does not fail this check",
+    );
+    expect(codeReview).toContain(
+      "the deterministic merge policy independently requires the corresponding specialist check",
+    );
+    expect(codeReview).not.toContain(
+      "Set the check to `failure` for any required fix, unresolved correctness concern, or specialist escalation.",
+    );
+  });
+
   it("requires trusted-bot specialist checks for high-risk PRs", () => {
     for (const workflow of [securityReview, tradingSafetyReview]) {
       expect(workflow).toContain(

@@ -130,7 +130,13 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
   const labels = object(root.labels, "labels");
   exactKeys(
     labels,
-    ["autoMerge", "blocked", "selfHealExhausted", "blocking"],
+    [
+      "autoMerge",
+      "blocked",
+      "selfHealExhausted",
+      "mergeBlocking",
+      "selfHealBlocking",
+    ],
     "labels",
   );
   const conclusions = object(root.conclusions, "conclusions");
@@ -247,7 +253,12 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
       labels.selfHealExhausted,
       "labels.selfHealExhausted",
     ),
-    blockingLabels: new Set(strings(labels.blocking, "labels.blocking")),
+    mergeBlockingLabels: new Set(
+      strings(labels.mergeBlocking, "labels.mergeBlocking"),
+    ),
+    selfHealBlockingLabels: new Set(
+      strings(labels.selfHealBlocking, "labels.selfHealBlocking"),
+    ),
     failingConclusions: new Set(
       strings(conclusions.failing, "conclusions.failing"),
     ),

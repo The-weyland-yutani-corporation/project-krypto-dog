@@ -115,15 +115,18 @@ of these paths gated on the applicable current-head agent checks.
   `operator`, `policy`, `production`, `release`, `rollback`, `runbook`,
   `runbooks`, `secret`, `secrets`, `security`, `trading`, `workflow`, and
   `workflows`. Renames and deletions are also outside the allowlist.
-- `blocked`, `self-heal-exhausted`, `needs-qa`, `security-review`,
-  `trading-safety`, and `ready-for-human-review` keep merge policy pending.
+- `blocked`, `self-heal-exhausted`, `needs-qa`, and
+  `ready-for-human-review` keep merge policy pending. `security-review` and
+  `trading-safety` route specialist checks; they do not remain permanent merge
+  holds after those current-head checks pass.
   A `docs-sync` label on a PR without the `[docs-sync] ` title is also blocking.
 - Required contexts are `Quality and evidence gates`,
   `PostgreSQL migrations and execution`, `Agentic code review`, and
   `Agentic merge policy`; required conversation resolution still applies.
 - Self-heal uses the same low-risk boundary, never treats missing or held checks
-  as repairable failures, and stops after two trusted `[self-heal]` commits or
-  a completed no-change repair run.
+  as repairable failures, remains blocked by specialist-routing labels, and
+  stops after two trusted `[self-heal]` commits or a completed no-change repair
+  run.
 - Humans retain control over production deployment, live-trading enablement,
   secrets and external accounts, and accepting architecture decisions.
 
