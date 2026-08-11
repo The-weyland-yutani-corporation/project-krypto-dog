@@ -84,7 +84,6 @@ export function generatedArtifactSignature(
         metadata.compiler_version ?? null,
       ),
       strict: normalizedGeneratedValue(metadata.strict ?? null),
-      agentId: normalizedGeneratedValue(metadata.agent_id ?? null),
     });
   }
 

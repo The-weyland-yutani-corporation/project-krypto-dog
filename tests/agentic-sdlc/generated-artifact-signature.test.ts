@@ -12,6 +12,7 @@ describe("generated artifact semantic signatures", () => {
     ].join("\n");
     const refreshed = base
       .replace("1.0.65", "1.0.99")
+      .replace('"agent_id":"copilot"', '"agent_id":"resolved-agent"')
       .replace('"sha":"old"', '"sha":"new"');
 
     expect(
