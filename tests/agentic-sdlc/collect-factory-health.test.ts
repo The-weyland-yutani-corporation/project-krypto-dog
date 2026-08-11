@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { parseDocument } from "yaml";
 
 const root = path.resolve(__dirname, "../..");
 const collectorPath = path.join(
@@ -90,12 +91,19 @@ interface Collector {
 
 const collector = jest.requireActual<Collector>(collectorPath);
 
-const fixtures = JSON.parse(
-  fs.readFileSync(
-    path.join(__dirname, "fixtures/monitor-ops/gh-outputs.json"),
-    "utf8",
-  ),
-) as {
+function parseUniqueJson<T>(filePath: string): T {
+  const document = parseDocument(fs.readFileSync(filePath, "utf8"), {
+    uniqueKeys: true,
+  });
+  if (document.errors.length > 0) {
+    throw new Error(
+      `${filePath}: ${document.errors.map((error) => error.message).join("; ")}`,
+    );
+  }
+  return document.toJS() as T;
+}
+
+const fixtures = parseUniqueJson<{
   now: string;
   status: unknown[];
   logsGovernance: unknown;
@@ -104,7 +112,9 @@ const fixtures = JSON.parse(
   pullRequests: unknown[];
   reportIssuesNone: unknown[];
   reportIssuesWithHash: unknown[];
-};
+}>(
+  path.join(__dirname, "fixtures/monitor-ops/gh-outputs.json"),
+);
 
 const policy = JSON.parse(
   fs.readFileSync(path.join(root, ".github/agentic-policy.json"), "utf8"),
