@@ -28,7 +28,7 @@ function normalizedGeneratedValue(value: unknown): JsonValue {
   }
   if (typeof value === "string") {
     const action = value.match(
-      /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)@(?:[0-9a-f]{40}|v?\d[^@\s]*)$/i,
+      /^((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+)@(?:[0-9a-f]{40}|v?\d[^@\s]*)$/i,
     );
     if (action) return action[1];
     return value.replace(/@sha256:[0-9a-f]{64}$/i, "");

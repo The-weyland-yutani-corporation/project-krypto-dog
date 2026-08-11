@@ -38,11 +38,13 @@ jobs:
     container: ghcr.io/example/tool:v1@sha256:${"a".repeat(64)}
     steps:
       - uses: actions/checkout@${"b".repeat(40)}
+      - uses: actions/cache/restore@${"e".repeat(40)}
       - run: echo stable
 `;
     const second = first
       .replace("a".repeat(64), "c".repeat(64))
-      .replace("b".repeat(40), "d".repeat(40));
+      .replace("b".repeat(40), "d".repeat(40))
+      .replace("e".repeat(40), "f".repeat(40));
 
     expect(
       generatedArtifactSignature("agentics-maintenance.yml", first),
