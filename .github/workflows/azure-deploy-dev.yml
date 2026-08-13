@@ -10,7 +10,7 @@ name: Azure deploy dev
 # Order: environment.bicep (what-if, reject unsafe deletes, deploy) ->
 # build+digest-resolve web/ops images via `az acr build` -> release.bicep
 # (always disabled/manual, per release.bicep's own hardcoded default) ->
-# preflight -> migrate-init -> target-smoke -> activation-check (each
+# migrate-init -> preflight -> target-smoke -> activation-check (each
 # started/polled to a terminal state, evidence downloaded via OIDC +
 # Storage Blob Data Reader, and independently schema/pass/binding
 # validated) -> only if target-smoke AND activation-check both passed,
@@ -376,7 +376,7 @@ jobs:
           done
 
   ops-validate:
-    name: Run preflight / migrate-init / target-smoke / activation-check (dev)
+    name: Run migrate-init / preflight / target-smoke / activation-check (dev)
     needs: [gate, deploy-environment, deploy-release, build-images]
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -405,28 +405,6 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Run preflight
-        run: |
-          set -euo pipefail
-          source .github/scripts/azure/lib/common.sh
-          job_execution_id="$(azure_new_job_execution_id preflight)"
-          .github/scripts/azure/run-ops-job.sh \
-            --job-name "${PREFLIGHT_JOB_NAME}" \
-            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
-            --job-execution-id "${job_execution_id}" \
-            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
-          .github/scripts/azure/download-evidence.sh \
-            --container-url "${EVIDENCE_CONTAINER_URL}" \
-            --environment-name dev \
-            --release-sha "${RESOLVED_SHA}" \
-            --operation preflight \
-            --job-execution-id "${job_execution_id}" \
-            --destination evidence
-          node .github/scripts/azure/validate-report.mjs \
-            --report "evidence/dev/${RESOLVED_SHA}/preflight/${job_execution_id}/report.json" \
-            --operation preflight \
-            --release-sha "${RESOLVED_SHA}"
-
       - name: Run migrate-init
         run: |
           set -euo pipefail
@@ -447,6 +425,28 @@ jobs:
           node .github/scripts/azure/validate-report.mjs \
             --report "evidence/dev/${RESOLVED_SHA}/migrate-init/${job_execution_id}/report.json" \
             --operation migrate-init \
+            --release-sha "${RESOLVED_SHA}"
+
+      - name: Run preflight
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id preflight)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${PREFLIGHT_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name dev \
+            --release-sha "${RESOLVED_SHA}" \
+            --operation preflight \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence/dev/${RESOLVED_SHA}/preflight/${job_execution_id}/report.json" \
+            --operation preflight \
             --release-sha "${RESOLVED_SHA}"
 
       - name: Run target-smoke

@@ -17,17 +17,20 @@ This document does not contain secrets or credentials.
 > which supersedes ADR 0003. The Bicep templates, GitHub Actions workflows,
 > and application-side deployment/ops-job code for that target now exist in
 > this repository and are locally validated (Bicep compile, `.bicepparam`
-> build, ops-job unit tests -- see `infra/README.md` "Validation"). **No real
-> Azure subscription, resource group, or environment has ever been
-> provisioned from this code, and no deploy/what-if/ops-job has ever run
-> against a live Azure tenant** -- so it has no live evidence baseline of its
+> build, ops-job unit tests -- see `infra/README.md` "Validation"). An Azure
+> subscription and existing Foundry service(s) are available, but **no Project
+> Krypto Azure resource group or environment has ever been provisioned from
+> this code, and no deploy/what-if/ops-job has ever targeted the new stack**
+> -- so it has no live evidence baseline of its
 > own yet, and none of the release gates below have been evaluated against a
 > provisioned Azure target. The Vercel/Supabase inventory and gates below
 > remain the record of the current hosted baseline. See
 > `specs/deployment.md` for the implemented Azure runbook (bootstrap, GitHub
 > Environments/OIDC, dev/prod deploy flows, promotion, rotation, rollback)
 > and §2 "Current v2.1 implementation progress" below for what "locally
-> complete" means distinct from "provisioned."
+> complete" means distinct from "provisioned." See
+> [`architecture.md`](./architecture.md) for the diagrammed hosted baseline,
+> target topology, planned resource map, and operator links.
 
 For metric definitions see `specs/evaluation.md`.
 For the proposed architecture changes see `specs/rfcs/0002-evidence-grade-paper-trading.md`.
@@ -138,8 +141,8 @@ current until the Azure target is actually provisioned).
   deployment/ops-job code (`src/deployment/`, `scripts/azure/`) exist and
   pass local unit tests.
 - **Provisioning/evidence pending:** the one-time `bootstrap.bicep`
-  subscription deploy has never been run against a real Azure
-  subscription; no `dev`/`prod` resource group, identity, Container App,
+  subscription deploy has never been run; no `dev`/`prod` resource group,
+  identity, Container App,
   PostgreSQL Flexible Server, Key Vault, or ACR has ever been created from
   this code. No GitHub Environment (`platform`, `development`,
   `production-deploy`, `production-promotion`) has been configured with

@@ -182,9 +182,9 @@ single observation, not proof of edge.
 
 | Alert | Threshold | Action |
 |---|---|---|
-| Agent error | Any `agent_run_completed.status = error` in 24h | Inspect Vercel logs and DB state |
+| Agent error | Any `agent_run_completed.status = error` in 24h | Inspect current host logs (Vercel baseline or Container Apps target) and DB state |
 | Drawdown lock | Any drawdown guardrail event or `status = locked` | Stop, inspect recent trades/journals, do not auto-unlock |
-| Missing cron | No `agent_run_completed` for > 2h during enabled cron window | Check Supabase cron, Vault secrets, Vercel deployment |
+| Missing trigger | No `agent_run_completed` for > 2h during an enabled schedule window | Check Supabase cron on the hosted baseline or Container Apps Job history on Azure, then verify secrets and the active revision |
 | Stale lease | `leaseExpiresAt < now()` or repeated 409 after expiry | Inspect owner/run record; use only the expired-lease recovery path |
 | Reconciliation failure | `accountingStatus != RECONCILED` | Keep trading blocked and reconcile immutable history before any unlock |
 | Alert delivery | Latest persisted delivery is failed/skipped, or older than 36h | Repair Resend configuration/provider health and prove a successful delivery |

@@ -25,12 +25,15 @@ by this ADR all exist in this repository now — see
 [`infra/README.md`](../../infra/README.md) and
 [`specs/deployment.md`](../deployment.md) for the implemented runbook.
 Local validation (Bicep compile, `.bicepparam` build, ops-job unit tests)
-passes. **No real Azure subscription, resource group, or environment has
-been provisioned from this code, and no workflow run has ever executed
-against a live Azure tenant** — that remains gated by the existing
+passes. An Azure subscription and existing Foundry service(s) are available,
+but **no Project Krypto Azure resource group or environment has been
+provisioned from this code, and no workflow run has ever executed against
+the new target stack** — that remains gated by the existing
 readiness process in `specs/production-readiness-prd.v1.md` and requires
 the one-time bootstrap and GitHub Environment setup in
 `specs/deployment.md` §1–§2.
+See [`specs/architecture.md`](../architecture.md) for the diagrammed
+current-vs-target state and service map.
 
 ## Decision
 

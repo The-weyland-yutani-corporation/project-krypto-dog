@@ -5,6 +5,12 @@ This tree implements the Azure-native deployment architecture accepted in
 It is infrastructure only: no application code, npm scripts, database
 migrations, or GitHub Actions workflows are added or changed by this tree.
 
+> **Deployment state:** source only. As of 2026-08-12, neither
+> `rg-krypto-dev` nor `rg-krypto-prod` exists and no resource in this tree
+> has been provisioned. See
+> [`specs/architecture.md`](../specs/architecture.md) for current/target
+> diagrams, planned resource names, and operator links.
+
 **v2 is paper trading only.** Nothing here provisions or authorizes any
 live-money execution path. Production is deployed and defaults to
 `ROLLOUT_MODE=disabled` with both scheduler jobs on the `Manual` trigger;
@@ -198,10 +204,11 @@ and mounted **only** on `target-smoke` and `activation-check` — never on
 `migrate-init`, `preflight`, `verified-backup`, the web app, or the
 scheduler jobs, none of which need it. It validates that a `target-smoke`
 or `activation-check` invocation is an authorized part of a real
-deploy/rollout rather than an arbitrary manual trigger. The CI/CD
-workflows that invoke these two jobs are being updated to supply it; the
-`.bicepparam` files read it from `DEPLOYMENT_APPROVAL_SECRET_DEV`/`_PROD`
-with no fallback (see "Secure parameters" below).
+deploy/rollout rather than an arbitrary manual trigger. Each CI/CD workflow
+reads the `DEPLOYMENT_APPROVAL_SECRET` secret from its protected GitHub
+Environment and maps it to the internal
+`DEPLOYMENT_APPROVAL_SECRET_DEV`/`_PROD` variable expected by the relevant
+`.bicepparam` file, with no fallback (see "Secure parameters" below).
 
 All five also receive `ENVIRONMENT_NAME`, `RELEASE_SHA`,
 `EVIDENCE_CONTAINER_URL`, and `AZCOPY_MSI_CLIENT_ID` as non-secret env (see

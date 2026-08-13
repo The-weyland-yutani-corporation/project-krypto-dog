@@ -9,10 +9,10 @@
 > (`infra/`), the GitHub Actions workflows below, and the application-side
 > deployment code (`src/deployment/`, `scripts/azure/`) all exist in this
 > repository and are validated locally (Bicep compiles clean, ops-job unit
-> tests pass — see `infra/README.md` "Validation"). **No real Azure
-> subscription, resource group, or environment has been provisioned from
-> this code, and no deploy/what-if has ever been run against a live
-> Azure tenant.** Every step below is unexercised outside local
+> tests pass — see `infra/README.md` "Validation"). An Azure subscription
+> and existing Foundry service(s) are available, but **no Project Krypto
+> Azure resource group or environment has been provisioned from this code,
+> and no deploy/what-if has ever targeted the new stack.** Every step below is unexercised outside local
 > compile-time validation until an operator completes the one-time
 > bootstrap in §1 and the first dev/prod deploys succeed. Do not treat any
 > statement in this document as evidence that a deploy has occurred.
@@ -27,6 +27,8 @@
 > [`infra/README.md`](../infra/README.md) — this document is the
 > operational sequence for using that infrastructure, not a restatement
 > of its design.
+> Current-vs-target diagrams, planned resource names, and safe operator
+> links are maintained in [`architecture.md`](./architecture.md).
 >
 > **Paper/live safety gates are unchanged by this platform migration.**
 > `ROLLOUT_MODE` still governs `disabled` / `shadow` / `paper` only; no
@@ -44,7 +46,8 @@
 - **Implementation-complete**: the Bicep templates, GitHub Actions
   workflows, and application ops-job code exist, compile, and pass their
   local/unit tests.
-- **Provisioning/evidence pending**: no real Azure resource group,
+- **Provisioning/evidence pending**: the Azure subscription and existing
+  Foundry service predate this work, but no Project Krypto Azure resource group,
   identity, database, or Container App has ever been created from this
   code, and no ops-job or target-smoke report has ever been produced
   against a live target. Both are true simultaneously today.
@@ -93,9 +96,9 @@ enforced by the workflow triggers).
 | GitHub Environment | Federated identity | Used by | Required repository/environment variables | Required environment secrets |
 |---|---|---|---|---|
 | `platform` | platform | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | none (model inputs are workflow_dispatch inputs, not secrets) |
-| `development` | dev | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME`, `FOUNDRY_RESOURCE_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `ANTHROPIC_FOUNDRY_API_KEY`, `POSTHOG_API_KEY`, `RESEND_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET_DEV` |
-| `production-deploy` | prod deploy | `azure-deploy-prod.yml`, `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `FOUNDRY_RESOURCE_NAME` | same ten secrets as `development` (prod values) plus `DEPLOYMENT_APPROVAL_SECRET_PROD` |
-| `production-promotion` | prod promotion | `azure-deploy-prod.yml` (force-disable step only), `azure-promote-prod.yml`, `azure-rotate-secrets.yml` (disable step only) | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | none — `rollout.bicep` never reads a secret |
+| `development` | dev | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME`, `FOUNDRY_RESOURCE_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `ANTHROPIC_FOUNDRY_API_KEY`, `POSTHOG_API_KEY`, `RESEND_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
+| `production-deploy` | prod deploy | `azure-deploy-prod.yml`, `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME`, `FOUNDRY_RESOURCE_NAME` | same secret names as `development`, using prod values |
+| `production-promotion` | prod promotion | `azure-deploy-prod.yml` (force-disable step only), `azure-promote-prod.yml`, `azure-rotate-secrets.yml` (disable step only) | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_PROMOTION_IDENTITY_NAME`, `FOUNDRY_RESOURCE_NAME` | none — `rollout.bicep` never reads a secret |
 
 Each `AZURE_CLIENT_ID` is the matching identity's `clientId` from §1's
 bootstrap output — **do not** reuse the same client ID across
@@ -103,8 +106,11 @@ Environments; each Environment gets its own identity, which is exactly
 how the resource-group isolation in `infra/README.md`'s GitHub
 Environments table is enforced.
 
-`DEPLOYMENT_APPROVAL_SECRET_DEV`/`DEPLOYMENT_APPROVAL_SECRET_PROD` are a
-distinct, narrower-scoped secret from `CRON_SECRET`: Bicep binds each one
+The `DEPLOYMENT_APPROVAL_SECRET` stored independently in the `development`
+and `production-deploy` GitHub Environments is distinct from `CRON_SECRET`.
+Each workflow maps it to the internal
+`DEPLOYMENT_APPROVAL_SECRET_DEV`/`DEPLOYMENT_APPROVAL_SECRET_PROD` variable
+that its `.bicepparam` file reads. Bicep binds it
 only into the **`target-smoke`** and **`activation-check`** ops-job
 definitions for its environment (never `preflight`, `migrate-init`,
 `verified-backup`, and never the web/runtime Container App revision).
@@ -118,6 +124,24 @@ connectivity check) — it takes plain repository secrets
 (`ANTHROPIC_FOUNDRY_BASE_URL`, `ANTHROPIC_FOUNDRY_API_KEY`,
 `ANTHROPIC_FOUNDRY_DEPLOYMENT`), not an OIDC identity, and is unrelated to
 the four bootstrap identities above.
+
+### 2a. Azure PostgreSQL credential contract
+
+The initial Azure target uses Flexible Server's default `postgres` database.
+`DATABASE_URL` and `DIRECT_URL` target that same private server/database but
+must use distinct roles:
+
+| Secret | Username | Required relationship |
+|---|---|---|
+| `DIRECT_URL` | `krypto_owner` | Its password equals `POSTGRES_ADMIN_PASSWORD`; only ops jobs receive it |
+| `DATABASE_URL` | `krypto_app` | Its password equals `RUNTIME_DATABASE_PASSWORD`; the web app receives only this URL |
+
+Both URLs include `sslmode=require`. `migrate-init` first connects through
+`DIRECT_URL`, applies migrations, creates/rotates `krypto_app` from
+`RUNTIME_DATABASE_PASSWORD`, then initializes the singleton through
+`DATABASE_URL`. Preflight proves the two connections reach the same cluster
+while using distinct current users. GitHub-hosted runners never connect
+directly to this private database.
 
 ---
 
@@ -166,8 +190,8 @@ gated on the previous job succeeding:
    `infra/release.bicep`. This always lands with `ROLLOUT_MODE=disabled`
    and both scheduler jobs `Manual` — hardcoded in `release.bicep` itself,
    not a workflow choice.
-5. **`ops-validate`** (`development`) — runs `preflight` →
-   `migrate-init` → `target-smoke` → `activation-check`, in that order,
+5. **`ops-validate`** (`development`) — runs `migrate-init` →
+   `preflight` → `target-smoke` → `activation-check`, in that order,
    each via the exact ops-job evidence sequence in §6. Evidence is
    downloaded and independently schema/pass/binding-validated after each
    job; a missing output or failed validation stops the workflow.
@@ -289,8 +313,8 @@ output, an unreadable report, or a validation failure stops the workflow
 — nothing here treats "no evidence" as "passed."
 
 `target-smoke` and `activation-check` additionally sign their report
-with an HMAC-SHA256 approval computed from
-`DEPLOYMENT_APPROVAL_SECRET_DEV`/`DEPLOYMENT_APPROVAL_SECRET_PROD` (§2),
+with an HMAC-SHA256 approval computed from the environment's
+`DEPLOYMENT_APPROVAL_SECRET` (§2),
 binding that specific report to the release/cron activation it approves.
 This approval secret is separate from `CRON_SECRET`: it authorizes
 *promotion decisions*, `CRON_SECRET` authorizes *scheduled invocation
@@ -318,7 +342,7 @@ run summary/logs when its `target-smoke` step succeeds); promotion never
 auto-discovers or falls back to "the newest evidence for this
 release/image." A `verify-target-smoke-evidence` job downloads and
 independently validates exactly that report, including its
-`DEPLOYMENT_APPROVAL_SECRET_PROD`-signed HMAC-SHA256 approval, before
+`DEPLOYMENT_APPROVAL_SECRET`-signed HMAC-SHA256 approval, before
 either action proceeds — it fails closed on a missing report, an ID that
 doesn't match, or an invalid signature.
 
@@ -432,6 +456,8 @@ trading is enabled:
   identity/RBAC model, the five manual operations jobs and their exact
   env/secret lists, secure-parameter handling, deployment order,
   API versions, and known design limitations.
+- [`architecture.md`](./architecture.md) — current hosted baseline, target
+  diagrams, planned dev/prod resources, promotion flow, and operator links.
 - `azure-infra-validate.yml` — the PR-facing CI check (triggers on
   `infra/**` changes) that runs template-compile-only `az bicep build` /
   `az bicep build-params` validation with inert stub values; never

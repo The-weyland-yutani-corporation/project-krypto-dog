@@ -90,8 +90,9 @@ param resendApiKey = readEnvironmentVariable('RESEND_API_KEY_PROD')
 param adminPassword = readEnvironmentVariable('ADMIN_PASSWORD_PROD')
 param adminSessionSecret = readEnvironmentVariable('ADMIN_SESSION_SECRET_PROD')
 param runtimeDatabasePassword = readEnvironmentVariable('RUNTIME_DATABASE_PASSWORD_PROD')
-// Mounted only on target-smoke and activation-check (see release.bicep);
-// workflows are being updated to supply this at deploy time.
+// Mounted only on target-smoke and activation-check (see release.bicep).
+// The prod workflows map the protected GitHub Environment secret named
+// DEPLOYMENT_APPROVAL_SECRET to this internal _PROD variable.
 param deploymentApprovalSecret = readEnvironmentVariable('DEPLOYMENT_APPROVAL_SECRET_PROD')
 
 param tags = {
