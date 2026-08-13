@@ -33,7 +33,7 @@
 | **Stack** | Next.js 16 (App Router) · TypeScript · structured Anthropic output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
 | **Hosted trigger state** | The fresh Supabase inventory found no active Krypto cron jobs or queued HTTP requests; there is no approved production schedule. |
 | **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
-| **Architecture** | [`specs/architecture.md`](./specs/architecture.md) — current hosted baseline, target diagrams, planned resources, promotion flow, and operator links |
+| **Architecture and live links** | [`specs/architecture.md`](./specs/architecture.md) — hosted baseline, target diagrams, planned resources, live endpoint register, promotion flow, and operator consoles |
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
 | **Deploy** | [`specs/deployment.md`](./specs/deployment.md) (Azure runbook) · [`infra/README.md`](./infra/README.md) (Bicep infrastructure design) |
 | **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |

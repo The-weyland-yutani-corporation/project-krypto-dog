@@ -175,6 +175,24 @@ The two URLs must use `sslmode=require`, and the runtime/admin usernames must
 remain distinct. GitHub-hosted runners do not connect directly to the private
 database; the VNet-integrated ops jobs perform database operations.
 
+## Live endpoint register
+
+This is the authoritative link register. **No Azure endpoint may be added
+until its environment deployment and retained target-smoke evidence pass.**
+
+| Environment | Public application | Azure resources | Evidence | Status |
+|---|---|---|---|---|
+| Hosted baseline | The concrete historical Vercel URL is intentionally not recorded; select the Project Krypto project in the [Vercel dashboard](https://vercel.com/dashboard) | The fresh database is visible in [Supabase projects](https://supabase.com/dashboard/projects) | See [`readiness.md`](./readiness.md) for the last observed inventory | Historical; not release candidate |
+| Azure dev | Not available | Expected resource group `rg-krypto-dev`; open [Azure Resource Groups](https://portal.azure.com/#view/HubsExtension/BrowseResourceGroups) after provisioning | None | **Not deployed** |
+| Azure prod | Not available | Expected resource group `rg-krypto-prod`; open [Azure Resource Groups](https://portal.azure.com/#view/HubsExtension/BrowseResourceGroups) after provisioning | None | **Not deployed** |
+
+After the first successful Azure deployment, update only the public Container
+App origin in this table and link the corresponding GitHub Actions run. Keep
+subscription IDs, full Azure resource IDs, PostgreSQL FQDNs/URLs, Key Vault
+URLs, evidence-container URLs, and private endpoints out of this public
+repository; operators can resolve them from the protected Bicep deployment
+outputs and evidence artifacts.
+
 ## Operator links
 
 Concrete project IDs and internal service URLs are deliberately not committed.

@@ -28,7 +28,8 @@
 > operational sequence for using that infrastructure, not a restatement
 > of its design.
 > Current-vs-target diagrams, planned resource names, and safe operator
-> links are maintained in [`architecture.md`](./architecture.md).
+> links are maintained in [`architecture.md`](./architecture.md). Its
+> "Live endpoint register" is authoritative for what is actually deployed.
 >
 > **Paper/live safety gates are unchanged by this platform migration.**
 > `ROLLOUT_MODE` still governs `disabled` / `shadow` / `paper` only; no
