@@ -49,11 +49,88 @@ orchestration_url="$url_prefix/orchestration"
 operations_url="$url_prefix/operations"
 migration_only_url="$url_prefix/migration_only"
 rollout_upgrade_url="$url_prefix/rollout_upgrade"
+azure_target_url="$url_prefix/azure_target"
+azure_upgrade_url="$url_prefix/azure_upgrade"
 
 create_database() {
   psql "$admin_url" -v ON_ERROR_STOP=1 \
     -c "CREATE DATABASE \"$1\";" >/dev/null
 }
+
+# Rewrites $1 (a full connection URL) to use username $2 and password $3,
+# via real URL parsing rather than string substitution, so it stays correct
+# regardless of the original (possibly externally-supplied,
+# TEST_POSTGRES_ADMIN_URL-derived) credentials embedded in the base URL.
+with_role_credentials() {
+  node -e '
+    const u = new URL(process.argv[1]);
+    u.username = process.argv[2];
+    u.password = process.argv[3];
+    process.stdout.write(u.toString());
+  ' "$1" "$2" "$3"
+}
+
+# Builds a Drizzle config whose `out` directory only contains migrations up
+# to (and including) journal index $1, tagged with suffix $2. This lets
+# scenarios that intentionally exercise a specific historical migration
+# state (e.g. "current as of 0006") stay pinned to that state regardless of
+# which migrations have since been added to drizzle/ (such as 0007's
+# retirement of the obsolete Supabase HTTP cron functions). Echoes the path
+# to the generated config file.
+build_through_config() {
+  local max_idx="$1"
+  local suffix="$2"
+  local migration_dir="$TEMP_DIR/drizzle-through-$suffix"
+  local config_path="$TEMP_DIR/drizzle-through-$suffix.config.ts"
+  node - "$ROOT_DIR" "$migration_dir" "$config_path" "$max_idx" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = process.argv[2];
+const migrationDir = process.argv[3];
+const configPath = process.argv[4];
+const maxIdx = Number(process.argv[5]);
+const sourceDir = path.join(root, "drizzle");
+const journal = JSON.parse(
+  fs.readFileSync(path.join(sourceDir, "meta", "_journal.json"), "utf8"),
+);
+
+journal.entries = journal.entries.filter((entry) => entry.idx <= maxIdx);
+fs.mkdirSync(path.join(migrationDir, "meta"), { recursive: true });
+for (const entry of journal.entries) {
+  fs.copyFileSync(
+    path.join(sourceDir, `${entry.tag}.sql`),
+    path.join(migrationDir, `${entry.tag}.sql`),
+  );
+  const snapshot = `${String(entry.idx).padStart(4, "0")}_snapshot.json`;
+  fs.copyFileSync(
+    path.join(sourceDir, "meta", snapshot),
+    path.join(migrationDir, "meta", snapshot),
+  );
+}
+fs.writeFileSync(
+  path.join(migrationDir, "meta", "_journal.json"),
+  JSON.stringify(journal, null, 2),
+);
+fs.writeFileSync(
+  configPath,
+  `export default {
+  schema: ${JSON.stringify(path.join(root, "src", "db", "schema.ts"))},
+  out: ${JSON.stringify(migrationDir)},
+  dialect: "postgresql",
+  dbCredentials: { url: process.env.DIRECT_URL },
+};
+`,
+);
+NODE
+  echo "$config_path"
+}
+
+# Pinned to the pre-Azure-transition (0006-current) migration set. Several
+# scenarios below intentionally emulate a Supabase target still relying on
+# the now-retired pg_cron/pg_net HTTP-invocation functions; pinning keeps
+# that emulation valid regardless of what is newest in drizzle/.
+through_0006_config="$(build_through_config 6 0006)"
 
 psql "$admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 DO $$
@@ -72,7 +149,8 @@ $$;
 SQL
 
 create_database fresh
-DIRECT_URL="$fresh_url" npx drizzle-kit migrate >/dev/null
+DIRECT_URL="$fresh_url" \
+  npx drizzle-kit migrate --config "$through_0006_config" >/dev/null
 
 fresh_migration_result="$(psql "$fresh_url" -Atc \
   'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
@@ -362,48 +440,7 @@ if [[ "$expanded_security_result" != "false|false|false|false|false|false|false|
   exit 1
 fi
 
-rollout_upgrade_migrations="$TEMP_DIR/drizzle-through-0005"
-rollout_upgrade_config="$TEMP_DIR/drizzle-through-0005.config.ts"
-node - "$ROOT_DIR" "$rollout_upgrade_migrations" "$rollout_upgrade_config" <<'NODE'
-const fs = require("node:fs");
-const path = require("node:path");
-
-const root = process.argv[2];
-const migrationDir = process.argv[3];
-const configPath = process.argv[4];
-const sourceDir = path.join(root, "drizzle");
-const journal = JSON.parse(
-  fs.readFileSync(path.join(sourceDir, "meta", "_journal.json"), "utf8"),
-);
-
-journal.entries = journal.entries.filter((entry) => entry.idx <= 5);
-fs.mkdirSync(path.join(migrationDir, "meta"), { recursive: true });
-for (const entry of journal.entries) {
-  fs.copyFileSync(
-    path.join(sourceDir, `${entry.tag}.sql`),
-    path.join(migrationDir, `${entry.tag}.sql`),
-  );
-  const snapshot = `${String(entry.idx).padStart(4, "0")}_snapshot.json`;
-  fs.copyFileSync(
-    path.join(sourceDir, "meta", snapshot),
-    path.join(migrationDir, "meta", snapshot),
-  );
-}
-fs.writeFileSync(
-  path.join(migrationDir, "meta", "_journal.json"),
-  JSON.stringify(journal, null, 2),
-);
-fs.writeFileSync(
-  configPath,
-  `export default {
-  schema: ${JSON.stringify(path.join(root, "src", "db", "schema.ts"))},
-  out: ${JSON.stringify(migrationDir)},
-  dialect: "postgresql",
-  dbCredentials: { url: process.env.DIRECT_URL },
-};
-`,
-);
-NODE
+rollout_upgrade_config="$(build_through_config 5 0005)"
 
 create_database rollout_upgrade
 DIRECT_URL="$rollout_upgrade_url" \
@@ -428,7 +465,12 @@ if [[ "$pre_0006_result" != "6|6c2224452bafb07b0bd7ecaa3fcc6a45690abef61944b4875
   exit 1
 fi
 
-DIRECT_URL="$rollout_upgrade_url" npx drizzle-kit migrate >/dev/null
+# Pinned to 0006 (not the default/full migration set) so this upgrade proof
+# keeps exercising exactly the 0005-to-0006 rollout-mode-binding step,
+# regardless of any later migrations (such as 0007's retirement of the
+# obsolete cron functions) that now also live in drizzle/.
+DIRECT_URL="$rollout_upgrade_url" \
+  npx drizzle-kit migrate --config "$through_0006_config" >/dev/null
 
 post_0006_result="$(psql "$rollout_upgrade_url" -Atc \
   'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
@@ -622,6 +664,309 @@ if [[ "$upgrade_result" != "1|3|1|false|true|RECONCILED|2194.06250000|2|0.012000
   exit 1
 fi
 
+# --- Azure PostgreSQL safety transition (drizzle/0007): fresh install ---
+#
+# A clean target migrated to the current (default, full) migration set must
+# have both obsolete Supabase HTTP cron functions absent and the
+# least-privilege krypto_runtime group role established with the exact,
+# fail-closed per-table privilege matrix (no more, no less): AgentState
+# SELECT+UPDATE only; AgentRun SELECT+INSERT+UPDATE; TradeExecution
+# SELECT+INSERT only; AgentJournal SELECT+INSERT only. No table anywhere may
+# carry a row-removal, table-clearing, TRIGGER, or REFERENCES privilege for
+# krypto_runtime, and the schema has no sequences to grant.
+
+azure_0007_hash="fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71"
+
+create_database azure_target
+DIRECT_URL="$azure_target_url" npx drizzle-kit migrate >/dev/null
+
+azure_fresh_result="$(psql "$azure_target_url" -Atc \
+  'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
+          (SELECT hash FROM drizzle.__drizzle_migrations
+            ORDER BY created_at DESC, id DESC LIMIT 1) || '\''|'\'' ||
+          (to_regprocedure('\''krypto.invoke_agent_run()'\'') IS NULL)::text || '\''|'\'' ||
+          (to_regprocedure('\''krypto.invoke_daily_summary()'\'') IS NULL)::text || '\''|'\'' ||
+          (SELECT NOT rolcanlogin FROM pg_roles
+            WHERE rolname = '\''krypto_runtime'\'')::text || '\''|'\'' ||
+          has_schema_privilege('\''krypto_runtime'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentState"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentState"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentState"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentState"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''TRUNCATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''TRIGGER'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''REFERENCES'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentJournal"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentJournal"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentJournal"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentJournal"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
+          (NOT EXISTS (
+             SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = '\''krypto'\'' AND c.relkind = '\''S'\''
+          ))::text || '\''|'\'' ||
+          has_schema_privilege('\''public'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
+          has_schema_privilege('\''anon'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
+          has_schema_privilege('\''authenticated'\'', '\''krypto'\'', '\''USAGE'\'')::text;')"
+if [[ "$azure_fresh_result" != "8|$azure_0007_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false" ]]; then
+  echo "Fresh Azure migration did not retire obsolete cron functions or establish the exact krypto_runtime privilege matrix: $azure_fresh_result" >&2
+  exit 1
+fi
+
+
+# Reapplying 0007 directly must remain idempotent (guarded role creation,
+# IF EXISTS drops, additive grants/revokes).
+psql "$azure_target_url" -v ON_ERROR_STOP=1 \
+  -f drizzle/0007_azure_retire_supabase_http_functions.sql >/dev/null
+psql "$azure_target_url" -v ON_ERROR_STOP=1 \
+  -f drizzle/0007_azure_retire_supabase_http_functions.sql >/dev/null
+
+# --- Azure PostgreSQL safety transition: 0006-to-0007 upgrade, row preservation ---
+
+create_database azure_upgrade
+DIRECT_URL="$azure_upgrade_url" \
+  npx drizzle-kit migrate --config "$through_0006_config" >/dev/null
+
+psql "$azure_upgrade_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+INSERT INTO "krypto"."AgentState" (
+  "id", "currentPositionETH", "currentPositionUSDC",
+  "portfolioValueUSD", "isLocked", "isOperatorPaused",
+  "isRunning", "currentPositionETHDecimal",
+  "currentPositionUSDCDecimal", "portfolioValueUSDDecimal",
+  "accountingStatus", "updatedAt"
+) VALUES (
+  'singleton', 0, 200, 200, false, false, false,
+  0.123456789012345678, 200, 200, 'RECONCILED', NOW()
+);
+
+INSERT INTO "krypto"."AgentRun" (
+  "id", "idempotencyKey", "triggerSource", "tradingMode",
+  "outcome", "strategyVersion"
+) VALUES (
+  'azure-upgrade-run', 'azure-upgrade-idempotency-key', 'migration-test',
+  'PAPER', 'EXECUTED', 'migration-test'
+);
+
+INSERT INTO "krypto"."TradeExecution" (
+  "id", "direction", "asset", "amountUSD", "amountAsset",
+  "executionPrice", "feesUSD", "slippage", "agentReasoning",
+  "agentRunId"
+) VALUES (
+  'azure-upgrade-trade', 'BUY', 'ETH', 10, 0.005, 2000, 0.03, 0,
+  'azure 0007 upgrade preservation sentinel', 'azure-upgrade-run'
+);
+
+INSERT INTO "krypto"."AgentJournal" (
+  "id", "entryText", "marketConditions", "tradeExecutionId"
+) VALUES (
+  'azure-upgrade-journal', 'azure 0007 upgrade preservation sentinel',
+  '{}'::jsonb, 'azure-upgrade-trade'
+);
+SQL
+
+DIRECT_URL="$azure_upgrade_url" npx drizzle-kit migrate >/dev/null
+
+azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
+  'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentState") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentRun") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."TradeExecution") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentJournal") || '\''|'\'' ||
+          (SELECT "currentPositionETHDecimal"::text FROM "krypto"."AgentState"
+            WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
+          (to_regprocedure('\''krypto.invoke_agent_run()'\'') IS NULL)::text || '\''|'\'' ||
+          (to_regprocedure('\''krypto.invoke_daily_summary()'\'') IS NULL)::text || '\''|'\'' ||
+          (SELECT NOT rolcanlogin FROM pg_roles
+            WHERE rolname = '\''krypto_runtime'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentState"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text;')"
+if [[ "$azure_upgrade_result" != "8|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true" ]]; then
+  echo "0006-to-0007 upgrade did not preserve rows, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
+  exit 1
+fi
+
+# --- Azure PostgreSQL safety transition: idempotent, password-based runtime login bootstrap ---
+#
+# A fresh Azure deployment cannot rely on membership-only bootstrap alone:
+# it must be able to create its own password-based runtime login role.
+# bootstrapRuntimeLoginRole must never receive the password as anything
+# other than argv/env in this process, must never write it to migration
+# history, and — proven below over a real scram-sha-256-authenticated TCP
+# connection when this script controls the cluster — the created
+# credential must actually authenticate.
+
+azure_login_role="azure_app_identity"
+azure_login_password_v1="krypto-test-pw-$(node -e 'console.log(Math.random().toString(36).slice(2))')"
+azure_login_password_v2="krypto-test-pw-$(node -e 'console.log(Math.random().toString(36).slice(2))')"
+azure_runtime_url_v1="$(with_role_credentials "$azure_target_url" "$azure_login_role" "$azure_login_password_v1")"
+azure_runtime_url_v2="$(with_role_credentials "$azure_target_url" "$azure_login_role" "$azure_login_password_v2")"
+
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_v1" \
+  AZURE_RUNTIME_LOGIN_ROLE="$azure_login_role" \
+  AZURE_RUNTIME_LOGIN_PASSWORD="$azure_login_password_v1" \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts >"$TEMP_DIR/bootstrap-create.json"
+
+if grep -qF "$azure_login_password_v1" "$TEMP_DIR/bootstrap-create.json"; then
+  echo "Login role bootstrap leaked the password into its own output" >&2
+  exit 1
+fi
+
+bootstrap_login_result="$(psql "$azure_target_url" -Atc \
+  "SELECT rolcanlogin::text || '|' ||
+          rolsuper::text || '|' ||
+          rolcreatedb::text || '|' ||
+          rolcreaterole::text || '|' ||
+          rolreplication::text || '|' ||
+          rolbypassrls::text || '|' ||
+          pg_has_role('$azure_login_role', 'krypto_runtime', 'MEMBER')::text
+     FROM pg_roles WHERE rolname = '$azure_login_role';")"
+if [[ "$bootstrap_login_result" != "true|false|false|false|false|false|true" ]]; then
+  echo "Login role bootstrap did not create a least-privilege LOGIN role or grant krypto_runtime membership: $bootstrap_login_result" >&2
+  exit 1
+fi
+
+# Re-running with the same password must be a safe, idempotent no-op.
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_v1" \
+  AZURE_RUNTIME_LOGIN_ROLE="$azure_login_role" \
+  AZURE_RUNTIME_LOGIN_PASSWORD="$azure_login_password_v1" \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts >/dev/null
+
+# Username-mismatch must be rejected: DATABASE_URL's username must match
+# AZURE_RUNTIME_LOGIN_ROLE before anything is created or altered.
+mismatch_runtime_url="$(with_role_credentials "$azure_target_url" "someone_else" "x")"
+if DIRECT_URL="$azure_target_url" DATABASE_URL="$mismatch_runtime_url" \
+  AZURE_RUNTIME_LOGIN_ROLE="$azure_login_role" \
+  AZURE_RUNTIME_LOGIN_PASSWORD="x" \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts >/dev/null 2>"$TEMP_DIR/bootstrap-mismatch.log"; then
+  echo "Login role bootstrap did not reject a DATABASE_URL/login-role username mismatch" >&2
+  exit 1
+fi
+if ! grep -qi "does not match the target login role" "$TEMP_DIR/bootstrap-mismatch.log"; then
+  echo "Login role bootstrap rejected the username mismatch for the wrong reason: $(cat "$TEMP_DIR/bootstrap-mismatch.log")" >&2
+  exit 1
+fi
+
+# A pre-existing elevated role must be refused, never silently demoted.
+psql "$azure_target_url" -v ON_ERROR_STOP=1 \
+  -c "CREATE ROLE azure_elevated_identity LOGIN SUPERUSER PASSWORD 'x';" >/dev/null
+elevated_runtime_url="$(with_role_credentials "$azure_target_url" "azure_elevated_identity" "x")"
+if DIRECT_URL="$azure_target_url" DATABASE_URL="$elevated_runtime_url" \
+  AZURE_RUNTIME_LOGIN_ROLE="azure_elevated_identity" \
+  AZURE_RUNTIME_LOGIN_PASSWORD="y" \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts >/dev/null 2>"$TEMP_DIR/bootstrap-elevated.log"; then
+  echo "Login role bootstrap did not refuse a pre-existing elevated role" >&2
+  exit 1
+fi
+if ! grep -qi "already exists with an elevated attribute" "$TEMP_DIR/bootstrap-elevated.log"; then
+  echo "Login role bootstrap rejected the elevated role for the wrong reason: $(cat "$TEMP_DIR/bootstrap-elevated.log")" >&2
+  exit 1
+fi
+psql "$azure_target_url" -v ON_ERROR_STOP=1 \
+  -c "DROP ROLE azure_elevated_identity;" >/dev/null
+
+if [[ -z "$TEST_POSTGRES_ADMIN_URL" ]]; then
+  # This script controls the cluster (its own initdb'd PGDATA), so it can
+  # require real scram-sha-256 password authentication over TCP for the
+  # created login role and prove rotation actually invalidates the old
+  # password — a meaningful test of the credential, not just the role's
+  # catalog attributes. (The `local`/unix-socket admin connections used
+  # elsewhere in this script are left on trust.)
+  # These must be prepended (not appended): pg_hba.conf uses first-match,
+  # and initdb's default `host all all 127.0.0.1/32 trust` line would
+  # otherwise shadow anything appended after it for the same address.
+  hba_override="$TEMP_DIR/pg_hba.override.conf"
+  cat >"$hba_override" <<HBA
+host    all             $azure_login_role        127.0.0.1/32            scram-sha-256
+HBA
+  cat "$hba_override" "$PGDATA/pg_hba.conf" >"$TEMP_DIR/pg_hba.conf.new"
+  mv "$TEMP_DIR/pg_hba.conf.new" "$PGDATA/pg_hba.conf"
+  pg_ctl -D "$PGDATA" reload >/dev/null
+  sleep 0.2
+
+  if ! PGPASSWORD="$azure_login_password_v1" psql \
+    "postgresql://$azure_login_role@127.0.0.1:$PORT/azure_target" \
+    -Atc "SELECT current_user;" >/dev/null 2>"$TEMP_DIR/auth-v1.log"; then
+    echo "Bootstrapped login role's initial password did not authenticate over TCP: $(cat "$TEMP_DIR/auth-v1.log")" >&2
+    exit 1
+  fi
+
+  # Rotate the password and prove the old one no longer authenticates.
+  DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_v2" \
+    AZURE_RUNTIME_LOGIN_ROLE="$azure_login_role" \
+    AZURE_RUNTIME_LOGIN_PASSWORD="$azure_login_password_v2" \
+    npx tsx scripts/bootstrap-azure-runtime-role.ts >"$TEMP_DIR/bootstrap-rotate.json"
+  if grep -qF "$azure_login_password_v2" "$TEMP_DIR/bootstrap-rotate.json"; then
+    echo "Login role rotation leaked the new password into its own output" >&2
+    exit 1
+  fi
+
+  if PGPASSWORD="$azure_login_password_v1" psql \
+    "postgresql://$azure_login_role@127.0.0.1:$PORT/azure_target" \
+    -Atc "SELECT 1;" >/dev/null 2>"$TEMP_DIR/auth-old-after-rotate.log"; then
+    echo "Old password still authenticated after rotation" >&2
+    exit 1
+  fi
+  if ! PGPASSWORD="$azure_login_password_v2" psql \
+    "postgresql://$azure_login_role@127.0.0.1:$PORT/azure_target" \
+    -Atc "SELECT current_user;" >/dev/null 2>"$TEMP_DIR/auth-v2.log"; then
+    echo "Rotated password did not authenticate over TCP: $(cat "$TEMP_DIR/auth-v2.log")" >&2
+    exit 1
+  fi
+
+  # The runtime login role must inherit exactly the matrix via membership,
+  # and nothing more: it must not be able to remove rows.
+  if PGPASSWORD="$azure_login_password_v2" psql \
+    "postgresql://$azure_login_role@127.0.0.1:$PORT/azure_target" \
+    -Atc 'DELETE FROM "krypto"."AgentJournal";' >/dev/null 2>"$TEMP_DIR/delete-attempt.log"; then
+    echo "Runtime login role was able to remove rows; least-privilege boundary is not enforced" >&2
+    exit 1
+  fi
+  if ! grep -qi "permission denied" "$TEMP_DIR/delete-attempt.log"; then
+    echo "Runtime login role's row-removal attempt failed for an unexpected reason: $(cat "$TEMP_DIR/delete-attempt.log")" >&2
+    exit 1
+  fi
+fi
+
+# --- Azure PostgreSQL safety transition: idempotent, password-free membership bootstrap ---
+#
+# The membership-only path remains available for a login role whose
+# credential is provisioned by another means (for example managed
+# identity); it must never create a role or touch a password.
+
+psql "$azure_target_url" -v ON_ERROR_STOP=1 \
+  -c "CREATE ROLE azure_managed_identity LOGIN;" >/dev/null
+
+DIRECT_URL="$azure_target_url" AZURE_RUNTIME_LOGIN_ROLE="azure_managed_identity" \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts >/dev/null
+
+bootstrap_membership_result="$(psql "$azure_target_url" -Atc \
+  "SELECT pg_has_role('azure_managed_identity', 'krypto_runtime', 'MEMBER')::text;")"
+if [[ "$bootstrap_membership_result" != "true" ]]; then
+  echo "Role bootstrap did not grant krypto_runtime membership: $bootstrap_membership_result" >&2
+  exit 1
+fi
+
+# Re-running the bootstrap must be a safe no-op (no password is ever read,
+# set, or stored, and re-granting an existing membership does not error).
+DIRECT_URL="$azure_target_url" AZURE_RUNTIME_LOGIN_ROLE="azure_managed_identity" \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts >/dev/null
+
+bootstrap_membership_result_second="$(psql "$azure_target_url" -Atc \
+  "SELECT pg_has_role('azure_managed_identity', 'krypto_runtime', 'MEMBER')::text;")"
+if [[ "$bootstrap_membership_result_second" != "true" ]]; then
+  echo "Repeated role bootstrap lost krypto_runtime membership: $bootstrap_membership_result_second" >&2
+  exit 1
+fi
+
 create_database quarantine
 psql "$quarantine_url" -v ON_ERROR_STOP=1 \
   -f tests/fixtures/v2-schema.sql >/dev/null
@@ -663,7 +1008,13 @@ DIRECT_URL="$orchestration_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$orchestration_url" npx tsx scripts/test-run-flow.ts
 
 create_database operations
-DIRECT_URL="$operations_url" npx drizzle-kit migrate >/dev/null
+# Pinned to 0006 (see through_0006_config above): this database exercises
+# the legacy Supabase pg_cron/pg_net HTTP-invocation functions extensively
+# below (cron enable/disable SQL, function-integrity preflight checks, the
+# unowned scripts/test-deployment-preflight.ts harness), which 0007
+# permanently retires.
+DIRECT_URL="$operations_url" \
+  npx drizzle-kit migrate --config "$through_0006_config" >/dev/null
 DIRECT_URL="$operations_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$operations_url" npx tsx scripts/test-operations-routes.ts
 DIRECT_URL="$operations_url" npx tsx scripts/test-target-smoke-evidence.ts
@@ -878,4 +1229,4 @@ if (
 }
 NODE
 
-echo "Migration tests passed for fresh install, original-0005-to-0006 rollout upgrade, private-schema security, cron rollout-mode fail-closed validation, decimal round-trip, idempotency constraints, v2 reconciliation, quarantine, transactional execution, run orchestration, operations routes, target-smoke evidence, deployment preflight, and verified backup restoration."
+echo "Migration tests passed for fresh install, original-0005-to-0006 rollout upgrade, private-schema security, cron rollout-mode fail-closed validation, decimal round-trip, idempotency constraints, v2 reconciliation, quarantine, transactional execution, run orchestration, operations routes, target-smoke evidence, deployment preflight, verified backup restoration, and the Azure PostgreSQL safety transition (0007 fresh install and 0006-to-0007 upgrade with row preservation, retirement of the obsolete Supabase HTTP cron functions, the exact fail-closed per-table krypto_runtime privilege matrix with no excess grants, idempotent password-based runtime-login bootstrap with real scram-sha-256 authentication and rotation proof where the cluster is self-managed, username-mismatch and elevated-role rejection, and the idempotent password-free membership-only bootstrap path)."

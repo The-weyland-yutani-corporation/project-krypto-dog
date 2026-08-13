@@ -1,0 +1,197 @@
+name: Azure platform deploy
+
+# Manual, protected deploy of infra/platform.bicep -- the dev and prod
+# Microsoft Foundry model deployments under the existing Foundry account.
+# This is the *only* workflow permitted to touch the platform resource
+# group, using the `platform` GitHub Environment identity from
+# bootstrap.bicep (see infra/README.md "GitHub Environments and OIDC
+# identities").
+#
+# Hard requirements enforced by this workflow (never relaxed):
+#   - workflow_dispatch only; no automatic trigger.
+#   - model/SKU/capacity values are ALWAYS taken from workflow inputs --
+#     never hardcoded here -- and are independently, live-validated
+#     against the existing Foundry account's model catalog and the
+#     subscription/region quota via
+#     .github/scripts/azure/validate-model-quota.sh before any deploy is
+#     attempted. A failed validation hard-fails the run; there is no
+#     fallback model/SKU/capacity.
+#   - the target account/resource group/region are printed before the
+#     deploy step runs, so a reviewer approving the `platform`
+#     Environment gate can see exactly what will be touched.
+#   - dev and prod are separate, independently supplied parameter sets
+#     (matching platform.bicep's separate dev*/prod* parameters) -- this
+#     workflow never assumes dev and prod share a model/SKU/capacity.
+on:
+  workflow_dispatch:
+    inputs:
+      foundry_account_name:
+        description: 'Exact existing Foundry/Cognitive Services account name (never invented/defaulted).'
+        required: true
+        type: string
+      foundry_resource_group:
+        description: 'Exact existing resource group name that already holds the Foundry account.'
+        required: true
+        type: string
+      location:
+        description: 'Azure region of the existing Foundry account (used for the live quota check).'
+        required: true
+        type: string
+      dev_deployment_name:
+        required: true
+        type: string
+      dev_model_format:
+        required: true
+        type: string
+      dev_model_name:
+        required: true
+        type: string
+      dev_model_version:
+        required: true
+        type: string
+      dev_sku_name:
+        required: true
+        type: string
+      dev_sku_capacity:
+        required: true
+        type: string
+      prod_deployment_name:
+        required: true
+        type: string
+      prod_model_format:
+        required: true
+        type: string
+      prod_model_name:
+        required: true
+        type: string
+      prod_model_version:
+        required: true
+        type: string
+      prod_sku_name:
+        required: true
+        type: string
+      prod_sku_capacity:
+        required: true
+        type: string
+
+concurrency:
+  group: azure-platform-${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Validate and deploy platform.bicep
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: platform
+    env:
+      FOUNDRY_ACCOUNT_NAME: ${{ inputs.foundry_account_name }}
+      FOUNDRY_RESOURCE_GROUP: ${{ inputs.foundry_resource_group }}
+      LOCATION: ${{ inputs.location }}
+      DEV_DEPLOYMENT_NAME: ${{ inputs.dev_deployment_name }}
+      DEV_MODEL_FORMAT: ${{ inputs.dev_model_format }}
+      DEV_MODEL_NAME: ${{ inputs.dev_model_name }}
+      DEV_MODEL_VERSION: ${{ inputs.dev_model_version }}
+      DEV_SKU_NAME: ${{ inputs.dev_sku_name }}
+      DEV_SKU_CAPACITY: ${{ inputs.dev_sku_capacity }}
+      PROD_DEPLOYMENT_NAME: ${{ inputs.prod_deployment_name }}
+      PROD_MODEL_FORMAT: ${{ inputs.prod_model_format }}
+      PROD_MODEL_NAME: ${{ inputs.prod_model_name }}
+      PROD_MODEL_VERSION: ${{ inputs.prod_model_version }}
+      PROD_SKU_NAME: ${{ inputs.prod_sku_name }}
+      PROD_SKU_CAPACITY: ${{ inputs.prod_sku_capacity }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Every workflow_dispatch input is format-validated here, from the
+      # job's own env: (never a raw `${{ inputs.* }}` expression pasted
+      # into shell text), BEFORE the OIDC login step below runs -- an
+      # operator cannot smuggle shell metacharacters into any Azure CLI
+      # invocation further down, and a malformed value fails the run
+      # before any Azure credential is even acquired.
+      - name: Validate all workflow inputs
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          azure_validate_safe_token "foundry_account_name" "${FOUNDRY_ACCOUNT_NAME}" >/dev/null
+          azure_validate_resource_group "${FOUNDRY_RESOURCE_GROUP}" >/dev/null
+          azure_validate_location "${LOCATION}" >/dev/null
+          azure_validate_safe_token "dev_deployment_name" "${DEV_DEPLOYMENT_NAME}" >/dev/null
+          azure_validate_safe_token "dev_model_format" "${DEV_MODEL_FORMAT}" >/dev/null
+          azure_validate_safe_token "dev_model_name" "${DEV_MODEL_NAME}" >/dev/null
+          azure_validate_safe_token "dev_model_version" "${DEV_MODEL_VERSION}" >/dev/null
+          azure_validate_safe_token "dev_sku_name" "${DEV_SKU_NAME}" >/dev/null
+          azure_validate_capacity "${DEV_SKU_CAPACITY}" >/dev/null
+          azure_validate_safe_token "prod_deployment_name" "${PROD_DEPLOYMENT_NAME}" >/dev/null
+          azure_validate_safe_token "prod_model_format" "${PROD_MODEL_FORMAT}" >/dev/null
+          azure_validate_safe_token "prod_model_name" "${PROD_MODEL_NAME}" >/dev/null
+          azure_validate_safe_token "prod_model_version" "${PROD_MODEL_VERSION}" >/dev/null
+          azure_validate_safe_token "prod_sku_name" "${PROD_SKU_NAME}" >/dev/null
+          azure_validate_capacity "${PROD_SKU_CAPACITY}" >/dev/null
+          echo "All workflow inputs passed format validation."
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Validate dev model/SKU/capacity against the live catalog and quota
+        run: |
+          .github/scripts/azure/validate-model-quota.sh \
+            --account-name "${FOUNDRY_ACCOUNT_NAME}" \
+            --resource-group "${FOUNDRY_RESOURCE_GROUP}" \
+            --location "${LOCATION}" \
+            --model-format "${DEV_MODEL_FORMAT}" \
+            --model-name "${DEV_MODEL_NAME}" \
+            --model-version "${DEV_MODEL_VERSION}" \
+            --sku-name "${DEV_SKU_NAME}" \
+            --capacity "${DEV_SKU_CAPACITY}"
+
+      - name: Validate prod model/SKU/capacity against the live catalog and quota
+        run: |
+          .github/scripts/azure/validate-model-quota.sh \
+            --account-name "${FOUNDRY_ACCOUNT_NAME}" \
+            --resource-group "${FOUNDRY_RESOURCE_GROUP}" \
+            --location "${LOCATION}" \
+            --model-format "${PROD_MODEL_FORMAT}" \
+            --model-name "${PROD_MODEL_NAME}" \
+            --model-version "${PROD_MODEL_VERSION}" \
+            --sku-name "${PROD_SKU_NAME}" \
+            --capacity "${PROD_SKU_CAPACITY}"
+
+      - name: Print deploy target
+        run: |
+          echo "About to deploy infra/platform.bicep with:"
+          echo "  Foundry account:   ${FOUNDRY_ACCOUNT_NAME}"
+          echo "  Resource group:    ${FOUNDRY_RESOURCE_GROUP}"
+          echo "  Region:            ${LOCATION}"
+          echo "  Dev deployment:    ${DEV_DEPLOYMENT_NAME} (${DEV_MODEL_FORMAT}/${DEV_MODEL_NAME}/${DEV_MODEL_VERSION}, sku=${DEV_SKU_NAME}, capacity=${DEV_SKU_CAPACITY})"
+          echo "  Prod deployment:   ${PROD_DEPLOYMENT_NAME} (${PROD_MODEL_FORMAT}/${PROD_MODEL_NAME}/${PROD_MODEL_VERSION}, sku=${PROD_SKU_NAME}, capacity=${PROD_SKU_CAPACITY})"
+
+      - name: Deploy infra/platform.bicep
+        run: |
+          az deployment group create \
+            --resource-group "${FOUNDRY_RESOURCE_GROUP}" \
+            --template-file infra/platform.bicep \
+            --parameters \
+              foundryAccountName="${FOUNDRY_ACCOUNT_NAME}" \
+              devDeploymentName="${DEV_DEPLOYMENT_NAME}" \
+              devModelFormat="${DEV_MODEL_FORMAT}" \
+              devModelName="${DEV_MODEL_NAME}" \
+              devModelVersion="${DEV_MODEL_VERSION}" \
+              devSkuName="${DEV_SKU_NAME}" \
+              devSkuCapacity="${DEV_SKU_CAPACITY}" \
+              prodDeploymentName="${PROD_DEPLOYMENT_NAME}" \
+              prodModelFormat="${PROD_MODEL_FORMAT}" \
+              prodModelName="${PROD_MODEL_NAME}" \
+              prodModelVersion="${PROD_MODEL_VERSION}" \
+              prodSkuName="${PROD_SKU_NAME}" \
+              prodSkuCapacity="${PROD_SKU_CAPACITY}"

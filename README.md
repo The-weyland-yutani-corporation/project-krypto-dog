@@ -28,11 +28,13 @@
 | | |
 |---|---|
 | **Status** | v2.1 safety core verified; clean PostgreSQL 17 target inventory passed -- migration and release gates remain |
-| **Hosting** | Vercel + Supabase + Azure AI Foundry-hosted Anthropic + PostHog + Resend |
+| **Hosting (current code baseline)** | Vercel + Supabase + Azure AI Foundry-hosted Anthropic + PostHog + Resend |
+| **Hosting (Azure runbook, implemented)** | Fully Azure-native: Azure Container Apps + Jobs, Azure Database for PostgreSQL Flexible Server 17 (private VNet only), Key Vault, per-environment Azure Container Registry, Bicep IaC, GitHub Actions OIDC. Supersedes the Vercel/Supabase target above — see ADR [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md). Bicep, GitHub Actions workflows, and app-side deployment code all exist and are locally validated (`infra/README.md`). **No real Azure environment has been provisioned and no live evidence exists yet** — see `specs/deployment.md` §0. |
 | **Stack** | Next.js 16 (App Router) · TypeScript · structured Anthropic output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
-| **Trigger** | Restricted fixed Supabase `pg_cron` + `pg_net` functions; scheduling remains disabled until production smoke checks pass |
+| **Trigger (current code baseline)** | Restricted fixed Supabase `pg_cron` + `pg_net` functions; scheduling remains disabled until production smoke checks pass |
+| **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
-| **Deploy** | [`specs/deployment.md`](./specs/deployment.md) |
+| **Deploy** | [`specs/deployment.md`](./specs/deployment.md) (Azure runbook) · [`infra/README.md`](./infra/README.md) (Bicep infrastructure design) |
 | **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |
 | **Monitoring** | [`specs/monitoring.md`](./specs/monitoring.md) |
 | **Readiness** | [`specs/readiness.md`](./specs/readiness.md) |
@@ -172,10 +174,28 @@ tests/                    # Jest unit + integration tests
 > rollout remain. See
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
-Don't `vercel --prod` blind -- there are ordered steps including backup,
-schema reconciliation, reviewed Drizzle migrations, Vault secrets, smoke
-tests, and cron enablement. Follow
-[`specs/deployment.md`](./specs/deployment.md).
+> **Target platform: Azure-native, implemented, not yet provisioned.** The
+> approved deployment plan supersedes Vercel/Supabase with a fully
+> Azure-native target (ADR
+> [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
+> The Bicep templates, GitHub Actions workflows, and application-side
+> deployment code for that target all exist in this repo and are locally
+> validated — see [`infra/README.md`](./infra/README.md) and
+> [`specs/deployment.md`](./specs/deployment.md). **No real Azure
+> environment has been provisioned and no live deploy/evidence exists
+> yet**; the one-time bootstrap and GitHub Environment setup in
+> `specs/deployment.md` §1–§2 are still outstanding manual prerequisites.
+
+Don't deploy blind -- there are ordered steps including bootstrap, GitHub
+Environment/OIDC setup, environment/release Bicep deploys, ops-job
+evidence (preflight, migration, backup, smoke, activation-check), and a
+separate two-step shadow/paper promotion. Follow
+[`specs/deployment.md`](./specs/deployment.md) (the implemented Azure
+runbook). The prior Vercel/Supabase runbook is preserved, unmodified
+except for its archive banner, at
+[`specs/archive/deployment.vercel-supabase.md`](./specs/archive/deployment.vercel-supabase.md)
+for historical/safety reference only -- do not follow it to start a new
+Vercel/Supabase production deployment.
 
 ## Local testing
 

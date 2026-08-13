@@ -1,0 +1,8 @@
+{
+  "changes": [
+    {
+      "changeType": "Unsupported",
+      "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-krypto-prod/providers/Microsoft.KeyVault/vaults/kv-krypto-prod"
+    }
+  ]
+}

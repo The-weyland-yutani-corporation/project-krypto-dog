@@ -1,0 +1,11 @@
+{
+  "passed": false,
+  "releaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "rolloutMode": "disabled",
+  "binding": {
+    "releaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "rolloutMode": "disabled"
+  }
+}

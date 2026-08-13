@@ -46,8 +46,9 @@ What did we choose, in one or two paragraphs?
 |---|---|---|
 | [0001](./0001-drizzle-over-prisma.md) | Drizzle ORM over Prisma | Accepted |
 | [0002](./0002-paper-trading-before-live.md) | Paper trading before live AgentKit | Accepted |
-| [0003](./0003-pg-cron-over-vercel-cron.md) | Supabase pg_cron over Vercel Cron | Accepted |
+| [0003](./0003-pg-cron-over-vercel-cron.md) | Supabase pg_cron over Vercel Cron | Superseded by [0008](./0008-azure-native-deployment-architecture.md) |
 | [0004](./0004-hybrid-spec-strategy.md) | Hybrid spec strategy (master + ADRs + RFCs + tags) | Accepted |
 | [0005](./0005-structured-llm-intent-authorization.md) | Structured LLM intent + hard deterministic authorization | Proposed |
 | [0006](./0006-migration-history-supabase-schema.md) | Single Drizzle migration history and private Supabase schema | Proposed |
 | [0007](./0007-evidence-based-goals.md) | Evidence-based goals and removal of guaranteed-profit language | Accepted |
+| [0008](./0008-azure-native-deployment-architecture.md) | Azure-native deployment architecture (Container Apps, Flexible Server, Key Vault, Bicep) — implemented, provisioning pending | Accepted |

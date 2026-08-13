@@ -5,10 +5,12 @@ on:
   push:
     branches:
       - main
+      - develop
       - 'develop/**'
   pull_request:
     branches:
       - main
+      - develop
       - 'develop/**'
 
 # Newer pushes to the same branch cancel in-progress runs.
@@ -162,3 +164,58 @@ jobs:
         run: |
           npm run db:generate
           test -z "$(git status --porcelain -- drizzle)"
+
+  docker-validate:
+    name: Docker image target validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the docs-only check below can diff against the
+          # actual merge-base/previous commit rather than a shallow clone's
+          # single commit.
+          fetch-depth: 0
+
+      - name: Determine whether this change is docs-only
+        id: changed
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            head_sha="${{ github.event.pull_request.head.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+            head_sha="${GITHUB_SHA}"
+          fi
+
+          # A zero SHA (new branch's first push) or an unknown base commit
+          # means there is no meaningful diff to inspect -- treat as "not
+          # docs-only" so the Docker targets are always validated at least
+          # once rather than silently skipped by a diffing edge case.
+          docs_only=false
+          if [ -n "${base_sha}" ] \
+            && [ "${base_sha}" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            changed_files="$(git diff --name-only "${base_sha}" "${head_sha}")"
+            if [ -n "${changed_files}" ] && ! printf '%s\n' "${changed_files}" \
+              | grep -vqE '^(docs/|specs/|infra/README\.md|README\.md|.*\.md)$'; then
+              docs_only=true
+            fi
+          fi
+          echo "docs_only=${docs_only}" >> "$GITHUB_OUTPUT"
+          echo "Docs-only change: ${docs_only}"
+
+      - name: Build the web image target
+        if: steps.changed.outputs.docs_only != 'true'
+        run: docker build --target web -t ci-validate-web:${{ github.sha }} .
+
+      - name: Build the ops image target
+        if: steps.changed.outputs.docs_only != 'true'
+        run: docker build --target ops -t ci-validate-ops:${{ github.sha }} .
+
+      - name: Skip notice for docs-only change
+        if: steps.changed.outputs.docs_only == 'true'
+        run: echo "Skipping Docker target validation -- this change only touches documentation."

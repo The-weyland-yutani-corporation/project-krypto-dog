@@ -8,12 +8,16 @@ import { runTargetSmoke } from "@/deployment/target-smoke";
 type Arguments = {
   baseUrl: string;
   confirmHost: string;
+  releaseSha: string;
+  imageDigest: string;
   out?: string;
 };
 
 function parseArguments(argv: string[]): Arguments {
   let baseUrl: string | undefined;
   let confirmHost: string | undefined;
+  let releaseSha: string | undefined;
+  let imageDigest: string | undefined;
   let out: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -22,6 +26,8 @@ function parseArguments(argv: string[]): Arguments {
       [
         "--base-url",
         "--confirm-host",
+        "--release-sha",
+        "--image-digest",
         "--out",
       ].includes(argument) &&
       (!value || value.startsWith("--"))
@@ -33,6 +39,12 @@ function parseArguments(argv: string[]): Arguments {
       index += 1;
     } else if (argument === "--confirm-host") {
       confirmHost = value;
+      index += 1;
+    } else if (argument === "--release-sha") {
+      releaseSha = value;
+      index += 1;
+    } else if (argument === "--image-digest") {
+      imageDigest = value;
       index += 1;
     } else if (argument === "--out") {
       out = value;
@@ -46,7 +58,14 @@ function parseArguments(argv: string[]): Arguments {
       "--base-url <url> and --confirm-host <hostname> are required.",
     );
   }
-  return { baseUrl, confirmHost, out };
+  releaseSha = releaseSha ?? process.env.RELEASE_SHA;
+  imageDigest = imageDigest ?? process.env.IMAGE_DIGEST;
+  if (!releaseSha || !imageDigest) {
+    throw new Error(
+      "--release-sha (or RELEASE_SHA) and --image-digest (or IMAGE_DIGEST) are required.",
+    );
+  }
+  return { baseUrl, confirmHost, releaseSha, imageDigest, out };
 }
 
 async function main(): Promise<void> {
@@ -54,9 +73,10 @@ async function main(): Promise<void> {
   const databaseUrl = process.env.DIRECT_URL;
   const cronSecret = process.env.CRON_SECRET;
   const adminPassword = process.env.ADMIN_PASSWORD;
-  if (!databaseUrl || !cronSecret || !adminPassword) {
+  const approvalSecret = process.env.DEPLOYMENT_APPROVAL_SECRET;
+  if (!databaseUrl || !cronSecret || !adminPassword || !approvalSecret) {
     throw new Error(
-      "DIRECT_URL, CRON_SECRET, and ADMIN_PASSWORD are required.",
+      "DIRECT_URL, CRON_SECRET, ADMIN_PASSWORD, and DEPLOYMENT_APPROVAL_SECRET are required.",
     );
   }
   const outputPath = arguments_.out
@@ -77,6 +97,9 @@ async function main(): Promise<void> {
       databaseUrl,
       cronSecret,
       adminPassword,
+      releaseSha: arguments_.releaseSha,
+      imageDigest: arguments_.imageDigest,
+      approvalSecret,
     });
   } catch (error) {
     if (outputPath && outputReserved) {
