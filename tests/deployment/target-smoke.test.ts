@@ -1,8 +1,16 @@
 import {
+  cronSecretBinding,
   extractSessionCookie,
   runTargetSmoke,
+  validateImageDigest,
+  validateReleaseSha,
   validateTargetBaseUrl,
 } from "@/deployment/target-smoke";
+
+const TEST_RELEASE_SHA = "c0e4ed2724a9880d5a5dfcdf954490f2d86e8e2f";
+const TEST_IMAGE_DIGEST =
+  "sha256:d32ebcff1be028d183b8ba7ce4e1506b0adf3a7a90b02d5c6a202fabceaf1e68";
+const TEST_APPROVAL_SECRET = "approval-secret-of-sufficient-length-x";
 
 const successfulFetch: typeof fetch = async (input, init) => {
   const url = new URL(
@@ -134,6 +142,35 @@ describe("target deployment smoke", () => {
     );
   });
 
+  it("validates an exact lowercase 40-hex release SHA and rejects everything else", () => {
+    expect(validateReleaseSha(TEST_RELEASE_SHA)).toBe(TEST_RELEASE_SHA);
+    expect(() => validateReleaseSha(TEST_RELEASE_SHA.toUpperCase())).toThrow(
+      "40 lowercase hexadecimal",
+    );
+    expect(() => validateReleaseSha(TEST_RELEASE_SHA.slice(0, 39))).toThrow(
+      "40 lowercase hexadecimal",
+    );
+    expect(() => validateReleaseSha(`${TEST_RELEASE_SHA}0`)).toThrow(
+      "40 lowercase hexadecimal",
+    );
+    expect(() => validateReleaseSha("not-a-sha")).toThrow(
+      "40 lowercase hexadecimal",
+    );
+  });
+
+  it("validates an exact sha256:<64-hex> image digest and rejects everything else", () => {
+    expect(validateImageDigest(TEST_IMAGE_DIGEST)).toBe(TEST_IMAGE_DIGEST);
+    expect(() =>
+      validateImageDigest(TEST_IMAGE_DIGEST.toUpperCase()),
+    ).toThrow("sha256:<64 lowercase hex>");
+    expect(() =>
+      validateImageDigest(TEST_IMAGE_DIGEST.replace("sha256:", "sha1:")),
+    ).toThrow("sha256:<64 lowercase hex>");
+    expect(() => validateImageDigest(TEST_IMAGE_DIGEST.slice(0, -1))).toThrow(
+      "sha256:<64 lowercase hex>",
+    );
+  });
+
   it("proves disabled HTTP, auth, provider, and database behavior", async () => {
     const uuids = [
       "123e4567-e89b-42d3-a456-426614174000",
@@ -150,6 +187,9 @@ describe("target deployment smoke", () => {
         databaseUrl: "postgresql://operator:secret@db.example.com/postgres",
         cronSecret: "cron-secret",
         adminPassword: "admin-password",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
       },
       {
         fetchImpl: successfulFetch,
@@ -216,8 +256,226 @@ describe("target deployment smoke", () => {
       expect.objectContaining({
         targetOrigin: "https://krypto.example.com",
         cronSecret: "cron-secret",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
       }),
     );
+    expect(report.releaseSha).toBe(TEST_RELEASE_SHA);
+    expect(report.imageDigest).toBe(TEST_IMAGE_DIGEST);
+    expect(report.rolloutMode).toBe("disabled");
+    const expectedCronSecretBinding = cronSecretBinding(
+      "cron-secret",
+      TEST_APPROVAL_SECRET,
+    );
+    expect(report.binding).toEqual({
+      approvalId: report.evidenceIds.approval,
+      bindingId: report.evidenceIds.databaseBinding,
+      targetOrigin: "https://krypto.example.com",
+      releaseSha: TEST_RELEASE_SHA,
+      imageDigest: TEST_IMAGE_DIGEST,
+      rolloutMode: "disabled",
+      cronSecretBinding: expectedCronSecretBinding,
+      approvalSignature: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    // The cron-secret binding cannot be reproduced from CRON_SECRET alone
+    // (the retired MD5(cronSecret) fingerprint could be) -- it requires
+    // DEPLOYMENT_APPROVAL_SECRET, which runtime/web never receives.
+    expect(report.binding?.cronSecretBinding).not.toBe("cron-secret");
+    expect(report.binding?.cronSecretBinding).toHaveLength(64);
+  });
+
+  it("rejects a missing or malformed release SHA and image digest before any target request", async () => {
+    const fetchImpl = jest.fn();
+    await expect(
+      runTargetSmoke(
+        {
+          baseUrl: "https://krypto.example.com",
+          expectedHost: "krypto.example.com",
+          databaseUrl: "******db.example.com/postgres",
+          cronSecret: "cron-secret",
+          adminPassword: "admin-password",
+          releaseSha: "",
+          imageDigest: TEST_IMAGE_DIGEST,
+          approvalSecret: TEST_APPROVAL_SECRET,
+        },
+        { fetchImpl },
+      ),
+    ).rejects.toThrow("RELEASE_SHA and IMAGE_DIGEST are required.");
+    await expect(
+      runTargetSmoke(
+        {
+          baseUrl: "https://krypto.example.com",
+          expectedHost: "krypto.example.com",
+          databaseUrl: "******db.example.com/postgres",
+          cronSecret: "cron-secret",
+          adminPassword: "admin-password",
+          releaseSha: "NOT-LOWERCASE-HEX",
+          imageDigest: TEST_IMAGE_DIGEST,
+          approvalSecret: TEST_APPROVAL_SECRET,
+        },
+        { fetchImpl },
+      ),
+    ).rejects.toThrow("40 lowercase hexadecimal");
+    await expect(
+      runTargetSmoke(
+        {
+          baseUrl: "https://krypto.example.com",
+          expectedHost: "krypto.example.com",
+          databaseUrl: "******db.example.com/postgres",
+          cronSecret: "cron-secret",
+          adminPassword: "admin-password",
+          releaseSha: TEST_RELEASE_SHA,
+          imageDigest: "not-a-digest",
+          approvalSecret: TEST_APPROVAL_SECRET,
+        },
+        { fetchImpl },
+      ),
+    ).rejects.toThrow("sha256:<64 lowercase hex>");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing or too-short DEPLOYMENT_APPROVAL_SECRET before any target request", async () => {
+    const fetchImpl = jest.fn();
+    await expect(
+      runTargetSmoke(
+        {
+          baseUrl: "https://krypto.example.com",
+          expectedHost: "krypto.example.com",
+          databaseUrl: "******db.example.com/postgres",
+          cronSecret: "cron-secret",
+          adminPassword: "admin-password",
+          releaseSha: TEST_RELEASE_SHA,
+          imageDigest: TEST_IMAGE_DIGEST,
+          approvalSecret: "",
+        },
+        { fetchImpl },
+      ),
+    ).rejects.toThrow("DEPLOYMENT_APPROVAL_SECRET is required.");
+    await expect(
+      runTargetSmoke(
+        {
+          baseUrl: "https://krypto.example.com",
+          expectedHost: "krypto.example.com",
+          databaseUrl: "******db.example.com/postgres",
+          cronSecret: "cron-secret",
+          adminPassword: "admin-password",
+          releaseSha: TEST_RELEASE_SHA,
+          imageDigest: TEST_IMAGE_DIGEST,
+          approvalSecret: "too-short",
+        },
+        { fetchImpl },
+      ),
+    ).rejects.toThrow("at least 32 characters");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("never persists or reports the raw cron secret or approval secret", async () => {
+    const uuids = [
+      "223e4567-e89b-42d3-a456-426614174000",
+      "223e4567-e89b-42d3-a456-426614174001",
+      "223e4567-e89b-42d3-a456-426614174002",
+      "223e4567-e89b-42d3-a456-426614174003",
+      "223e4567-e89b-42d3-a456-426614174004",
+    ];
+    const createApproval = jest.fn(async () => undefined);
+    const report = await runTargetSmoke(
+      {
+        baseUrl: "https://krypto.example.com",
+        expectedHost: "krypto.example.com",
+        databaseUrl: "******db.example.com/postgres",
+        cronSecret: "super-secret-cron-value",
+        adminPassword: "admin-password",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
+      },
+      {
+        fetchImpl: successfulFetch,
+        randomUuid: () => uuids.shift()!,
+        now: () => new Date("2026-07-14T22:00:00.000Z"),
+        inspectBefore: async () => ({
+          tradeCount: 4,
+          activeKryptoCronJobs: 0,
+          pendingKryptoHttpRequests: 0,
+          state: {
+            present: true,
+            accountingStatus: "RECONCILED",
+            openPosition: false,
+            activeLease: false,
+          },
+        }),
+        inspectAfter: async ({ idempotencyKeys }) =>
+          idempotencyKeys.length === 1 &&
+          idempotencyKeys[0]?.includes("mode-mismatch")
+            ? {
+                runCount: 0,
+                disabledRunCount: 0,
+                tradeCount: 4,
+                leaseReleased: true,
+                deliveryStatus: null,
+              }
+            : {
+                runCount: 2,
+                disabledRunCount: 2,
+                tradeCount: 4,
+                leaseReleased: true,
+                deliveryStatus: "sent",
+              },
+        createBinding: async () => undefined,
+        createApproval,
+        runProviders: async () => ({
+          foundry: {
+            latencyMs: 100,
+            responseLength: 2,
+            inputTokens: 5,
+            outputTokens: 1,
+            totalTokens: 6,
+          },
+          coinbase: {
+            latencyMs: 80,
+            spotPriceFinite: true,
+            completeCandleCount: 2,
+          },
+          postHog: {
+            latencyMs: 20,
+            flushed: true,
+            smokeId: "posthog-smoke-id",
+          },
+        }),
+      },
+    );
+
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain("super-secret-cron-value");
+    expect(serialized).not.toContain(TEST_APPROVAL_SECRET);
+  });
+
+  it("leaves binding null and skips approval persistence on a blocked run", async () => {
+    const createApproval = jest.fn();
+    const report = await runTargetSmoke(
+      {
+        baseUrl: "https://krypto.example.com",
+        expectedHost: "krypto.example.com",
+        databaseUrl: "******db.example.com/postgres",
+        cronSecret: "cron-secret",
+        adminPassword: "admin-password",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
+      },
+      {
+        fetchImpl: async () =>
+          Response.json({ error: "Unauthorized" }, { status: 401 }),
+        createApproval,
+      },
+    );
+
+    expect(report.passed).toBe(false);
+    expect(report.binding).toBeNull();
+    expect(report.releaseSha).toBe(TEST_RELEASE_SHA);
+    expect(report.imageDigest).toBe(TEST_IMAGE_DIGEST);
+    expect(createApproval).not.toHaveBeenCalled();
   });
 
   it("does not invoke the agent when the target is not disabled", async () => {
@@ -236,6 +494,9 @@ describe("target deployment smoke", () => {
         databaseUrl: "postgresql://operator:secret@db.example.com/postgres",
         cronSecret: "cron-secret",
         adminPassword: "admin-password",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
       },
       {
         fetchImpl,
@@ -282,6 +543,9 @@ describe("target deployment smoke", () => {
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "cron-secret",
         adminPassword: "admin-password",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
       },
       {
         fetchImpl,
@@ -316,6 +580,9 @@ describe("target deployment smoke", () => {
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "cron-secret",
         adminPassword: "admin-password",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
       },
       {
         fetchImpl: successfulFetch,
@@ -350,6 +617,9 @@ describe("target deployment smoke", () => {
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "cron-secret",
         adminPassword: "admin-password",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
       },
       {
         fetchImpl: successfulFetch,

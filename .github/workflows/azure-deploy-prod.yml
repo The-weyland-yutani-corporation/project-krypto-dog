@@ -1,0 +1,778 @@
+name: Azure deploy prod
+
+# Automatic prod deploy after a successful CI run on the exact `main`
+# branch (a push-triggered CI run only), plus a manual workflow_dispatch
+# escape hatch. Always checks out the exact commit SHA the triggering CI
+# run validated. Pauses for the `production-deploy` GitHub Environment's
+# required reviewers before anything runs.
+#
+# Safety ordering (ADR 0008 items 11-12, infra/README.md):
+#   1. infra/environment.bicep is (idempotently) deployed/updated first,
+#      with a what-if pass whose Delete changes against PostgreSQL, Key
+#      Vault, evidence storage, or their locks are hard-rejected. (Job
+#      `deploy-environment`, Environment `production-deploy`.)
+#   2. If an existing release is detected (the five ops Container Apps
+#      Jobs already exist), rollout.bicep is deployed FIRST to force
+#      disabled/Manual (its own committed prod defaults -- this workflow
+#      never passes an override to promote). This deploy specifically
+#      runs under the `production-promotion` Environment/identity, NOT
+#      `production-deploy` -- infra/README.md documents "prod deploy ...
+#      never rollout.bicep" / "prod promotion ... rollout.bicep for prod
+#      only" as a process control, so a single run of this workflow pauses
+#      for TWO separate GitHub Environment approval gates in sequence.
+#      (Job `force-disable-rollout`, Environment `production-promotion`.)
+#   3. Only then does the CURRENT release's preflight and verified-backup
+#      run and get evidence-validated, back under `production-deploy`,
+#      before anything about the new release is touched. (Job
+#      `backup-current-release`, Environment `production-deploy`.)
+#   4. For a genuinely fresh environment (no existing ops jobs at all),
+#      step 3 (`backup-current-release`) is skipped entirely (not
+#      failed -- `deploy-release` explicitly tolerates a skipped
+#      predecessor here but never a failed one) -- this workflow never
+#      fabricates or claims a backup of a release that never existed.
+#   5. The new release is then built (digest-pinned web/ops images),
+#      release.bicep is deployed (always disabled/Manual -- hardcoded by
+#      release.bicep itself), migrate-init runs for the new release, a
+#      fresh baseline verified-backup is created and restore-verified,
+#      and target-smoke runs.
+#   6. Evidence for every ops run in this workflow is downloaded and
+#      published. The workflow always ends disabled/Manual -- it never
+#      promotes shadow/paper trading or flips a scheduler trigger type to
+#      Schedule. Promotion is exclusively azure-promote-prod.yml's job.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Exact 40-hex commit SHA to deploy. Required for manual dispatch.'
+        required: true
+        type: string
+
+concurrency:
+  group: azure-deploy-prod-production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PROD_RESOURCE_GROUP_NAME: ${{ vars.PROD_RESOURCE_GROUP_NAME }}
+  FOUNDRY_RESOURCE_NAME: ${{ vars.FOUNDRY_RESOURCE_NAME }}
+  OPS_JOB_TIMEOUT_SECONDS: '1800'
+  # Fixed, deterministic names matching infra/params/release.prod.bicepparam
+  # and infra/params/rollout.prod.bicepparam exactly (not re-derived) --
+  # if those committed files are ever changed to use different names,
+  # these must be updated to match.
+  PREFLIGHT_JOB_NAME: caj-prod-preflight
+  VERIFIED_BACKUP_JOB_NAME: caj-prod-verified-backup
+  WEB_APP_NAME: ca-prod-web
+
+jobs:
+  gate:
+    name: Determine and validate the commit to deploy
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    permissions:
+      contents: read
+      actions: read
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
+      WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      # fetch-depth: 0 is required so verify-deploy-sha.sh's
+      # `git merge-base --is-ancestor` (manual-dispatch path only) can
+      # walk the FULL commit history, not just a shallow tip.
+      - name: Checkout (full history, for lib/common.sh and SHA verification)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and format-validate the exact commit SHA to deploy
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            candidate="${INPUT_COMMIT_SHA}"
+          else
+            candidate="${WORKFLOW_RUN_HEAD_SHA}"
+          fi
+          source .github/scripts/azure/lib/common.sh
+          validated="$(azure_validate_release_sha "${candidate}")"
+          echo "sha=${validated}" >> "$GITHUB_OUTPUT"
+          echo "Resolved candidate commit ${validated} (event=${EVENT_NAME})."
+
+      # The automatic workflow_run path is already provably safe by
+      # construction (see this job's `if:` condition). A manually
+      # dispatched SHA is arbitrary operator input and must additionally
+      # be proven to be a real ancestor of origin/main AND to have its
+      # own successful, push-triggered CI run before it reaches any
+      # deploy step -- a hard, non-format check.
+      - name: Verify manually-dispatched SHA is an ancestor of main with a successful push CI run
+        if: env.EVENT_NAME == 'workflow_dispatch'
+        env:
+          RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
+          TARGET_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          .github/scripts/azure/verify-deploy-sha.sh \
+            --sha "${RESOLVED_SHA}" \
+            --branch main \
+            --repo "${TARGET_REPO}" \
+            --ci-workflow ci.yml
+
+
+  deploy-environment:
+    name: Deploy infra/environment.bicep (prod)
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+    outputs:
+      acr_name: ${{ steps.outputs.outputs.acr_name }}
+      acr_login_server: ${{ steps.outputs.outputs.acr_login_server }}
+      container_apps_environment_id: ${{ steps.outputs.outputs.container_apps_environment_id }}
+      runtime_identity_id: ${{ steps.outputs.outputs.runtime_identity_id }}
+      runtime_identity_principal_id: ${{ steps.outputs.outputs.runtime_identity_principal_id }}
+      scheduler_identity_id: ${{ steps.outputs.outputs.scheduler_identity_id }}
+      scheduler_identity_principal_id: ${{ steps.outputs.outputs.scheduler_identity_principal_id }}
+      ops_identity_id: ${{ steps.outputs.outputs.ops_identity_id }}
+      ops_identity_principal_id: ${{ steps.outputs.outputs.ops_identity_principal_id }}
+      ops_identity_client_id: ${{ steps.outputs.outputs.ops_identity_client_id }}
+      evidence_container_url: ${{ steps.outputs.outputs.evidence_container_url }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve the prod-deploy OIDC identity's principal ID
+        id: identity
+        run: |
+          set -euo pipefail
+          principal_id="$(az identity show \
+            --name "${{ vars.PROD_DEPLOY_IDENTITY_NAME }}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --query principalId \
+            --output tsv)"
+          if [ -z "${principal_id}" ]; then
+            echo "Could not resolve a principal ID for identity '${{ vars.PROD_DEPLOY_IDENTITY_NAME }}'." >&2
+            exit 1
+          fi
+          echo "::add-mask::${principal_id}"
+          echo "principal_id=${principal_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the prod-promotion OIDC identity's principal ID
+        id: identity_promotion
+        run: |
+          set -euo pipefail
+          principal_id="$(az identity show \
+            --name "${{ vars.PROD_PROMOTION_IDENTITY_NAME }}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --query principalId \
+            --output tsv)"
+          if [ -z "${principal_id}" ]; then
+            echo "Could not resolve a principal ID for identity '${{ vars.PROD_PROMOTION_IDENTITY_NAME }}'." >&2
+            exit 1
+          fi
+          echo "::add-mask::${principal_id}"
+          echo "principal_id=${principal_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Render environment.prod.bicepparam
+        run: |
+          set -euo pipefail
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/environment.prod.bicepparam \
+            --out /tmp/environment.prod.resolved.bicepparam \
+            --set REPLACE_WITH_BOOTSTRAP_PROD_DEPLOY_IDENTITY_PRINCIPAL_ID="${{ steps.identity.outputs.principal_id }}" \
+            --set REPLACE_WITH_BOOTSTRAP_PROD_PROMOTION_IDENTITY_PRINCIPAL_ID="${{ steps.identity_promotion.outputs.principal_id }}"
+
+      - name: What-if infra/environment.bicep
+        env:
+          POSTGRES_ADMIN_PASSWORD_PROD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --template-file infra/environment.bicep \
+            --parameters /tmp/environment.prod.resolved.bicepparam \
+            --result-format FullResourcePayloads \
+            --no-pretty-print \
+            --output json > /tmp/whatif-environment.json
+
+      - name: Reject unsafe what-if deletes (PostgreSQL, Key Vault, evidence storage, locks)
+        run: node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-environment.json
+
+      - name: Deploy infra/environment.bicep
+        env:
+          POSTGRES_ADMIN_PASSWORD_PROD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --name "env-prod-${RESOLVED_SHA}" \
+            --template-file infra/environment.bicep \
+            --parameters /tmp/environment.prod.resolved.bicepparam \
+            --query properties.outputs \
+            --output json > /tmp/environment-outputs.json
+          cat /tmp/environment-outputs.json
+
+      - name: Extract environment.bicep outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          for name in acrName acrLoginServer containerAppsEnvironmentId runtimeIdentityId runtimeIdentityPrincipalId schedulerIdentityId schedulerIdentityPrincipalId opsIdentityId opsIdentityPrincipalId opsIdentityClientId evidenceContainerUrl; do
+            value="$(jq -r --arg n "${name}" '.[$n].value // empty' /tmp/environment-outputs.json)"
+            if [ -z "${value}" ]; then
+              echo "Deployment output '${name}' was missing or empty -- failing closed." >&2
+              exit 1
+            fi
+            snake="$(printf '%s' "${name}" | sed -E 's/([A-Z])/_\1/g' | tr '[:upper:]' '[:lower:]')"
+            echo "${snake}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+  force-disable-rollout:
+    name: Detect existing release; force rollout.bicep to disabled/Manual
+    # Uses the `production-promotion` Environment/identity -- NOT
+    # `production-deploy` -- for the rollout.bicep deploy specifically.
+    # infra/README.md's GitHub Environments table documents this as a
+    # process/workflow control (Azure RBAC alone would not stop the
+    # prod-deploy identity from also deploying rollout.bicep, since both
+    # identities hold Contributor on the same resource group): "prod
+    # deploy ... never rollout.bicep" / "prod promotion ... rollout.bicep
+    # for prod only". Splitting this into its own job/Environment means a
+    # single azure-deploy-prod.yml run pauses for the production-promotion
+    # reviewers to approve the forced disable, then separately for the
+    # production-deploy reviewers to approve the actual release deploy --
+    # matching "each is a distinct, separately-reviewable GitHub
+    # Environment approval gate."
+    needs: [gate, deploy-environment]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-promotion
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+    outputs:
+      existing_release: ${{ steps.detect.outputs.existing_release }}
+      current_sha: ${{ steps.current.outputs.sha }}
+      current_digest: ${{ steps.current.outputs.digest }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Detect whether an existing release is already deployed
+        id: detect
+        run: |
+          set -euo pipefail
+          if az containerapp job show \
+            --name "${PREFLIGHT_JOB_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --output none 2>/dev/null; then
+            echo "existing_release=true" >> "$GITHUB_OUTPUT"
+            echo "An existing release was detected (job '${PREFLIGHT_JOB_NAME}' already exists)."
+          else
+            echo "existing_release=false" >> "$GITHUB_OUTPUT"
+            echo "No existing release detected -- proceeding on the explicit fresh-deploy path. No backup will be fabricated."
+          fi
+
+      - name: Resolve the currently-deployed release SHA and image digest
+        id: current
+        if: steps.detect.outputs.existing_release == 'true'
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          current_sha="$(az containerapp job show \
+            --name "${PREFLIGHT_JOB_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --query "properties.template.containers[0].env[?name=='RELEASE_SHA'].value | [0]" \
+            --output tsv)"
+          current_sha="$(azure_validate_release_sha "${current_sha}")"
+          echo "sha=${current_sha}" >> "$GITHUB_OUTPUT"
+
+          current_image="$(az containerapp show \
+            --name "${WEB_APP_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --query "properties.template.containers[0].image" \
+            --output tsv)"
+          case "${current_image}" in
+            *@sha256:*)
+              digest_hex="${current_image##*@sha256:}"
+              ;;
+            *)
+              echo "Currently-deployed web app image '${current_image}' is not pinned to an immutable sha256 digest." >&2
+              exit 1
+              ;;
+          esac
+          digest="$(azure_validate_image_digest "sha256:${digest_hex}")"
+          echo "digest=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+      - name: Force rollout.bicep to disabled/Manual before touching anything else
+        if: steps.detect.outputs.existing_release == 'true'
+        env:
+          ENV_CONTAINER_APPS_ENVIRONMENT_ID: ${{ needs.deploy-environment.outputs.container_apps_environment_id }}
+          ENV_ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+          ENV_RUNTIME_IDENTITY_ID: ${{ needs.deploy-environment.outputs.runtime_identity_id }}
+          ENV_SCHEDULER_IDENTITY_ID: ${{ needs.deploy-environment.outputs.scheduler_identity_id }}
+          CURRENT_DIGEST: ${{ steps.current.outputs.digest }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/rollout.prod.bicepparam \
+            --out /tmp/rollout.prod.force-disabled.bicepparam \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId="${ENV_CONTAINER_APPS_ENVIRONMENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer="${ENV_ACR_LOGIN_SERVER}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId="${ENV_RUNTIME_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${ENV_SCHEDULER_IDENTITY_ID}" \
+            --set REPLACE_WITH_CURRENTLY_RELEASED_DIGEST="${CURRENT_DIGEST}" \
+            --set REPLACE_WITH_FOUNDRY_RESOURCE="${FOUNDRY_RESOURCE_NAME}"
+          # Committed rollout.prod.bicepparam already defaults rolloutMode
+          # to 'disabled' and both trigger types to 'Manual' -- no
+          # --set-string-param override is used here, so this deploy can
+          # only ever (re)confirm the disabled/Manual state, never
+          # promote it.
+          az deployment group create \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --name "roll-prod-force-disable-${RESOLVED_SHA}" \
+            --template-file infra/rollout.bicep \
+            --parameters /tmp/rollout.prod.force-disabled.bicepparam
+
+  backup-current-release:
+    name: Preflight + verified-backup the current release before touching anything new
+    needs: [gate, deploy-environment, force-disable-rollout]
+    if: needs.force-disable-rollout.outputs.existing_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      CURRENT_SHA: ${{ needs.force-disable-rollout.outputs.current_sha }}
+      EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run preflight on the current release
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id preflight)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${PREFLIGHT_JOB_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name prod \
+            --release-sha "${CURRENT_SHA}" \
+            --operation preflight \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence-current
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence-current/prod/${CURRENT_SHA}/preflight/${job_execution_id}/report.json" \
+            --operation preflight \
+            --release-sha "${CURRENT_SHA}"
+
+      - name: Run verified-backup on the current release
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id verified-backup)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${VERIFIED_BACKUP_JOB_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name prod \
+            --release-sha "${CURRENT_SHA}" \
+            --operation verified-backup \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence-current
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence-current/prod/${CURRENT_SHA}/verified-backup/${job_execution_id}/report.json" \
+            --operation verified-backup \
+            --release-sha "${CURRENT_SHA}"
+
+      - name: Publish current-release safety evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-prod-current-release-evidence-${{ needs.gate.outputs.sha }}
+          path: evidence-current/
+          if-no-files-found: warn
+          retention-days: 90
+
+  build-images:
+    name: Build web/ops images and resolve digests (prod)
+    needs: [gate, deploy-environment]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      ACR_NAME: ${{ needs.deploy-environment.outputs.acr_name }}
+    outputs:
+      web_digest_hex: ${{ steps.web.outputs.digest_hex }}
+      ops_digest_hex: ${{ steps.ops.outputs.digest_hex }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build web image and resolve digest
+        id: web
+        run: |
+          set -euo pipefail
+          out="$(.github/scripts/azure/build-and-resolve-digest.sh \
+            --registry "${ACR_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --repository krypto-web \
+            --target web \
+            --tag "${RESOLVED_SHA}")"
+          echo "${out}"
+          digest="$(printf '%s' "${out}" | grep '^digest=' | cut -d= -f2)"
+          echo "digest_hex=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+      - name: Build ops image and resolve digest
+        id: ops
+        run: |
+          set -euo pipefail
+          out="$(.github/scripts/azure/build-and-resolve-digest.sh \
+            --registry "${ACR_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --repository krypto-ops \
+            --target ops \
+            --tag "${RESOLVED_SHA}")"
+          echo "${out}"
+          digest="$(printf '%s' "${out}" | grep '^digest=' | cut -d= -f2)"
+          echo "digest_hex=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+  deploy-release:
+    name: Deploy infra/release.bicep (prod, disabled/Manual)
+    needs: [gate, deploy-environment, build-images, force-disable-rollout, backup-current-release]
+    # backup-current-release is intentionally skipped (not failed) on the
+    # fresh-deploy path (needs.force-disable-rollout.outputs.existing_release
+    # == 'false'). GitHub Actions treats a skipped dependency as blocking
+    # downstream jobs by default, so this explicit condition is required
+    # to allow that genuinely-fresh path through while still hard-failing
+    # closed if backup-current-release (or any other dependency) actually
+    # failed.
+    if: |
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.force-disable-rollout.result == 'success' &&
+      (needs.backup-current-release.result == 'success' || needs.backup-current-release.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+    outputs:
+      migrate_init_job_name: ${{ steps.outputs.outputs.migrate_init_job_name }}
+      verified_backup_job_name: ${{ steps.outputs.outputs.verified_backup_job_name }}
+      target_smoke_job_name: ${{ steps.outputs.outputs.target_smoke_job_name }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Render release.prod.bicepparam
+        env:
+          ENV_CONTAINER_APPS_ENVIRONMENT_ID: ${{ needs.deploy-environment.outputs.container_apps_environment_id }}
+          ENV_ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+          ENV_RUNTIME_IDENTITY_ID: ${{ needs.deploy-environment.outputs.runtime_identity_id }}
+          ENV_RUNTIME_IDENTITY_PRINCIPAL_ID: ${{ needs.deploy-environment.outputs.runtime_identity_principal_id }}
+          ENV_SCHEDULER_IDENTITY_ID: ${{ needs.deploy-environment.outputs.scheduler_identity_id }}
+          ENV_SCHEDULER_IDENTITY_PRINCIPAL_ID: ${{ needs.deploy-environment.outputs.scheduler_identity_principal_id }}
+          ENV_OPS_IDENTITY_ID: ${{ needs.deploy-environment.outputs.ops_identity_id }}
+          ENV_OPS_IDENTITY_PRINCIPAL_ID: ${{ needs.deploy-environment.outputs.ops_identity_principal_id }}
+          ENV_OPS_IDENTITY_CLIENT_ID: ${{ needs.deploy-environment.outputs.ops_identity_client_id }}
+          ENV_EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+          BUILD_WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+          BUILD_OPS_DIGEST_HEX: ${{ needs.build-images.outputs.ops_digest_hex }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/release.prod.bicepparam \
+            --out /tmp/release.prod.resolved.bicepparam \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId="${ENV_CONTAINER_APPS_ENVIRONMENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer="${ENV_ACR_LOGIN_SERVER}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId="${ENV_RUNTIME_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityPrincipalId="${ENV_RUNTIME_IDENTITY_PRINCIPAL_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${ENV_SCHEDULER_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityPrincipalId="${ENV_SCHEDULER_IDENTITY_PRINCIPAL_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityId="${ENV_OPS_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityPrincipalId="${ENV_OPS_IDENTITY_PRINCIPAL_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityClientId="${ENV_OPS_IDENTITY_CLIENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_evidenceContainerUrl="${ENV_EVIDENCE_CONTAINER_URL}" \
+            --set REPLACE_WITH_PUSHED_WEB_DIGEST="${BUILD_WEB_DIGEST_HEX}" \
+            --set REPLACE_WITH_PUSHED_OPS_DIGEST="${BUILD_OPS_DIGEST_HEX}" \
+            --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${RESOLVED_SHA}" \
+            --set REPLACE_WITH_FOUNDRY_RESOURCE="${FOUNDRY_RESOURCE_NAME}"
+
+      - name: What-if infra/release.bicep
+        env:
+          DATABASE_URL_PROD: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
+          CRON_SECRET_PROD: ${{ secrets.CRON_SECRET }}
+          ANTHROPIC_FOUNDRY_API_KEY_PROD: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
+          POSTHOG_API_KEY_PROD: ${{ secrets.POSTHOG_API_KEY }}
+          RESEND_API_KEY_PROD: ${{ secrets.RESEND_API_KEY }}
+          ADMIN_PASSWORD_PROD: ${{ secrets.ADMIN_PASSWORD }}
+          ADMIN_SESSION_SECRET_PROD: ${{ secrets.ADMIN_SESSION_SECRET }}
+          RUNTIME_DATABASE_PASSWORD_PROD: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+          DEPLOYMENT_APPROVAL_SECRET_PROD: ${{ secrets.DEPLOYMENT_APPROVAL_SECRET }}
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --template-file infra/release.bicep \
+            --parameters /tmp/release.prod.resolved.bicepparam \
+            --result-format FullResourcePayloads \
+            --no-pretty-print \
+            --output json > /tmp/whatif-release.json
+
+      - name: Reject unsafe what-if deletes
+        run: node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-release.json
+
+      - name: Deploy infra/release.bicep
+        env:
+          DATABASE_URL_PROD: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
+          CRON_SECRET_PROD: ${{ secrets.CRON_SECRET }}
+          ANTHROPIC_FOUNDRY_API_KEY_PROD: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
+          POSTHOG_API_KEY_PROD: ${{ secrets.POSTHOG_API_KEY }}
+          RESEND_API_KEY_PROD: ${{ secrets.RESEND_API_KEY }}
+          ADMIN_PASSWORD_PROD: ${{ secrets.ADMIN_PASSWORD }}
+          ADMIN_SESSION_SECRET_PROD: ${{ secrets.ADMIN_SESSION_SECRET }}
+          RUNTIME_DATABASE_PASSWORD_PROD: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+          DEPLOYMENT_APPROVAL_SECRET_PROD: ${{ secrets.DEPLOYMENT_APPROVAL_SECRET }}
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --name "rel-prod-${RESOLVED_SHA}" \
+            --template-file infra/release.bicep \
+            --parameters /tmp/release.prod.resolved.bicepparam \
+            --query properties.outputs \
+            --output json > /tmp/release-outputs.json
+          cat /tmp/release-outputs.json
+
+      - name: Extract release.bicep job name outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          for name in migrateInitJobName verifiedBackupJobName targetSmokeJobName; do
+            value="$(jq -r --arg n "${name}" '.[$n].value // empty' /tmp/release-outputs.json)"
+            if [ -z "${value}" ]; then
+              echo "Deployment output '${name}' was missing or empty -- failing closed." >&2
+              exit 1
+            fi
+            snake="$(printf '%s' "${name}" | sed -E 's/([A-Z])/_\1/g' | tr '[:upper:]' '[:lower:]')"
+            echo "${snake}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+  migrate-backup-smoke:
+    name: migrate-init -> baseline verified-backup -> target-smoke (new release)
+    needs: [gate, deploy-environment, deploy-release, build-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+      MIGRATE_INIT_JOB_NAME: ${{ needs.deploy-release.outputs.migrate_init_job_name }}
+      VERIFIED_BACKUP_JOB_NAME_NEW: ${{ needs.deploy-release.outputs.verified_backup_job_name }}
+      TARGET_SMOKE_JOB_NAME_NEW: ${{ needs.deploy-release.outputs.target_smoke_job_name }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run migrate-init (new release)
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id migrate-init)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${MIGRATE_INIT_JOB_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name prod \
+            --release-sha "${RESOLVED_SHA}" \
+            --operation migrate-init \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence/prod/${RESOLVED_SHA}/migrate-init/${job_execution_id}/report.json" \
+            --operation migrate-init \
+            --release-sha "${RESOLVED_SHA}"
+
+      - name: Create and restore-verify a fresh baseline backup (new release)
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id verified-backup)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${VERIFIED_BACKUP_JOB_NAME_NEW}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name prod \
+            --release-sha "${RESOLVED_SHA}" \
+            --operation verified-backup \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence/prod/${RESOLVED_SHA}/verified-backup/${job_execution_id}/report.json" \
+            --operation verified-backup \
+            --release-sha "${RESOLVED_SHA}"
+
+      - name: Run target-smoke (new release)
+        id: target_smoke
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id target-smoke)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${TARGET_SMOKE_JOB_NAME_NEW}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name prod \
+            --release-sha "${RESOLVED_SHA}" \
+            --operation target-smoke \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence/prod/${RESOLVED_SHA}/target-smoke/${job_execution_id}/report.json" \
+            --operation target-smoke \
+            --release-sha "${RESOLVED_SHA}" \
+            --image-digest "sha256:${WEB_DIGEST_HEX}"
+          echo "job_execution_id=${job_execution_id}" >> "$GITHUB_OUTPUT"
+
+      # Fix 5 (security review): azure-promote-prod.yml now requires the
+      # operator to supply the EXACT target-smoke JOB_EXECUTION_ID it will
+      # promote (never a "most recent evidence" guess), so this ID must be
+      # surfaced somewhere a human running that later workflow can find
+      # it. Both the job summary and the published evidence artifact name
+      # carry it.
+      - name: Surface the target-smoke execution ID for promotion
+        env:
+          TARGET_SMOKE_EXECUTION_ID: ${{ steps.target_smoke.outputs.job_execution_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### target-smoke evidence for promotion"
+            echo ""
+            echo "- release SHA: \`${RESOLVED_SHA}\`"
+            echo "- image digest: \`sha256:${WEB_DIGEST_HEX}\`"
+            echo "- target_smoke_execution_id: \`${TARGET_SMOKE_EXECUTION_ID}\`"
+            echo ""
+            echo "Pass this exact \`target_smoke_execution_id\` (with the same release SHA and image digest) to \`azure-promote-prod.yml\`'s \`target_smoke_execution_id\` input to promote this build."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish downloaded evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-prod-evidence-${{ needs.gate.outputs.sha }}-${{ steps.target_smoke.outputs.job_execution_id }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Confirm this workflow ends disabled/Manual
+        run: |
+          echo "release.bicep hardcodes ROLLOUT_MODE=disabled and triggerType=Manual regardless of parameters."
+          echo "This workflow never deploys rollout.bicep to promote -- shadow/paper activation is exclusively azure-promote-prod.yml's job."

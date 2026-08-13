@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import {
   hasBlockingChecks,
+  parseDeploymentProvider,
   redactPostgresUrl,
   runDeploymentPreflight,
   summarizeAgentState,
@@ -36,6 +37,10 @@ const canonicalMigrationRows = [
   [
     "drizzle/0006_reject_null_cron_rollout_mode.sql",
     "1784174542964",
+  ],
+  [
+    "drizzle/0007_azure_retire_supabase_http_functions.sql",
+    "1786579433481",
   ],
 ].map(([path, createdAt]) => ({
   hash: createHash("sha256")
@@ -83,13 +88,157 @@ function createSqlMock(
     | "missing-functions"
     | "pending-http"
     | "public-wrapper"
-    | "public-exposed" = "safe",
+    | "public-exposed"
+    | "azure-current"
+    | "azure-functions-present"
+    | "azure-role-incomplete"
+    | "azure-role-excess"
+    | "azure-role-excess-future-view"
+    | "azure-role-excess-future-relation"
+    | "azure-login-not-member"
+    | "azure-login-excess"
+    | "same-connection-role" = "safe",
   systemIdentifier = "7123456789012345678",
 ) {
+  const RUNTIME_LOGIN_CURRENT_USER = "azure_app_identity";
+  const CORRECT_TABLE_PRIVILEGE_ROWS: Record<
+    string,
+    {
+      hasSelect: boolean;
+      hasInsert: boolean;
+      hasUpdate: boolean;
+      hasDelete: boolean;
+      hasTruncate: boolean;
+      hasTrigger: boolean;
+      hasReferences: boolean;
+    }
+  > = {
+    AgentState: {
+      hasSelect: true,
+      hasInsert: false,
+      hasUpdate: true,
+      hasDelete: false,
+      hasTruncate: false,
+      hasTrigger: false,
+      hasReferences: false,
+    },
+    AgentRun: {
+      hasSelect: true,
+      hasInsert: true,
+      hasUpdate: true,
+      hasDelete: false,
+      hasTruncate: false,
+      hasTrigger: false,
+      hasReferences: false,
+    },
+    TradeExecution: {
+      hasSelect: true,
+      hasInsert: true,
+      hasUpdate: false,
+      hasDelete: false,
+      hasTruncate: false,
+      hasTrigger: false,
+      hasReferences: false,
+    },
+    AgentJournal: {
+      hasSelect: true,
+      hasInsert: true,
+      hasUpdate: false,
+      hasDelete: false,
+      hasTruncate: false,
+      hasTrigger: false,
+      hasReferences: false,
+    },
+  };
+  function tablePrivilegeRows(roleName: unknown) {
+    const rows = Object.entries(CORRECT_TABLE_PRIVILEGE_ROWS).map(
+      ([name, privileges]) => ({ name, ...privileges }),
+    );
+    if (scenario === "azure-role-incomplete" && roleName === "krypto_runtime") {
+      // TradeExecution is missing its required INSERT privilege.
+      return rows.map((row) =>
+        row.name === "TradeExecution"
+          ? { ...row, hasInsert: false }
+          : row,
+      );
+    }
+    if (scenario === "azure-role-excess" && roleName === "krypto_runtime") {
+      // TradeExecution unexpectedly also has UPDATE (not in the matrix).
+      return rows.map((row) =>
+        row.name === "TradeExecution" ? { ...row, hasUpdate: true } : row,
+      );
+    }
+    if (
+      scenario === "azure-role-excess-future-view" &&
+      roleName === "krypto_runtime"
+    ) {
+      // A future reporting view — not in RUNTIME_TABLE_PRIVILEGE_MATRIX at
+      // all — unexpectedly carries a granted SELECT. Before extending the
+      // scan to relkind 'v' this would never have appeared in the scan
+      // results at all (neither missing nor excess); it must now surface
+      // as excess.
+      return [
+        ...rows,
+        {
+          name: "TradeExecutionSummaryView",
+          hasSelect: true,
+          hasInsert: false,
+          hasUpdate: false,
+          hasDelete: false,
+          hasTruncate: false,
+          hasTrigger: false,
+          hasReferences: false,
+        },
+      ];
+    }
+    if (
+      scenario === "azure-role-excess-future-relation" &&
+      roleName === "krypto_runtime"
+    ) {
+      // A future partitioned parent table (relkind 'p') and a future
+      // foreign table (relkind 'f') — again absent from the matrix —
+      // unexpectedly carry granted privileges (INSERT and SELECT
+      // respectively). Both relkinds were previously invisible to a scan
+      // scoped only to relkind = 'r'.
+      return [
+        ...rows,
+        {
+          name: "TradeExecutionArchive",
+          hasSelect: false,
+          hasInsert: true,
+          hasUpdate: false,
+          hasDelete: false,
+          hasTruncate: false,
+          hasTrigger: false,
+          hasReferences: false,
+        },
+        {
+          name: "ExternalMarketDataFeed",
+          hasSelect: true,
+          hasInsert: false,
+          hasUpdate: false,
+          hasDelete: false,
+          hasTruncate: false,
+          hasTrigger: false,
+          hasReferences: false,
+        },
+      ];
+    }
+    if (
+      scenario === "azure-login-excess" &&
+      roleName === RUNTIME_LOGIN_CURRENT_USER
+    ) {
+      // The login role (inherited via membership) has an excess DELETE.
+      return rows.map((row) =>
+        row.name === "AgentJournal" ? { ...row, hasDelete: true } : row,
+      );
+    }
+    return rows;
+  }
   const sql = jest.fn(
     async (
       first: TemplateStringsArray | string,
-      ..._values: unknown[]
+      ...values: unknown[]
     ): Promise<unknown> => {
       if (typeof first === "string") {
         return { identifier: first };
@@ -103,12 +252,50 @@ function createSqlMock(
         return [];
       }
       if (query.includes("current_database() AS database")) {
+        const isDirectConnection = query.includes("server_version");
+        const sameRole = scenario === "same-connection-role";
         return [
           {
             database: "krypto",
             serverVersion: "14.15",
             systemIdentifier,
+            currentUser: isDirectConnection
+              ? "krypto_migrator"
+              : sameRole
+                ? "krypto_migrator"
+                : RUNTIME_LOGIN_CURRENT_USER,
           },
+        ];
+      }
+      if (query.includes("krypto_runtime role inventory")) {
+        const present =
+          scenario === "azure-current" ||
+          scenario === "azure-functions-present" ||
+          scenario === "azure-role-incomplete" ||
+          scenario === "azure-role-excess" ||
+          scenario === "azure-role-excess-future-view" ||
+          scenario === "azure-role-excess-future-relation" ||
+          scenario === "azure-login-not-member" ||
+          scenario === "azure-login-excess" ||
+          scenario === "same-connection-role";
+        return [
+          {
+            present,
+            isGroupRole: present,
+            schemaUsage: present,
+          },
+        ];
+      }
+      if (query.includes("runtime role table privilege scan")) {
+        return tablePrivilegeRows(values[0]);
+      }
+      if (query.includes("runtime role sequence privilege scan")) {
+        // The krypto schema has no sequences; nothing to report either way.
+        return [];
+      }
+      if (query.includes("runtime login role membership check")) {
+        return [
+          { isMember: scenario !== "azure-login-not-member" },
         ];
       }
       if (query.includes("FROM pg_tables")) {
@@ -211,7 +398,11 @@ function createSqlMock(
                 ? canonicalMigrationRows.slice(0, 5)
                 : scenario === "pre-null-rejection"
                   ? canonicalMigrationRows.slice(0, 6)
-            : canonicalMigrationRows;
+                : scenario === "azure-current" ||
+                    scenario === "azure-functions-present" ||
+                    scenario === "azure-role-incomplete"
+                  ? canonicalMigrationRows
+                  : canonicalMigrationRows.slice(0, 7);
         return scenario === "migration-drift"
           ? [
               {
@@ -255,7 +446,13 @@ function createSqlMock(
         return [{ count: scenario === "pending-http" ? "1" : "0" }];
       }
       if (query.includes("p.prosrc AS source")) {
-        if (scenario === "missing-functions") return [];
+        if (
+          scenario === "missing-functions" ||
+          scenario === "azure-current" ||
+          scenario === "azure-role-incomplete"
+        ) {
+          return [];
+        }
         return [
           {
             name: "invoke_agent_run",
@@ -391,7 +588,10 @@ function createSqlMock(
       if (query.includes("to_regclass('vault.secrets')")) {
         return [
           {
-            relation: scenario === "blocked" ? null : "vault.secrets",
+            relation:
+              scenario === "blocked" || scenario === "azure-current"
+                ? null
+                : "vault.secrets",
           },
         ];
       }
@@ -407,8 +607,15 @@ function createSqlMock(
       }
       throw new Error(`Unhandled SQL in test: ${query}`);
     },
-  ) as jest.Mock & { end: jest.Mock };
+  ) as jest.Mock & { end: jest.Mock; array: jest.Mock };
   sql.end = jest.fn(async () => undefined);
+  // postgres.js's real `sql.array(...)` helper wraps a JS array as a bound
+  // array parameter; this mock only ever inspects the tagged template's
+  // string parts (never its interpolated values) to decide how to
+  // respond, so a passthrough stub is sufficient — it just needs to exist
+  // and not throw, since `sql.array(...)` is evaluated as a plain JS
+  // expression before the tagged template call happens.
+  sql.array = jest.fn((value: unknown) => value);
   return sql;
 }
 
@@ -788,5 +995,303 @@ describe("deployment preflight helpers", () => {
 
     expect(report.blockers).toContain("pending-http-requests");
     expect(report.inventory.pendingKryptoHttpRequests).toBe(1);
+  });
+
+  it("parses an explicit deployment provider without silent fallback", () => {
+    expect(parseDeploymentProvider(undefined)).toBeUndefined();
+    expect(parseDeploymentProvider("")).toBeUndefined();
+    expect(parseDeploymentProvider("azure")).toBe("azure");
+    expect(parseDeploymentProvider("AZURE")).toBe("azure");
+    expect(parseDeploymentProvider("supabase")).toBe("supabase");
+    expect(() => parseDeploymentProvider("aws")).toThrow(
+      /unknown deployment provider/i,
+    );
+  });
+
+  it("passes a fully current Azure target with the obsolete cron functions retired", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(createSqlMock("azure-current") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(report.provider).toBe("azure");
+    expect(report.databasePreflightPassed).toBe(true);
+    expect(report.blockers).toEqual([]);
+    expect(report.inventory.drizzleMigrationCount).toBe(8);
+    expect(report.inventory.fixedFunctions.agentRun).toBe(false);
+    expect(report.inventory.fixedFunctions.dailySummary).toBe(false);
+    expect(report.inventory.runtimeRole).toEqual(
+      expect.objectContaining({
+        name: "krypto_runtime",
+        present: true,
+        isGroupRole: true,
+        schemaUsage: true,
+        missingTablePrivileges: [],
+        missingSequencePrivileges: [],
+      }),
+    );
+    expect(
+      report.checks.find(
+        (check) => check.id === "azure-legacy-cron-functions-retired",
+      ),
+    ).toEqual(expect.objectContaining({ status: "pass" }));
+    expect(
+      report.checks.find((check) => check.id === "runtime-role"),
+    ).toEqual(expect.objectContaining({ status: "pass" }));
+    const vaultCheck = report.checks.find(
+      (check) => check.id === "vault-secrets",
+    );
+    expect(vaultCheck).toEqual(
+      expect.objectContaining({
+        status: "pass",
+        summary: expect.stringMatching(/not part of the azure target/i),
+      }),
+    );
+  });
+
+  it("treats the same absent-vault data as a warning off of Azure", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(createSqlMock("azure-current") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+    });
+
+    expect(report.provider).toBeNull();
+    expect(
+      report.checks.find((check) => check.id === "vault-secrets"),
+    ).toEqual(expect.objectContaining({ status: "warn" }));
+  });
+
+  it("warns when an Azure target has not yet reached the retirement migration", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(createSqlMock("safe") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(report.provider).toBe("azure");
+    expect(
+      report.checks.find(
+        (check) => check.id === "azure-legacy-cron-functions-retired",
+      ),
+    ).toEqual(expect.objectContaining({ status: "warn" }));
+    expect(report.blockers).not.toContain(
+      "azure-legacy-cron-functions-retired",
+    );
+  });
+
+  it("blocks an Azure target whose migration history is current but still retains the obsolete cron functions", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(
+        createSqlMock("azure-functions-present") as never,
+      );
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(report.databasePreflightPassed).toBe(false);
+    expect(report.blockers).toEqual(
+      expect.arrayContaining([
+        "azure-legacy-cron-functions-retired",
+        "fixed-cron-functions",
+        "fixed-cron-function-integrity",
+      ]),
+    );
+  });
+
+  it("blocks a runtime role that is present but missing required table privileges", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(
+        createSqlMock("azure-role-incomplete") as never,
+      );
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(report.blockers).toContain("runtime-role");
+    expect(report.inventory.runtimeRole?.missingTablePrivileges).toEqual([
+      "TradeExecution:INSERT",
+    ]);
+    expect(report.inventory.runtimeRole?.excessTablePrivileges).toEqual([]);
+  });
+
+  it("blocks a runtime role that holds an excess privilege beyond the exact matrix", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(createSqlMock("azure-role-excess") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(report.blockers).toContain("runtime-role");
+    expect(report.inventory.runtimeRole?.missingTablePrivileges).toEqual([]);
+    expect(report.inventory.runtimeRole?.excessTablePrivileges).toEqual([
+      "TradeExecution:UPDATE",
+    ]);
+  });
+
+  it("blocks a runtime role privilege granted on a future view, not just ordinary tables", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(
+        createSqlMock("azure-role-excess-future-view") as never,
+      );
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(report.blockers).toContain("runtime-role");
+    expect(report.inventory.runtimeRole?.missingTablePrivileges).toEqual([]);
+    expect(report.inventory.runtimeRole?.excessTablePrivileges).toEqual([
+      "TradeExecutionSummaryView:SELECT",
+    ]);
+  });
+
+  it("blocks a runtime role privilege granted on a future partitioned or foreign relation", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(
+        createSqlMock("azure-role-excess-future-relation") as never,
+      );
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(report.blockers).toContain("runtime-role");
+    expect(report.inventory.runtimeRole?.missingTablePrivileges).toEqual([]);
+    expect(report.inventory.runtimeRole?.excessTablePrivileges).toEqual([
+      "TradeExecutionArchive:INSERT",
+      "ExternalMarketDataFeed:SELECT",
+    ]);
+  });
+
+  it("captures current_user on both connections and requires them to differ", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("same-connection-role") as never)
+      .mockReturnValueOnce(createSqlMock("same-connection-role") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(report.inventory.directCurrentUser).toBe("krypto_migrator");
+    expect(report.inventory.runtimeCurrentUser).toBe("krypto_migrator");
+    expect(
+      report.checks.find(
+        (check) => check.id === "connection-roles-distinct",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+    expect(report.blockers).toContain("connection-roles-distinct");
+  });
+
+  it("warns (not blocks) on a legacy target when connections share a role", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("same-connection-role") as never)
+      .mockReturnValueOnce(createSqlMock("same-connection-role") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+    });
+
+    expect(
+      report.checks.find(
+        (check) => check.id === "connection-roles-distinct",
+      ),
+    ).toEqual(expect.objectContaining({ status: "warn" }));
+    expect(report.blockers).not.toContain("connection-roles-distinct");
+  });
+
+  it("blocks when the runtime login role is not a member of krypto_runtime on Azure", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(createSqlMock("azure-login-not-member") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(report.inventory.runtimeLoginRole?.isMemberOfRuntimeRole).toBe(
+      false,
+    );
+    expect(
+      report.checks.find(
+        (check) => check.id === "runtime-login-role-boundary",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+    expect(report.blockers).toContain("runtime-login-role-boundary");
+  });
+
+  it("blocks when the runtime login role inherits an excess privilege on Azure", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(createSqlMock("azure-login-excess") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+      provider: "azure",
+    });
+
+    expect(
+      report.inventory.runtimeLoginRole?.excessTablePrivileges,
+    ).toEqual(["AgentJournal:DELETE"]);
+    expect(
+      report.checks.find(
+        (check) => check.id === "runtime-login-role-boundary",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+    expect(report.blockers).toContain("runtime-login-role-boundary");
+  });
+
+  it("warns (not blocks) on a legacy target when the runtime login role fails the privilege boundary proof", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safe") as never)
+      .mockReturnValueOnce(createSqlMock("azure-login-not-member") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "******db.example.com/postgres",
+      runtimeUrl: "******pooler.example.com/postgres",
+    });
+
+    expect(
+      report.checks.find(
+        (check) => check.id === "runtime-login-role-boundary",
+      ),
+    ).toEqual(expect.objectContaining({ status: "warn" }));
+    expect(report.blockers).not.toContain("runtime-login-role-boundary");
   });
 });

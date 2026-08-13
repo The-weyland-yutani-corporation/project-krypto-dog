@@ -3,11 +3,14 @@ import assert from "node:assert/strict";
 import postgres from "postgres";
 
 import {
+  cronSecretBinding,
   createTargetApproval,
   createTargetBinding,
   inspectTargetAfter,
   inspectTargetBefore,
 } from "@/deployment/target-smoke";
+
+const TEST_APPROVAL_SECRET = "test-approval-secret-".padEnd(40, "x");
 
 async function main(): Promise<void> {
   const databaseUrl = process.env.DIRECT_URL;
@@ -43,30 +46,52 @@ async function main(): Promise<void> {
     assert.equal(binding?.event, "deployment-smoke-binding");
     const approvalId =
       "deployment-smoke-approved-123e4567-e89b-42d3-a456-426614174001";
+    const releaseSha = "c0e4ed2724a9880d5a5dfcdf954490f2d86e8e2f";
+    const imageDigest =
+      "sha256:d32ebcff1be028d183b8ba7ce4e1506b0adf3a7a90b02d5c6a202fabceaf1e68";
     await createTargetApproval({
       databaseUrl,
       approvalId,
       bindingId,
       targetOrigin: "https://krypto.example.com",
       cronSecret: "test-cron-secret",
+      releaseSha,
+      imageDigest,
+      approvalSecret: TEST_APPROVAL_SECRET,
     });
     const [approval] = await sql<
       Array<{
         event: string | null;
         targetOrigin: string | null;
-        cronSecretMd5: string | null;
+        cronSecretBinding: string | null;
+        releaseSha: string | null;
+        imageDigest: string | null;
+        rolloutMode: string | null;
+        approvalSignature: string | null;
       }>
     >`
       SELECT
         "marketConditions" ->> 'event' AS event,
         "marketConditions" ->> 'targetOrigin' AS "targetOrigin",
-        "marketConditions" ->> 'cronSecretMd5' AS "cronSecretMd5"
+        "marketConditions" ->> 'cronSecretBinding' AS "cronSecretBinding",
+        "marketConditions" ->> 'releaseSha' AS "releaseSha",
+        "marketConditions" ->> 'imageDigest' AS "imageDigest",
+        "marketConditions" ->> 'rolloutMode' AS "rolloutMode",
+        "marketConditions" ->> 'approvalSignature' AS "approvalSignature"
       FROM "krypto"."AgentJournal"
       WHERE id = ${approvalId}
     `;
     assert.equal(approval?.event, "deployment-smoke-approved");
     assert.equal(approval?.targetOrigin, "https://krypto.example.com");
-    assert.match(approval?.cronSecretMd5 ?? "", /^[a-f0-9]{32}$/);
+    assert.equal(
+      approval?.cronSecretBinding,
+      cronSecretBinding("test-cron-secret", TEST_APPROVAL_SECRET),
+    );
+    assert.match(approval?.cronSecretBinding ?? "", /^[a-f0-9]{64}$/);
+    assert.equal(approval?.releaseSha, releaseSha);
+    assert.equal(approval?.imageDigest, imageDigest);
+    assert.equal(approval?.rolloutMode, "disabled");
+    assert.match(approval?.approvalSignature ?? "", /^[a-f0-9]{64}$/);
 
     await sql`
       INSERT INTO "krypto"."AgentRun" (

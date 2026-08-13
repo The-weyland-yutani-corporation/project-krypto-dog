@@ -196,6 +196,121 @@ describe("production migration safety", () => {
     expect(config).not.toContain("process.env.DATABASE_URL");
   });
 
+  it("retires the obsolete Supabase HTTP cron functions and establishes a least-privilege runtime role", () => {
+    const retirement = read(
+      "drizzle/0007_azure_retire_supabase_http_functions.sql",
+    );
+
+    expect(retirement).toContain(
+      'DROP FUNCTION IF EXISTS "krypto"."invoke_agent_run"()',
+    );
+    expect(retirement).toContain(
+      'DROP FUNCTION IF EXISTS "krypto"."invoke_daily_summary"()',
+    );
+    expect(retirement).toContain('CREATE ROLE "krypto_runtime" NOLOGIN');
+    expect(retirement).toContain(
+      'GRANT USAGE ON SCHEMA "krypto" TO "krypto_runtime"',
+    );
+    expect(retirement).toContain('REVOKE ALL ON SCHEMA "krypto" FROM PUBLIC');
+    expect(retirement).toContain(
+      'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "krypto" FROM PUBLIC',
+    );
+    expect(retirement).toContain(
+      'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "krypto" FROM PUBLIC',
+    );
+
+    // Fail-closed, table-specific grants only: no blanket ON ALL TABLES /
+    // ON ALL SEQUENCES grant, and no blanket default privileges for future
+    // tables — future migrations must grant explicitly. (REVOKE statements
+    // legitimately use "ON ALL TABLES"/"ON ALL SEQUENCES ... FROM"; only a
+    // "... TO krypto_runtime" grant of that shape is disallowed.)
+    expect(retirement).not.toMatch(
+      /ON ALL TABLES IN SCHEMA "krypto" TO "krypto_runtime"/,
+    );
+    expect(retirement).not.toMatch(
+      /ON ALL SEQUENCES IN SCHEMA "krypto" TO "krypto_runtime"/,
+    );
+    expect(retirement).not.toMatch(
+      /ALTER DEFAULT PRIVILEGES IN SCHEMA "krypto"\s+GRANT/,
+    );
+    // Existing privileges are revoked before the exact grants are applied,
+    // so reapplying this migration (or correcting prior drift) converges
+    // on the same matrix instead of accumulating privileges.
+    const revokeTablesIndex = retirement.indexOf(
+      'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "krypto" FROM "krypto_runtime"',
+    );
+    const revokeSequencesIndex = retirement.indexOf(
+      'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "krypto" FROM "krypto_runtime"',
+    );
+    const revokeDefaultTablesIndex = retirement.indexOf(
+      'REVOKE ALL PRIVILEGES ON TABLES FROM "krypto_runtime"',
+    );
+    const revokeDefaultSequencesIndex = retirement.indexOf(
+      'REVOKE ALL PRIVILEGES ON SEQUENCES FROM "krypto_runtime"',
+    );
+    const grantSchemaIndex = retirement.indexOf(
+      'GRANT USAGE ON SCHEMA "krypto" TO "krypto_runtime"',
+    );
+    expect(revokeTablesIndex).toBeGreaterThan(-1);
+    expect(revokeSequencesIndex).toBeGreaterThan(-1);
+    expect(revokeDefaultTablesIndex).toBeGreaterThan(-1);
+    expect(revokeDefaultSequencesIndex).toBeGreaterThan(-1);
+    expect(revokeTablesIndex).toBeLessThan(grantSchemaIndex);
+    expect(revokeSequencesIndex).toBeLessThan(grantSchemaIndex);
+    expect(revokeDefaultTablesIndex).toBeLessThan(grantSchemaIndex);
+    expect(revokeDefaultSequencesIndex).toBeLessThan(grantSchemaIndex);
+
+    // Exact, table-specific privilege matrix.
+    expect(retirement).toContain(
+      'GRANT SELECT, UPDATE ON TABLE "krypto"."AgentState" TO "krypto_runtime"',
+    );
+    expect(retirement).toContain(
+      'GRANT SELECT, INSERT, UPDATE ON TABLE "krypto"."AgentRun" TO "krypto_runtime"',
+    );
+    expect(retirement).toContain(
+      'GRANT SELECT, INSERT ON TABLE "krypto"."TradeExecution" TO "krypto_runtime"',
+    );
+    expect(retirement).toContain(
+      'GRANT SELECT, INSERT ON TABLE "krypto"."AgentJournal" TO "krypto_runtime"',
+    );
+    // TradeExecution and AgentJournal are immutable history: never UPDATE.
+    expect(retirement).not.toMatch(
+      /GRANT[^;]*UPDATE[^;]*ON TABLE "krypto"\."TradeExecution"/i,
+    );
+    expect(retirement).not.toMatch(
+      /GRANT[^;]*UPDATE[^;]*ON TABLE "krypto"\."AgentJournal"/i,
+    );
+    // AgentState is never inserted by the application.
+    expect(retirement).not.toMatch(
+      /GRANT[^;]*INSERT[^;]*ON TABLE "krypto"\."AgentState"/i,
+    );
+    // No table grant anywhere includes DELETE, TRUNCATE, TRIGGER, or
+    // REFERENCES for krypto_runtime.
+    expect(retirement).not.toMatch(/GRANT[^;]*\bDELETE\b[^;]*"krypto_runtime"/i);
+    expect(retirement).not.toMatch(
+      /GRANT[^;]*\bTRUNCATE\b[^;]*"krypto_runtime"/i,
+    );
+    expect(retirement).not.toMatch(
+      /GRANT[^;]*\bTRIGGER\b[^;]*"krypto_runtime"/i,
+    );
+    expect(retirement).not.toMatch(
+      /GRANT[^;]*\bREFERENCES\b[^;]*"krypto_runtime"/i,
+    );
+
+    // Additive and reversible: no trading table or row is touched.
+    expect(retirement).not.toMatch(/\bDROP\s+TABLE\b/i);
+    expect(retirement).not.toMatch(/\bDELETE\s+FROM\b/i);
+    expect(retirement).not.toMatch(/\bTRUNCATE\b/i);
+    expect(retirement).not.toMatch(/\bALTER\s+TABLE\b/i);
+    // No password is embedded anywhere in the migration's executable SQL.
+    expect(retirement).not.toMatch(/PASSWORD\s+'/i);
+    expect(retirement).not.toMatch(/\bWITH\s+PASSWORD\b/i);
+    // Guarded role creation is idempotent, unlike a bare CREATE ROLE.
+    expect(retirement).toContain(
+      "IF NOT EXISTS (\n\t\tSELECT 1 FROM pg_roles WHERE rolname = 'krypto_runtime'",
+    );
+  });
+
   it("keeps Supabase reset from loading application fixtures", () => {
     const config = read("supabase/config.toml");
 

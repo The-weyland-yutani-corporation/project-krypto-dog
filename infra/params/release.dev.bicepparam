@@ -1,0 +1,96 @@
+// Nonsecret dev release parameters for release.bicep.
+//
+// Values marked REPLACE_WITH_ENVIRONMENT_OUTPUT_* must be copied from the
+// corresponding `az deployment group show` output of the environment.bicep
+// deployment for this resource group (see infra/README.md "Outputs"). They
+// are not secrets, but they are resource IDs/names/URLs generated at
+// deploy time, not invented here. evidenceContainerUrl specifically must
+// be the bare HTTPS evidenceContainerUrl output (no credential/query
+// string embedded) — see scripts/azure/lib/evidence-upload.ts.
+//
+// Every @secure() parameter (databaseUrl, directUrl, cronSecret,
+// anthropicFoundryApiKey, posthogApiKey, resendApiKey, adminPassword,
+// adminSessionSecret, runtimeDatabasePassword, deploymentApprovalSecret) is
+// deliberately NOT set with a literal value. Each
+// is resolved from an environment variable at deploy time via
+// readEnvironmentVariable() with NO fallback default: a missing
+// environment variable fails the deployment instead of silently
+// overwriting Key Vault with a placeholder value. The deployment
+// pipeline / operator shell must export the real secret into the named
+// environment variable before running `az deployment group create`. For
+// CI template-compile-only validation (az bicep build-params), export
+// throwaway stub values for these environment variables in the shell
+// invoking the CLI; never commit a stub value into this file.
+using '../release.bicep'
+
+param environmentName = 'dev'
+param location = 'eastus2'
+
+param keyVaultName = 'kv-krypto-dev'
+param containerAppsEnvironmentId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId'
+param registryLoginServer = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer'
+param runtimeIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId'
+param runtimeIdentityPrincipalId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityPrincipalId'
+param schedulerIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId'
+param schedulerIdentityPrincipalId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityPrincipalId'
+param opsIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityId'
+param opsIdentityPrincipalId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityPrincipalId'
+param opsIdentityClientId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityClientId'
+param evidenceContainerUrl = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_evidenceContainerUrl'
+
+param webAppName = 'ca-dev-web'
+param hourlyJobName = 'caj-dev-agent-run'
+param dailyJobName = 'caj-dev-daily-summary'
+param migrateInitJobName = 'caj-dev-migrate-init'
+param preflightJobName = 'caj-dev-preflight'
+param verifiedBackupJobName = 'caj-dev-verified-backup'
+param targetSmokeJobName = 'caj-dev-target-smoke'
+param activationCheckJobName = 'caj-dev-activation-check'
+
+// Digest-pinned images. Replace with the actual pushed digests — never a
+// mutable tag such as :latest. imageDigest is reused verbatim for the web
+// app, the hourly/daily scheduler jobs (same image, Dockerfile `web`
+// target), and the IMAGE_DIGEST env var passed to target-smoke/
+// activation-check, so there is exactly one source of truth for "which
+// release is this."
+param webImageName = 'krypto-web'
+param imageDigest = 'sha256:REPLACE_WITH_PUSHED_WEB_DIGEST'
+param opsImageName = 'krypto-ops'
+param opsImageDigest = 'sha256:REPLACE_WITH_PUSHED_OPS_DIGEST'
+
+// The 40-character lowercase-hex git commit SHA that produced this
+// release. Not invented here — must be the actual commit SHA being
+// deployed.
+param releaseSha = 'REPLACE_WITH_REAL_COMMIT_SHA000000000000'
+
+param anthropicFoundryBaseUrl = 'https://REPLACE_WITH_FOUNDRY_RESOURCE.services.ai.azure.com/anthropic'
+param anthropicFoundryDeployment = 'krypto-dev-claude'
+param anthropicFoundryApiVersion = '2024-10-21'
+
+param posthogHost = 'https://us.i.posthog.com'
+param alertEmailTo = 'ops-dev@example.com'
+param alertEmailFrom = 'krypto-dev@example.com'
+
+// Fresh-deployment Azure PostgreSQL runtime login role name. Nonsecret —
+// a role name, not a credential. Default matches the database
+// workstream's krypto_app convention; override only if that workstream's
+// reviewed configuration uses a different name for this environment.
+param runtimeDatabaseLoginRole = 'krypto_app'
+
+param databaseUrl = readEnvironmentVariable('DATABASE_URL_DEV')
+param directUrl = readEnvironmentVariable('DIRECT_URL_DEV')
+param cronSecret = readEnvironmentVariable('CRON_SECRET_DEV')
+param anthropicFoundryApiKey = readEnvironmentVariable('ANTHROPIC_FOUNDRY_API_KEY_DEV')
+param posthogApiKey = readEnvironmentVariable('POSTHOG_API_KEY_DEV')
+param resendApiKey = readEnvironmentVariable('RESEND_API_KEY_DEV')
+param adminPassword = readEnvironmentVariable('ADMIN_PASSWORD_DEV')
+param adminSessionSecret = readEnvironmentVariable('ADMIN_SESSION_SECRET_DEV')
+param runtimeDatabasePassword = readEnvironmentVariable('RUNTIME_DATABASE_PASSWORD_DEV')
+// Mounted only on target-smoke and activation-check (see release.bicep).
+// The dev workflow maps the protected GitHub Environment secret named
+// DEPLOYMENT_APPROVAL_SECRET to this internal _DEV variable.
+param deploymentApprovalSecret = readEnvironmentVariable('DEPLOYMENT_APPROVAL_SECRET_DEV')
+
+param tags = {
+  project: 'project-krypto'
+}

@@ -1,0 +1,16 @@
+{
+  "changes": [
+    {
+      "changeType": "Modify",
+      "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-krypto-prod/providers/Microsoft.DBforPostgreSQL/flexibleServers/pg-krypto-prod/providers/Microsoft.Authorization/locks/deleteLock",
+      "delta": [
+        {
+          "path": "properties.level",
+          "propertyChangeType": "Modify",
+          "before": "CanNotDelete",
+          "after": "ReadOnly"
+        }
+      ]
+    }
+  ]
+}

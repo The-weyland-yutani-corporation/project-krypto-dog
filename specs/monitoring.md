@@ -25,8 +25,8 @@ remains authoritative for gate thresholds and authorization.
 | Trade events | PostHog `trade_executed` | Confirms paper trade execution and structured trade fields |
 | Token usage | PostHog `llm_token_usage` | Tracks prompt/completion cost and abnormal token spikes |
 | Daily summary | `AgentJournal.marketConditions.event = daily-summary-delivery` plus route result | Human-readable 24h digest and persisted sent/skipped/failed health |
-| Cron job result | Supabase `cron.job_run_details` and `net._http_response` | Verifies scheduled HTTP invocation actually reaches Vercel |
-| App logs | Vercel logs / local console | Debugging route exceptions, LLM retries, Coinbase failures, email failures |
+| Cron job result | Current baseline: Supabase `cron.job_run_details` and `net._http_response`. Azure runbook (implemented, unprovisioned): Container Apps Job execution history (see "Azure Container Apps Jobs and Log Analytics checks" below) | Verifies scheduled invocation actually reached the app |
+| App logs | Current baseline: Vercel logs / local console. Azure runbook: Container Apps Log Analytics workspace (`infra/environment.bicep`, implemented, unprovisioned) | Debugging route exceptions, LLM retries, Coinbase failures, email failures |
 
 ## PostHog dashboard
 
@@ -81,7 +81,40 @@ journal records. Unlock requires an operator reason and is refused while an
 owned lease is active. Unlock leaves the agent paused so resumption is a
 separate audited decision.
 
-## Supabase cron checks
+## Azure Container Apps Jobs and Log Analytics checks (implemented runbook, unprovisioned)
+
+Once an Azure environment is actually provisioned (`specs/deployment.md`),
+the scheduler equivalent of the Supabase cron checks above is Container
+Apps Job execution history — there is no `pg_cron`/`pg_net` on the Azure
+target (ADR 0008 item 1, item 10):
+
+```bash
+# Recent hourly agent-run executions
+az containerapp job execution list \
+  --name caj-<env>-agent-run \
+  --resource-group <rg> \
+  --query "[].{name:name, status:properties.status, startTime:properties.startTime}" \
+  --output table
+
+# Recent daily-summary executions
+az containerapp job execution list \
+  --name caj-<env>-daily-summary \
+  --resource-group <rg> \
+  --output table
+```
+
+`status = Succeeded` is the goal; `Failed` or a missing recent execution
+during an enabled schedule window is the Azure equivalent of a missed
+Supabase cron tick. Application-level logs are queryable from the
+per-environment Log Analytics workspace `environment.bicep` creates
+(`logAnalyticsWorkspaceId` output); an Action Group for operator email
+alerts is also created (`infra/modules/monitoring.bicep`), but no
+scheduled query alert rules are deployed by Bicep yet — configuring them
+against the Log Analytics workspace is an operational follow-up once an
+environment is provisioned, not something this repository automates
+today.
+
+## Supabase cron checks (current Vercel/Supabase baseline)
 
 Registered jobs:
 
@@ -149,9 +182,9 @@ single observation, not proof of edge.
 
 | Alert | Threshold | Action |
 |---|---|---|
-| Agent error | Any `agent_run_completed.status = error` in 24h | Inspect Vercel logs and DB state |
+| Agent error | Any `agent_run_completed.status = error` in 24h | Inspect current host logs (Vercel baseline or Container Apps target) and DB state |
 | Drawdown lock | Any drawdown guardrail event or `status = locked` | Stop, inspect recent trades/journals, do not auto-unlock |
-| Missing cron | No `agent_run_completed` for > 2h during enabled cron window | Check Supabase cron, Vault secrets, Vercel deployment |
+| Missing trigger | No `agent_run_completed` for > 2h during an enabled schedule window | Check Supabase cron on the hosted baseline or Container Apps Job history on Azure, then verify secrets and the active revision |
 | Stale lease | `leaseExpiresAt < now()` or repeated 409 after expiry | Inspect owner/run record; use only the expired-lease recovery path |
 | Reconciliation failure | `accountingStatus != RECONCILED` | Keep trading blocked and reconcile immutable history before any unlock |
 | Alert delivery | Latest persisted delivery is failed/skipped, or older than 36h | Repair Resend configuration/provider health and prove a successful delivery |

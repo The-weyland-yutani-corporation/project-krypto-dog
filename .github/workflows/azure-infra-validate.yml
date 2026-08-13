@@ -1,0 +1,136 @@
+name: Azure infra validate
+
+# Template-compile-only validation of every Bicep entry point, module, and
+# .bicepparam file under infra/ (see infra/README.md "Validation"). This
+# workflow never authenticates to Azure (no azure/login, no OIDC, no
+# federated credential, no real secret) -- `az bicep build` and
+# `az bicep build-params` are both fully local, offline operations against
+# the Azure CLI's bundled Bicep compiler and ARM resource-provider schemas.
+# The stub values below are deliberately inert placeholders (never a real
+# connection string, key, or password) supplied only so that
+# `readEnvironmentVariable()` calls in the .bicepparam files have
+# *something* to resolve to for type-checking -- see infra/README.md
+# "Secure parameters" and "CI/local template-compile-only validation".
+#
+# Docker image targets are intentionally NOT validated here -- that
+# happens in the main CI pipeline's docker-validate job (.github/workflows/
+# ci.yml), gated to skip docs-only changes, so this PR-facing infra check
+# stays fast and Bicep-only.
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/azure-infra-validate.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: azure-infra-validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Deliberately inert, non-secret stub values -- shell-scoped environment
+# variables only, never written into a .bicepparam file, and never used
+# for any authenticated Azure call in this workflow (there is none).
+env:
+  POSTGRES_ADMIN_PASSWORD_DEV: stub-inert-value
+  POSTGRES_ADMIN_PASSWORD_PROD: stub-inert-value
+  DATABASE_URL_DEV: stub-inert-value
+  DIRECT_URL_DEV: stub-inert-value
+  CRON_SECRET_DEV: stub-inert-value
+  ANTHROPIC_FOUNDRY_API_KEY_DEV: stub-inert-value
+  POSTHOG_API_KEY_DEV: stub-inert-value
+  RESEND_API_KEY_DEV: stub-inert-value
+  ADMIN_PASSWORD_DEV: stub-inert-value
+  ADMIN_SESSION_SECRET_DEV: stub-inert-value
+  RUNTIME_DATABASE_PASSWORD_DEV: stub-inert-value
+  DEPLOYMENT_APPROVAL_SECRET_DEV: stub-inert-value
+  DATABASE_URL_PROD: stub-inert-value
+  DIRECT_URL_PROD: stub-inert-value
+  CRON_SECRET_PROD: stub-inert-value
+  ANTHROPIC_FOUNDRY_API_KEY_PROD: stub-inert-value
+  POSTHOG_API_KEY_PROD: stub-inert-value
+  RESEND_API_KEY_PROD: stub-inert-value
+  ADMIN_PASSWORD_PROD: stub-inert-value
+  ADMIN_SESSION_SECRET_PROD: stub-inert-value
+  RUNTIME_DATABASE_PASSWORD_PROD: stub-inert-value
+  DEPLOYMENT_APPROVAL_SECRET_PROD: stub-inert-value
+
+jobs:
+  bicep-build:
+    name: Build every Bicep entry point and module
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show az/bicep versions
+        run: |
+          az version
+          az bicep version
+
+      - name: Build every Bicep entry point
+        run: |
+          set -euo pipefail
+          for f in infra/bootstrap.bicep infra/platform.bicep infra/environment.bicep infra/release.bicep infra/rollout.bicep; do
+            echo "::group::az bicep build --file ${f}"
+            az bicep build --file "${f}"
+            echo "::endgroup::"
+          done
+
+      - name: Build every Bicep module
+        run: |
+          set -euo pipefail
+          for f in infra/modules/*.bicep; do
+            echo "::group::az bicep build --file ${f}"
+            az bicep build --file "${f}"
+            echo "::endgroup::"
+          done
+
+  bicepparam-build:
+    name: Build every .bicepparam file
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build every .bicepparam file
+        run: |
+          set -euo pipefail
+          for f in infra/params/*.bicepparam; do
+            echo "::group::az bicep build-params --file ${f}"
+            az bicep build-params --file "${f}"
+            echo "::endgroup::"
+          done
+
+  helper-script-self-tests:
+    name: Run .github/scripts/azure helper script self-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # No Azure login, no OIDC, no real credentials -- every assertion here
+    # is either a pure-bash/pure-Node fixture check or a fail-closed
+    # argument-validation check that never reaches a live `git`/`gh`/`az`
+    # call, consistent with this workflow's no-live-secrets design.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Self-test lib/common.sh validators
+        run: .github/scripts/azure/tests/test-common-sh.sh
+
+      - name: Self-test reject-unsafe-whatif-deletes.mjs against fixtures
+        run: node .github/scripts/azure/tests/test-reject-unsafe-whatif-deletes.mjs
+
+      - name: Self-test validate-report.mjs digest/SHA/pass binding against fixtures
+        run: node .github/scripts/azure/tests/test-validate-report.mjs
+
+      - name: Self-test verify-deploy-sha.sh argument validation (no live network calls)
+        run: .github/scripts/azure/tests/test-verify-deploy-sha.sh

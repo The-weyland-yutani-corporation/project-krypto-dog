@@ -6,6 +6,32 @@ are defined in
 [`specs/production-readiness-prd.v1.md`](./production-readiness-prd.v1.md).
 This document does not contain secrets or credentials.
 
+> **Azure target: implemented, provisioning/evidence pending.** The
+> infrastructure inventory below (§1) describes the current Vercel/Supabase
+> code baseline, which the approved deployment plan is replacing with a
+> fully Azure-native target (Azure Container Apps + Jobs, Azure Database for
+> PostgreSQL Flexible Server 17 on private VNet access, Key Vault,
+> per-environment Azure Container Registry, Bicep, GitHub Actions OIDC) --
+> see ADR
+> [`0008-azure-native-deployment-architecture.md`](./decisions/0008-azure-native-deployment-architecture.md),
+> which supersedes ADR 0003. The Bicep templates, GitHub Actions workflows,
+> and application-side deployment/ops-job code for that target now exist in
+> this repository and are locally validated (Bicep compile, `.bicepparam`
+> build, ops-job unit tests -- see `infra/README.md` "Validation"). An Azure
+> subscription and existing Foundry service(s) are available, but **no Project
+> Krypto Azure resource group or environment has ever been provisioned from
+> this code, and no deploy/what-if/ops-job has ever targeted the new stack**
+> -- so it has no live evidence baseline of its
+> own yet, and none of the release gates below have been evaluated against a
+> provisioned Azure target. The Vercel/Supabase inventory and gates below
+> remain the record of the current hosted baseline. See
+> `specs/deployment.md` for the implemented Azure runbook (bootstrap, GitHub
+> Environments/OIDC, dev/prod deploy flows, promotion, rotation, rollback)
+> and §2 "Current v2.1 implementation progress" below for what "locally
+> complete" means distinct from "provisioned." See
+> [`architecture.md`](./architecture.md) for the diagrammed hosted baseline,
+> target topology, planned resource map, and operator links.
+
 For metric definitions see `specs/evaluation.md`.
 For the proposed architecture changes see `specs/rfcs/0002-evidence-grade-paper-trading.md`.
 
@@ -99,7 +125,33 @@ current application:
 - [ ] **Disabled deployment and smoke:** deploy the exact release SHA with cron
       unscheduled and pass automated plus manual target checks.
 
-See `specs/deployment.md` for the ordered runbook.
+See `specs/deployment.md` for the ordered Vercel/Supabase-superseding
+Azure runbook (this hosted Vercel/Supabase inventory itself remains
+current until the Azure target is actually provisioned).
+
+**Azure target (ADR 0008)**
+
+- **Implementation-complete:** `infra/*.bicep` + `infra/modules/*.bicep`
+  all compile cleanly with zero warnings/errors under the Azure CLI's
+  bundled Bicep compiler; every `.bicepparam` file builds standalone with
+  stub secret values (see `infra/README.md` "Validation"). The six
+  `azure-*.yml` GitHub Actions workflows (`azure-infra-validate`,
+  `azure-platform`, `azure-deploy-dev`, `azure-deploy-prod`,
+  `azure-promote-prod`, `azure-rotate-secrets`) and the application-side
+  deployment/ops-job code (`src/deployment/`, `scripts/azure/`) exist and
+  pass local unit tests.
+- **Provisioning/evidence pending:** the one-time `bootstrap.bicep`
+  subscription deploy has never been run; no `dev`/`prod` resource group,
+  identity, Container App,
+  PostgreSQL Flexible Server, Key Vault, or ACR has ever been created from
+  this code. No GitHub Environment (`platform`, `development`,
+  `production-deploy`, `production-promotion`) has been configured with
+  live OIDC variables/secrets. No `az deployment ... what-if` or
+  `az deployment ... create` has ever targeted a real subscription, and no
+  ops-job (`preflight`/`migrate-init`/`verified-backup`/`target-smoke`/
+  `activation-check`) has ever produced a live evidence report. **Treat
+  every statement above as "compiles and unit-tests locally," never as
+  "has run in Azure."**
 
 ---
 

@@ -1,8 +1,15 @@
 # 0003 — Supabase pg_cron over Vercel Cron
 
-- **Status:** Accepted
+- **Status:** Superseded by [0008](./0008-azure-native-deployment-architecture.md)
 - **Date:** 2026-03-22
 - **Deciders:** @VeVarunSharma
+
+> **Superseded 2026-08-12:** the approved deployment plan moves the target
+> platform off Vercel/Supabase to a fully Azure-native stack (Azure Container
+> Apps + Jobs for scheduling, Azure Database for PostgreSQL Flexible Server,
+> Key Vault, Bicep). See ADR 0008. This document is retained for historical
+> context on the Vercel-vs-Supabase-cron trade-off within the now-superseded
+> Vercel/Supabase target.
 
 ## Context
 

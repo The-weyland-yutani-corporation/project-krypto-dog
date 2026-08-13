@@ -28,7 +28,8 @@
     "evidence:evaluate": "npx tsx scripts/evidence.ts evaluate",
     "deployment:preflight": "npx tsx scripts/deployment-preflight.ts",
     "deployment:backup": "npx tsx scripts/create-verified-backup.ts",
-    "smoke:target": "npx tsx scripts/target-smoke.ts"
+    "smoke:target": "npx tsx scripts/target-smoke.ts",
+    "azure:ops-job": "npx tsx scripts/azure/ops-job.ts"
   },
   "repository": {
     "type": "git",
