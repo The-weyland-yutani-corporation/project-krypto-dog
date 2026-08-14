@@ -189,7 +189,7 @@ GitHub evaluates a `workflow_run` trigger using the workflow file from the
 repository's default branch. Therefore the **first dev deployment must be a
 manual dispatch with the exact CI-passed SHA**. Do not rely on a dev push to
 pick up this new workflow until the updated workflow itself has reached
-`main`. Future successful pushes to `develop` may auto-deploy after that.
+`main`. Future successful pushes to `develop/azure` may auto-deploy after that.
 
 ### Foundation order
 
@@ -230,7 +230,7 @@ keyless model access.
 ## 6. Dev full release and schedule activation
 
 After platform access is bound, manually run the first dev `full` release at
-the exact CI-passed SHA. Subsequent eligible `develop` pushes can use the
+the exact CI-passed SHA. Subsequent eligible `develop/azure` pushes can use the
 automatic path described above.
 
 The implemented order is:

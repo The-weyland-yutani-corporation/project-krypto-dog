@@ -1,6 +1,6 @@
 name: Azure deploy dev
 
-# Automatic dev deploy after a successful CI run on the exact `develop`
+# Automatic dev deploy after a successful CI run on the exact `develop/azure`
 # branch (a push-triggered CI run, never a pull_request-triggered run,
 # so this never deploys from an unmerged PR head), plus a manual
 # workflow_dispatch escape hatch. Always checks out the exact commit SHA
@@ -60,7 +60,7 @@ jobs:
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'develop')
+       github.event.workflow_run.head_branch == 'develop/azure')
     permissions:
       contents: read
       actions: read
@@ -116,7 +116,7 @@ jobs:
       # itself from the real completed run, so they cannot be spoofed by
       # an operator). A manually-dispatched SHA carries no such
       # guarantee -- it is arbitrary operator input -- so it alone must
-      # additionally be proven to be a real ancestor of origin/develop
+      # additionally be proven to be a real ancestor of origin/develop/azure
       # AND to have its own successful, push-triggered CI run before it
       # is allowed to reach any deploy step. This is a hard, non-format
       # check: a syntactically valid 40-hex SHA that fails either
@@ -130,7 +130,7 @@ jobs:
           set -euo pipefail
           .github/scripts/azure/verify-deploy-sha.sh \
             --sha "${RESOLVED_SHA}" \
-            --branch develop \
+            --branch develop/azure \
             --repo "${TARGET_REPO}" \
             --ci-workflow ci.yml
 
