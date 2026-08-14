@@ -98,8 +98,9 @@ credential mode.
   evidence-storage locks.
 - [x] Configure `platform`, `development`, `production-deploy`, and the
   forced-disable-only `production-promotion` GitHub Environments, including
-  branch restrictions and protected values. Required reviewers are unavailable
-  on the current plan; keep mutation manual/paused.
+  branch restrictions and the currently available protected values. Required
+  reviewers are unavailable on the current plan; keep mutation manual/paused.
+- [ ] Add a distinct dev PostHog project key; do not reuse the staged prod key.
 - [x] Run the Foundry account what-if/apply; verify local auth disabled and the
   `CanNotDelete` lock.
 - [x] Prove the exact model catalog match and quota availability for the two
@@ -167,6 +168,9 @@ directly to that environment's Key Vault. Runtime configuration is
 
 ## 6. Dev release and activation gate
 
+Current dev is foundation-only. No release/app/jobs exist, and full deployment
+is blocked by the absent Luna deployments and missing separate dev PostHog key.
+
 The approved dev sequence is indivisible:
 
 1. Deploy the exact CI-passed release in `disabled` mode with both jobs
@@ -197,15 +201,16 @@ failed; successful rollback does not make a failed activation successful.
 
 ## 7. Prod release gate
 
-Initial production provisioning ends with the new release
-**disabled/manual**. No executable production promotion workflow is shipped or
-approved.
+Current production remains disabled and foundation-only: no release, Container
+App, job, URL, or schedule exists. Any future full deployment must end with the
+new release **disabled/manual**. No executable production promotion workflow is
+shipped or approved.
 
 Before any prod environment mutation:
 
 - [ ] Detect either a complete current release or a proven-fresh environment;
   partial state fails closed.
-- [ ] Force-disable a complete current release under the protected
+- [ ] Force-disable a complete current release under the environment-scoped
   forced-disable identity, verify both jobs are Manual, then disable and verify
   schedule monitoring.
 - [ ] Resolve and verify its live SHA, image digests, and config.

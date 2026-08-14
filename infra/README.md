@@ -209,7 +209,7 @@ Schedulers invoke the application and receive no direct Foundry access.
 Runtime configuration is:
 
 ```text
-AZURE_OPENAI_BASE_URL=https://ai-krypto-westus3.openai.azure.com/openai/v1/
+AZURE_OPENAI_BASE_URL=<protected account endpoint ending /openai/v1>
 AZURE_OPENAI_DEPLOYMENT_NAME=krypto-dev-luna | krypto-prod-luna
 AZURE_CLIENT_ID=<matching runtime-or-ops UAMI client ID>
 ```
@@ -247,12 +247,12 @@ required.
 
 1. Subscription owner runs `register-providers.sh` and waits for `Registered`.
 2. Local `bootstrap.bicep`.
-3. Protected `azure-platform.yml` account/model plan and apply, then no-trade
-   smoke.
+3. Environment-scoped manual `azure-platform.yml` account/model plan and apply,
+   then no-trade smoke.
 4. `azure-deploy-dev.yml` with `deployment_stage=foundation`.
 5. `azure-deploy-prod.yml` with `deployment_stage=foundation`.
-6. Protected `azure-platform-access.yml` with the four retained runtime/ops
-   principal IDs.
+6. Environment-scoped manual `azure-platform-access.yml` with the four retained
+   runtime/ops principal IDs.
 7. Full dev release and monitored shadow activation.
 8. Full prod release, ending disabled/manual. No production promotion
    workflow is shipped or approved.
@@ -266,11 +266,10 @@ identity IDs, evidence metadata, ACS sender, and monitoring IDs. The access
 workflow consumes the principal IDs through explicit reviewed inputs; it
 does not guess them.
 
-Manual workflows support `foundation` and `full`; automatic `workflow_run`
-events always run `full`. The first dev run must use manual exact SHA because
-GitHub evaluates `workflow_run` using the default-branch workflow definition.
-Automatic dev pushes are eligible only after this workflow version reaches
-`main`.
+Manual workflows support `foundation` and `full`; the workflow definition maps
+`workflow_run` events to `full`. Automatic mutation is currently paused because
+required-reviewer enforcement is unavailable. Use manual dispatch with the
+configured branch, exact CI-passed SHA, and CI gate.
 
 ## Release secrets and Azure-generated values
 

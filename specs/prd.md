@@ -12,7 +12,7 @@
 | **v1** | Paper-trading scaffolding: agent loop, guardrails, schema, tools, admin dashboard | ✅ Shipped (tag `spec/v1`) |
 | **v2** | Hardening: admin auth, balance validation, full PostHog/email wiring, env validation, Drizzle consolidation | ⚠️ Code baseline shipped (tag `spec/v2`) -- NOT production-ready. See §14. |
 | **v2.1** | Safety and Correctness: atomic execution, deterministic authorization, non-destructive migrations, cost-basis PnL, owned expiring run leases, dependency remediation | ✅ Implemented -- live Azure target evidence remains before deployment |
-| **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Azure foundation/release implementation is unprovisioned; platform/foundations/access, first releases, live smoke, and rollout evidence remain. Production promotion is intentionally unimplemented pending a new evidence-bound review; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
+| **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Azure account/foundations/access are provisioned; Luna model deployment is blocked and no release exists. Live smoke and rollout evidence remain. Production promotion is intentionally unimplemented pending a new evidence-bound review; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
 | **v3** | Live Coinbase AgentKit execution on Base L2, sentiment, advanced orders, scaling | 📋 RFC stub only -- see [`rfcs/0001-v3-live-trading.md`](./rfcs/0001-v3-live-trading.md) |
 
 ---
@@ -316,8 +316,12 @@ User and use Entra tokens.
 
 ## 10. Deployment model
 
-- **State:** implemented in source, **not provisioned**. No Azure URL or live
-  Azure evidence exists.
+- **State:** account/foundations/access provisioned; model and releases blocked.
+  No Container App, job, schedule, or public Azure URL exists.
+- **Deployment control:** GitHub Environments, branch restrictions, and
+  protected values are configured except for a distinct dev PostHog key.
+  Required-reviewer rules are unsupported by the private-repo billing plan, so
+  mutation remains manual/paused behind branch, exact-SHA, and CI gates.
 - **Subscription/region:** select **Visual Studio Enterprise Subscription** at
   runtime; deploy `rg-krypto-platform`, `rg-krypto-dev`, and
   `rg-krypto-prod` in `westus3`. A subscription owner must register/wait for
@@ -333,8 +337,12 @@ User and use Entra tokens.
   `krypto-dev-luna`/`krypto-prod-luna`, capacity 10 each. Catalog/quota
   validation passes both target name/capacity pairs and subtracts only exact
   replaceable target capacity on the same format/model/version/SKU dimension.
+  The account and lock are live, but both model deployments are absent after
+  Azure error `715-123420`. Support API ticket creation is unavailable without
+  an eligible support plan; portal/account support action is required.
 - **Hosting:** Next.js runs in Azure Container Apps. Web and ops images are
-  digest-pinned in separate dev/prod ACRs.
+  digest-pinned in separate dev/prod ACRs. Both ACRs and Container Apps
+  environments exist; no web app, image release, or job is deployed.
 - **Database:** private Azure PostgreSQL Flexible Server 17. Reviewed Drizzle
   migrations use `DIRECT_URL`; runtime uses least-privilege `DATABASE_URL`.
 - **Singleton initialization:** `npm run db:init` inserts the account only when
@@ -347,7 +355,8 @@ User and use Entra tokens.
   Manual jobs before disabling monitoring.
 - **Foundation/access dependency:** deploy environment foundations for dev and
   prod, then bind both runtime/ops identity pairs through the protected
-  `azure-platform-access.yml` workflow before full releases.
+  `azure-platform-access.yml` workflow before full releases. This checkpoint is
+  complete.
 - **Dev rollout:** disabled/manual evidence → shadow/manual →
   one unique `manual-shadow:` hourly execution → post-run activation-check
   proving the exact safe no-trade `AgentRun` and released lease → monitored
@@ -450,13 +459,16 @@ the engineering-only evidence-pipeline foundation are implemented.
 
 Production is still blocked by:
 
-- **Azure provisioning:** the dedicated platform account/model, both
-  foundations, and Foundry workload-access bindings have not been deployed.
-- **Replacement initialization:** no Azure PostgreSQL target exists. Reviewed
-  migration, initialization, and baseline restore-verified backup remain.
+- **Azure release:** the Foundry account, both foundations, and workload-access
+  bindings are live, but model deployment is blocked by Azure `715-123420` and
+  no Container App or job exists.
+- **Replacement initialization:** both private Azure PostgreSQL 17 foundations
+  exist. Reviewed migration, initialization, and baseline restore-verified
+  backup remain.
 - **Production smoke/evidence:** Luna/Entra, Coinbase, ACS Email, separate
   PostHog projects, admin, disabled/shadow/paper modes, Container Apps Jobs,
-  alerts, backup, and rollback have not been proven on a live Azure target.
+  alerts, backup, and rollback have not been proven on a live release. The prod
+  PostHog key is staged; the distinct dev key is missing.
 - **Historical and paper evidence:** imported walk-forward reports are
   deliberately classified engineering-only and cannot satisfy release gates.
   Real holdout datasets and the required 30-day production paper window do not

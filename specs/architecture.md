@@ -6,7 +6,7 @@
 > Container App, job, schedule, or public Azure application URL exists.
 
 This document is the concise source of truth for current deployment state,
-the approved Azure topology, planned resource names, and safe operator entry
+the approved Azure topology, live/planned resource names, and safe operator entry
 points. Operational order lives in [`deployment.md`](./deployment.md);
 template and identity detail lives in
 [`../infra/README.md`](../infra/README.md); release gates live in
@@ -21,7 +21,7 @@ template and identity detail lives in
 | Platform | `ai-krypto-westus3` exists; local auth is disabled and its `CanNotDelete` lock is verified. | [Account live; platform run later failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
 | Model | Exact catalog/quota validation passed for OpenAI `gpt-5.6-luna` `2026-07-09`, `GlobalStandard`, capacity 10 each. Both deployments are absent because Azure returned `715-123420` (“unusual activity”). Support API ticket creation failed for lack of an eligible support plan; portal/account support action is required. | **Blocked** |
 | Azure dev | Foundation resources and runtime/scheduler/ops identities exist; runtime/ops have Cognitive Services OpenAI User. No release/app/jobs exist. | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
-| Azure prod | Foundation resources and runtime/scheduler/ops identities exist; runtime/ops have Cognitive Services OpenAI User. No release/app/jobs exist; no promotion workflow is shipped or approved. | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
+| Azure prod | Foundation resources and runtime/scheduler/ops identities exist; runtime/ops have Cognitive Services OpenAI User. Production remains disabled with no release/app/jobs; no promotion workflow is shipped or approved. | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
 | Email | Dev and prod ACS Email resources and Azure-managed domains exist as foundation resources. No runtime delivery smoke has run. | **Foundation provisioned** |
 | Analytics | Prod PostHog key is staged; a separate dev project key is missing. | **Dev blocked; ingestion unverified** |
 | Azure evidence | Live platform/foundation workflow runs exist. No ops-job report, backup, target smoke, activation check, or scheduled execution exists because no release is deployed. | **Foundation evidence only** |
@@ -37,7 +37,7 @@ Describe the bootstrap/account/foundations as provisioned, but do not describe
 either application release as deployed until target-smoke evidence passes and
 this map is updated.
 
-## Target Azure topology
+## Azure topology and release gaps
 
 ```mermaid
 flowchart TB

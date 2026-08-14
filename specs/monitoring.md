@@ -3,9 +3,10 @@
 This runbook defines the minimum observability required before any recurring
 paper-trading schedule is accepted. It does not authorize live trading.
 
-> **Azure state: NOT PROVISIONED.** The alerts and workflow gates below are
-> implemented in Bicep/workflows but have not run against a live Project
-> Krypto Azure environment. No Azure telemetry or alert evidence exists yet.
+> **Azure state (2026-08-14): foundations provisioned; no release.** Dev/prod
+> Log Analytics and foundation alerts exist, but no Container App or job is
+> deployed. Therefore no runtime/job telemetry, target-smoke evidence,
+> schedule-bound alert validation, or scheduled execution exists.
 
 Release thresholds and authorization are in
 [`readiness.md`](./readiness.md); deployment order is in
@@ -190,10 +191,10 @@ promotion requires a new evidence-bound design and review.
 Prod deploy and rotation share the `azure-production-mutation` concurrency
 lock so forced-disable and secret mutations cannot overlap.
 
-## Operator checks after provisioning
+## Operator checks after release deployment
 
-These commands are examples only; they currently have no Project Krypto Azure
-target to query:
+These commands are examples only. The resource groups exist, but the referenced
+jobs do not:
 
 ```bash
 az containerapp job execution list \
@@ -289,5 +290,6 @@ complete monitoring, no unexplained errors, expected guardrail behavior,
 positive net results under the evaluation methodology, and manual journal
 review.
 
-Current Azure baseline: **0 provisioned environments, 0 scheduled production
-days, and no live Azure evidence**.
+Current Azure baseline: **2 provisioned environment foundations, 0 releases,
+0 Container Apps Jobs, and 0 scheduled production days**. Foundation workflow
+evidence exists; release, ops-job, and schedule evidence does not.

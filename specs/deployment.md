@@ -54,7 +54,7 @@ those values without making them public documentation.
 | Foundry platform | `ai-krypto-westus3` exists with local auth disabled and `CanNotDelete` verified. Catalog/quota validation passed; model apply failed with Azure `715-123420` (“unusual activity”). | [Platform run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
 | Workload access | Dev/prod runtime and ops identities have Cognitive Services OpenAI User | Complete |
 | Dev foundation | Foundation resource set deployed; no release resources | [Passed run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
-| Prod foundation | Foundation resource set deployed; no release resources | [Passed run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
+| Prod foundation | Foundation resource set deployed; production remains disabled with no release resources | [Passed run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
 | Release/rollout | No Container App, job, public URL, schedule, or promotion workflow exists | Not started |
 
 Azure Support API ticket creation failed because the subscription has no
@@ -88,9 +88,9 @@ register and wait for every required Azure resource provider:
 
 The script verifies the selected subscription is enabled, owns the reviewed
 provider list, calls provider registration with `--wait`, and fails unless all
-providers reach `Registered`. Protected platform/dev/prod deployment workflows
-run the same script with `--check-only`; they never register providers or
-mutate subscription provider state. The required list includes
+providers reach `Registered`. Environment-scoped platform/dev/prod deployment
+workflows run the same script with `--check-only`; they never register providers
+or mutate subscription provider state. The required list includes
 `Microsoft.Network` for the VNet/private-networking foundation.
 
 Review the subscription-scope what-if, then create the three resource groups,
@@ -223,9 +223,9 @@ created a release, web Container App, or job.
 - `commit_sha`: exact 40-hex commit; and
 - `deployment_stage`: `foundation` or `full`.
 
-Automatic `workflow_run` events always select `full`. Manual SHAs must be an
-ancestor of the target branch and have their own successful push-triggered CI
-run.
+The workflow definition maps `workflow_run` events to `full`, but automatic
+mutation is currently paused. Manual SHAs must be ancestors of the configured
+target branch and have their own successful push-triggered CI run.
 
 ### First dev-run caveat
 
