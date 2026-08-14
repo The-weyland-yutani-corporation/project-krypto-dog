@@ -33,7 +33,7 @@
 | **Azure state (2026-08-14)** | `rg-krypto-platform`, `rg-krypto-dev`, and `rg-krypto-prod` exist in `westus3`. `ai-krypto-westus3` and both environment foundations are deployed. The planned OpenAI `gpt-5.6-luna` deployments remain absent. |
 | **Current blockers** | Azure rejects model deployment with error `715-123420` (“unusual activity”) despite valid catalog/quota. Support API ticket creation failed because the subscription has no eligible support plan; portal/account support action is required. A separate dev PostHog project key is also missing; the prod key is staged. |
 | **Stack** | Next.js 16 (App Router) · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
-| **Scheduling state** | No Azure jobs or approved production schedule exist. Production has no release and no promotion workflow. |
+| **Scheduling state** | No Azure jobs or approved production schedule exist. Production remains disabled with no release and no promotion workflow. |
 | **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
 | **Architecture and live links** | [`specs/architecture.md`](./specs/architecture.md) — hosted baseline, target diagrams, planned resources, live endpoint register, rollout safety, and operator consoles |
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
@@ -184,8 +184,7 @@ tests/                    # Jest unit + integration tests
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
 > **Target platform: Azure-native; foundations provisioned, releases blocked.**
-> The
-> approved deployment plan supersedes Vercel/Supabase with a fully
+> The approved deployment plan supersedes Vercel/Supabase with a fully
 > Azure-native target (ADR
 > [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
 > The Bicep templates, GitHub Actions workflows, and application-side
@@ -195,7 +194,7 @@ tests/                    # Jest unit + integration tests
 > bootstrap/OIDC, the Foundry account, workload access, and both environment
 > foundations are live. No release or public application URL exists.
 > See [`specs/architecture.md`](./specs/architecture.md) for diagrams,
-> planned resource names, the exact current-vs-target state, and safe
+> live/planned resource names, the exact current-vs-target state, and safe
 > operator links. The selected runtime subscription is **Visual Studio
 > Enterprise Subscription**; do not publish its subscription ID.
 
@@ -205,11 +204,12 @@ Observed live runs:
 - [Dev foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
 - [Prod foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
 
-GitHub Environments, branch restrictions, and protected values are configured.
-Required-reviewer rules are unavailable on the private repository's billing
-plan, so mutation workflows remain manual/paused and require the configured
-branch, exact SHA, and successful CI gates. Resolve the Azure model restriction
-and provision a separate dev PostHog key before any full dev release.
+GitHub Environments, branch restrictions, and protected values are configured
+except for a separate dev PostHog key. Required-reviewer rules are unavailable
+on the private repository's billing plan, so mutation workflows remain
+manual/paused and require the configured branch, exact SHA, and successful CI
+gates. Resolve the Azure model restriction and provision the dev key before any
+full dev release.
 
 After those blockers clear, dev uses a staged
 disabled/manual → shadow/manual → unique manual shadow run → post-run
