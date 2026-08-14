@@ -1,475 +1,465 @@
-# Deployment Runbook (Azure)
+# Deployment runbook (Azure)
 
-> **Implemented, not yet provisioned.** This is the Azure-native runbook
-> accepted in ADR
-> [`0008-azure-native-deployment-architecture.md`](./decisions/0008-azure-native-deployment-architecture.md)
-> (Azure Container Apps + Jobs, Azure Database for PostgreSQL Flexible
-> Server 17 on private VNet access, Key Vault, a per-environment Azure
-> Container Registry, Bicep, GitHub Actions OIDC). The Bicep templates
-> (`infra/`), the GitHub Actions workflows below, and the application-side
-> deployment code (`src/deployment/`, `scripts/azure/`) all exist in this
-> repository and are validated locally (Bicep compiles clean, ops-job unit
-> tests pass — see `infra/README.md` "Validation"). An Azure subscription
-> and existing Foundry service(s) are available, but **no Project Krypto
-> Azure resource group or environment has been provisioned from this code,
-> and no deploy/what-if has ever targeted the new stack.** Every step below is unexercised outside local
-> compile-time validation until an operator completes the one-time
-> bootstrap in §1 and the first dev/prod deploys succeed. Do not treat any
-> statement in this document as evidence that a deploy has occurred.
+> **Implemented, not provisioned.** The Bicep templates and protected GitHub
+> Actions workflows described here exist, but no Project Krypto Azure
+> resource has been provisioned and no live Azure what-if, apply, ops job,
+> smoke, backup, or schedule evidence exists. There is no Azure application
+> URL. Treat every step as pending until retained run evidence proves it.
 >
-> The historical Vercel + Supabase runbook this replaces is preserved,
-> unmodified except for its archive banner, at
-> [`specs/archive/deployment.vercel-supabase.md`](./archive/deployment.vercel-supabase.md).
-> Do not use it to start a new Vercel/Supabase production deployment.
->
-> For the full infrastructure design (identity model, secret handling,
-> job layout, API versions, known design limitations) see
-> [`infra/README.md`](../infra/README.md) — this document is the
-> operational sequence for using that infrastructure, not a restatement
-> of its design.
-> Current-vs-target diagrams, planned resource names, and safe operator
-> links are maintained in [`architecture.md`](./architecture.md). Its
-> "Live endpoint register" is authoritative for what is actually deployed.
->
-> **Paper/live safety gates are unchanged by this platform migration.**
-> `ROLLOUT_MODE` still governs `disabled` / `shadow` / `paper` only; no
-> workflow here can enable live trading. The v2.1/v2.2/v3 release gates in
-> [`specs/readiness.md`](./readiness.md) §4 and the authorization rules in
-> [`production-readiness-prd.v1.md`](./production-readiness-prd.v1.md)
-> remain authoritative and are not satisfied by a passing Azure deploy —
-> a disabled-mode deploy proves the deploy mechanism works, not that
-> promotion criteria are met.
+> **Paper/live safety is unchanged.** `ROLLOUT_MODE` supports only
+> `disabled`, `shadow`, and `paper`. Nothing in this runbook authorizes
+> live-money execution. Azure provisioning proves deployment mechanics, not
+> the v2.2 or v3 evidence gates in [`readiness.md`](./readiness.md).
 
----
+The target is Azure Container Apps + Jobs, private Azure Database for
+PostgreSQL Flexible Server 17, Key Vault, per-environment ACR and Azure
+Communication Services Email, immutable evidence storage, Azure Monitor,
+GitHub Actions OIDC, and a dedicated Microsoft Foundry platform. The
+historical deployment procedure is archived at
+[`archive/deployment.vercel-supabase.md`](./archive/deployment.vercel-supabase.md)
+and must not be used for a new release.
 
-## 0. Terminology
+## 0. Approved target contract
 
-- **Implementation-complete**: the Bicep templates, GitHub Actions
-  workflows, and application ops-job code exist, compile, and pass their
-  local/unit tests.
-- **Provisioning/evidence pending**: the Azure subscription and existing
-  Foundry service predate this work, but no Project Krypto Azure resource group,
-  identity, database, or Container App has ever been created from this
-  code, and no ops-job or target-smoke report has ever been produced
-  against a live target. Both are true simultaneously today.
+| Setting | Approved value |
+|---|---|
+| Runtime-selected subscription | **Visual Studio Enterprise Subscription** |
+| Region | `westus3` |
+| Platform resource group | `rg-krypto-platform` |
+| Dev/prod resource groups | `rg-krypto-dev` / `rg-krypto-prod` |
+| Foundry account | `ai-krypto-westus3` |
+| Model | OpenAI `gpt-5.6-luna`, version `2026-07-09` |
+| SKU and capacity | `GlobalStandard`; dev 10 and prod 10 |
+| Model deployments | `krypto-dev-luna` / `krypto-prod-luna` |
+| Model auth | Microsoft Entra ID only; Foundry local auth/API keys disabled |
+| Runtime model config | `AZURE_OPENAI_BASE_URL` ending `/openai/v1`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_CLIENT_ID` |
+| Email | Per-environment ACS Email with Azure-managed domain |
+| Analytics | Distinct PostHog project key for dev and prod |
 
----
+The rejected candidate region `eastus2` is a **historical constraint, not a
+target**: the selected subscription is restricted from PostgreSQL
+provisioning there. All current templates and commands use `westus3`.
+
+Do not commit or publish the subscription ID, tenant ID, identity IDs, full
+Azure resource IDs, database URLs, Key Vault URLs, evidence URLs, or other
+internal deployment identifiers. Protected workflow variables may carry
+those values without making them public documentation.
 
 ## 1. One-time local bootstrap
 
-Before any GitHub Actions workflow can run, an operator with subscription
-Owner/Contributor access must deploy `bootstrap.bicep` **once**, from a
-local shell with the Azure CLI and `az login` (not from CI — this step
-creates the very identities CI later authenticates as):
+An operator with the required subscription permissions selects the approved
+subscription at runtime by display name:
 
 ```bash
+az login
+az account set --subscription "Visual Studio Enterprise Subscription"
+az account show --query name --output tsv
+```
+
+The final command must print exactly `Visual Studio Enterprise Subscription`.
+Do not paste its ID into an issue, log excerpt, or this repository.
+
+Before any `bootstrap.bicep` what-if, an authorized subscription owner must
+register and wait for every required Azure resource provider:
+
+```bash
+.github/scripts/azure/register-providers.sh
+```
+
+The script verifies the selected subscription is enabled, owns the reviewed
+provider list, calls provider registration with `--wait`, and fails unless all
+providers reach `Registered`. Protected platform/dev/prod deployment workflows
+run the same script with `--check-only`; they never register providers or
+mutate subscription provider state. The required list includes
+`Microsoft.Network` for the VNet/private-networking foundation.
+
+Review the subscription-scope what-if, then create the three resource groups,
+four GitHub OIDC user-assigned identities, and least-privilege role bindings:
+
+```bash
+az deployment sub what-if \
+  --location westus3 \
+  --template-file infra/bootstrap.bicep \
+  --parameters infra/params/bootstrap.bicepparam
+
 az deployment sub create \
-  --location eastus2 \
+  --location westus3 \
   --template-file infra/bootstrap.bicep \
   --parameters infra/params/bootstrap.bicepparam
 ```
 
-Before running it, edit `infra/params/bootstrap.bicepparam` and replace
-`platformResourceGroupName`'s `REPLACE_WITH_EXISTING_PLATFORM_RESOURCE_GROUP_NAME`
-placeholder with the real name of the resource group that already holds
-the existing Microsoft Foundry account (this template does not create
-that resource group). See `infra/README.md` "GitHub Environments and OIDC
-identities" for what this deploy creates: the `dev` and `prod` resource
-groups, and four GitHub OIDC-federated user-assigned identities (`dev`,
-`prod deploy`, `prod promotion`, `platform`), each scoped to exactly one
-resource group.
+`bootstrap.bicep` creates:
 
-Record this deploy's outputs (`az deployment sub show --query
-properties.outputs`): the two resource group names and each identity's
-`clientId`/`principalId`. They feed directly into §2 and §3. Re-run this
-step only if the repo/org name or a GitHub Environment name changes.
+- `rg-krypto-platform`, `rg-krypto-dev`, and `rg-krypto-prod`;
+- four identities: `id-github-oidc-platform`, `id-github-oidc-dev`,
+  `id-github-oidc-prod-deploy`, and `id-github-oidc-prod-promotion`;
+- the custom **Project Krypto Provider Registration Reader**, containing only
+  `Microsoft.Resources/subscriptions/providers/read`, assigned at subscription
+  scope to the platform, dev, and prod-deploy identities; and
+- one subscription-scoped, read-only **Cognitive Services Usages Reader**
+  assignment for `id-github-oidc-platform`.
 
----
+Record the deployment outputs in a protected operator handoff. Client and
+principal IDs are configuration inputs, not documentation values.
 
-## 2. Required GitHub Environments, variables, and secrets
+## 2. Protected GitHub Environments
 
-Four GitHub Environments must exist before any Azure workflow can run,
-matching the four identities `bootstrap.bicep` just created. Each
-Environment should have required reviewers configured (branch
-restrictions optional beyond the default `main`/`develop` split already
-enforced by the workflow triggers).
+Create required-reviewer protection rules before populating values.
 
-| GitHub Environment | Federated identity | Used by | Required repository/environment variables | Required environment secrets |
-|---|---|---|---|---|
-| `platform` | platform | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | none (model inputs are workflow_dispatch inputs, not secrets) |
-| `development` | dev | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME`, `FOUNDRY_RESOURCE_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `ANTHROPIC_FOUNDRY_API_KEY`, `POSTHOG_API_KEY`, `RESEND_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
-| `production-deploy` | prod deploy | `azure-deploy-prod.yml`, `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME`, `FOUNDRY_RESOURCE_NAME` | same secret names as `development`, using prod values |
-| `production-promotion` | prod promotion | `azure-deploy-prod.yml` (force-disable step only), `azure-promote-prod.yml`, `azure-rotate-secrets.yml` (disable step only) | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_PROMOTION_IDENTITY_NAME`, `FOUNDRY_RESOURCE_NAME` | none — `rollout.bicep` never reads a secret |
+| Environment | Workflows | Required variables | Required secrets |
+|---|---|---|---|
+| `platform` | `azure-platform.yml`, `azure-platform-access.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
+| `development` | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
+| `production-deploy` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
+| `production-promotion` | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
 
-Each `AZURE_CLIENT_ID` is the matching identity's `clientId` from §1's
-bootstrap output — **do not** reuse the same client ID across
-Environments; each Environment gets its own identity, which is exactly
-how the resource-group isolation in `infra/README.md`'s GitHub
-Environments table is enforced.
+Bootstrap RBAC boundaries:
 
-The `DEPLOYMENT_APPROVAL_SECRET` stored independently in the `development`
-and `production-deploy` GitHub Environments is distinct from `CRON_SECRET`.
-Each workflow maps it to the internal
-`DEPLOYMENT_APPROVAL_SECRET_DEV`/`DEPLOYMENT_APPROVAL_SECRET_PROD` variable
-that its `.bicepparam` file reads. Bicep binds it
-only into the **`target-smoke`** and **`activation-check`** ops-job
-definitions for its environment (never `preflight`, `migrate-init`,
-`verified-backup`, and never the web/runtime Container App revision).
-Those two jobs use it as HMAC-SHA256 key material to sign the approval
-that binds a passing evidence report to the specific release/cron
-activation it approves — see §6 and §7.
-
-A fifth environment, `production-smoke`, is used only by the separate,
-non-Bicep `foundry-smoke.yml` workflow (manual, protected, no-trade LLM
-connectivity check) — it takes plain repository secrets
-(`ANTHROPIC_FOUNDRY_BASE_URL`, `ANTHROPIC_FOUNDRY_API_KEY`,
-`ANTHROPIC_FOUNDRY_DEPLOYMENT`), not an OIDC identity, and is unrelated to
-the four bootstrap identities above.
-
-### 2a. Azure PostgreSQL credential contract
-
-The initial Azure target uses Flexible Server's default `postgres` database.
-`DATABASE_URL` and `DIRECT_URL` target that same private server/database but
-must use distinct roles:
-
-| Secret | Username | Required relationship |
+| Identity | Resource-group roles | Subscription read-only roles |
 |---|---|---|
-| `DIRECT_URL` | `krypto_owner` | Its password equals `POSTGRES_ADMIN_PASSWORD`; only ops jobs receive it |
-| `DATABASE_URL` | `krypto_app` | Its password equals `RUNTIME_DATABASE_PASSWORD`; the web app receives only this URL |
+| `id-github-oidc-platform` | `rg-krypto-platform`: Contributor, Role Based Access Control Administrator, Locks Contributor | Project Krypto Provider Registration Reader; Cognitive Services Usages Reader |
+| `id-github-oidc-dev` | `rg-krypto-dev`: Contributor, Role Based Access Control Administrator | Project Krypto Provider Registration Reader |
+| `id-github-oidc-prod-deploy` | `rg-krypto-prod`: Contributor, Role Based Access Control Administrator, Locks Contributor | Project Krypto Provider Registration Reader |
+| `id-github-oidc-prod-promotion` | `rg-krypto-prod`: Contributor | none |
 
-Both URLs include `sslmode=require`. `migrate-init` first connects through
-`DIRECT_URL`, applies migrations, creates/rotates `krypto_app` from
-`RUNTIME_DATABASE_PASSWORD`, then initializes the singleton through
-`DATABASE_URL`. Preflight proves the two connections reach the same cluster
-while using distinct current users. GitHub-hosted runners never connect
-directly to this private database.
+Requirements:
 
----
+- Each Environment's `AZURE_CLIENT_ID` is the matching bootstrap identity.
+- `AZURE_SUBSCRIPTION_ID` stays protected; never publish its value.
+- Every mutation role remains scoped to its platform/dev/prod resource group.
+  Subscription roles are read-only: the one-action provider-state reader on
+  platform/dev/prod-deploy, plus **Cognitive Services Usages Reader** on
+  platform for live quota inspection. Neither permits provider registration or
+  other subscription mutation; broad Reader is not granted.
+- Locks Contributor remains resource-group-scoped: platform uses it for the
+  Foundry account lock; prod deploy uses it for the prod PostgreSQL, Key Vault,
+  and evidence-storage locks created by `environment.bicep`.
+- Dev and prod `POSTHOG_API_KEY` values must belong to separate projects.
+- There is no Foundry API-key secret.
+- There is no ACS connection-string GitHub secret. `release.bicep` calls
+  `listKeys()` on the per-environment Communication Service and writes the
+  connection string directly to that environment's Key Vault.
+- `DEPLOYMENT_APPROVAL_SECRET` is distinct from `CRON_SECRET` and is mounted
+  only on `target-smoke` and `activation-check`.
+- `DATABASE_URL` uses `krypto_app`; `DIRECT_URL` uses `krypto_owner`. Both
+  target the same private server/database with `sslmode=require`.
 
-## 3. Foundry capacity review (`azure-platform.yml`)
+## 3. Provision the dedicated Foundry platform
 
-`platform.bicep` is deployed once (not per dev/prod pair — see
-`infra/README.md` "Design limitations") into the existing Foundry
-account's resource group, using the `platform` Environment.
-`azure-platform.yml` is `workflow_dispatch`-only and takes the Foundry
-account name/resource group/region plus dev and prod
-model/format/version/SKU/capacity as explicit inputs — nothing is
-hardcoded or defaulted. Before deploying, it independently validates
-every model/SKU/capacity combination against the **live** Foundry model
-catalog and subscription/region quota via
-`.github/scripts/azure/validate-model-quota.sh`, and prints the exact
-target (account, resource group, region, both deployments) for the
-`platform` Environment reviewer to confirm before approving. A failed
-quota/catalog check hard-fails the run; there is no fallback
-model/SKU/capacity. Re-run only when a model/version/SKU/capacity changes
-for either environment.
+Run `azure-platform.yml` manually under the protected `platform` Environment.
+It has separate protected mutation boundaries:
 
----
+1. **Account plan** — what-if `platform-account.bicep`, reject deletes, retain
+   the artifact.
+2. **Account apply** — create `ai-krypto-westus3`, verify `AIServices`/`S0`,
+   `westus3`, `disableLocalAuth=true`, and the `CanNotDelete` lock.
+3. **Model plan** — require exactly one live catalog match for
+   `OpenAI/gpt-5.6-luna/2026-07-09/GlobalStandard`; resolve its exact
+   `usageName`; pass both deployment-name/capacity pairs; and validate the
+   desired aggregate 10 + 10 = 20 against that one quota dimension. The quota
+   calculation subtracts only existing `krypto-dev-luna`/
+   `krypto-prod-luna` capacity whose format, model, version, and SKU all match
+   exactly, so a rerun does not double-count replaceable target capacity. Then
+   what-if `platform.bicep` and retain the artifact.
+4. **Model apply** — deploy `krypto-dev-luna` and `krypto-prod-luna`, each at
+   capacity 10 with `NoAutoUpgrade`, then verify exact live properties.
+5. **No-trade smoke** — use the platform OIDC identity's Entra token to prove
+   both a plain response and a structured `HOLD` response. It cannot trade.
 
-## 4. Dev deploy: `develop` → automatic disabled deploy → auto-promote to shadow
+An existing target name on a different dimension is not subtracted. Any
+absent/ambiguous catalog or quota mapping, malformed existing capacity,
+insufficient incremental quota, delete change, property mismatch, or smoke
+failure blocks the platform run. No fallback model, version, SKU, region, or
+capacity is allowed.
 
-`azure-deploy-dev.yml` runs automatically after a **push-triggered** CI
-run succeeds on the exact `develop` branch (never on a `pull_request`-
-triggered run, so an unmerged PR head is never deployed), or manually via
-`workflow_dispatch` with an explicit commit SHA. It always checks out the
-exact commit SHA the triggering CI run validated. Job sequence, each
-gated on the previous job succeeding:
+## 4. Deploy both environment foundations
 
-1. **`gate`** — resolves and validates the exact 40-hex commit SHA to
-   deploy.
-2. **`deploy-environment`** (`development` Environment) — renders
-   `environment.dev.bicepparam`, runs `az deployment group what-if` on
-   `infra/environment.bicep`, hard-rejects any unsafe Delete change via
-   `reject-unsafe-whatif-deletes.mjs`, then deploys it and extracts its
-   outputs (ACR, Container Apps environment ID, runtime/scheduler/ops
-   identity IDs, evidence container URL).
-3. **`build-images`** (`development`) — builds the web and ops images via
-   `az acr build` and resolves their immutable `sha256` digests (never a
-   mutable tag).
-4. **`deploy-release`** (`development`) — renders `release.dev.bicepparam`
-   with the environment outputs and image digests, then deploys
-   `infra/release.bicep`. This always lands with `ROLLOUT_MODE=disabled`
-   and both scheduler jobs `Manual` — hardcoded in `release.bicep` itself,
-   not a workflow choice.
-5. **`ops-validate`** (`development`) — runs `migrate-init` →
-   `preflight` → `target-smoke` → `activation-check`, in that order,
-   each via the exact ops-job evidence sequence in §6. Evidence is
-   downloaded and independently schema/pass/binding-validated after each
-   job; a missing output or failed validation stops the workflow.
-6. **`promote-shadow`** (`development`) — only if `ops-validate` passed:
-   renders `rollout.dev.bicepparam` with `rolloutMode=shadow` and both
-   trigger types `Schedule`, runs a what-if with the same unsafe-delete
-   rejection, then deploys `infra/rollout.bicep`.
+`azure-deploy-dev.yml` and `azure-deploy-prod.yml` accept:
 
-Dev is the one environment where a passing automated pipeline promotes
-itself to `shadow` + `Schedule` without a separate manual promotion step —
-prod never does this (§7 is always a separate, manually-invoked action).
+- `commit_sha`: exact 40-hex commit; and
+- `deployment_stage`: `foundation` or `full`.
 
----
+Automatic `workflow_run` events always select `full`. Manual SHAs must be an
+ancestor of the target branch and have their own successful push-triggered CI
+run.
 
-## 5. Prod deploy: successful `main` CI → approved disabled deploy
+### First dev-run caveat
 
-`azure-deploy-prod.yml` runs automatically after a push-triggered CI run
-succeeds on the exact `main` branch, or manually via `workflow_dispatch`.
-It **never** promotes to shadow/paper or flips a scheduler trigger to
-`Schedule` — every path through this workflow ends with prod
-disabled/Manual. Job sequence:
+GitHub evaluates a `workflow_run` trigger using the workflow file from the
+repository's default branch. Therefore the **first dev deployment must be a
+manual dispatch with the exact CI-passed SHA**. Do not rely on a dev push to
+pick up this new workflow until the updated workflow itself has reached
+`main`. Future successful pushes to `develop` may auto-deploy after that.
 
-1. **`gate`** — resolves and validates the exact commit SHA (same
-   pattern as dev).
-2. **`deploy-environment`** (`production-deploy`) — what-if + deploy
-   `infra/environment.bicep` for prod, same unsafe-delete rejection as
-   dev.
-3. **`force-disable-rollout`** (`production-promotion` — a **separate**
-   approval gate from step 2's `production-deploy`) —
-   - detects whether an existing release is already deployed, by
-     checking whether the `caj-prod-preflight` Container Apps Job already
-     exists;
-   - **if an existing release is detected**: resolves its current
-     `RELEASE_SHA` (from the preflight job's own `RELEASE_SHA` env) and
-     current web-app image digest, then deploys `infra/rollout.bicep`
-     with **no** `--set-string-param` override — the committed
-     `rollout.prod.bicepparam` already defaults to
-     `rolloutMode=disabled`/both triggers `Manual`, so this deploy can
-     only (re)confirm the disabled state, never promote it;
-   - **if no existing release is detected** (genuinely fresh
-     environment): this whole force-disable deploy is skipped, not
-     failed — there is nothing to force back to disabled yet, and the
-     workflow never fabricates a "disable" action against a release that
-     doesn't exist.
-4. **`backup-current-release`** (`production-deploy`) — runs **only if**
-   step 3 detected an existing release (`needs.force-disable-rollout.
-   outputs.existing_release == 'true'`; explicitly skipped, never
-   failed, on a fresh environment). Runs `preflight` then
-   `verified-backup` against the **current** (about-to-be-replaced)
-   release, each through the §6 evidence sequence, before anything about
-   the new release is touched. This is the fresh-vs-existing backup
-   logic: a fresh environment has no prior release to back up and skips
-   this job entirely; an existing environment always gets a safety
-   backup of what's currently live before it's replaced.
-5. **`build-images`** (`production-deploy`) — builds and digest-resolves
-   the new web/ops images.
-6. **`deploy-release`** (`production-deploy`) — deploys
-   `infra/release.bicep` for the new release (always
-   disabled/Manual — hardcoded).
-7. **`migrate-backup-smoke`** (`production-deploy`) — runs `migrate-init`
-   → `verified-backup` (a **fresh** baseline backup of the just-migrated
-   new release) → `target-smoke` for the new release, each through §6.
+### Foundation order
 
-Every ops run's evidence in this workflow is downloaded and published as
-a workflow artifact. Step 7's `target-smoke` run is the one whose exact
-`JOB_EXECUTION_ID` an operator must record and later supply to
-`azure-promote-prod.yml` (§7) — it is not looked up automatically.
-Promotion to shadow/paper and flipping a scheduler trigger to `Schedule`
-is exclusively `azure-promote-prod.yml`'s job (§7) — this workflow cannot
-do either.
+1. Manually run dev with `deployment_stage=foundation`.
+2. Manually run prod with `deployment_stage=foundation`.
+3. Retain both `foundation-outputs.<env>.json` artifacts.
 
----
+Each foundation runs `environment.bicep` what-if with unsafe-delete rejection,
+then creates the per-environment network, ACR, Container Apps environment,
+private PostgreSQL, Key Vault, evidence storage, monitoring, runtime/scheduler/
+ops identities, and ACS Email resources. It publishes nonsecret principal IDs,
+ACS sender, evidence metadata, and monitoring IDs. It does not build images,
+create a release, or enable a schedule.
 
-## 6. Ops-job evidence sequence (exact)
+Both foundations are mandatory because the next step binds all four workload
+principal IDs in one account-scoped access deployment.
 
-Every ops-job invocation anywhere in these workflows — `preflight`,
-`migrate-init`, `verified-backup`, `target-smoke`, `activation-check` —
-follows the identical three-command sequence, fail-closed at each step:
+## 5. Bind Foundry workload access
 
-```bash
-# 1. Start the job and poll to a terminal state (fails on Failed/timeout).
-job_execution_id="$(azure_new_job_execution_id <operation>)"
-.github/scripts/azure/run-ops-job.sh \
-  --job-name "<job-name-from-bicep-output>" \
-  --resource-group "<rg>" \
-  --job-execution-id "${job_execution_id}" \
-  --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"   # 1800
+Run `azure-platform-access.yml` only after both foundation artifacts exist.
+Supply exactly the retained principal IDs for:
 
-# 2. Download the versioned evidence report the job wrote to blob
-#    storage, authenticating as the CI/CD OIDC identity (read-only,
-#    container-scoped Storage Blob Data Reader — see infra/README.md).
-#    The job itself only ever holds container-scoped writer RBAC on the
-#    evidence container (never subscription- or account-wide), and the
-#    container has a time-based immutability policy — once written, a
-#    report can be read but not overwritten or deleted before its
-#    retention window expires.
-.github/scripts/azure/download-evidence.sh \
-  --container-url "<evidence_container_url>" \
-  --environment-name <dev|prod> \
-  --release-sha "<40-hex-sha>" \
-  --operation <operation> \
-  --job-execution-id "${job_execution_id}" \
-  --destination evidence
+- dev runtime;
+- dev ops;
+- prod runtime; and
+- prod ops.
 
-# 3. Independently validate the downloaded report's schema, pass/fail
-#    field, and (for target-smoke/activation-check) that its bound
-#    release SHA and image digest match what this run expects.
-node .github/scripts/azure/validate-report.mjs \
-  --report "evidence/<env>/<sha>/<operation>/${job_execution_id}/report.json" \
-  --operation <operation> \
-  --release-sha "<40-hex-sha>" \
-  [--image-digest "sha256:<64-hex>"]
+The workflow format-validates them, runs a protected what-if job, publishes
+the what-if artifact, then runs a separate protected apply job. It grants
+exactly one **Cognitive Services OpenAI User** assignment per principal at the
+`ai-krypto-westus3` account scope. Scheduler identities receive no Foundry
+role.
+
+Do not proceed to a full release until the live assignment verification
+passes. This is the dependency bridge between the application foundations and
+keyless model access.
+
+## 6. Dev full release and schedule activation
+
+After platform access is bound, manually run the first dev `full` release at
+the exact CI-passed SHA. Subsequent eligible `develop` pushes can use the
+automatic path described above.
+
+The implemented order is:
+
+1. **Gate** the exact SHA and `full` stage.
+2. **Environment** what-if/apply and publish the current foundation handoff.
+3. **Build** web and ops images and resolve immutable digests.
+4. **Release** what-if/apply. `release.bicep` hardcodes
+   `ROLLOUT_MODE=disabled` and both scheduler jobs to `Manual`.
+5. **Disabled evidence** — run `migrate-init`, `preflight`, and
+   `target-smoke`; download and independently validate every immutable
+   report.
+6. **Stage shadow/manual** — deploy `rollout.bicep` with `shadow` while both
+   jobs remain `Manual`; verify outputs and live state, then deploy and verify
+   `schedule-monitoring.bicep` disabled at boundary `0`.
+7. **Attended manual shadow proof** — capture a second-precision UTC boundary,
+   derive a unique `manual-shadow:` idempotency key, inject it as
+   `SCHEDULED_IDEMPOTENCY_KEY` into exactly one Manual hourly execution, and
+   require the Container Apps execution to succeed. No schedule exists yet.
+8. **Post-run activation-check** — inject the exact expected shadow key and
+   boundary into a new activation-check execution. Its immutable report must
+   prove the exact new SHADOW `AgentRun` started after the boundary, reached a
+   safe terminal outcome, created zero `TradeExecution`, and released the
+   lease.
+9. **Activate Schedule with monitoring** — capture the current UTC activation
+   epoch; what-if, deploy, and validate `schedule-monitoring.bicep` with the
+   missing-hourly-success alert enabled; only then deploy `rollout.bicep` to
+   switch both jobs to `Schedule`.
+10. **Observe scheduled success** — require a successful unmarked hourly
+   execution from the first scheduled window. Its idempotency namespace binds
+   the exact image digest and current activation generation, so an old
+   same-hour run cannot satisfy observation.
+11. **Final-state verification** — prove live shadow mode, both cron
+    expressions, schedule monitoring boundary, exact release SHA, exact
+    web/ops digests, current idempotency generation, and the observed
+    scheduled execution.
+
+Any failure or cancellation from shadow staging onward invokes the dedicated
+rollback job. It what-ifs and applies `disabled`/`Manual`, verifies both jobs
+are `Manual` with no schedule, then deploys and verifies
+`schedule-monitoring.bicep` disabled with boundary `0`. It reports the
+original deployment as failed. A failed activation is never accepted merely
+because rollback succeeded.
+
+## 7. Prod full release (no promotion workflow)
+
+Prod deploy and secret rotation use one concurrency group:
+`azure-production-mutation`. Runs queue rather than cancel one another. No
+executable production promotion workflow is shipped or approved.
+
+`azure-deploy-prod.yml` ends disabled/manual and cannot promote. Its order is:
+
+1. **Gate** the exact `main` SHA.
+2. **Detect current release** by requiring either all eight deterministic
+   release resources or none. Partial state fails closed.
+3. **Force-disable current release** under `production-promotion`: when a
+   complete release exists, resolve its live SHA/digest/config, what-if
+   `rollout.bicep`, apply the committed `disabled`/`Manual` defaults, and
+   verify both jobs are `Manual` with no schedule. Only after that verification
+   deploy `schedule-monitoring.bicep` disabled at boundary `0` and verify it.
+4. **Back up current release** under `production-deploy`: run and validate
+   current-release `preflight` and `verified-backup`. The verified-backup
+   `JOB_EXECUTION_ID` carries a `-current` suffix so a same-SHA current-release
+   report cannot collide with the new-release baseline evidence path. A
+   proven-fresh environment skips this step; partial or failed state cannot.
+5. **Only now mutate the environment**: reverify current disabled state,
+   what-if `environment.bicep`, reject unsafe deletes, and apply it. This
+   ordering prevents PostgreSQL administrator rotation or other foundation
+   mutation before the current release is disabled and backed up.
+6. If `deployment_stage=foundation`, publish the handoff and stop.
+7. For `full`, build immutable web/ops images and apply `release.bicep`,
+   which lands the new release disabled/manual.
+8. Run and validate new-release `migrate-init`, baseline
+   `verified-backup`, and `target-smoke`.
+9. Verify live prod remains disabled, both jobs are `Manual` with no schedule,
+   all ops jobs carry the exact release SHA/digest, and ACR tags still resolve
+   to the deployed immutable digests.
+
+The target-smoke job summary surfaces its exact `JOB_EXECUTION_ID` for a
+future evidence-bound design review. The `production-promotion`
+identity/environment remains only as the protected forced-disable boundary in
+prod deploy and rotation; it is not an activation path.
+
+## 8. Ops-job execution and immutable evidence
+
+`run-ops-job.sh` starts every evidence-producing ops invocation
+(`migrate-init`, `preflight`, `verified-backup`, `target-smoke`,
+`activation-check`) and the attended dev manual-shadow execution fail-closed:
+
+1. derive a unique CI-controlled `JOB_EXECUTION_ID`;
+2. fetch the complete live Container Apps Job `properties.template`;
+3. fail if the live template declares any `volumes` or any container/init
+   `volumeMounts`;
+4. require exactly one container and replace only allowlisted per-execution
+   environment entries;
+5. start the execution with `az containerapp job start --yaml`;
+6. poll to `Succeeded` or fail on terminal failure/timeout;
+7. for evidence-producing operations, download the exact report with OIDC and
+   container-scoped reader access and validate schema, pass state, release SHA,
+   and where applicable image digest and signed approval.
+
+The helper always injects `JOB_EXECUTION_ID`. For attended dev proof it may
+add only these validated overrides:
+
+- `SCHEDULED_IDEMPOTENCY_KEY` — a unique `manual-shadow:` key on the Manual
+  hourly execution;
+- `EXPECTED_SHADOW_IDEMPOTENCY_KEY` — the same key on the post-run
+  activation-check; and
+- `EXPECTED_SHADOW_STARTED_AFTER` — the second-precision UTC boundary captured
+  before the manual run.
+
+No other per-execution environment name is accepted.
+
+Azure replaces an execution template when a start override is supplied.
+Therefore the helper clones the full live template and preserves every
+non-allowlisted image, environment entry, secret reference, command, retry
+limit, and timeout. Azure's `JobExecutionTemplate` cannot preserve volumes, so
+the helper rejects them rather than silently dropping them. Current Project
+Krypto jobs declare no volumes or volume mounts. An env-only
+`job start` override is unsafe because Azure can drop the rest of the live
+template.
+
+Evidence paths are:
+
+```text
+<environment>/<release-sha>/<operation>/<job-execution-id>/report.json
 ```
 
-`JOB_EXECUTION_ID` is always derived from `GITHUB_RUN_ID`/
-`GITHUB_RUN_ATTEMPT` (never a free-form workflow input), so it can never
-be crafted to collide with or overwrite prior evidence. A missing job
-output, an unreadable report, or a validation failure stops the workflow
-— nothing here treats "no evidence" as "passed."
+Missing, unreadable, ambiguous, or mismatched evidence is failure. The ops
+identity writes to the immutable container; GitHub OIDC identities have
+read-only container-scoped access. Production retention is 90 days and still
+requires the documented one-time irreversible immutability-policy lock after
+foundation provisioning.
 
-`target-smoke` and `activation-check` additionally sign their report
-with an HMAC-SHA256 approval computed from the environment's
-`DEPLOYMENT_APPROVAL_SECRET` (§2),
-binding that specific report to the release/cron activation it approves.
-This approval secret is separate from `CRON_SECRET`: it authorizes
-*promotion decisions*, `CRON_SECRET` authorizes *scheduled invocation
-requests* the running app receives — neither substitutes for the other,
-and only these two ops jobs ever see the approval secret. `preflight`,
-`migrate-init`, and `verified-backup` never receive it and never produce
-a signed approval.
+## 9. Mandatory smoke gates
 
----
+The following remain mandatory before schedule activation:
 
-## 7. Two-step prod promotion: `prepare` then `activate` (`azure-promote-prod.yml`)
+- exact Foundry catalog/quota validation and platform plain + structured
+  no-trade smoke;
+- Foundry Entra access for runtime and ops identities;
+- target provider smoke for Foundry (including structured Luna output),
+  Coinbase, and the environment-specific PostHog project;
+- ACS Email delivery through the running app with a persisted `sent` audit;
+- database/runtime binding, admin login/logout, disabled-mode no-mutation,
+  lease release, and unchanged-trade checks;
+- immutable signed target-smoke evidence;
+- post-run activation-check evidence bound to the exact new `manual-shadow:`
+  `AgentRun`, its start boundary, safe terminal outcome, zero
+  `TradeExecution`, and released lease;
+- cross-mode idempotency replay rejection; and
+- monitoring readiness before a trigger becomes `Schedule`.
 
-Manual, `workflow_dispatch`-only, always under the `production-promotion`
-Environment. This is the **only** workflow that can move prod out of
-`disabled` or turn a scheduler trigger to `Schedule`, and it only ever
-deploys `infra/rollout.bicep` — never `release.bicep`, never touching
-PostgreSQL/Key Vault/evidence storage directly.
+Target smoke must fail if any provider is skipped. Local console-only email
+behavior is never acceptable as Azure target evidence.
 
-Both actions require the exact 40-hex `release_sha`, `sha256:`
-`image_digest`, **and** the exact `target_smoke_job_execution_id` of the
-specific `target-smoke` run that already produced a **passing** evidence
-report for that release/image — the operator supplies this
-`JOB_EXECUTION_ID` explicitly (surfaced in `azure-deploy-prod.yml`'s own
-run summary/logs when its `target-smoke` step succeeds); promotion never
-auto-discovers or falls back to "the newest evidence for this
-release/image." A `verify-target-smoke-evidence` job downloads and
-independently validates exactly that report, including its
-`DEPLOYMENT_APPROVAL_SECRET`-signed HMAC-SHA256 approval, before
-either action proceeds — it fails closed on a missing report, an ID that
-doesn't match, or an invalid signature.
+## 10. Monitoring activation
 
-- **`action=prepare`** (requires `app_mode` = `shadow` or `paper`; `paper`
-  additionally requires typing the exact acknowledgement phrase `I
-  ACKNOWLEDGE THIS DOES NOT AUTHORIZE LIVE TRADING`):
-  1. Deploys `rollout.bicep` with the requested `rolloutMode` and **both**
-     trigger types left at their committed `Manual` default, then
-     confirms from the deploy's own output that the mode matches the
-     request and both triggers are still `Manual` — failing closed if
-     either drifted.
-  2. `paper` only: runs `preflight` then `verified-backup` for the
-     current release (§6 sequence).
-  3. Runs `activation-check` (§6 sequence) against the newly-set mode.
-  4. Runs exactly **one manual (not scheduled)** execution of the hourly
-     agent-run job, proving it behaves correctly bound to the new
-     `ROLLOUT_MODE` before any schedule exists.
-  5. Exits with both trigger types still `Manual` — `prepare` alone can
-     never cause a scheduled trading run, and it never authorizes live
-     trading regardless of `app_mode`.
-- **`action=activate`** (no `app_mode` input — the currently-deployed live
-  mode is used, queried live, never re-supplied):
-  1. Re-runs `activation-check` against the currently deployed mode/image.
-  2. Deploys `rollout.bicep` again with **only** the two trigger types
-     flipped to `Schedule` — every other input (image digest, Foundry
-     config, alert emails) must match what's currently deployed, since
-     `rollout.bicep` re-declares the whole app/jobs.
+`environment.bicep` creates an always-enabled scheduled-query alert for
+terminal hourly/daily job failures.
 
-`prepare` and `activate` are always separate, separately-invoked runs so
-an attended human reviews the `prepare` evidence before deciding to
-`activate`. Neither step, nor the `paper_trading_acknowledgement` input,
-ever authorizes live-money execution — `paper` mode is paper trading
-only.
+`schedule-monitoring.bicep` owns the separate missing-hourly-success rule.
+Its dev/prod `.bicepparam` files default to disabled at boundary `0`:
 
----
+- before hourly becomes `Schedule`, the workflow passes the current UTC Unix
+  timestamp, what-ifs and deploys the monitoring template, and verifies the
+  enabled state and exact boundary;
+- the rule validates the live Log Analytics schema before schedule resources
+  change; missing schema blocks activation;
+- after a two-hour grace period measured from that exact activation timestamp,
+  no successful hourly execution raises a severity-1 alert; and
+- only after monitoring validation succeeds may `rollout.bicep` change either
+  job to `Schedule`.
 
-## 8. Secret rotation (`azure-rotate-secrets.yml`)
+The same activation epoch is the rollout's idempotency generation. The hourly
+job receives `SCHEDULED_IDEMPOTENCY_NAMESPACE` bound to the exact
+`sha256` image digest plus that generation; its UTC-hour key is therefore
+unique to the deployed image and activation window. A same-hour run from an
+older image or activation cannot be replayed as the observed scheduled run.
 
-Manual, `workflow_dispatch`-only, requires the operator to type the
-`expected_release_sha` they believe is currently deployed (fails closed
-on a mismatch — a safety cross-check, not a target selector). The actual
-new secret *values* are never a workflow input: the operator rotates each
-secret's value in the `production-deploy` Environment's GitHub secrets
-**before** running this workflow; the workflow only ever reads whatever
-is currently stored there.
+Disable ordering is deliberately reversed. Prod force-disable, dev rollback,
+manual shadow staging, and secret rotation first apply `rollout.bicep` and
+verify both jobs are `Manual` with no schedule; only then may they deploy
+`schedule-monitoring.bicep` disabled at boundary `0`. This prevents an
+unmonitored schedule window and prevents monitoring from being removed while
+jobs may still run unattended.
 
-1. **Disable schedules first** (`production-promotion` Environment) —
-   deploys `rollout.bicep` with no promote override, same as
-   `azure-deploy-prod.yml`'s `force-disable-rollout` job, so this
-   workflow pauses for **two** separate Environment approval gates even
-   though only `production-deploy` is named as its overall gate.
-2. **Redeploy `release.bicep`** (`production-deploy`) with the **same**
-   exact currently-deployed image digests (no new build, no release
-   change) — only the Key Vault secret values actually rotate, since
-   `release.bicep`'s `readEnvironmentVariable()` calls pick up whatever
-   is currently in the Environment's secrets.
-3. **Rerun `target-smoke`** (§6 sequence) to prove the rotated secrets
-   still work.
-4. Publish evidence and leave prod exactly where it started:
-   disabled/Manual. This workflow never passes a rollout-mode or
-   trigger-type override, so it can never re-enable a schedule as a side
-   effect of rotation.
+## 11. Production promotion status and rotation
 
----
+`.github/workflows/azure-promote-prod.yml` has been deleted. **No executable
+production promotion workflow is shipped or approved**, and no
+`prepare`/`activate` operator path is available. The `production-promotion`
+identity/environment remains solely for forced-disable jobs inside
+`azure-deploy-prod.yml` and `azure-rotate-secrets.yml`.
 
-## 9. Rollback
+Any future production promotion requires a new evidence-bound design,
+trading-safety review, and explicit approval before an executable workflow is
+added. Readiness gates alone do not create an activation mechanism.
 
-| Goal | Action |
+`azure-rotate-secrets.yml` makes and verifies both jobs Manual, disables and
+verifies missing-success monitoring, backs up the current release, redeploys
+the same SHA and image digests with protected secret values, reruns
+target-smoke, and leaves prod disabled/manual. ACS connection strings remain
+Azure-generated and are not rotation inputs from GitHub. Prod deployment and
+rotation share `azure-production-mutation`.
+
+## 12. Rollback and state updates
+
+| Goal | Required action |
 |---|---|
-| Stop all schedules immediately | Deploy `infra/rollout.bicep` (via the `production-promotion` identity, manually or via `azure-rotate-secrets.yml`'s disable step) with both trigger types `Manual`; the committed `params/rollout.prod.bicepparam` already defaults to this |
-| Prevent any new orchestration | Confirm `ROLLOUT_MODE=disabled` on the deployed release; a rollout-mode-only change is always a `rollout.bicep` deploy, never a `release.bicep` redeploy |
-| Roll back to a prior release | Re-run `azure-deploy-prod.yml` with `workflow_dispatch` and the prior known-good `commit_sha`; it re-runs the full disabled-deploy + evidence sequence against that commit, never skipping gates for a rollback |
-| Pause while preserving configuration | Use **Pause Agent** in `/admin` (unchanged from the historical runbook — this is an application-level control, not an Azure control) |
-| Retire an environment | Not automated here; requires a separately reviewed decommission procedure (resource group deletion is destructive and is not part of any workflow above) |
+| Stop recurring work | Apply `rollout.bicep` with `disabled` and both triggers `Manual`; verify both jobs have no schedule; then deploy and verify `schedule-monitoring.bicep` disabled at boundary `0` |
+| Recover a failed dev activation | Use the workflow's automatic rollback and investigate the failed run/evidence |
+| Promote production | No current operator action exists; require a new evidence-bound design and review |
+| Roll back a release | Re-run the full workflow at a prior CI-passed exact SHA; do not bypass current-release prod backup gates |
+| Pause application behavior | Use the audited admin **Pause Agent** control in addition to disabling schedules |
+| Retire resources | Use a separately reviewed decommission plan; resource-group deletion is not a release operation |
 
-Rollback triggers (trade in disabled/shadow, reconciliation failure,
-negative/duplicate accounting, stale/overlapping lease, auth/privilege
-failure, unsafe/stale market data, consecutive missed/error runs,
-prolonged email failure, drawdown lock, credential concern, migration
-drift) are unchanged from RFC 0002 and the historical runbook. Preserve
-all evidence and record the incident; never reset the ledger to make a
-promotion window appear clean.
+After a successful first deployment, update
+[`architecture.md`](./architecture.md)'s live endpoint register with only the
+public Container App origin and evidence link. Until then it must continue to
+say **Not deployed / No URL yet**.
 
----
+## Further reading
 
-## 10. Paper/live gates are unchanged
-
-Migrating the deployment target to Azure changes **how** a release is
-shipped and promoted. It does not change **what** is required before
-trading is enabled:
-
-- `ROLLOUT_MODE` still only ever takes `disabled` / `shadow` / `paper`.
-  No workflow in this document, and no Bicep template under `infra/`, can
-  set it to anything implying live execution.
-- The v2.1 safety/correctness gates, v2.2 evidence-grade paper trading
-  gates, and v3 live-trading preconditions in
-  [`specs/readiness.md`](./readiness.md) §4 are unchanged and remain
-  authoritative. A passing Azure disabled-mode deploy or a passing
-  `target-smoke` report satisfies deployment-mechanism gates only — it is
-  not evidence toward the v2.2/v3 evaluation-window or authorization
-  gates.
-- [`production-readiness-prd.v1.md`](./production-readiness-prd.v1.md)'s
-  ownership, authorization, and gate-threshold rules govern promotion
-  decisions regardless of hosting platform.
-
----
-
-## 11. Further reading
-
-- [`infra/README.md`](../infra/README.md) — full infrastructure design:
-  identity/RBAC model, the five manual operations jobs and their exact
-  env/secret lists, secure-parameter handling, deployment order,
-  API versions, and known design limitations.
-- [`architecture.md`](./architecture.md) — current hosted baseline, target
-  diagrams, planned dev/prod resources, promotion flow, and operator links.
-- `azure-infra-validate.yml` — the PR-facing CI check (triggers on
-  `infra/**` changes) that runs template-compile-only `az bicep build` /
-  `az bicep build-params` validation with inert stub values; never
-  authenticates to Azure. See `infra/README.md` "Validation" for the
-  equivalent local commands.
+- [`../infra/README.md`](../infra/README.md) — template, identity, secret,
+  monitoring, and limitation detail.
+- [`architecture.md`](./architecture.md) — topology, planned names, and live
+  endpoint register.
+- [`readiness.md`](./readiness.md) — current evidence and promotion gates.
+- [`monitoring.md`](./monitoring.md) — operational alerts and reviews.
 - [`decisions/0008-azure-native-deployment-architecture.md`](./decisions/0008-azure-native-deployment-architecture.md)
-  — the accepted architecture decision and its consequences/trade-offs.
-- [`specs/readiness.md`](./readiness.md) — current evidence baseline and
-  gate disposition.
-- [`specs/monitoring.md`](./monitoring.md) — observability signals,
-  dashboards, and alert thresholds (platform-agnostic; still applies).
-- [`specs/archive/deployment.vercel-supabase.md`](./archive/deployment.vercel-supabase.md)
-  — the superseded Vercel/Supabase runbook, kept for historical/safety
-  reference only.
+  — accepted Azure architecture.

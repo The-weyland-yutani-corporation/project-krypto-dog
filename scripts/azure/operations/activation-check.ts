@@ -14,15 +14,21 @@ export async function run(
   const cronSecret = process.env.CRON_SECRET;
   const imageDigest = process.env.IMAGE_DIGEST;
   const approvalSecret = process.env.DEPLOYMENT_APPROVAL_SECRET;
+  const expectedShadowIdempotencyKey =
+    process.env.EXPECTED_SHADOW_IDEMPOTENCY_KEY;
+  const expectedShadowStartedAfter =
+    process.env.EXPECTED_SHADOW_STARTED_AFTER;
   if (
     !databaseUrl ||
     !targetOrigin ||
     !cronSecret ||
     !imageDigest ||
-    !approvalSecret
+    !approvalSecret ||
+    !expectedShadowIdempotencyKey ||
+    !expectedShadowStartedAfter
   ) {
     throw new Error(
-      "DIRECT_URL, TARGET_ORIGIN, CRON_SECRET, IMAGE_DIGEST, and DEPLOYMENT_APPROVAL_SECRET are required for the activation-check operation.",
+      "DIRECT_URL, TARGET_ORIGIN, CRON_SECRET, IMAGE_DIGEST, DEPLOYMENT_APPROVAL_SECRET, EXPECTED_SHADOW_IDEMPOTENCY_KEY, and EXPECTED_SHADOW_STARTED_AFTER are required for the activation-check operation.",
     );
   }
 
@@ -33,6 +39,8 @@ export async function run(
     targetOrigin,
     cronSecret,
     approvalSecret,
+    expectedShadowIdempotencyKey,
+    expectedShadowStartedAfter,
   });
 
   return { passed: report.approved, report };

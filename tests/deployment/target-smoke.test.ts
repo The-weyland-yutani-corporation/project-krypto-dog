@@ -232,6 +232,11 @@ describe("target deployment smoke", () => {
             inputTokens: 5,
             outputTokens: 1,
             totalTokens: 6,
+            structured: {
+              latencyMs: 120,
+              action: "HOLD",
+              notionalUSD: null,
+            },
           },
           coinbase: {
             latencyMs: 80,
@@ -431,6 +436,11 @@ describe("target deployment smoke", () => {
             inputTokens: 5,
             outputTokens: 1,
             totalTokens: 6,
+            structured: {
+              latencyMs: 120,
+              action: "HOLD",
+              notionalUSD: null,
+            },
           },
           coinbase: {
             latencyMs: 80,

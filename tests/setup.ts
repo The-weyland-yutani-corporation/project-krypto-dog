@@ -1,11 +1,10 @@
 process.env.NODE_ENV = "test";
 
 // Dummy env vars so config validation doesn't crash during tests.
-// Use preferred ANTHROPIC_FOUNDRY_* names; legacy AZURE_OPENAI_* fallback is
-// still supported but CDP credentials are no longer required.
-process.env.ANTHROPIC_FOUNDRY_BASE_URL = "https://test.services.ai.azure.com/anthropic";
-process.env.ANTHROPIC_FOUNDRY_API_KEY = "test-api-key";
-process.env.ANTHROPIC_FOUNDRY_DEPLOYMENT = "claude-sonnet-stub";
+// Authentication is mocked at the client boundary; no API key is configured.
+process.env.AZURE_OPENAI_BASE_URL =
+  "https://test.openai.azure.com/openai/v1";
+process.env.AZURE_OPENAI_DEPLOYMENT_NAME = "krypto-test-luna";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 process.env.POSTHOG_API_KEY = "phc_test_key";
 process.env.POSTHOG_HOST = "https://app.posthog.com";

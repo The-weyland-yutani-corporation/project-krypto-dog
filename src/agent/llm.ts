@@ -1,29 +1,24 @@
-import { ChatAnthropic } from "@langchain/anthropic";
+import {
+  DefaultAzureCredential,
+  ManagedIdentityCredential,
+  getBearerTokenProvider,
+} from "@azure/identity";
+import { ChatOpenAI } from "@langchain/openai";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { resolveFoundryConfig } from "@/lib/config";
+import { resolveAzureOpenAIConfig } from "@/lib/config";
 import { TradingConfigurationError } from "@/trading/errors";
 
 let llmInstance: BaseChatModel | null = null;
 
-const DEFAULT_FOUNDRY_API_VERSION = "2024-10-21";
+export const AZURE_OPENAI_TOKEN_SCOPE = "https://ai.azure.com/.default";
 
 /**
- * Build the LLM client for Azure AI Foundry-hosted Anthropic.
+ * Build the GPT-5.6 Luna client against Azure OpenAI's v1 API.
  *
- * Azure AI Foundry exposes Claude models via Anthropic's native Messages API
- * at a `services.ai.azure.com/anthropic` endpoint (preferred) or the older
- * `*.openai.azure.com/anthropic` path.  The Anthropic SDK authenticates with
- * the subscription key sent as `x-api-key`.
- *
- * Preferred env vars (set these for new deployments):
- *   ANTHROPIC_FOUNDRY_BASE_URL    – e.g. https://your-resource.services.ai.azure.com/anthropic
- *   ANTHROPIC_FOUNDRY_API_KEY     – Azure subscription key
- *   ANTHROPIC_FOUNDRY_DEPLOYMENT  – Claude model deployment name
- *   ANTHROPIC_FOUNDRY_API_VERSION – optional, defaults to 2024-10-21
- *
- * Legacy fallbacks (still accepted for already-deployed environments):
- *   AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY + AZURE_OPENAI_DEPLOYMENT_NAME
- *   (AZURE_OPENAI_ENDPOINT has /anthropic appended automatically)
+ * Production uses the explicitly selected user-assigned managed identity.
+ * Local attended smoke tests use DefaultAzureCredential so a developer's
+ * authenticated Azure CLI session can supply the same Entra bearer token.
+ * No provider API key is accepted.
  */
 export function getLLM(): BaseChatModel {
   if (!llmInstance) {
@@ -34,29 +29,49 @@ export function getLLM(): BaseChatModel {
 
 /** Exported for testing; creates a fresh instance without the singleton cache. */
 export function buildLLM(): BaseChatModel {
-  const config = resolveFoundryConfig(
+  const config = resolveAzureOpenAIConfig(
     process.env as Record<string, string | undefined>,
   );
 
   if (!config) {
     throw new TradingConfigurationError(
-      "LLM credentials missing or incomplete. Provide " +
-        "ANTHROPIC_FOUNDRY_BASE_URL + ANTHROPIC_FOUNDRY_API_KEY + " +
-        "ANTHROPIC_FOUNDRY_DEPLOYMENT, or the legacy " +
-        "AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY + AZURE_OPENAI_DEPLOYMENT_NAME.",
+      "Azure OpenAI configuration missing or incomplete. Provide " +
+        "AZURE_OPENAI_BASE_URL + AZURE_OPENAI_DEPLOYMENT_NAME.",
     );
   }
 
-  return new ChatAnthropic({
+  if (process.env.NODE_ENV === "production" && !config.clientId) {
+    throw new TradingConfigurationError(
+      "AZURE_CLIENT_ID is required in production to select the user-assigned managed identity.",
+    );
+  }
+
+  const credential =
+    process.env.NODE_ENV === "production"
+      ? new ManagedIdentityCredential(config.clientId!)
+      : config.clientId
+        ? new DefaultAzureCredential({
+            managedIdentityClientId: config.clientId,
+          })
+        : new DefaultAzureCredential();
+  const tokenProvider = getBearerTokenProvider(
+    credential,
+    AZURE_OPENAI_TOKEN_SCOPE,
+  );
+
+  return new ChatOpenAI({
     model: config.deployment,
-    anthropicApiKey: config.apiKey,
-    anthropicApiUrl: config.baseURL,
-    temperature: 0,
+    // Azure's request model is the deployment name, so LangChain cannot infer
+    // that it is a GPT-5 reasoning model. Pass the Responses API parameter
+    // explicitly rather than setting a temperature unsupported by Luna.
+    modelKwargs: {
+      reasoning: { effort: "low" },
+    },
+    useResponsesApi: true,
     maxRetries: 0,
-    clientOptions: {
-      defaultQuery: {
-        "api-version": config.apiVersion ?? DEFAULT_FOUNDRY_API_VERSION,
-      },
+    configuration: {
+      baseURL: config.baseURL,
+      apiKey: tokenProvider,
       maxRetries: 0,
     },
   });

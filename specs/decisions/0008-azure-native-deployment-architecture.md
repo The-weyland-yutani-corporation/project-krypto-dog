@@ -2,13 +2,18 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-12
+- **Amended:** 2026-08-13 — dedicated Bicep-managed Foundry platform,
+  pinned Luna deployments, and keyless workload access; 2026-08-14 — no
+  shipped production promotion workflow and independently ordered schedule
+  monitoring; least-privilege provider-state reads, scoped lock management,
+  and idempotent quota validation
 - **Deciders:** @VeVarunSharma
 
 ## Context
 
-Project Krypto's shipped code baseline targets Vercel (app hosting) +
-Supabase (PostgreSQL + `pg_cron`/`pg_net` scheduling), with the LLM already
-served through an existing Azure AI Foundry account. ADR 0003 recorded the
+Project Krypto's shipped code baseline targeted Vercel (app hosting) +
+Supabase (PostgreSQL + `pg_cron`/`pg_net` scheduling), with model integration
+targeting Azure AI Foundry. ADR 0003 recorded the
 Supabase `pg_cron`-over-Vercel-Cron choice within that Vercel/Supabase
 target.
 
@@ -17,21 +22,21 @@ application hosting, database, secrets, and scheduling all move onto Azure
 primitives, replacing Vercel and Supabase as the deployment target. This ADR
 records that platform decision and the operational model it implies.
 
-**Implementation status (updated 2026-08-12): implemented, not yet
+**Implementation status (updated 2026-08-14): implemented, not yet
 provisioned.** The Bicep templates (`infra/`), the GitHub Actions OIDC
-deployment/promotion/rotation workflows, and the application-side
+deployment/forced-disable/rotation workflows, and the application-side
 deployment/ops-job code (`src/deployment/`, `scripts/azure/`) described
 by this ADR all exist in this repository now — see
 [`infra/README.md`](../../infra/README.md) and
 [`specs/deployment.md`](../deployment.md) for the implemented runbook.
-Local validation (Bicep compile, `.bicepparam` build, ops-job unit tests)
-passes. An Azure subscription and existing Foundry service(s) are available,
-but **no Project Krypto Azure resource group or environment has been
-provisioned from this code, and no workflow run has ever executed against
-the new target stack** — that remains gated by the existing
-readiness process in `specs/production-readiness-prd.v1.md` and requires
-the one-time bootstrap and GitHub Environment setup in
-`specs/deployment.md` §1–§2.
+The target selects **Visual Studio Enterprise Subscription** at runtime and
+uses `westus3`, but **no Project Krypto Azure resource group, dedicated
+Foundry account, model deployment, or environment has been provisioned from
+this code, and no workflow run has executed against the new target stack**.
+That remains gated by [`specs/readiness.md`](../readiness.md) and requires the
+subscription-owner provider-registration step, one-time bootstrap, and GitHub
+Environment setup in
+[`specs/deployment.md`](../deployment.md) §1–§2.
 See [`specs/architecture.md`](../architecture.md) for the diagrammed
 current-vs-target state and service map.
 
@@ -53,7 +58,7 @@ its Vercel/Supabase framing.
 2. **Database: Azure Database for PostgreSQL Flexible Server, version 17,
    reachable only over private VNet access.** No public endpoint. This
    replaces Supabase Postgres. The private/restricted-role separation already
-   required by ADR 0006 and `specs/production-readiness-prd.v1.md` §7.3
+   required by ADR 0006 and [`specs/readiness.md`](../readiness.md)
    (owner/migrator/scheduler/runtime separation) continues to apply on the
    Azure-hosted server.
 
@@ -62,29 +67,48 @@ its Vercel/Supabase framing.
    Vault, referenced by managed identity. This is the sole secret store for
    the Azure target.
 
-4. **Infrastructure as code: Bicep.** All Azure resources (Container Apps
-   environment/app/jobs, Flexible Server, VNet/private endpoints, Key Vault,
-   Container Registry, Foundry model deployments) are declared in Bicep.
-   There is no console-managed production resource.
+4. **Infrastructure as code: Bicep.** Azure resources (Container Apps
+   environment/app/jobs, Flexible Server, VNet/private database networking,
+   Key Vault, Container Registry, Foundry account/model deployments) are
+   declared in Bicep. The documented one-time irreversible evidence-retention
+   policy lock remains an attended post-foundation action because Azure does
+   not expose that lock operation as a Bicep property; ad hoc console
+   configuration is otherwise not part of the release.
 
 5. **CI/CD identity: GitHub Actions using OIDC federation.** Deployment
    workflows authenticate to Azure via OIDC-federated credentials; no
-   long-lived Azure credential is stored in GitHub secrets.
+   long-lived Azure credential is stored in GitHub secrets. All mutation
+   permissions remain resource-group-scoped. Bootstrap defines **Project
+   Krypto Provider Registration Reader** with only
+   `Microsoft.Resources/subscriptions/providers/read` and assigns it at
+   subscription scope to platform/dev/prod-deploy so workflow `--check-only`
+   does not require broad Reader. Platform additionally receives read-only
+   **Cognitive Services Usages Reader**. Platform and prod-deploy receive Locks
+   Contributor only in their own resource groups for the Foundry account and
+   prod PostgreSQL/Key Vault/evidence-storage locks, respectively. An
+   authorized subscription owner registers required providers, including
+   `Microsoft.Network`, before bootstrap; workflows cannot perform that
+   subscription mutation.
 
 6. **Environment isolation: separate dev and prod resource groups and
    separate container registries.** Dev and prod never share a resource
    group or a registry. This mirrors, at the infrastructure level, the
-   environment separation already required by
-   `specs/production-readiness-prd.v1.md` §7.2.
+   environment separation required by
+   [`specs/readiness.md`](../readiness.md).
 
-7. **LLM: reuse the existing Azure AI Foundry account with separate model
-   deployments per environment, sharing the account's quota/key boundary.**
-   Dev and prod get distinct Foundry **model deployments** (so a runaway dev
-   workload cannot starve prod's model capacity in isolation and deployment
-   configuration/rotation stays independent per environment), but both
-   deployments live under the one existing Foundry account/subscription
-   quota and key boundary — a new Foundry account is not created per
-   environment.
+7. **LLM: create one dedicated Bicep-managed Microsoft Foundry platform
+   account with separate pinned model deployments and keyless access.**
+   `rg-krypto-platform` owns `ai-krypto-westus3`, separate from the dev/prod
+   application resource groups. It hosts OpenAI `gpt-5.6-luna` version
+   `2026-07-09` as `GlobalStandard` deployments `krypto-dev-luna` and
+   `krypto-prod-luna`, capacity 10 each. Account local authentication is
+   disabled. Dev/prod runtime and ops user-assigned identities receive only
+   **Cognitive Services OpenAI User**; there is no shared model API-key
+   boundary. Catalog and quota checks receive the exact target
+   deployment-name/capacity pairs. They validate the desired aggregate 10 + 10
+   against one exact quota dimension after subtracting only exact existing
+   target capacity on that same format/model/version/SKU dimension, so reruns
+   do not double-count replaceable capacity.
 
 8. **Production availability: single-zone initially, with 35-day
    point-in-time-recovery (PITR).** Zone-redundant HA is deferred; PITR
@@ -92,14 +116,12 @@ its Vercel/Supabase framing.
    (35 days), not the default.
 
 9. **Backup restore verification: logical `pg_dump` into a scratch loopback
-   PostgreSQL instance run inside an ops job.** Continuing the pattern
-   already used against Supabase (`specs/deployment.md` Step 5 —
-   `deployment:backup --restore-test-url` against a loopback-only target),
-   restore verification on Azure runs the same logical dump/restore/row-count
-   comparison, but the scratch PostgreSQL instance and the comparison run
-   inside a Container Apps ops job rather than a developer machine, so it can
-   run unattended and on a schedule while remaining restricted to a
-   throwaway, loopback-only database.
+   PostgreSQL instance run inside an ops job.** Restore verification on Azure
+   runs the reviewed logical dump/restore/row-count comparison, but the
+   scratch PostgreSQL instance and the comparison run inside a manually
+   triggered Container Apps ops job rather than a developer machine. The
+   protected workflow validates its immutable report while the restored
+   database remains throwaway and loopback-only.
 
 10. **Scheduler state is recovered from Bicep/Git, not from the database.**
     Unlike the Supabase model in ADR 0003 — where schedule definitions lived
@@ -109,21 +131,26 @@ its Vercel/Supabase framing.
     restoring scheduler rows from the database. The database backup/restore
     path (item 9) covers application and accounting data only.
 
-11. **Secret rotation procedure:** disable schedules first, rotate the
-    secret in Key Vault, refresh the affected Container Apps revision(s) to
-    pick up the new secret, rerun smoke and secret-binding verification
-    against the refreshed revision, and only then request a **separate**
-    promotion approval to re-enable schedules. Rotation never re-enables
-    schedules as a side effect of a passing smoke run.
+11. **Secret rotation procedure:** apply and verify both scheduler jobs as
+    `Manual`, then disable and verify missing-success monitoring, rotate the
+    secret in Key Vault, refresh the affected Container Apps revision(s), and
+    rerun smoke and secret-binding verification. Rotation leaves production
+    disabled/manual and never re-enables schedules as a side effect.
 
-12. **Production deploy and schedule activation are two distinct, separately
-    approved steps.** A production deploy always lands with schedules
-    disabled — there is no path that deploys and activates in one action.
-    Schedule activation is a separate approval that requires the disabled
-    deploy's smoke/binding evidence to already exist; it is not implied by a
-    successful deploy. This preserves, on the new platform, the same
-    disabled-first-then-attended-promotion shape already required by
-    `specs/production-readiness-prd.v1.md` PR-G1/PR-G3.
+12. **Production deploy cannot activate a schedule.** A production deploy
+    always lands disabled/manual. No executable production promotion workflow
+    is shipped or approved. The `production-promotion` identity/environment is
+    retained only for forced-disable portions of prod deploy and secret
+    rotation. Any future schedule activation requires a new evidence-bound
+    design, trading-safety review, and explicit approval; passing deployment
+    smoke does not create an activation path.
+
+13. **Schedule monitoring is independently deployed with asymmetric safe
+    ordering.** `schedule-monitoring.bicep` owns the missing-hourly-success
+    alert and activation boundary; `rollout.bicep` owns only web mode and job
+    trigger state. Workflows enable and validate monitoring before changing
+    jobs to `Schedule`. To disable, roll back, or rotate, they first change and
+    verify both jobs as `Manual`, then disable monitoring at boundary `0`.
 
 ## Consequences
 
@@ -140,26 +167,30 @@ its Vercel/Supabase framing.
 - **Trade-off:** Single-zone prod accepts a regional-outage gap until
   zone-redundant HA is implemented; 35-day PITR is the mitigating control in
   the interim.
-- **Trade-off:** Shared Foundry account quota/key boundary means a
-  misbehaving dev model deployment can still exhaust subscription-level
-  quota or require a shared key rotation, even though deployments are
-  otherwise separated.
+- **Trade-off:** The dedicated Foundry account still hosts both environment
+  deployments, so subscription/account-level quota remains aggregate even
+  though names, capacities, identities, and runtime configuration are
+  separated. Entra-only access removes shared model-key rotation.
 - **Trade-off:** Container Apps Jobs' Bicep-defined schedules mean an
   uncommitted or unreviewed manual schedule change is not captured by the
   Git-based recovery path in item 10; operational changes to schedules must
   go through Bicep, not console edits.
 - **Follow-ups required:** the Bicep templates, OIDC-federated GitHub
-  Actions workflows, ops-job scratch-loopback restore verification, and
-  rotation/promotion runbooks described above are now implemented (see
-  "Implementation status" above). What remains is operational, not code:
-  complete the one-time bootstrap and GitHub Environment/secret setup in
-  `specs/deployment.md` §1–§2, run the first real dev deploy, and produce
+  Actions deployment/forced-disable/rotation workflows, ops-job
+  scratch-loopback restore verification, and runbooks described above are
+  implemented (see "Implementation status" above). What remains before the
+  first disabled/manual release is operational:
+  register the required providers, complete the one-time bootstrap and GitHub
+  Environment/secret setup in `specs/deployment.md` §1–§2, run the first real
+  dev deploy, and produce
   the first live evidence (preflight/backup/target-smoke reports) against
   an actually-provisioned Azure environment. `specs/deployment.md` is now
   the Azure ordered runbook; the prior Vercel/Supabase runbook is
   preserved at `specs/archive/deployment.vercel-supabase.md`. `specs/readiness.md`
   is updated to record implementation-complete-but-unprovisioned status
   and does not yet contain any live-environment evidence for this target.
+  Production promotion remains a separate future design/review task; it is
+  intentionally not executable in the current repository.
 
 ## Alternatives considered
 
@@ -172,10 +203,10 @@ its Vercel/Supabase framing.
   model for both the recurring agent triggers and one-off operator actions
   (backup restore verification, rotation follow-up) without adding a second
   compute primitive.
-- **New, separate Foundry account per environment:** rejected — the existing
-  Foundry account is retained to avoid re-provisioning model access and
-  quota from scratch; separate model deployments give per-environment
-  configuration/rotation isolation without a second account.
+- **Separate Foundry account per environment:** rejected — one dedicated
+  Bicep-managed platform account keeps account lifecycle and exact aggregate
+  quota validation centralized, while separate pinned deployments and
+  workload identities preserve environment-specific runtime configuration.
 - **Zone-redundant HA at initial launch:** deferred, not rejected outright —
   single-zone plus 35-day PITR is accepted as the initial production posture;
   HA is a future hardening step once the single-cloud migration itself is

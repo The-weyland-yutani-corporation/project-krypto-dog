@@ -1,0 +1,11 @@
+[
+  {
+    "name": {
+      "value": "OpenAI.GlobalStandard.gpt-5.6-luna",
+      "localizedValue": "Global Standard gpt-5.6-luna"
+    },
+    "currentValue": 20,
+    "limit": 20,
+    "unit": "Count"
+  }
+]

@@ -15,12 +15,14 @@
 using '../environment.bicep'
 
 param environmentName = 'prod'
-param location = 'eastus2'
+param location = 'westus3'
 param namePrefix = 'krypto-prod'
 
 param acrName = 'acrkryptoprod'
 param keyVaultName = 'kv-krypto-prod'
 param evidenceStorageAccountName = 'stkryptoprodevid'
+param communicationServiceName = 'acs-krypto-prod'
+param emailServiceName = 'email-krypto-prod'
 
 // Principal IDs of the "production-deploy" and "production-promotion"
 // GitHub Environments' OIDC deployment identities (bootstrap.bicep
@@ -51,7 +53,7 @@ param postgresStorageSizeGB = 64
 param postgresBackupRetentionDays = 35
 
 param alertEmails = [
-  'ops@example.com'
+  'varun.sharma.exe@gmail.com'
 ]
 
 // Approved evidence-retention plan requires >=35 days in production.

@@ -19,8 +19,8 @@ name: Azure infra validate
 on:
   pull_request:
     paths:
-      - 'infra/**'
-      - '.github/workflows/azure-infra-validate.yml'
+      - "infra/**"
+      - ".github/workflows/azure-infra-validate.yml"
   workflow_dispatch:
 
 concurrency:
@@ -39,9 +39,7 @@ env:
   DATABASE_URL_DEV: stub-inert-value
   DIRECT_URL_DEV: stub-inert-value
   CRON_SECRET_DEV: stub-inert-value
-  ANTHROPIC_FOUNDRY_API_KEY_DEV: stub-inert-value
   POSTHOG_API_KEY_DEV: stub-inert-value
-  RESEND_API_KEY_DEV: stub-inert-value
   ADMIN_PASSWORD_DEV: stub-inert-value
   ADMIN_SESSION_SECRET_DEV: stub-inert-value
   RUNTIME_DATABASE_PASSWORD_DEV: stub-inert-value
@@ -49,9 +47,7 @@ env:
   DATABASE_URL_PROD: stub-inert-value
   DIRECT_URL_PROD: stub-inert-value
   CRON_SECRET_PROD: stub-inert-value
-  ANTHROPIC_FOUNDRY_API_KEY_PROD: stub-inert-value
   POSTHOG_API_KEY_PROD: stub-inert-value
-  RESEND_API_KEY_PROD: stub-inert-value
   ADMIN_PASSWORD_PROD: stub-inert-value
   ADMIN_SESSION_SECRET_PROD: stub-inert-value
   RUNTIME_DATABASE_PASSWORD_PROD: stub-inert-value
@@ -75,7 +71,7 @@ jobs:
       - name: Build every Bicep entry point
         run: |
           set -euo pipefail
-          for f in infra/bootstrap.bicep infra/platform.bicep infra/environment.bicep infra/release.bicep infra/rollout.bicep; do
+          for f in infra/*.bicep; do
             echo "::group::az bicep build --file ${f}"
             az bicep build --file "${f}"
             echo "::endgroup::"
@@ -134,3 +130,9 @@ jobs:
 
       - name: Self-test verify-deploy-sha.sh argument validation (no live network calls)
         run: .github/scripts/azure/tests/test-verify-deploy-sha.sh
+
+      - name: Self-test exact model quota validation
+        run: .github/scripts/azure/tests/test-validate-model-quota.sh
+
+      - name: Self-test full-template operations job start
+        run: .github/scripts/azure/tests/test-run-ops-job.sh

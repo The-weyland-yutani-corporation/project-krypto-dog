@@ -35,6 +35,12 @@ param keyVaultName string
 @description('Globally unique evidence storage account name (lowercase alphanumeric only).')
 param evidenceStorageAccountName string
 
+@description('Globally unique Azure Communication Services resource name.')
+param communicationServiceName string
+
+@description('Email Communication Service resource name.')
+param emailServiceName string
+
 @description('Principal IDs (object IDs) of the GitHub Actions OIDC deployment identities from bootstrap.bicep outputs that need read-only access to the evidence container, e.g. to download versioned ops-job reports with `az storage blob download --auth-mode login` from a CI/CD workflow. RG-scoped Contributor grants no storage data-plane access on its own (shared key access is disabled on the account), so this is the explicit data-plane grant those identities need. Pass the dev deploy identity principal ID for a dev environment, and both the prod-deploy and prod-promotion identity principal IDs for the prod environment.')
 param evidenceReaderPrincipalIds array = []
 
@@ -88,6 +94,8 @@ var postgresServerName = 'psql-${namePrefix}'
 var runtimeIdentityName = 'id-${namePrefix}-runtime'
 var schedulerIdentityName = 'id-${namePrefix}-scheduler'
 var opsIdentityName = 'id-${namePrefix}-ops'
+var hourlyJobName = 'caj-${environmentName}-agent-run'
+var dailyJobName = 'caj-${environmentName}-daily-summary'
 
 module network 'modules/network.bicep' = {
   name: 'network'
@@ -125,9 +133,13 @@ resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2025-02
 module monitoring 'modules/monitoring.bicep' = {
   name: 'monitoring'
   params: {
+    location: location
     actionGroupName: actionGroupName
     actionGroupShortName: 'krypto${environmentName}'
     alertEmails: alertEmails
+    logAnalyticsWorkspaceId: logAnalyticsWorkspace.id
+    hourlyJobName: hourlyJobName
+    dailyJobName: dailyJobName
     tags: envTags
   }
 }
@@ -203,6 +215,15 @@ module evidenceStorage 'modules/storage.bicep' = {
   }
 }
 
+module communicationEmail 'modules/communication-email.bicep' = {
+  name: 'communication-email'
+  params: {
+    communicationServiceName: communicationServiceName
+    emailServiceName: emailServiceName
+    tags: envTags
+  }
+}
+
 output acrName string = acr.outputs.registryName
 output acrLoginServer string = acr.outputs.registryLoginServer
 output containerAppsEnvironmentId string = containerAppsEnvironment.outputs.environmentId
@@ -221,8 +242,14 @@ output evidenceContainerUrl string = evidenceStorage.outputs.evidenceContainerUr
 // immutability policy, for operator verification before performing the
 // manual, irreversible lock step described in modules/storage.bicep.
 output evidenceImmutabilityRetentionDays int = evidenceStorage.outputs.immutabilityRetentionDays
+output communicationServiceId string = communicationEmail.outputs.communicationServiceId
+output communicationServiceName string = communicationEmail.outputs.communicationServiceName
+output communicationServiceEndpoint string = communicationEmail.outputs.communicationServiceEndpoint
+output communicationEmailSender string = communicationEmail.outputs.communicationEmailSender
 output logAnalyticsWorkspaceId string = logAnalyticsWorkspace.id
 output actionGroupId string = monitoring.outputs.actionGroupId
+output failedJobExecutionAlertId string = monitoring.outputs.failedJobExecutionAlertId
+output failedJobExecutionAlertName string = monitoring.outputs.failedJobExecutionAlertName
 output vnetId string = network.outputs.vnetId
 output containerAppsSubnetId string = network.outputs.containerAppsSubnetId
 output runtimeIdentityId string = identities.outputs.runtimeIdentityId

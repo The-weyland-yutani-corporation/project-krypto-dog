@@ -54,6 +54,8 @@ export type ActivationCheckOptions = {
    * signature can be recomputed and constant-time verified here.
    */
   approvalSecret: string;
+  expectedShadowIdempotencyKey: string;
+  expectedShadowStartedAfter: string;
 };
 
 export type ActivationCheckResult = {
@@ -71,6 +73,14 @@ export type ActivationCheckReport = {
   checks: ActivationCheckResult[];
   approved: boolean;
   blockers: string[];
+  shadowRun?: {
+    id: string;
+    idempotencyKey: string;
+    outcome: string;
+    startedAt: string;
+    completedAt: string | null;
+    tradeCount: number;
+  };
 };
 
 type LatestApprovalRow = {
@@ -91,6 +101,17 @@ type AgentStateRow = {
   isRunning: boolean;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
+};
+
+type ShadowRunRow = {
+  id: string;
+  idempotencyKey: string;
+  triggerSource: string;
+  tradingMode: string;
+  outcome: string;
+  startedAt: Date;
+  completedAt: Date | null;
+  tradeCount: number;
 };
 
 function errorCode(error: unknown): string {
@@ -185,6 +206,37 @@ async function loadAgentState(
   return row;
 }
 
+async function loadShadowRun(
+  sql: postgres.Sql,
+  idempotencyKey: string,
+): Promise<ShadowRunRow | undefined> {
+  const [row] = await sql<ShadowRunRow[]>`
+    SELECT
+      agent_run.id,
+      agent_run."idempotencyKey",
+      agent_run."triggerSource",
+      agent_run."tradingMode"::text AS "tradingMode",
+      agent_run.outcome::text AS outcome,
+      agent_run."startedAt",
+      agent_run."completedAt",
+      COUNT(execution.id)::int AS "tradeCount"
+    FROM "krypto"."AgentRun" agent_run
+    LEFT JOIN "krypto"."TradeExecution" execution
+      ON execution."agentRunId" = agent_run.id
+    WHERE agent_run."idempotencyKey" = ${idempotencyKey}
+    GROUP BY
+      agent_run.id,
+      agent_run."idempotencyKey",
+      agent_run."triggerSource",
+      agent_run."tradingMode",
+      agent_run.outcome,
+      agent_run."startedAt",
+      agent_run."completedAt"
+    LIMIT 1
+  `;
+  return row;
+}
+
 /**
  * Runs the read-only activation check against `DIRECT_URL`. Never opens a
  * writable transaction and never mutates trading state.
@@ -212,6 +264,32 @@ export async function runActivationCheck(
     options.cronSecret,
     approvalSecret,
   );
+  const expectsShadowProof = true;
+  if (
+    expectsShadowProof &&
+    (!options.expectedShadowIdempotencyKey ||
+      !/^manual-shadow:[A-Za-z0-9._-]{1,64}$/.test(
+        options.expectedShadowIdempotencyKey,
+      ))
+  ) {
+    throw new Error(
+      "EXPECTED_SHADOW_IDEMPOTENCY_KEY must use manual-shadow:<1-64 safe characters>.",
+    );
+  }
+  const expectedShadowStartedAfter = options.expectedShadowStartedAfter
+    ? new Date(options.expectedShadowStartedAfter)
+    : undefined;
+  if (
+    expectsShadowProof &&
+    (!expectedShadowStartedAfter ||
+      Number.isNaN(expectedShadowStartedAfter.getTime()) ||
+      expectedShadowStartedAfter.toISOString().replace(".000Z", "Z") !==
+        options.expectedShadowStartedAfter)
+  ) {
+    throw new Error(
+      "EXPECTED_SHADOW_STARTED_AFTER must be a second-precision UTC timestamp.",
+    );
+  }
 
   const checks: ActivationCheckResult[] = [];
   const blockers: string[] = [];
@@ -226,6 +304,7 @@ export async function runActivationCheck(
   let approval: LatestApprovalRow | undefined;
   let bindingExists = false;
   let state: AgentStateRow | undefined;
+  let shadowRun: ShadowRunRow | undefined;
 
   try {
     await readOnly(options.databaseUrl, async (sql) => {
@@ -234,6 +313,12 @@ export async function runActivationCheck(
         bindingExists = await bindingRowExists(sql, approval.bindingId);
       }
       state = await loadAgentState(sql);
+      if (options.expectedShadowIdempotencyKey) {
+        shadowRun = await loadShadowRun(
+          sql,
+          options.expectedShadowIdempotencyKey,
+        );
+      }
     });
   } catch (error) {
     record(
@@ -241,6 +326,7 @@ export async function runActivationCheck(
       false,
       `Could not read activation evidence: ${errorCode(error)}.`,
     );
+
     return {
       schemaVersion: ACTIVATION_CHECK_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
@@ -251,6 +337,54 @@ export async function runActivationCheck(
       approved: false,
       blockers,
     };
+  }
+
+  if (expectsShadowProof) {
+    record(
+      "manual-shadow-run-present",
+      shadowRun !== undefined,
+      shadowRun
+        ? "The exact manual shadow AgentRun exists."
+        : "The exact manual shadow AgentRun is missing.",
+    );
+    record(
+      "manual-shadow-run-started-after-boundary",
+      shadowRun !== undefined &&
+        expectedShadowStartedAfter !== undefined &&
+        shadowRun.startedAt >= expectedShadowStartedAfter,
+      shadowRun !== undefined &&
+        expectedShadowStartedAfter !== undefined &&
+        shadowRun.startedAt >= expectedShadowStartedAfter
+        ? "The manual shadow AgentRun started after the attended proof boundary."
+        : "The manual shadow AgentRun predates the attended proof boundary.",
+    );
+    record(
+      "manual-shadow-run-mode",
+      shadowRun?.triggerSource === "cron" &&
+        shadowRun.tradingMode === "SHADOW",
+      shadowRun?.triggerSource === "cron" &&
+        shadowRun.tradingMode === "SHADOW"
+        ? "The manual AgentRun used the cron boundary in SHADOW mode."
+        : "The manual AgentRun did not use the cron boundary in SHADOW mode.",
+    );
+    const terminalShadowOutcome =
+      shadowRun !== undefined &&
+      ["SHADOW", "HOLD", "REJECTED", "LOCKED"].includes(shadowRun.outcome) &&
+      shadowRun.completedAt !== null;
+    record(
+      "manual-shadow-run-terminal",
+      terminalShadowOutcome,
+      terminalShadowOutcome
+        ? "The manual shadow AgentRun reached a safe terminal outcome."
+        : "The manual shadow AgentRun is missing, nonterminal, or failed.",
+    );
+    record(
+      "manual-shadow-run-no-trade",
+      shadowRun !== undefined && shadowRun.tradeCount === 0,
+      shadowRun !== undefined && shadowRun.tradeCount === 0
+        ? "The manual shadow AgentRun created no TradeExecution."
+        : "The manual shadow AgentRun created or could not prove zero TradeExecution rows.",
+    );
   }
 
   record(
@@ -394,5 +528,15 @@ export async function runActivationCheck(
     checks,
     approved,
     blockers,
+    shadowRun: shadowRun
+      ? {
+          id: shadowRun.id,
+          idempotencyKey: shadowRun.idempotencyKey,
+          outcome: shadowRun.outcome,
+          startedAt: shadowRun.startedAt.toISOString(),
+          completedAt: shadowRun.completedAt?.toISOString() ?? null,
+          tradeCount: shadowRun.tradeCount,
+        }
+      : undefined,
   };
 }

@@ -1,0 +1,30 @@
+[
+  {
+    "name": "krypto-dev-luna",
+    "properties": {
+      "model": {
+        "format": "OpenAI",
+        "name": "gpt-5.6-luna",
+        "version": "2026-07-09"
+      }
+    },
+    "sku": {
+      "name": "GlobalStandard",
+      "capacity": 10
+    }
+  },
+  {
+    "name": "krypto-prod-luna",
+    "properties": {
+      "model": {
+        "format": "OpenAI",
+        "name": "gpt-5.6-luna",
+        "version": "2026-07-09"
+      }
+    },
+    "sku": {
+      "name": "GlobalStandard",
+      "capacity": 10
+    }
+  }
+]

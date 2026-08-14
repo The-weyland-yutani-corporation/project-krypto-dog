@@ -1,19 +1,22 @@
 /**
  * scripts/smoke-llm.ts
  *
- * Minimal no-trade LLM smoke test for Azure AI Foundry-hosted Anthropic.
+ * No-trade smoke test for GPT-5.6 Luna on Azure OpenAI v1.
  *
  * Usage:
  *   npm run smoke:llm
  *
- * Performs a single model invocation with a short timeout, prints endpoint
- * metadata without credentials, verifies a non-empty response, and exits
- * nonzero with a classified error message on failure.
+ * Performs plain and strict structured-output invocations with short timeouts,
+ * prints endpoint metadata without credentials, verifies a no-trade HOLD, and
+ * exits nonzero with a classified error message on failure.
  */
 
 import "dotenv/config";
-import { smokeFoundry } from "@/deployment/provider-smoke";
-import { resolveFoundryBaseURL } from "@/lib/config";
+import {
+  smokeFoundry,
+  smokeLunaStructuredOutput,
+} from "@/deployment/provider-smoke";
+import { resolveAzureOpenAIConfig } from "@/lib/config";
 
 function redactURL(url: string): string {
   // Replace everything between the scheme and the host with [...]
@@ -23,13 +26,31 @@ function redactURL(url: string): string {
 function classifyError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   const lower = message.toLowerCase();
-  if (lower.includes("api_key") || lower.includes("authentication") || lower.includes("401") || lower.includes("403")) {
+  if (
+    lower.includes("credential") ||
+    lower.includes("authentication") ||
+    lower.includes("apikey") ||
+    lower.includes("api_key") ||
+    lower.includes("unauthorized") ||
+    lower.includes("forbidden") ||
+    lower.includes("401") ||
+    lower.includes("403")
+  ) {
     return `AUTH_ERROR: ${message}`;
   }
-  if (lower.includes("404") || lower.includes("not found") || lower.includes("deployment")) {
+  if (
+    lower.includes("404") ||
+    lower.includes("not found") ||
+    lower.includes("deployment")
+  ) {
     return `MODEL_NOT_FOUND: ${message}`;
   }
-  if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("econnreset") || lower.includes("enotfound")) {
+  if (
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("econnreset") ||
+    lower.includes("enotfound")
+  ) {
     return `NETWORK_ERROR: ${message}`;
   }
   if (lower.includes("quota") || lower.includes("429") || lower.includes("rate")) {
@@ -39,24 +60,28 @@ function classifyError(err: unknown): string {
 }
 
 async function main() {
-  const baseURL = resolveFoundryBaseURL(process.env as Record<string, string | undefined>);
-  const deployment =
-    process.env.ANTHROPIC_FOUNDRY_DEPLOYMENT ?? process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-  const apiVersion =
-    process.env.ANTHROPIC_FOUNDRY_API_VERSION ??
-    process.env.AZURE_OPENAI_API_VERSION ??
-    "2024-10-21";
+  const config = resolveAzureOpenAIConfig(
+    process.env as Record<string, string | undefined>,
+  );
 
-  console.log("🔍 smoke:llm — Azure AI Foundry Anthropic connectivity check");
-  console.log(`   endpoint  : ${baseURL ? redactURL(baseURL) : "(not set)"}`);
-  console.log(`   deployment: ${deployment ?? "(not set)"}`);
-  console.log(`   api-version: ${apiVersion}`);
+  console.log("🔍 smoke:llm — Azure OpenAI GPT-5.6 Luna validation");
+  console.log(
+    `   endpoint  : ${config ? redactURL(config.baseURL) : "(not set)"}`,
+  );
+  console.log(`   deployment: ${config?.deployment ?? "(not set)"}`);
+  console.log(
+    `   identity  : ${process.env.NODE_ENV === "production" ? "user-assigned managed identity" : "DefaultAzureCredential (attended local smoke)"}`,
+  );
   console.log("   timeout   : 30000ms");
   console.log();
 
   let result;
+  let structured;
   try {
-    result = await smokeFoundry();
+    [result, structured] = await Promise.all([
+      smokeFoundry(),
+      smokeLunaStructuredOutput(),
+    ]);
   } catch (err) {
     console.error(`❌ LLM invocation failed — ${classifyError(err)}`);
     process.exit(1);
@@ -64,6 +89,9 @@ async function main() {
 
   console.log(
     `   tokens    : in=${result.inputTokens ?? "?"} out=${result.outputTokens ?? "?"} total=${result.totalTokens ?? "?"}`,
+  );
+  console.log(
+    `   structured: ${structured.action} (notional=${String(structured.notionalUSD)}, ${structured.latencyMs}ms)`,
   );
   console.log(
     `✅ LLM responded (${result.responseLength} chars, ${result.latencyMs}ms)`,

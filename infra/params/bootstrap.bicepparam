@@ -1,22 +1,13 @@
-// One-time subscription-scoped bootstrap parameters. Provisions the dev
-// and prod resource groups plus four GitHub OIDC identities (development,
-// production-deploy, production-promotion, platform) in a single
-// deployment. Replace the placeholder values below (githubOrg, githubRepo,
-// location, platformResourceGroupName) with the real repository/region/
-// existing-Foundry-resource-group before deploying — none of these are
-// secrets, but platformResourceGroupName MUST point at a resource group
-// that already exists (this template does not create it). See
-// infra/README.md for the full bootstrap procedure and the GitHub
-// Environment names these identities must be federated to.
+// One-time subscription-scoped bootstrap parameters. Provisions the
+// dedicated platform, dev, and prod resource groups plus four GitHub OIDC
+// identities (development, production-deploy, production-promotion,
+// platform) in westus3.
 using '../bootstrap.bicep'
 
-param location = 'eastus2'
+param location = 'westus3'
 param devResourceGroupName = 'rg-krypto-dev'
 param prodResourceGroupName = 'rg-krypto-prod'
-// REPLACE with the resource group name that already holds the existing
-// Microsoft Foundry account. Not invented/guessed — must be supplied by
-// the operator who owns that platform resource group.
-param platformResourceGroupName = 'REPLACE_WITH_EXISTING_PLATFORM_RESOURCE_GROUP_NAME'
+param platformResourceGroupName = 'rg-krypto-platform'
 param githubOrg = 'VeVarunSharma'
 param githubRepo = 'project-krypto-dog'
 param devGithubEnvironmentName = 'development'

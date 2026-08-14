@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Read-only Azure CLI fixture double for test-validate-model-quota.sh.
+set -euo pipefail
+
+if [ "${1:-}" = "cognitiveservices" ] &&
+   [ "${2:-}" = "account" ] &&
+   [ "${3:-}" = "list-models" ]; then
+  /bin/cat "${MODEL_CATALOG_FIXTURE:?MODEL_CATALOG_FIXTURE is required}"
+  exit 0
+fi
+
+if [ "${1:-}" = "cognitiveservices" ] &&
+   [ "${2:-}" = "usage" ] &&
+   [ "${3:-}" = "list" ]; then
+  /bin/cat "${QUOTA_USAGE_FIXTURE:?QUOTA_USAGE_FIXTURE is required}"
+  exit 0
+fi
+
+if [ "${1:-}" = "cognitiveservices" ] &&
+   [ "${2:-}" = "account" ] &&
+   [ "${3:-}" = "deployment" ] &&
+   [ "${4:-}" = "list" ]; then
+  /bin/cat "${DEPLOYMENTS_FIXTURE:?DEPLOYMENTS_FIXTURE is required}"
+  exit 0
+fi
+
+echo "Fixture az rejected unrecognized or mutating command: $*" >&2
+exit 97

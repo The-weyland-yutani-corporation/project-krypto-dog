@@ -56,9 +56,12 @@ RUN mkdir -p public
 # real secret is baked into any image layer. Actual configuration is
 # supplied at container start via Key-Vault-sourced environment variables.
 ENV NEXT_TELEMETRY_DISABLED=1 \
-    ANTHROPIC_FOUNDRY_BASE_URL=https://build-placeholder.services.ai.azure.com/anthropic \
-    ANTHROPIC_FOUNDRY_API_KEY=build-placeholder \
-    ANTHROPIC_FOUNDRY_DEPLOYMENT=build-placeholder \
+    AZURE_OPENAI_BASE_URL=https://build-placeholder.openai.azure.com/openai/v1/ \
+    AZURE_OPENAI_DEPLOYMENT_NAME=build-placeholder \
+    AZURE_CLIENT_ID=00000000-0000-0000-0000-000000000000 \
+    AZURE_COMMUNICATION_CONNECTION_STRING="endpoint=https://build-placeholder.communication.azure.com/;accesskey=build-placeholder" \
+    AZURE_COMMUNICATION_EMAIL_SENDER=DoNotReply@build-placeholder.azurecomm.net \
+    ALERT_EMAIL_TO=operator@example.com \
     DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build \
     POSTHOG_API_KEY=build-placeholder \
     CRON_SECRET=build-placeholder \

@@ -1,67 +1,116 @@
-// Resource-group-scoped template deployed into the resource group that
-// already holds the existing Microsoft Foundry (Azure AI Foundry /
-// Cognitive Services) account. References that account as an existing
-// resource — it is never created or modified by this repo — and declares
-// separate, independently parameterized dev and prod model deployments
-// under it, per ADR 0008 item 7 (shared account/quota/key boundary,
-// separate deployments per environment).
+// Resource-group-scoped model template for the dedicated Project Krypto
+// Microsoft Foundry account. Account lifecycle is deliberately separate in
+// platform-account.bicep: this template references the account as existing
+// and owns only the reviewed dev/prod model deployments beneath it.
 //
-// Model name/version/SKU/capacity are required parameters with no
-// defaults: this template does not assert or invent any claim about
-// what model, quota, or capacity is actually approved. Supply the
-// reviewed values via the .bicepparam files (after replacing the
-// placeholders) or via --parameters at deploy time.
+// Every model setting is pinned to the approved
+// OpenAI/gpt-5.6-luna/2026-07-09 GlobalStandard configuration. The
+// single-value @allowed contracts ensure an operator cannot substitute a
+// merely similar model, version, SKU, deployment name, or capacity without a
+// reviewed source change.
 //
 // Deploy with:
 //   az deployment group create \
-//     --resource-group <existing-foundry-account-resource-group> \
+//     --resource-group rg-krypto-platform \
 //     --template-file infra/platform.bicep \
 //     --parameters infra/params/platform.bicepparam
 targetScope = 'resourceGroup'
 
-@description('Name of the existing Microsoft Foundry / Cognitive Services account. Not created or modified by this template.')
-param foundryAccountName string
+@description('Name of the existing dedicated Microsoft Foundry / Cognitive Services account. Created separately by platform-account.bicep.')
+@allowed([
+  'ai-krypto-westus3'
+])
+param foundryAccountName string = 'ai-krypto-westus3'
 
-@description('Dev model deployment name.')
-param devDeploymentName string
+@description('Protected platform GitHub OIDC principal used for attended no-trade model smoke after deployment.')
+param platformSmokePrincipalId string
 
-@description('Dev model publisher format, e.g. OpenAI or Anthropic.')
-param devModelFormat string
+@description('Pinned dev model deployment name.')
+@allowed([
+  'krypto-dev-luna'
+])
+param devDeploymentName string = 'krypto-dev-luna'
 
-@description('Dev model name, e.g. claude-3-5-sonnet-20241022.')
-param devModelName string
+@description('Pinned dev model publisher format.')
+@allowed([
+  'OpenAI'
+])
+param devModelFormat string = 'OpenAI'
 
-@description('Dev model version, exactly as published by the provider.')
-param devModelVersion string
+@description('Pinned dev model name.')
+@allowed([
+  'gpt-5.6-luna'
+])
+param devModelName string = 'gpt-5.6-luna'
 
-@description('Dev deployment SKU name, e.g. GlobalStandard or Standard.')
-param devSkuName string
+@description('Pinned dev model version, exactly as published by the provider.')
+@allowed([
+  '2026-07-09'
+])
+param devModelVersion string = '2026-07-09'
 
-@description('Dev deployment capacity (provider-defined throughput units). Must reflect an actually approved/reviewed quota allocation, not an assumed value.')
-@minValue(1)
-param devSkuCapacity int
+@description('Pinned dev deployment SKU name.')
+@allowed([
+  'GlobalStandard'
+])
+param devSkuName string = 'GlobalStandard'
 
-@description('Prod model deployment name.')
-param prodDeploymentName string
+@description('Pinned dev deployment capacity in the provider-defined GlobalStandard unit.')
+@allowed([
+  10
+])
+param devSkuCapacity int = 10
 
-@description('Prod model publisher format, e.g. OpenAI or Anthropic.')
-param prodModelFormat string
+@description('Pinned prod model deployment name.')
+@allowed([
+  'krypto-prod-luna'
+])
+param prodDeploymentName string = 'krypto-prod-luna'
 
-@description('Prod model name, exactly as published by the provider.')
-param prodModelName string
+@description('Pinned prod model publisher format.')
+@allowed([
+  'OpenAI'
+])
+param prodModelFormat string = 'OpenAI'
 
-@description('Prod model version, exactly as published by the provider.')
-param prodModelVersion string
+@description('Pinned prod model name.')
+@allowed([
+  'gpt-5.6-luna'
+])
+param prodModelName string = 'gpt-5.6-luna'
 
-@description('Prod deployment SKU name, e.g. GlobalStandard or Standard.')
-param prodSkuName string
+@description('Pinned prod model version, exactly as published by the provider.')
+@allowed([
+  '2026-07-09'
+])
+param prodModelVersion string = '2026-07-09'
 
-@description('Prod deployment capacity (provider-defined throughput units). Must reflect an actually approved/reviewed quota allocation, not an assumed value.')
-@minValue(1)
-param prodSkuCapacity int
+@description('Pinned prod deployment SKU name.')
+@allowed([
+  'GlobalStandard'
+])
+param prodSkuName string = 'GlobalStandard'
+
+@description('Pinned prod deployment capacity in the provider-defined GlobalStandard unit.')
+@allowed([
+  10
+])
+param prodSkuCapacity int = 10
 
 resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' existing = {
   name: foundryAccountName
+}
+
+var cognitiveServicesOpenAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
+
+resource platformSmokeOpenAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: foundryAccount
+  name: guid(foundryAccount.id, platformSmokePrincipalId, cognitiveServicesOpenAiUserRoleId)
+  properties: {
+    principalId: platformSmokePrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesOpenAiUserRoleId)
+  }
 }
 
 resource devDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = {

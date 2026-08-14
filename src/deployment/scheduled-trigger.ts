@@ -30,9 +30,10 @@
 // outcome for the job runtime to act on.
 //
 // Required environment variables when run as a CLI: TARGET_BASE_URL,
-// SCHEDULED_ROUTE, CRON_SECRET, ROLLOUT_MODE (see validators below). Exits 0
-// on a 2xx response, 1 otherwise. Never logs CRON_SECRET or any other
-// secret value.
+// SCHEDULED_ROUTE, CRON_SECRET, ROLLOUT_MODE (see validators below). An
+// attended manual shadow proof may additionally supply a unique
+// SCHEDULED_IDEMPOTENCY_KEY. Exits 0 on a 2xx response, 1 otherwise. Never
+// logs CRON_SECRET or any other secret value.
 
 export type ScheduledRouteName = "/api/agent/run" | "/api/agent/daily-summary";
 
@@ -154,11 +155,55 @@ export function validateRolloutMode(value: string | undefined): RolloutMode {
   return normalized as RolloutMode;
 }
 
+export function validateScheduledIdempotencyKey(
+  value: string | undefined,
+  route: ScheduledRouteName,
+  rolloutMode: RolloutMode,
+): string | undefined {
+  if (!value) return undefined;
+  if (route !== "/api/agent/run") {
+    throw new ScheduledTriggerConfigError(
+      "SCHEDULED_IDEMPOTENCY_KEY is allowed only for /api/agent/run.",
+    );
+  }
+  if (!/^manual-shadow:[A-Za-z0-9._-]{1,64}$/.test(value)) {
+    throw new ScheduledTriggerConfigError(
+      "SCHEDULED_IDEMPOTENCY_KEY must be a manual-shadow: prefix followed by 1-64 safe characters.",
+    );
+  }
+  if (rolloutMode !== "shadow") {
+    throw new ScheduledTriggerConfigError(
+      "A manual-shadow SCHEDULED_IDEMPOTENCY_KEY requires ROLLOUT_MODE=shadow.",
+    );
+  }
+  return value;
+}
+
+export function validateScheduledIdempotencyNamespace(
+  value: string | undefined,
+  route: ScheduledRouteName,
+): string | undefined {
+  if (!value) return undefined;
+  if (route !== "/api/agent/run") {
+    throw new ScheduledTriggerConfigError(
+      "SCHEDULED_IDEMPOTENCY_NAMESPACE is allowed only for /api/agent/run.",
+    );
+  }
+  if (!/^sha256:[a-f0-9]{64}-[0-9]{1,10}$/.test(value)) {
+    throw new ScheduledTriggerConfigError(
+      "SCHEDULED_IDEMPOTENCY_NAMESPACE must bind a sha256 image digest to a numeric activation generation.",
+    );
+  }
+  return value;
+}
+
 export interface ScheduledTriggerEnv {
   TARGET_BASE_URL?: string;
   SCHEDULED_ROUTE?: string;
   CRON_SECRET?: string;
   ROLLOUT_MODE?: string;
+  SCHEDULED_IDEMPOTENCY_KEY?: string;
+  SCHEDULED_IDEMPOTENCY_NAMESPACE?: string;
   // Index signature (rather than only the four named optional properties
   // above) so `process.env` — a dictionary type with no properties known to
   // overlap structurally — remains assignable here without a cast.
@@ -170,17 +215,30 @@ export interface ScheduledTriggerConfig {
   route: ScheduledRouteName;
   cronSecret: string;
   rolloutMode: RolloutMode;
+  explicitIdempotencyKey: string | undefined;
+  idempotencyNamespace: string | undefined;
 }
 
 /** Validates all four required inputs and returns a resolved configuration. */
 export function resolveScheduledTriggerConfig(
   env: ScheduledTriggerEnv,
 ): ScheduledTriggerConfig {
+  const route = validateScheduledRoute(env.SCHEDULED_ROUTE);
+  const rolloutMode = validateRolloutMode(env.ROLLOUT_MODE);
   return {
     targetUrl: validateTargetBaseUrl(env.TARGET_BASE_URL),
-    route: validateScheduledRoute(env.SCHEDULED_ROUTE),
+    route,
     cronSecret: validateCronSecret(env.CRON_SECRET),
-    rolloutMode: validateRolloutMode(env.ROLLOUT_MODE),
+    rolloutMode,
+    explicitIdempotencyKey: validateScheduledIdempotencyKey(
+      env.SCHEDULED_IDEMPOTENCY_KEY,
+      route,
+      rolloutMode,
+    ),
+    idempotencyNamespace: validateScheduledIdempotencyNamespace(
+      env.SCHEDULED_IDEMPOTENCY_NAMESPACE,
+      route,
+    ),
   };
 }
 
@@ -193,12 +251,16 @@ export function resolveScheduledTriggerConfig(
 export function buildIdempotencyKey(
   route: ScheduledRouteName,
   now: Date,
+  explicitKey?: string,
+  namespace?: string,
 ): string | undefined {
   if (route !== "/api/agent/run") return undefined;
+  if (explicitKey) return explicitKey;
   // Matches the server-side default format in src/agent/run-flow.ts
   // (defaultIdempotencyKey) so scheduled and unscheduled cron triggers within
   // the same hour always converge on one AgentRun row.
-  return `cron:${now.toISOString().slice(0, 13)}`;
+  const hour = now.toISOString().slice(0, 13);
+  return namespace ? `cron:${namespace}:${hour}` : `cron:${hour}`;
 }
 
 export interface ScheduledTriggerOutcome {
@@ -231,7 +293,12 @@ export async function runScheduledTrigger(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const requestUrl = new URL(config.route, config.targetUrl);
-  const idempotencyKey = buildIdempotencyKey(config.route, now);
+  const idempotencyKey = buildIdempotencyKey(
+    config.route,
+    now,
+    config.explicitIdempotencyKey,
+    config.idempotencyNamespace,
+  );
 
   const headers: Record<string, string> = {
     "x-cron-secret": config.cronSecret,

@@ -1,167 +1,134 @@
 import { z } from "zod/v4";
 
 // ---------------------------------------------------------------------------
-// Foundry Anthropic endpoint validation
+// Azure OpenAI v1 endpoint validation
 // ---------------------------------------------------------------------------
 //
-// Preferred names (new): ANTHROPIC_FOUNDRY_BASE_URL, ANTHROPIC_FOUNDRY_API_KEY,
-//   ANTHROPIC_FOUNDRY_DEPLOYMENT, ANTHROPIC_FOUNDRY_API_VERSION
+// AZURE_OPENAI_BASE_URL is the complete v1 data-plane base URL, for example:
+//   https://your-resource.openai.azure.com/openai/v1
+//   https://your-resource.services.ai.azure.com/openai/v1
 //
-// Legacy fallbacks (kept for already-deployed environments):
-//   AZURE_OPENAI_ENDPOINT  → the raw resource endpoint; /anthropic is appended
-//   AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME, AZURE_OPENAI_API_VERSION
-//
-// ANTHROPIC_FOUNDRY_BASE_URL must be a services.ai.azure.com/anthropic endpoint,
-// not a direct OpenAI API host (api.openai.com).
+// AZURE_OPENAI_DEPLOYMENT_NAME is the environment-specific Azure deployment
+// name. AZURE_CLIENT_ID selects the user-assigned managed identity in Azure.
+// Authentication is always Microsoft Entra ID; API keys and dated API versions
+// are intentionally not part of the runtime configuration.
 
 function normalizeBaseURL(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function isFoundryAnthropicBaseURL(value: string): boolean {
+function isAzureOpenAIBaseURL(value: string): boolean {
   try {
     const url = new URL(value);
+    const isAzureHost =
+      url.hostname.endsWith(".openai.azure.com") ||
+      url.hostname.endsWith(".services.ai.azure.com");
     return (
       url.protocol === "https:" &&
-      url.hostname.endsWith(".services.ai.azure.com") &&
-      normalizeBaseURL(url.pathname) === "/anthropic"
+      isAzureHost &&
+      normalizeBaseURL(url.pathname) === "/openai/v1" &&
+      !url.search &&
+      !url.hash
     );
   } catch {
     return false;
   }
 }
 
-export function resolveFoundryBaseURL(
-  env: Record<string, string | undefined>,
-): string | undefined {
-  const explicit = env.ANTHROPIC_FOUNDRY_BASE_URL;
-  if (explicit) return normalizeBaseURL(explicit);
-  const legacy = env.AZURE_OPENAI_ENDPOINT;
-  if (legacy) {
-    const normalized = normalizeBaseURL(legacy);
-    return normalized.endsWith("/anthropic")
-      ? normalized
-      : `${normalized}/anthropic`;
-  }
-  return undefined;
-}
-
-export interface FoundryConfig {
+export interface AzureOpenAIConfig {
   baseURL: string;
-  apiKey: string;
   deployment: string;
-  apiVersion?: string;
-  source: "preferred" | "legacy";
+  clientId?: string;
 }
 
-export function resolveFoundryConfig(
+export function resolveAzureOpenAIConfig(
   env: Record<string, string | undefined>,
-): FoundryConfig | undefined {
-  const preferred = {
-    baseURL: env.ANTHROPIC_FOUNDRY_BASE_URL,
-    apiKey: env.ANTHROPIC_FOUNDRY_API_KEY,
-    deployment: env.ANTHROPIC_FOUNDRY_DEPLOYMENT,
-    apiVersion: env.ANTHROPIC_FOUNDRY_API_VERSION,
-  };
-  const hasAnyPreferred = Object.values(preferred).some(Boolean);
-
-  if (hasAnyPreferred) {
-    if (!preferred.baseURL || !preferred.apiKey || !preferred.deployment) {
-      return undefined;
-    }
-    return {
-      baseURL: normalizeBaseURL(preferred.baseURL),
-      apiKey: preferred.apiKey,
-      deployment: preferred.deployment,
-      apiVersion: preferred.apiVersion,
-      source: "preferred",
-    };
-  }
-
-  const legacyBaseURL = resolveFoundryBaseURL(env);
+): AzureOpenAIConfig | undefined {
   if (
-    !legacyBaseURL ||
-    !env.AZURE_OPENAI_API_KEY ||
-    !env.AZURE_OPENAI_DEPLOYMENT_NAME
+    !env.AZURE_OPENAI_BASE_URL ||
+    !env.AZURE_OPENAI_DEPLOYMENT_NAME ||
+    !isAzureOpenAIBaseURL(env.AZURE_OPENAI_BASE_URL)
   ) {
     return undefined;
   }
 
   return {
-    baseURL: legacyBaseURL,
-    apiKey: env.AZURE_OPENAI_API_KEY,
+    baseURL: normalizeBaseURL(env.AZURE_OPENAI_BASE_URL),
     deployment: env.AZURE_OPENAI_DEPLOYMENT_NAME,
-    apiVersion: env.AZURE_OPENAI_API_VERSION,
-    source: "legacy",
+    clientId: env.AZURE_CLIENT_ID,
   };
 }
 
 const envSchema = z
   .object({
-    // Preferred Foundry Anthropic config
-    ANTHROPIC_FOUNDRY_BASE_URL: z.string().url().optional(),
-    ANTHROPIC_FOUNDRY_API_KEY: z.string().min(1).optional(),
-    ANTHROPIC_FOUNDRY_DEPLOYMENT: z.string().min(1).optional(),
-    ANTHROPIC_FOUNDRY_API_VERSION: z.string().min(1).optional(),
-    // Legacy fallback names (still accepted for backwards-compat)
-    AZURE_OPENAI_ENDPOINT: z.string().url().optional(),
-    AZURE_OPENAI_API_KEY: z.string().min(1).optional(),
+    // Azure OpenAI v1 with Microsoft Entra authentication
+    AZURE_OPENAI_BASE_URL: z.string().url(),
     AZURE_OPENAI_DEPLOYMENT_NAME: z.string().min(1).optional(),
-    AZURE_OPENAI_API_VERSION: z.string().min(1).optional(),
+    AZURE_CLIENT_ID: z.string().uuid().optional(),
     // Other runtime config
     DATABASE_URL: z.string().url(),
     POSTHOG_API_KEY: z.string().min(1),
     POSTHOG_HOST: z.string().url().optional(),
     CRON_SECRET: z.string().min(1),
     ROLLOUT_MODE: z.enum(["disabled", "shadow", "paper"]).optional(),
-    RESEND_API_KEY: z.string().min(1).optional(),
+    AZURE_COMMUNICATION_CONNECTION_STRING: z.string().min(1).optional(),
+    AZURE_COMMUNICATION_EMAIL_SENDER: z.email().optional(),
     ALERT_EMAIL_TO: z.email().optional(),
-    ALERT_EMAIL_FROM: z.email().optional(),
     ADMIN_PASSWORD: z.string().min(1),
     ADMIN_SESSION_SECRET: z.string().min(1).optional(),
     NODE_ENV: z.enum(["development", "test", "production"]).optional(),
   })
   .check((ctx) => {
     const env = ctx.value;
-    // Require at least one complete set of LLM credentials
-    const newBaseURL = env.ANTHROPIC_FOUNDRY_BASE_URL;
-    const newKey = env.ANTHROPIC_FOUNDRY_API_KEY;
-    const newDeployment = env.ANTHROPIC_FOUNDRY_DEPLOYMENT;
-    const legacyEndpoint = env.AZURE_OPENAI_ENDPOINT;
-    const legacyKey = env.AZURE_OPENAI_API_KEY;
-    const legacyDeployment = env.AZURE_OPENAI_DEPLOYMENT_NAME;
-
-    const hasAnyNew = !!(newBaseURL || newKey || newDeployment);
-    const hasNew = !!(newBaseURL && newKey && newDeployment);
-    const hasLegacy = !!(legacyEndpoint && legacyKey && legacyDeployment);
-    if ((hasAnyNew && !hasNew) || (!hasAnyNew && !hasLegacy)) {
+    if (!env.AZURE_OPENAI_DEPLOYMENT_NAME) {
       ctx.issues.push({
         code: "custom",
         message:
-          "LLM credentials required: set ANTHROPIC_FOUNDRY_BASE_URL + " +
-          "ANTHROPIC_FOUNDRY_API_KEY + ANTHROPIC_FOUNDRY_DEPLOYMENT, " +
-          "or the legacy AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY + AZURE_OPENAI_DEPLOYMENT_NAME.",
+          "AZURE_OPENAI_DEPLOYMENT_NAME is required for Azure OpenAI.",
         input: ctx.value,
       });
     }
 
-    if (newBaseURL && !isFoundryAnthropicBaseURL(newBaseURL)) {
+    if (!isAzureOpenAIBaseURL(env.AZURE_OPENAI_BASE_URL)) {
       ctx.issues.push({
         code: "custom",
         message:
-          "ANTHROPIC_FOUNDRY_BASE_URL must be an HTTPS Azure AI Foundry " +
-          "Anthropic endpoint such as " +
-          "https://your-resource.services.ai.azure.com/anthropic.",
+          "AZURE_OPENAI_BASE_URL must be an HTTPS Azure OpenAI v1 endpoint " +
+          "ending in /openai/v1.",
         input: ctx.value,
       });
     }
 
-    if (env.NODE_ENV === "production" && !env.ADMIN_SESSION_SECRET) {
-      ctx.issues.push({
-        code: "custom",
-        message: "ADMIN_SESSION_SECRET is required in production.",
-        input: ctx.value,
-      });
+    if (env.NODE_ENV === "production") {
+      if (!env.AZURE_CLIENT_ID) {
+        ctx.issues.push({
+          code: "custom",
+          message:
+            "AZURE_CLIENT_ID is required in production to select the user-assigned managed identity.",
+          input: ctx.value,
+        });
+      }
+      if (!env.ADMIN_SESSION_SECRET) {
+        ctx.issues.push({
+          code: "custom",
+          message: "ADMIN_SESSION_SECRET is required in production.",
+          input: ctx.value,
+        });
+      }
+      const missingEmailConfig = [
+        !env.AZURE_COMMUNICATION_CONNECTION_STRING &&
+          "AZURE_COMMUNICATION_CONNECTION_STRING",
+        !env.AZURE_COMMUNICATION_EMAIL_SENDER &&
+          "AZURE_COMMUNICATION_EMAIL_SENDER",
+        !env.ALERT_EMAIL_TO && "ALERT_EMAIL_TO",
+      ].filter(Boolean);
+      if (missingEmailConfig.length > 0) {
+        ctx.issues.push({
+          code: "custom",
+          message: `Production ACS email configuration is incomplete: ${missingEmailConfig.join(", ")}.`,
+          input: ctx.value,
+        });
+      }
     }
   });
 

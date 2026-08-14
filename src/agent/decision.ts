@@ -7,6 +7,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { getLLM } from "./llm";
 import {
   tradeDecisionSchema,
+  tradeDecisionWireSchema,
   type DecisionResult,
   type PolicyEvaluation,
   type TradingAccountSnapshot,
@@ -132,7 +133,7 @@ export async function generateTradeDecision(
     throw new Error("Configured model does not support structured output");
   }
 
-  const structuredModel = model.withStructuredOutput(tradeDecisionSchema, {
+  const structuredModel = model.withStructuredOutput(tradeDecisionWireSchema, {
     name: "trade_decision",
     includeRaw: true,
   });
@@ -187,7 +188,7 @@ export async function generateTradeDecision(
 
   const usage = extractTokenUsage(response.raw);
   return {
-    decision: response.parsed,
+    decision: tradeDecisionSchema.parse(response.parsed),
     tokenUsage: {
       promptTokens: usage?.promptTokens ?? 0,
       completionTokens: usage?.completionTokens ?? 0,
