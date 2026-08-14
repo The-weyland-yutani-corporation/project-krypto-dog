@@ -145,6 +145,11 @@ resource prodDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-0
     }
     versionUpgradeOption: 'NoAutoUpgrade'
   }
+  // Cognitive Services rejects concurrent child-deployment mutations on one
+  // account. Serialize prod after dev instead of racing the parent resource.
+  dependsOn: [
+    devDeployment
+  ]
 }
 
 output foundryAccountEndpoint string = foundryAccount.properties.endpoint

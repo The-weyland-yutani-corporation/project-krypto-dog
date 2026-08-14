@@ -75,8 +75,14 @@ param platformResourceGroupName string = 'rg-krypto-platform'
 @description('GitHub repository owner (org or user), e.g. VeVarunSharma.')
 param githubOrg string
 
+@description('Immutable GitHub repository owner ID used by the configured OIDC subject format.')
+param githubOwnerId string
+
 @description('GitHub repository name, e.g. project-krypto-dog.')
 param githubRepo string
+
+@description('Immutable GitHub repository ID used by the configured OIDC subject format.')
+param githubRepoId string
 
 @description('GitHub repository Environment name federated to the dev identity. Must match an Environment configured in the repository settings.')
 param devGithubEnvironmentName string = 'development'
@@ -135,7 +141,9 @@ module devOidcIdentity 'modules/oidc-identity.bicep' = {
     identityName: devIdentityName
     location: location
     githubOrg: githubOrg
+    githubOwnerId: githubOwnerId
     githubRepo: githubRepo
+    githubRepoId: githubRepoId
     githubEnvironmentName: devGithubEnvironmentName
     includeRoleAssignmentAdmin: true
     tags: union(tags, { environment: 'dev' })
@@ -153,7 +161,9 @@ module prodDeployOidcIdentity 'modules/oidc-identity.bicep' = {
     identityName: prodDeployIdentityName
     location: location
     githubOrg: githubOrg
+    githubOwnerId: githubOwnerId
     githubRepo: githubRepo
+    githubRepoId: githubRepoId
     githubEnvironmentName: prodDeployGithubEnvironmentName
     includeRoleAssignmentAdmin: true
     includeLocksContributor: true
@@ -172,7 +182,9 @@ module prodPromotionOidcIdentity 'modules/oidc-identity.bicep' = {
     identityName: prodPromotionIdentityName
     location: location
     githubOrg: githubOrg
+    githubOwnerId: githubOwnerId
     githubRepo: githubRepo
+    githubRepoId: githubRepoId
     githubEnvironmentName: prodPromotionGithubEnvironmentName
     includeRoleAssignmentAdmin: false
     tags: union(tags, { environment: 'prod' })
@@ -200,7 +212,9 @@ module platformOidcIdentity 'modules/oidc-identity.bicep' = {
     identityName: platformIdentityName
     location: location
     githubOrg: githubOrg
+    githubOwnerId: githubOwnerId
     githubRepo: githubRepo
+    githubRepoId: githubRepoId
     githubEnvironmentName: platformGithubEnvironmentName
     includeRoleAssignmentAdmin: true
     includeLocksContributor: true

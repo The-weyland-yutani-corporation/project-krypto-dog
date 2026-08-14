@@ -77,6 +77,16 @@ else
   echo "FAIL  valid-format args but no GH_TOKEN: expected a GH_TOKEN-specific rejection, got (rc=${rc:-0}): ${output}"
 fi
 
+total=$((total + 1))
+output="$(env -u GH_TOKEN -u GITHUB_TOKEN bash "${script_path}" \
+  --sha "$(printf 'a%.0s' $(seq 1 40))" --branch develop/azure --repo owner/repo --ci-workflow ci.yml 2>&1)" && rc=0 || rc=$?
+if [ "${rc:-0}" -ne 0 ] && printf '%s' "${output}" | grep -q "GH_TOKEN"; then
+  echo "PASS  slash-qualified branch passed ref validation before auth rejection"
+else
+  failures=$((failures + 1))
+  echo "FAIL  slash-qualified branch should reach the GH_TOKEN check, got (rc=${rc:-0}): ${output}"
+fi
+
 echo
 echo "${total} assertions run, $((total - failures)) passed, ${failures} failed."
 if [ "${failures}" -gt 0 ]; then

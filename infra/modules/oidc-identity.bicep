@@ -14,8 +14,14 @@ param location string
 @description('GitHub repository owner (org or user), e.g. VeVarunSharma.')
 param githubOrg string
 
+@description('Immutable GitHub repository owner ID used by the repository OIDC subject customization.')
+param githubOwnerId string
+
 @description('GitHub repository name, e.g. project-krypto-dog.')
 param githubRepo string
+
+@description('Immutable GitHub repository ID used by the repository OIDC subject customization.')
+param githubRepoId string
 
 @description('GitHub repository Environment name this identity is federated to, e.g. development, production-deploy, production-promotion, or platform.')
 param githubEnvironmentName string
@@ -71,7 +77,7 @@ resource federatedCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/f
     audiences: [
       'api://AzureADTokenExchange'
     ]
-    subject: 'repo:${githubOrg}/${githubRepo}:environment:${githubEnvironmentName}'
+    subject: 'repo:${githubOrg}@${githubOwnerId}/${githubRepo}@${githubRepoId}:environment:${githubEnvironmentName}'
   }
 }
 

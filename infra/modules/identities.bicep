@@ -37,7 +37,7 @@ param registryId string
 @description('Tags applied to the identities.')
 param tags object = {}
 
-var acrPullRoleId = '7f951dda-4ed3-4680-a904-db6ba5628e46'
+var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
 resource runtimeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' = {
   name: runtimeIdentityName
