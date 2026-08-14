@@ -194,8 +194,8 @@ if [ "${quota_values_are_integers}" != "true" ]; then
   exit 1
 fi
 
-current_value="$(printf '%s' "${quota_matches}" | jq -r '.[0].currentValue')"
-quota_limit="$(printf '%s' "${quota_matches}" | jq -r '.[0].limit')"
+current_value="$(printf '%s' "${quota_matches}" | jq -r '.[0].currentValue | floor')"
+quota_limit="$(printf '%s' "${quota_matches}" | jq -r '.[0].limit | floor')"
 
 replaceable_existing_capacity=0
 for index in "${!deployment_names[@]}"; do
