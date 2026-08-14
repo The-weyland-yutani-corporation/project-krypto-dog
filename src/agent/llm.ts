@@ -71,6 +71,10 @@ export function buildLLM(): BaseChatModel {
     maxRetries: 0,
     configuration: {
       baseURL: config.baseURL,
+      // openai@6 ClientOptions.apiKey accepts an async ApiKeySetter and awaits
+      // it before every request. This is the v1-client token path; the legacy
+      // azureADTokenProvider option belongs to AzureOpenAI/AzureChatOpenAI's
+      // dated deployment endpoint client.
       apiKey: tokenProvider,
       maxRetries: 0,
     },

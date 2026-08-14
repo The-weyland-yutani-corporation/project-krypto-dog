@@ -11,6 +11,7 @@ import {
 } from "@azure/identity";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { ChatOpenAI } from "@langchain/openai";
+import OpenAI from "openai";
 
 jest.mock("@azure/identity", () => ({
   DefaultAzureCredential: jest.fn(),
@@ -328,6 +329,24 @@ describe("buildLLM", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedGetBearerTokenProvider.mockReturnValue(tokenProvider);
+  });
+
+  it("openai v1 awaits the async token setter before building Authorization", async () => {
+    const fetchImpl = jest.fn(async (_input: unknown, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe("Bearer test-entra-token");
+      return Response.json({ object: "list", data: [], has_more: false });
+    });
+    const client = new OpenAI({
+      apiKey: tokenProvider,
+      baseURL: "https://test-resource.openai.azure.com/openai/v1",
+      fetch: fetchImpl as typeof fetch,
+    });
+
+    await client.models.list();
+
+    expect(tokenProvider).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("builds a BaseChatModel-compatible GPT-5.6 Luna client for Azure OpenAI v1", () => {
