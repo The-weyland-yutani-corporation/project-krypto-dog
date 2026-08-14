@@ -18,7 +18,7 @@
 # Usage:
 #   verify-deploy-sha.sh \
 #     --sha <candidate 40-hex SHA> \
-#     --branch <develop|main, exact branch name, no wildcards> \
+#     --branch <exact branch name, slash-qualified names allowed, no wildcards> \
 #     --repo <owner/repo> \
 #     --ci-workflow <workflow file name, e.g. ci.yml>
 #
@@ -66,7 +66,11 @@ while [ $# -gt 0 ]; do
 done
 
 sha="$(azure_validate_release_sha "${sha}")"
-branch="$(azure_validate_safe_token "branch" "${branch}")"
+if ! [[ "${branch}" =~ ^[A-Za-z0-9._/-]{1,128}$ ]] ||
+   ! git check-ref-format --branch "${branch}" >/dev/null 2>&1; then
+  echo "Invalid branch '${branch}': must be an exact valid Git branch name with no wildcards." >&2
+  exit 1
+fi
 ci_workflow="$(azure_validate_safe_token "ci-workflow" "${ci_workflow}")"
 
 if ! [[ "${repo}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
