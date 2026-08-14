@@ -86,6 +86,25 @@ describe("generateTradeDecision", () => {
     expect(model.withStructuredOutput).toHaveBeenCalledTimes(1);
   });
 
+  it("applies full domain constraints locally after Azure-compatible parsing", async () => {
+    const invalidModel = {
+      withStructuredOutput: jest.fn(() =>
+        RunnableLambda.from(async () => ({
+          parsed: {
+            action: "BUY",
+            notionalUSD: -1,
+            reasoning: "Invalid negative amount",
+          },
+          raw: new AIMessage({ content: "" }),
+        })),
+      ),
+    } as unknown as BaseChatModel;
+
+    await expect(
+      generateTradeDecision(input, { model: invalidModel }),
+    ).rejects.toThrow();
+  });
+
   it("refuses inference when deterministic policy blocks it", async () => {
     await expect(
       generateTradeDecision(

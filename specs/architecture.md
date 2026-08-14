@@ -1,227 +1,266 @@
 # Deployment architecture and service map
 
-> **State snapshot: 2026-08-12.** The Azure architecture is implemented in
-> source at commit `34446fe`, but **no Project Krypto Azure dev or prod
-> environment has been provisioned**. There is no Azure Container App URL,
-> Azure PostgreSQL target, or Azure deployment evidence to visit yet. The
-> hosted system remains the older Vercel/Supabase baseline described below.
+> **State snapshot: 2026-08-14.** The Azure target is implemented in source
+> but **not provisioned**. No Project Krypto Azure resource group, Foundry
+> account, model deployment, Container App, PostgreSQL server, ACS resource,
+> or retained live Azure deployment evidence exists yet. There are no Azure
+> application URLs to publish.
 
-This document is the concise source of truth for:
-
-- what is hosted today;
-- what exists only as reviewed infrastructure code;
-- what the Azure dev/prod target will contain after provisioning; and
-- where operators can open the relevant service consoles safely.
-
-Operational sequencing lives in [`deployment.md`](./deployment.md). Bicep
-parameters, identity boundaries, and limitations live in
-[`../infra/README.md`](../infra/README.md). Release gates live in
+This document is the concise source of truth for current deployment state,
+the approved Azure topology, planned resource names, and safe operator entry
+points. Operational order lives in [`deployment.md`](./deployment.md);
+template and identity detail lives in
+[`../infra/README.md`](../infra/README.md); release gates live in
 [`readiness.md`](./readiness.md).
 
 ## Deployment state
 
-| Surface | Current state | Deployment status |
+| Surface | Current state | Status |
 |---|---|---|
-| Application | A historical Vercel production build was observed `Ready` on 2026-07-15, but it is about 115 days old and returns `404` from `/api/agent/status`. | **Hosted, not the current release candidate** |
-| Database | A fresh Supabase PostgreSQL 17 replacement exists and passed read-only inventory. It has no retained paper-trading history and has not been promoted to serve the Azure release. | **Hosted baseline, intentionally fresh** |
-| Scheduling | The fresh Supabase inventory found no active Krypto cron jobs or queued Krypto HTTP requests. | **No approved production schedule active** |
-| LLM | Existing Microsoft Foundry account(s) are available, but the account/model/SKU/capacity for the new dev/prod deployments has not been selected. | **Existing shared service; target selection pending** |
-| Analytics | PostHog configuration exists in the hosted baseline. No Azure target has emitted telemetry. | **Existing service; Azure evidence pending** |
-| Email | Resend variables were absent from the observed Vercel production configuration. | **Not proven for the hosted baseline** |
-| Azure source | Bicep, Docker images, application deployment tooling, and six Azure GitHub Actions workflows are committed. | **Implemented and locally validated** |
-| Azure dev | `rg-krypto-dev` and the `development` GitHub Environment were absent when checked on 2026-08-12. | **Not provisioned** |
-| Azure prod | `rg-krypto-prod`, `production-deploy`, and `production-promotion` were absent when checked on 2026-08-12. | **Not provisioned** |
-| Azure evidence | No live Azure `what-if`, deployment, ops job, backup, smoke, or activation report exists. | **None** |
+| Azure subscription | Runtime selection is **Visual Studio Enterprise Subscription**. Its subscription ID and other internal identifiers stay in protected configuration, never this repository. | Selected; no Project Krypto deployment run |
+| Region | `westus3` is the approved region for the platform, dev, and prod resource groups. | Implemented in Bicep; not provisioned |
+| Platform | Planned dedicated resource group `rg-krypto-platform` and Foundry account `ai-krypto-westus3`. | **Not provisioned** |
+| Model | Planned OpenAI `gpt-5.6-luna` version `2026-07-09`, `GlobalStandard`; `krypto-dev-luna` and `krypto-prod-luna`, capacity 10 each. | **Not deployed** |
+| Azure dev | Planned `rg-krypto-dev` foundation, release, and monitored shadow schedule. | **Not provisioned** |
+| Azure prod | Planned `rg-krypto-prod` foundation and disabled/manual release. | **Not provisioned; no promotion workflow shipped or approved** |
+| Email | Per-environment Azure Communication Services Email resources with Azure-managed domains are declared. | **Not provisioned** |
+| Analytics | Dev and prod require distinct PostHog project keys. | Configuration/evidence pending |
+| Azure evidence | No live what-if, apply, ops job, backup, provider smoke, target smoke, activation check, or scheduled execution has run. | **None** |
+| Historical host | An older Vercel build and a fresh Supabase PostgreSQL replacement were observed previously. Neither is the Azure release candidate. | Historical baseline only |
+| Scheduling | No approved Project Krypto production schedule is active. | Disabled |
 
-Do not describe the new infrastructure as "deployed" until
-[`azure-deploy-dev.yml`](../.github/workflows/azure-deploy-dev.yml) has
-completed against Azure and its retained evidence has been reviewed.
-
-## Current hosted baseline
-
-The dashed edges below mean "configured or historically associated, but not
-proven for the current release candidate."
-
-```mermaid
-flowchart LR
-  GH["GitHub repository<br/>source + CI"]
-  VERCEL["Vercel<br/>historical production build<br/>not release candidate"]
-  SUPA["Supabase PostgreSQL 17<br/>fresh replacement<br/>no retained trading data"]
-  FOUNDRY["Microsoft Foundry<br/>existing account(s)<br/>new target unselected"]
-  POSTHOG["PostHog<br/>baseline configuration present"]
-  RESEND["Resend<br/>production configuration not proven"]
-
-  GH -->|"historical deploy path"| VERCEL
-  VERCEL -.->|"database configuration staged/unverified"| SUPA
-  VERCEL -.->|"LLM configuration staged/unverified"| FOUNDRY
-  VERCEL -.->|"analytics"| POSTHOG
-  VERCEL -.->|"email variables absent when observed"| RESEND
-```
-
-This baseline is retained only until the Azure target passes the disabled
-deployment gates. Its historical procedure is archived at
-[`archive/deployment.vercel-supabase.md`](./archive/deployment.vercel-supabase.md).
+Do not describe the Azure target as deployed until its workflow has completed
+against Azure, retained evidence has been reviewed, and this state map has
+been updated.
 
 ## Target Azure topology
 
-The following per-environment topology is declared by
-[`environment.bicep`](../infra/environment.bicep),
-[`release.bicep`](../infra/release.bicep), and
-[`rollout.bicep`](../infra/rollout.bicep). Dev and prod receive separate
-resource groups, registries, networks, databases, secret stores, evidence
-containers, identities, apps, and jobs. Only the existing Foundry account is
-shared, with separate model deployments.
-
 ```mermaid
-flowchart LR
-  GH["GitHub Actions<br/>protected Environment + OIDC"]
-  ACR["Azure Container Registry<br/>web + ops digests"]
-  WEB["Container App<br/>Next.js admin + API"]
-  SCHED["Scheduled Container Apps Jobs<br/>hourly run + daily summary"]
-  OPS["Manual Container Apps Jobs<br/>migrate · preflight · backup<br/>smoke · activation"]
-  KV["Key Vault<br/>per-secret RBAC"]
-  PG["PostgreSQL Flexible Server 17<br/>private subnet + private DNS"]
-  EVIDENCE["Blob evidence container<br/>WORM retention"]
-  LOGS["Log Analytics + Action Group"]
-  FOUNDRY["Existing Foundry account<br/>separate dev/prod deployment"]
-  EXTERNAL["Coinbase · PostHog · Resend"]
+flowchart TB
+  GH["GitHub Actions<br/>protected Environments + OIDC"]
 
-  GH -->|"Bicep + immutable image digest"| ACR
-  GH -->|"deploy / operate / promote"| WEB
-  GH -->|"start manual evidence jobs"| OPS
-  ACR --> WEB
-  ACR --> SCHED
-  ACR --> OPS
-  KV -->|"runtime secrets"| WEB
-  KV -->|"cron secret"| SCHED
-  KV -->|"operation-specific secrets"| OPS
-  WEB -->|"private TLS"| PG
-  OPS -->|"private TLS"| PG
-  SCHED -->|"HTTPS + mode-bound headers"| WEB
-  OPS -->|"HTTPS smoke probes"| WEB
-  OPS -->|"signed immutable reports"| EVIDENCE
-  WEB --> FOUNDRY
-  OPS --> FOUNDRY
-  WEB --> EXTERNAL
-  OPS --> EXTERNAL
-  WEB --> LOGS
-  SCHED --> LOGS
-  OPS --> LOGS
+  subgraph PLATFORM["rg-krypto-platform · westus3 · planned"]
+    ACCOUNT["Foundry account<br/>ai-krypto-westus3<br/>local auth disabled"]
+    DEV_MODEL["krypto-dev-luna<br/>GPT-5.6 Luna · capacity 10"]
+    PROD_MODEL["krypto-prod-luna<br/>GPT-5.6 Luna · capacity 10"]
+    ACCOUNT --> DEV_MODEL
+    ACCOUNT --> PROD_MODEL
+  end
+
+  subgraph DEV["rg-krypto-dev · planned"]
+    DEV_ACR["Dev ACR"]
+    DEV_APP["ca-dev-web"]
+    DEV_JOBS["Scheduled + manual<br/>Container Apps Jobs"]
+    DEV_PG["PostgreSQL 17<br/>private VNet"]
+    DEV_KV["Key Vault"]
+    DEV_ACS["ACS Email<br/>Azure-managed domain"]
+    DEV_LOGS["Log Analytics + alerts"]
+    DEV_EVIDENCE["Immutable evidence container"]
+  end
+
+  subgraph PROD["rg-krypto-prod · planned"]
+    PROD_ACR["Prod ACR"]
+    PROD_APP["ca-prod-web"]
+    PROD_JOBS["Scheduled + manual<br/>Container Apps Jobs"]
+    PROD_PG["PostgreSQL 17<br/>private VNet"]
+    PROD_KV["Key Vault"]
+    PROD_ACS["ACS Email<br/>Azure-managed domain"]
+    PROD_LOGS["Log Analytics + alerts"]
+    PROD_EVIDENCE["Immutable evidence container"]
+  end
+
+  GH -->|"platform account/model/access workflows"| PLATFORM
+  GH -->|"dev deploy identity"| DEV
+  GH -->|"prod deploy + forced-disable identities"| PROD
+  DEV_ACR --> DEV_APP
+  DEV_ACR --> DEV_JOBS
+  DEV_APP --> DEV_PG
+  DEV_APP --> DEV_KV
+  DEV_APP --> DEV_ACS
+  DEV_JOBS --> DEV_EVIDENCE
+  DEV_APP --> DEV_MODEL
+  PROD_ACR --> PROD_APP
+  PROD_ACR --> PROD_JOBS
+  PROD_APP --> PROD_PG
+  PROD_APP --> PROD_KV
+  PROD_APP --> PROD_ACS
+  PROD_JOBS --> PROD_EVIDENCE
+  PROD_APP --> PROD_MODEL
 ```
 
-### Intended resource map
+Runtime and ops user-assigned managed identities authenticate to Foundry
+through Microsoft Entra ID. Each receives exactly **Cognitive Services
+OpenAI User** at the account scope. Scheduler identities call the app and
+receive no direct model role. Foundry local authentication/API keys are
+disabled.
 
-All rows are **planned/not provisioned**. ACR, Key Vault, and Storage names
-must be globally unique and can change before the first deployment.
+### Deployment identity security boundary
 
-| Resource | Dev target | Prod target | Bicep source |
+Every mutation permission stays at the identity's assigned resource-group
+scope:
+
+| Identity | Resource-group roles | Subscription read-only roles |
+|---|---|---|
+| Platform | `rg-krypto-platform`: Contributor, Role Based Access Control Administrator, Locks Contributor | Project Krypto Provider Registration Reader; Cognitive Services Usages Reader |
+| Dev deploy | `rg-krypto-dev`: Contributor, Role Based Access Control Administrator | Project Krypto Provider Registration Reader |
+| Prod deploy | `rg-krypto-prod`: Contributor, Role Based Access Control Administrator, Locks Contributor | Project Krypto Provider Registration Reader |
+| Prod forced-disable | `rg-krypto-prod`: Contributor | none |
+
+**Project Krypto Provider Registration Reader** is a minimal custom
+subscription role containing only
+`Microsoft.Resources/subscriptions/providers/read`. It lets the platform, dev,
+and prod-deploy workflows run provider `--check-only` without broad Reader or
+provider-registration permission. The platform identity additionally reads
+live quota through **Cognitive Services Usages Reader**. Prod deploy's
+RG-scoped Locks Contributor manages the PostgreSQL, Key Vault, and evidence
+storage locks; platform's manages the Foundry account lock.
+
+An authorized subscription owner must run
+`.github/scripts/azure/register-providers.sh` before bootstrap. Its required
+provider set includes `Microsoft.Network`; workflows only inspect registration
+after bootstrap.
+
+## Approved platform contract
+
+| Setting | Approved value |
+|---|---|
+| Resource group | `rg-krypto-platform` |
+| Foundry account | `ai-krypto-westus3` |
+| Region | `westus3` |
+| Publisher/model/version | OpenAI `gpt-5.6-luna` `2026-07-09` |
+| SKU | `GlobalStandard` |
+| Dev deployment | `krypto-dev-luna`, capacity 10 |
+| Prod deployment | `krypto-prod-luna`, capacity 10 |
+| Upgrade policy | `NoAutoUpgrade` |
+| Runtime API | Azure OpenAI v1 base URL ending `/openai/v1` |
+| Runtime auth | User-assigned managed identity selected by `AZURE_CLIENT_ID` |
+
+`azure-platform.yml` verifies one exact catalog mapping and the desired
+aggregate capacity (10 + 10 = 20) against the matching live quota dimension.
+It passes both target deployment-name/capacity pairs and subtracts only exact
+existing target capacity on the same format/model/version/SKU dimension,
+making exact reruns idempotent without crediting unrelated capacity. It has
+separate protected what-if/apply jobs for the account and model deployments.
+`azure-platform-access.yml` has its own protected what-if/apply pair for
+workload role bindings.
+
+## Planned resource map
+
+Every row below is **planned/not provisioned**. Globally unique resource names
+remain subject to Azure availability at first deployment.
+
+| Resource | Platform/shared | Dev | Prod |
 |---|---|---|---|
-| Resource group | `rg-krypto-dev` | `rg-krypto-prod` | `bootstrap.bicep` |
-| VNet | `vnet-krypto-dev` | `vnet-krypto-prod` | `modules/network.bicep` |
-| Container Apps environment | `cae-krypto-dev` | `cae-krypto-prod` | `environment.bicep` |
-| Web app | `ca-dev-web` | `ca-prod-web` | `release.bicep` |
-| PostgreSQL server | `psql-krypto-dev` | `psql-krypto-prod` | `environment.bicep` |
-| ACR parameter | `acrkryptodev` | `acrkryptoprod` | `params/environment.*.bicepparam` |
-| Key Vault parameter | `kv-krypto-dev` | `kv-krypto-prod` | `params/environment.*.bicepparam` |
-| Evidence storage parameter | `stkryptodevevid` | `stkryptoprodevid` | `params/environment.*.bicepparam` |
-| Web model deployment | `krypto-dev-claude` | `krypto-prod-claude` | `platform.bicep` |
-| Scheduler jobs | `caj-dev-agent-run`, `caj-dev-daily-summary` | `caj-prod-agent-run`, `caj-prod-daily-summary` | `release.bicep` |
-| Ops jobs | `caj-dev-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` | `caj-prod-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` | `release.bicep` |
+| Resource group | `rg-krypto-platform` | `rg-krypto-dev` | `rg-krypto-prod` |
+| Foundry account | `ai-krypto-westus3` | — | — |
+| Model deployment | — | `krypto-dev-luna` | `krypto-prod-luna` |
+| VNet | — | `vnet-krypto-dev` | `vnet-krypto-prod` |
+| Container Apps environment | — | `cae-krypto-dev` | `cae-krypto-prod` |
+| Web app | — | `ca-dev-web` | `ca-prod-web` |
+| PostgreSQL server | — | `psql-krypto-dev` | `psql-krypto-prod` |
+| ACR | — | `acrkryptodev` | `acrkryptoprod` |
+| Key Vault | — | `kv-krypto-dev` | `kv-krypto-prod` |
+| Evidence storage | — | `stkryptodevevid` | `stkryptoprodevid` |
+| Communication Service | — | `acs-krypto-dev` | `acs-krypto-prod` |
+| Email Communication Service | — | `email-krypto-dev` | `email-krypto-prod` |
+| Hourly job | — | `caj-dev-agent-run` | `caj-prod-agent-run` |
+| Daily job | — | `caj-dev-daily-summary` | `caj-prod-daily-summary` |
+| Ops jobs | — | `caj-dev-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` | `caj-prod-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` |
 
-The first successful environment deployment emits the authoritative resource
-IDs, evidence container URL, PostgreSQL FQDN, and Container Apps domain. Keep
-those values in deployment outputs/evidence; do not paste credentials,
-subscription IDs, private endpoints, or database URLs into this document.
+Each environment has its own PostHog project key. The key is a protected
+environment secret, not a Bicep-managed PostHog resource.
 
-## Release and promotion flow
+## Provisioning and release flow
 
 ```mermaid
 flowchart TD
-  CI["Successful push CI<br/>exact develop or main SHA"]
-  ENV["Protected GitHub Environment<br/>OIDC login"]
-  CORE["Bicep environment deploy<br/>what-if safety checks"]
-  IMAGE["Build web + ops once<br/>resolve immutable digests"]
-  RELEASE["release.bicep<br/>disabled + Manual schedules"]
-  INIT["migrate-init<br/>runtime login + schema + seed"]
-  PREFLIGHT["Azure preflight"]
-  SMOKE["target-smoke<br/>signed SHA/digest approval"]
-  ACTCHECK["activation-check"]
-  DEV["Dev only: shadow + Schedule"]
-  PREPARE["Prod prepare<br/>shadow or paper, schedules Manual"]
-  ACTIVATE["Separate prod activate<br/>recheck evidence, then Schedule"]
+  PROVIDERS["Subscription owner<br/>register/wait providers<br/>including Microsoft.Network"]
+  BOOT["Local bootstrap<br/>three resource groups + OIDC identities<br/>minimal read-only subscription roles"]
+  PLATFORM["Protected platform account/model<br/>what-if → apply → no-trade smoke"]
+  DEV_FOUNDATION["Dev foundation<br/>environment.bicep only"]
+  PROD_FOUNDATION["Prod foundation<br/>environment.bicep only"]
+  ACCESS["Protected platform access<br/>four OpenAI User bindings"]
+  DEV_FULL["Dev full release<br/>disabled/manual → evidence → shadow/manual"]
+  DEV_MANUAL["Unique manual shadow run<br/>post-run activation proof"]
+  DEV_SCHEDULE["Activate monitored Schedule"]
+  DEV_OBSERVE["Observe scheduled success"]
+  PROD_FULL["Prod full release<br/>disabled/manual only"]
 
-  CI --> ENV --> CORE --> IMAGE --> RELEASE --> INIT --> PREFLIGHT --> SMOKE --> ACTCHECK
-  ACTCHECK --> DEV
-  ACTCHECK --> PREPARE --> ACTIVATE
+  PROVIDERS --> BOOT
+  BOOT --> PLATFORM
+  BOOT --> DEV_FOUNDATION
+  BOOT --> PROD_FOUNDATION
+  DEV_FOUNDATION --> ACCESS
+  PROD_FOUNDATION --> ACCESS
+  ACCESS --> DEV_FULL --> DEV_MANUAL --> DEV_SCHEDULE --> DEV_OBSERVE
+  ACCESS --> PROD_FULL
 ```
 
-Production deploy and production activation are separate approvals. No
-workflow or Bicep parameter supports live-money execution.
+Both foundations must exist before `azure-platform-access.yml` can bind the
+dev/prod runtime and ops principal IDs. A full release before those bindings
+would fail Foundry smoke and is not an approved shortcut.
 
-## Database connection contract
+Dev schedule activation deploys and validates `schedule-monitoring.bicep` with
+the current activation timestamp before `rollout.bicep` may set either job to
+`Schedule`. Disable, rollback, and rotation paths first make and verify both
+jobs `Manual`, then disable monitoring at boundary `0`.
+The same generation plus the exact image digest namespaces hourly scheduled
+idempotency, so an old same-hour run cannot satisfy current observation;
+run-flow rejects cross-mode replay of an existing key.
 
-The Azure target uses the default `postgres` database initially; no separate
-application database resource is declared. Both URLs target the same private
-server/database but use different roles:
+Prod deployment and secret rotation share the
+`azure-production-mutation` concurrency lock and end disabled/manual. No
+executable production promotion workflow is shipped or approved. The
+`production-promotion` identity/environment is retained only for the
+forced-disable portions of those two workflows; any future promotion requires
+a new evidence-bound design and review.
 
-| Setting | Required identity | Purpose |
-|---|---|---|
-| `DIRECT_URL` | `krypto_owner` administrator | Migrations, runtime-login bootstrap, preflight inventory, and verified backup only |
-| `DATABASE_URL` | `krypto_app` runtime | Web app and idempotent singleton initialization |
-| `POSTGRES_ADMIN_PASSWORD` | Password embedded in `DIRECT_URL` | Creates/configures the Flexible Server administrator |
-| `RUNTIME_DATABASE_PASSWORD` | Password embedded in `DATABASE_URL` | Creates or rotates `krypto_app` during `migrate-init` |
+## Database and provider boundaries
 
-The two URLs must use `sslmode=require`, and the runtime/admin usernames must
-remain distinct. GitHub-hosted runners do not connect directly to the private
-database; the VNet-integrated ops jobs perform database operations.
+- `DATABASE_URL` uses least-privilege `krypto_app`; `DIRECT_URL` uses
+  `krypto_owner`. Both address the same private PostgreSQL 17 server/database
+  with `sslmode=require`.
+- GitHub-hosted runners do not connect to PostgreSQL. VNet-integrated ops jobs
+  perform migration, preflight, and backup work.
+- ACS connection strings are generated by Azure from the environment's
+  Communication Service and written directly to Key Vault. They never transit
+  GitHub.
+- The runtime receives `AZURE_COMMUNICATION_CONNECTION_STRING`,
+  `AZURE_COMMUNICATION_EMAIL_SENDER`, and `ALERT_EMAIL_TO`.
+- Foundry runtime configuration is `AZURE_OPENAI_BASE_URL`,
+  `AZURE_OPENAI_DEPLOYMENT_NAME`, and `AZURE_CLIENT_ID`; there is no model API
+  key.
 
 ## Live endpoint register
 
-This is the authoritative link register. **No Azure endpoint may be added
-until its environment deployment and retained target-smoke evidence pass.**
+No URL is recorded until the matching deployment and retained target-smoke
+evidence pass.
 
-| Environment | Public application | Azure resources | Evidence | Status |
+| Environment | Planned app | Planned resource group | Public URL | Status |
 |---|---|---|---|---|
-| Hosted baseline | The concrete historical Vercel URL is intentionally not recorded; select the Project Krypto project in the [Vercel dashboard](https://vercel.com/dashboard) | The fresh database is visible in [Supabase projects](https://supabase.com/dashboard/projects) | See [`readiness.md`](./readiness.md) for the last observed inventory | Historical; not release candidate |
-| Azure dev | Not available | Expected resource group `rg-krypto-dev`; open [Azure Resource Groups](https://portal.azure.com/#view/HubsExtension/BrowseResourceGroups) after provisioning | None | **Not deployed** |
-| Azure prod | Not available | Expected resource group `rg-krypto-prod`; open [Azure Resource Groups](https://portal.azure.com/#view/HubsExtension/BrowseResourceGroups) after provisioning | None | **Not deployed** |
+| Azure dev | `ca-dev-web` | `rg-krypto-dev` | No URL yet | **Not deployed** |
+| Azure prod | `ca-prod-web` | `rg-krypto-prod` | No URL yet | **Not deployed** |
 
-After the first successful Azure deployment, update only the public Container
-App origin in this table and link the corresponding GitHub Actions run. Keep
-subscription IDs, full Azure resource IDs, PostgreSQL FQDNs/URLs, Key Vault
-URLs, evidence-container URLs, and private endpoints out of this public
-repository; operators can resolve them from the protected Bicep deployment
-outputs and evidence artifacts.
+Do not publish subscription IDs, full Azure resource IDs, PostgreSQL FQDNs,
+Key Vault URLs, evidence-container URLs, identity IDs, or other protected
+deployment outputs.
 
 ## Operator links
 
-Concrete project IDs and internal service URLs are deliberately not committed.
-Use these safe entry points, then select the resource named in deployment
-outputs. GitHub workflow links become active after this branch reaches the
-default branch.
-
-| Service | Operator link | Current use |
+| Service | Entry point | Purpose |
 |---|---|---|
-| Repository | [Project Krypto on GitHub](https://github.com/VeVarunSharma/project-krypto-dog) | Source of truth |
-| Actions | [Workflow runs](https://github.com/VeVarunSharma/project-krypto-dog/actions) | CI and future Azure deployments |
-| Dev deploy workflow | [Azure deploy dev](https://github.com/VeVarunSharma/project-krypto-dog/actions/workflows/azure-deploy-dev.yml) | First target to provision and prove |
-| Prod deploy workflow | [Azure deploy prod](https://github.com/VeVarunSharma/project-krypto-dog/actions/workflows/azure-deploy-prod.yml) | Approved disabled-only production releases |
-| Prod promotion workflow | [Azure promote prod](https://github.com/VeVarunSharma/project-krypto-dog/actions/workflows/azure-promote-prod.yml) | Separate prepare/activate approvals |
-| GitHub Environments | [Environment settings](https://github.com/VeVarunSharma/project-krypto-dog/settings/environments) | Create `platform`, `development`, `production-deploy`, `production-promotion` |
-| Actions secrets/variables | [Actions settings](https://github.com/VeVarunSharma/project-krypto-dog/settings/secrets/actions) | Configure OIDC variables and protected secrets |
-| Azure resources | [Azure Resource Groups](https://portal.azure.com/#view/HubsExtension/BrowseResourceGroups) | Dev/prod groups do not exist yet |
-| Microsoft Foundry | [Microsoft Foundry portal](https://ai.azure.com/) | Select the existing account and reviewed model capacity |
-| Vercel | [Vercel dashboard](https://vercel.com/dashboard) | Historical hosted app |
-| Supabase | [Supabase projects](https://supabase.com/dashboard/projects) | Fresh hosted PostgreSQL baseline |
-| PostHog | [PostHog US](https://us.posthog.com/) | Analytics/operational telemetry |
-| Resend | [Resend email activity](https://resend.com/emails) | Alert and daily-summary delivery |
+| GitHub Actions | [Workflow runs](https://github.com/VeVarunSharma/project-krypto-dog/actions) | Platform, access, foundation, release, and evidence runs |
+| GitHub Environments | [Environment settings](https://github.com/VeVarunSharma/project-krypto-dog/settings/environments) | Protected `platform`, `development`, and `production-deploy` gates; `production-promotion` is forced-disable-only |
+| Azure | [Azure portal](https://portal.azure.com/) | Select **Visual Studio Enterprise Subscription**, then planned resource groups |
+| Microsoft Foundry | [Foundry portal](https://ai.azure.com/) | Planned account/model inspection after provisioning |
+| PostHog | [PostHog US](https://us.posthog.com/) | Select the separate dev or prod project |
 
 ## Source-of-truth links
 
 - [`deployment.md`](./deployment.md) — ordered operator runbook.
-- [`../infra/README.md`](../infra/README.md) — Bicep modules, identities,
-  secrets, outputs, and limitations.
-- [`readiness.md`](./readiness.md) — observed hosted baseline and release gates.
-- [`monitoring.md`](./monitoring.md) — operational signals and alerts.
+- [`../infra/README.md`](../infra/README.md) — Bicep, identity, secret, and
+  monitoring detail.
+- [`readiness.md`](./readiness.md) — evidence and release gates.
+- [`monitoring.md`](./monitoring.md) — signals and alert behavior.
 - [`decisions/0008-azure-native-deployment-architecture.md`](./decisions/0008-azure-native-deployment-architecture.md)
-  — accepted architecture decision.
+  — accepted Azure architecture decision.

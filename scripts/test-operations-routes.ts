@@ -12,9 +12,9 @@ const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required");
 process.env.CRON_SECRET = "operations-route-test-secret";
 process.env.ADMIN_SESSION_SECRET = "operations-route-admin-secret";
-delete process.env.RESEND_API_KEY;
+delete process.env.AZURE_COMMUNICATION_CONNECTION_STRING;
+delete process.env.AZURE_COMMUNICATION_EMAIL_SENDER;
 delete process.env.ALERT_EMAIL_TO;
-delete process.env.ALERT_EMAIL_FROM;
 
 const sql = postgres(databaseUrl, { max: 1, prepare: false });
 let adminToken = "";

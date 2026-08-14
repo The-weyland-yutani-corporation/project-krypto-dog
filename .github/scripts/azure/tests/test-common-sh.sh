@@ -118,6 +118,22 @@ assert_reject safe_token_wrapper 'name`id`'
 assert_reject safe_token_wrapper "$(printf 'x%.0s' $(seq 1 129))" # too long
 
 echo
+echo "== azure_new_job_execution_id =="
+GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=2
+export GITHUB_RUN_ID GITHUB_RUN_ATTEMPT
+generated_execution_id="$(azure_new_job_execution_id verified-backup current)"
+assert_accept azure_validate_job_execution_id \
+  "${generated_execution_id}" \
+  "run123-a2-verified-backup-current"
+total=$((total + 1))
+if azure_new_job_execution_id verified-backup 'INVALID!' >/tmp/test-common-sh-stdout 2>/tmp/test-common-sh-stderr; then
+  failures=$((failures + 1))
+  echo "FAIL  azure_new_job_execution_id accepted an unsafe discriminator"
+else
+  echo "PASS  azure_new_job_execution_id rejected an unsafe discriminator"
+fi
+
+echo
 echo "== azure_validate_location =="
 assert_accept azure_validate_location "eastus2"
 assert_reject azure_validate_location "East US 2"

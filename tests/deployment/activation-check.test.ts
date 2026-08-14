@@ -33,6 +33,8 @@ const BASE_OPTIONS: ActivationCheckOptions = {
   targetOrigin: TARGET_ORIGIN,
   cronSecret: CRON_SECRET,
   approvalSecret: APPROVAL_SECRET,
+  expectedShadowIdempotencyKey: "manual-shadow:run123-a1",
+  expectedShadowStartedAfter: "2026-08-13T12:00:00Z",
 };
 
 type ApprovalRowOverrides = Partial<{
@@ -51,6 +53,17 @@ type AgentStateOverrides = Partial<{
   isRunning: boolean;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
+}>;
+
+type ShadowRunOverrides = Partial<{
+  id: string;
+  idempotencyKey: string;
+  triggerSource: string;
+  tradingMode: string;
+  outcome: string;
+  startedAt: Date;
+  completedAt: Date | null;
+  tradeCount: number;
 }>;
 
 /**
@@ -111,12 +124,14 @@ function createSqlMock(options: {
   approval?: ApprovalRowOverrides | null;
   bindingExists?: boolean;
   agentState?: AgentStateOverrides | null;
+  shadowRun?: ShadowRunOverrides | null;
 }) {
   const calls: string[] = [];
   const {
     approval = {},
     bindingExists = true,
     agentState = {},
+    shadowRun = {},
   } = options;
   const sql = jest.fn(
     async (
@@ -159,6 +174,26 @@ function createSqlMock(options: {
               agentState.leaseExpiresAt === undefined
                 ? null
                 : agentState.leaseExpiresAt,
+          },
+        ];
+      }
+      if (query.includes('FROM "krypto"."AgentRun"')) {
+        if (shadowRun === null) return [];
+        return [
+          {
+            id: shadowRun.id ?? "shadow-run-id",
+            idempotencyKey:
+              shadowRun.idempotencyKey ?? "manual-shadow:run123-a1",
+            triggerSource: shadowRun.triggerSource ?? "cron",
+            tradingMode: shadowRun.tradingMode ?? "SHADOW",
+            outcome: shadowRun.outcome ?? "HOLD",
+            startedAt:
+              shadowRun.startedAt ?? new Date("2026-08-13T12:00:01.000Z"),
+            completedAt:
+              shadowRun.completedAt === undefined
+                ? new Date("2026-08-13T12:00:10.000Z")
+                : shadowRun.completedAt,
+            tradeCount: shadowRun.tradeCount ?? 0,
           },
         ];
       }
@@ -205,6 +240,68 @@ describe("schedule-activation verifier", () => {
     expect(serialized).not.toContain(CRON_SECRET);
     expect(serialized).not.toContain(APPROVAL_SECRET);
     expect(serialized).not.toContain(BASE_OPTIONS.databaseUrl);
+  });
+
+  it("binds activation to a new terminal zero-trade manual shadow run", async () => {
+    const sql = createSqlMock({ approval: {}, shadowRun: {} });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runActivationCheck({
+      ...BASE_OPTIONS,
+      expectedShadowIdempotencyKey: "manual-shadow:run123-a1",
+      expectedShadowStartedAfter: "2026-08-13T12:00:00Z",
+    });
+
+    expect(report.approved).toBe(true);
+    expect(report.shadowRun).toMatchObject({
+      id: "shadow-run-id",
+      idempotencyKey: "manual-shadow:run123-a1",
+      outcome: "HOLD",
+      tradeCount: 0,
+    });
+    expect(
+      report.checks.filter((check) => check.id.startsWith("manual-shadow")),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "manual-shadow-run-present",
+          status: "pass",
+        }),
+        expect.objectContaining({
+          id: "manual-shadow-run-no-trade",
+          status: "pass",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects a replayed or trading manual shadow run", async () => {
+    const sql = createSqlMock({
+      approval: {},
+      shadowRun: {
+        startedAt: new Date("2026-08-13T11:59:59.000Z"),
+        tradeCount: 1,
+      },
+    });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runActivationCheck({
+      ...BASE_OPTIONS,
+      expectedShadowIdempotencyKey: "manual-shadow:run123-a1",
+      expectedShadowStartedAfter: "2026-08-13T12:00:00Z",
+    });
+
+    expect(report.approved).toBe(false);
+    expect(
+      report.checks.find(
+        (check) => check.id === "manual-shadow-run-started-after-boundary",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+    expect(
+      report.checks.find(
+        (check) => check.id === "manual-shadow-run-no-trade",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
   });
 
   it("rejects when no approval exists", async () => {
@@ -505,6 +602,22 @@ describe("schedule-activation verifier", () => {
     await expect(
       runActivationCheck({ ...BASE_OPTIONS, approvalSecret: "too-short" }),
     ).rejects.toThrow("at least 32 characters");
+    expect(mockedPostgres).not.toHaveBeenCalled();
+  });
+
+  it("requires the exact manual shadow proof inputs", async () => {
+    await expect(
+      runActivationCheck({
+        ...BASE_OPTIONS,
+        expectedShadowIdempotencyKey: "",
+      }),
+    ).rejects.toThrow("EXPECTED_SHADOW_IDEMPOTENCY_KEY");
+    await expect(
+      runActivationCheck({
+        ...BASE_OPTIONS,
+        expectedShadowStartedAfter: "",
+      }),
+    ).rejects.toThrow("EXPECTED_SHADOW_STARTED_AFTER");
     expect(mockedPostgres).not.toHaveBeenCalled();
   });
 });

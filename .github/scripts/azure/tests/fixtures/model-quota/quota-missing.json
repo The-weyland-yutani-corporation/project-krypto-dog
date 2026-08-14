@@ -1,0 +1,20 @@
+[
+  {
+    "name": {
+      "value": "OpenAI.GlobalStandard.gpt-5.6-luna-preview",
+      "localizedValue": "Similar but not exact"
+    },
+    "currentValue": 0,
+    "limit": 100,
+    "unit": "Count"
+  },
+  {
+    "name": {
+      "value": "openai.globalstandard.gpt-5.6-luna",
+      "localizedValue": "Wrong case"
+    },
+    "currentValue": 0,
+    "limit": 100,
+    "unit": "Count"
+  }
+]

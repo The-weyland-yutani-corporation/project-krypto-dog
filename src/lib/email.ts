@@ -1,4 +1,8 @@
-import { Resend } from "resend";
+import {
+  EmailClient,
+  type EmailMessage,
+  type EmailSendResponse,
+} from "@azure/communication-email";
 
 export type EmailDeliveryResult =
   | { status: "sent"; id?: string }
@@ -11,6 +15,20 @@ export class EmailDeliveryError extends Error {
   }
 }
 
+// Keep provider polling comfortably inside the 30-second HTTP caller budgets
+// used by scheduled-trigger and target smoke.
+const EMAIL_SEND_TIMEOUT_MS = 20_000;
+
+interface AcsEmailConfig {
+  connectionString: string;
+  sender: string;
+  recipient: string;
+}
+
+type AcsEmailConfigResolution =
+  | { configured: true; config: AcsEmailConfig }
+  | { configured: false; reason: string };
+
 export function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -20,25 +38,145 @@ export function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-function getResendClient(): Resend | null {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    console.warn("⚠️ RESEND_API_KEY not set — emails will be logged to console");
-    return null;
+function hasValidAcsConnectionString(connectionString: string): boolean {
+  const fields = new Map<string, string>();
+  for (const segment of connectionString.split(";")) {
+    const separatorIndex = segment.indexOf("=");
+    if (separatorIndex === -1) continue;
+    fields.set(
+      segment.slice(0, separatorIndex).trim().toLowerCase(),
+      segment.slice(separatorIndex + 1).trim(),
+    );
   }
-  return new Resend(apiKey);
+
+  const endpoint = fields.get("endpoint");
+  const accessKey = fields.get("accesskey");
+  if (!endpoint || !accessKey) return false;
+
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === "https:" && url.hostname.length > 0;
+  } catch {
+    return false;
+  }
 }
 
-function getEmailAddresses(): { to: string; from: string } | null {
-  const to = process.env.ALERT_EMAIL_TO;
-  const from = process.env.ALERT_EMAIL_FROM;
-  if (!to || !from) {
-    console.warn(
-      "⚠️ ALERT_EMAIL_TO or ALERT_EMAIL_FROM not set — emails will be logged to console"
-    );
-    return null;
+function resolveAcsEmailConfig(): AcsEmailConfigResolution {
+  const connectionString =
+    process.env.AZURE_COMMUNICATION_CONNECTION_STRING?.trim();
+  const sender = process.env.AZURE_COMMUNICATION_EMAIL_SENDER?.trim();
+  const recipient = process.env.ALERT_EMAIL_TO?.trim();
+  const missing = [
+    !connectionString && "AZURE_COMMUNICATION_CONNECTION_STRING",
+    !sender && "AZURE_COMMUNICATION_EMAIL_SENDER",
+    !recipient && "ALERT_EMAIL_TO",
+  ].filter((name): name is string => Boolean(name));
+
+  let reason: string | undefined;
+  if (missing.length > 0) {
+    reason = `Missing ACS email configuration: ${missing.join(", ")}`;
+  } else if (!hasValidAcsConnectionString(connectionString!)) {
+    reason =
+      "AZURE_COMMUNICATION_CONNECTION_STRING must include a valid HTTPS Endpoint and AccessKey";
   }
-  return { to, from };
+
+  if (reason) {
+    if (process.env.NODE_ENV === "production") {
+      throw new EmailDeliveryError(
+        `ACS email delivery is not configured for production: ${reason}`,
+      );
+    }
+    return { configured: false, reason };
+  }
+
+  return {
+    configured: true,
+    config: {
+      connectionString: connectionString!,
+      sender: sender!,
+      recipient: recipient!,
+    },
+  };
+}
+
+function describeProviderError(response: EmailSendResponse): string {
+  const details = [response.error?.code, response.error?.message].filter(
+    (value): value is string => Boolean(value),
+  );
+  return details.length > 0 ? `: ${details.join(" — ")}` : "";
+}
+
+async function sendEmail(
+  subject: string,
+  html: string,
+  logData: unknown,
+  deliveryName: string,
+): Promise<EmailDeliveryResult> {
+  const resolution = resolveAcsEmailConfig();
+  if (!resolution.configured) {
+    console.warn(
+      `[email no-op] ${resolution.reason} — delivery is console-only outside production`,
+    );
+    console.log(`[email no-op] ${subject}\n${JSON.stringify(logData)}`);
+    return { status: "skipped", reason: resolution.reason };
+  }
+
+  const { connectionString, sender, recipient } = resolution.config;
+  const message: EmailMessage = {
+    senderAddress: sender,
+    recipients: {
+      to: [{ address: recipient }],
+    },
+    content: {
+      subject,
+      html,
+    },
+  };
+
+  const abortController = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    abortController.abort();
+  }, EMAIL_SEND_TIMEOUT_MS);
+
+  try {
+    const client = new EmailClient(connectionString);
+    const poller = await client.beginSend(message, {
+      abortSignal: abortController.signal,
+    });
+    const response = await poller.pollUntilDone({
+      abortSignal: abortController.signal,
+    });
+
+    if (response.status !== "Succeeded") {
+      throw new EmailDeliveryError(
+        `ACS email ${deliveryName} ended with status ${response.status}${describeProviderError(response)}`,
+        response.error ?? response,
+      );
+    }
+    if (!response.id?.trim()) {
+      throw new EmailDeliveryError(
+        `ACS email ${deliveryName} succeeded without an operation ID`,
+        response,
+      );
+    }
+    return { status: "sent", id: response.id };
+  } catch (error) {
+    if (error instanceof EmailDeliveryError) throw error;
+    if (timedOut) {
+      throw new EmailDeliveryError(
+        `Timed out sending ${deliveryName} through ACS Email after ${EMAIL_SEND_TIMEOUT_MS}ms`,
+        error,
+      );
+    }
+    throw new EmailDeliveryError(
+      `Failed to send ${deliveryName} through ACS Email`,
+      error,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function sendGuardrailAlert(
@@ -84,37 +222,7 @@ export async function sendGuardrailAlert(
     </div>
   `;
 
-  const resend = getResendClient();
-  const addresses = getEmailAddresses();
-
-  if (!resend || !addresses) {
-    const reason = !resend
-      ? "RESEND_API_KEY is not configured"
-      : "ALERT_EMAIL_TO or ALERT_EMAIL_FROM is not configured";
-    console.log(`[email no-op] ${subject}\n${JSON.stringify(details)}`);
-    return { status: "skipped", reason };
-  }
-
-  try {
-    const response = await resend.emails.send({
-      from: addresses.from,
-      to: addresses.to,
-      subject,
-      html,
-    });
-    if (response.error) {
-      throw new EmailDeliveryError(
-        `Resend rejected guardrail alert: ${response.error.message}`,
-        response.error,
-      );
-    }
-    return response.data?.id
-      ? { status: "sent", id: response.data.id }
-      : { status: "sent" };
-  } catch (error) {
-    if (error instanceof EmailDeliveryError) throw error;
-    throw new EmailDeliveryError("Failed to send guardrail alert", error);
-  }
+  return sendEmail(subject, html, details, "guardrail alert");
 }
 
 export async function sendDailySummary(data: {
@@ -207,35 +315,5 @@ export async function sendDailySummary(data: {
     </div>
   `;
 
-  const resend = getResendClient();
-  const addresses = getEmailAddresses();
-
-  if (!resend || !addresses) {
-    const reason = !resend
-      ? "RESEND_API_KEY is not configured"
-      : "ALERT_EMAIL_TO or ALERT_EMAIL_FROM is not configured";
-    console.log(`[email no-op] ${subject}\n${JSON.stringify(data)}`);
-    return { status: "skipped", reason };
-  }
-
-  try {
-    const response = await resend.emails.send({
-      from: addresses.from,
-      to: addresses.to,
-      subject,
-      html,
-    });
-    if (response.error) {
-      throw new EmailDeliveryError(
-        `Resend rejected daily summary: ${response.error.message}`,
-        response.error,
-      );
-    }
-    return response.data?.id
-      ? { status: "sent", id: response.data.id }
-      : { status: "sent" };
-  } catch (error) {
-    if (error instanceof EmailDeliveryError) throw error;
-    throw new EmailDeliveryError("Failed to send daily summary", error);
-  }
+  return sendEmail(subject, html, data, "daily summary");
 }

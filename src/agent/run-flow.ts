@@ -94,18 +94,21 @@ type InvocationAcquisition =
   | { kind: "existing"; run: AgentRun }
   | { kind: "conflict"; runId: string; message: string };
 
-function configuredModelVersion(
+export function configuredModelVersion(
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  return (
-    env.ANTHROPIC_FOUNDRY_DEPLOYMENT ??
-    env.AZURE_OPENAI_DEPLOYMENT_NAME ??
-    null
-  );
+  return env.AZURE_OPENAI_DEPLOYMENT_NAME ?? null;
 }
 
 function databaseMode(mode: TradingMode): "DISABLED" | "SHADOW" | "PAPER" {
   return mode.toUpperCase() as "DISABLED" | "SHADOW" | "PAPER";
+}
+
+export function idempotencyReplayMatchesMode(
+  persistedMode: AgentRun["tradingMode"],
+  currentMode: TradingMode,
+): boolean {
+  return persistedMode === databaseMode(currentMode);
 }
 
 function defaultIdempotencyKey(
@@ -193,6 +196,14 @@ async function acquireInvocation(
       .from(agentRun)
       .where(eq(agentRun.idempotencyKey, idempotencyKey))
       .limit(1);
+    if (existing && !idempotencyReplayMatchesMode(existing.tradingMode, mode)) {
+      return {
+        kind: "conflict",
+        runId: existing.id,
+        message:
+          "Idempotency key belongs to an AgentRun from a different rollout mode.",
+      };
+    }
     if (
       existing &&
       existing.outcome !== "RUNNING" &&

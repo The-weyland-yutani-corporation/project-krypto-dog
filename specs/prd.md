@@ -2,8 +2,7 @@
 
 > **This document is the single source of truth for the current state of Project Krypto.**
 > Historical PRDs are preserved in [`specs/archive/`](./archive/). Architectural decisions are logged in [`specs/decisions/`](./decisions/). Future proposals live in [`specs/rfcs/`](./rfcs/).
-> Current evidence baseline and release gates: [`specs/readiness.md`](./readiness.md).
-> Production-paper controls and authorization contract: [`specs/production-readiness-prd.v1.md`](./production-readiness-prd.v1.md).
+> Current deployment, paper, and live readiness gates: [`specs/readiness.md`](./readiness.md).
 > Evaluation methodology: [`specs/evaluation.md`](./evaluation.md).
 
 ## Status
@@ -12,8 +11,8 @@
 |---|---|---|
 | **v1** | Paper-trading scaffolding: agent loop, guardrails, schema, tools, admin dashboard | ✅ Shipped (tag `spec/v1`) |
 | **v2** | Hardening: admin auth, balance validation, full PostHog/email wiring, env validation, Drizzle consolidation | ⚠️ Code baseline shipped (tag `spec/v2`) -- NOT production-ready. See §14. |
-| **v2.1** | Safety and Correctness: atomic execution, deterministic authorization, non-destructive migrations, cost-basis PnL, owned expiring run leases, dependency remediation | ✅ Implemented and locally verified -- hosted CI and target-environment evidence remain before deployment |
-| **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Active deployment preparation -- clean target inventory passed; migration, backup, disabled smoke, and rollout remain; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
+| **v2.1** | Safety and Correctness: atomic execution, deterministic authorization, non-destructive migrations, cost-basis PnL, owned expiring run leases, dependency remediation | ✅ Implemented -- live Azure target evidence remains before deployment |
+| **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Azure foundation/release implementation is unprovisioned; platform/foundations/access, first releases, live smoke, and rollout evidence remain. Production promotion is intentionally unimplemented pending a new evidence-bound review; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
 | **v3** | Live Coinbase AgentKit execution on Base L2, sentiment, advanced orders, scaling | 📋 RFC stub only -- see [`rfcs/0001-v3-live-trading.md`](./rfcs/0001-v3-live-trading.md) |
 
 ---
@@ -23,8 +22,8 @@
 **Project Krypto** is an autonomous, LLM-driven cryptocurrency trading agent designed to execute swing trades on the ETH/USDC pair.
 
 - **Phase 1 (v2 baseline):** Paper trading on a **$200 USD** notional pool. v2 is a shipped code baseline -- the engineering loop, guardrails, and schema are in place, but known safety and correctness issues (see §14) must be resolved before any production deployment. The goal at this stage is not profit; it is to harden the agentic loop, move risk rules from the system prompt to deterministic code, and lay the groundwork for trustworthy evidence collection.
-- **Phase 2 (v2.1 / v2.2):** Resolve blocking issues (RFC 0002), deploy to production in shadow mode, then promote to paper mode. Collect at least 30 days of out-of-sample paper-trading data. Success means capital preservation plus positive risk-adjusted returns versus cash and buy-and-hold baselines. No specific daily profit target is committed (see ADR 0007 and `specs/evaluation.md`).
-- **Phase 3 (v3+):** If evidence gates in `specs/readiness.md` §4 are satisfied, enable live execution behind an `ExecutionAdapter` interface. Long-term aspiration is positive compounding returns at scale; this outcome is contingent on demonstrated positive expected value, not a guaranteed result.
+- **Phase 2 (v2.1 / v2.2):** Resolve blocking issues (RFC 0002), provision disabled/manual, and collect qualifying shadow/paper evidence only after a new evidence-bound production promotion design is reviewed and approved. No executable production promotion workflow is currently shipped. Collect at least 30 days of out-of-sample paper-trading data. Success means capital preservation plus positive risk-adjusted returns versus cash and buy-and-hold baselines. No specific daily profit target is committed (see ADR 0007 and `specs/evaluation.md`).
+- **Phase 3 (v3+):** If the live-money boundary in `specs/readiness.md` §11 is satisfied, enable live execution behind an `ExecutionAdapter` interface. Long-term aspiration is positive compounding returns at scale; this outcome is contingent on demonstrated positive expected value, not a guaranteed result.
 
 ---
 
@@ -33,15 +32,15 @@
 | Layer | Technology |
 |---|---|
 | Application | Next.js 16 (App Router), TypeScript, Node.js |
-| AI orchestration | One structured `HOLD` / `BUY` / `SELL` output through `@langchain/anthropic`; no ReAct loop and no mutating model tool |
-| LLM engine | Azure AI Foundry-hosted Anthropic model via the Azure `/anthropic` API surface |
+| AI orchestration | One structured `HOLD` / `BUY` / `SELL` output through `@langchain/openai`; no ReAct loop and no mutating model tool |
+| LLM engine | Dedicated Microsoft Foundry account `ai-krypto-westus3`; OpenAI `gpt-5.6-luna` `2026-07-09` via Azure OpenAI v1 and Microsoft Entra identity |
 | Execution venue | Deterministic transactional paper executor using validated Coinbase market data. A future v3 live venue must implement the gated `ExecutionAdapter` contract. |
-| Database | Supabase (PostgreSQL) via **Drizzle ORM** |
-| Observability | PostHog (events) + Vercel logs + Resend (email alerts) |
+| Database | Azure Database for PostgreSQL Flexible Server 17 (private VNet target) via **Drizzle ORM** |
+| Observability | Separate dev/prod PostHog projects + Container Apps/Log Analytics + Azure Monitor alerts |
 | Design system | Root [`DESIGN.md`](../DESIGN.md): shadcn/ui + Tailwind trading-terminal UI, EvilCharts-style Recharts graphs |
-| Hosting | Vercel |
-| Scheduling | Supabase `pg_cron` + `pg_net` calling the Vercel endpoint hourly |
-| Email | Resend |
+| Hosting | Azure Container Apps (`westus3`) |
+| Scheduling | Azure Container Apps Jobs: hourly agent run and daily summary; Manual until approved activation |
+| Email | Per-environment Azure Communication Services Email with Azure-managed domain |
 
 ADR `0001-drizzle-over-prisma.md` records the Drizzle decision (Prisma was removed in v2).
 
@@ -50,9 +49,10 @@ ADR `0001-drizzle-over-prisma.md` records the Drizzle decision (Prisma was remov
 ## 3. Database schema
 
 Source of truth: [`src/db/schema.ts`](../src/db/schema.ts). Drizzle is the only
-application migration history. Supabase cron enable/disable SQL is kept
-separately under [`supabase/operations/`](../supabase/operations/) and does not
-create application tables.
+application migration history. The Azure target does not use database-side
+scheduling. Legacy hosted-baseline cron operations remain under
+[`supabase/operations/`](../supabase/operations/) for historical compatibility
+and do not define the Azure release.
 
 ### `AgentState` (singleton — `id = "singleton"`)
 
@@ -187,6 +187,8 @@ that would persist a paper trade.
   one structured model decision with a 20-second timeout and one safe retry →
   authorize → transactionally execute/reconcile → journal/complete/flush
   telemetry → owner-checked lease release.
+- **Idempotency:** replay is accepted only when the existing `AgentRun` belongs
+  to the current rollout mode; cross-mode reuse fails as a conflict.
 - **Response:** `AgentRunResult` JSON (`status`, `action`, `reasoning`, `trade`, `portfolioState`, `tokenUsage`, `durationMs`).
 
 ### `GET /api/agent/status`
@@ -253,7 +255,7 @@ that would persist a paper trade.
 | `trade_executed` | After the paper transaction commits |
 | `llm_token_usage` | Token counts plus bounded attempt count and model latency |
 
-### Email delivery (Resend)
+### Email delivery (Azure Communication Services)
 
 - `sendDailySummary(...)` — fired from the daily-summary cron route.
 - `sendGuardrailAlert(...)` remains wired to the legacy `checkDrawdown` helper,
@@ -262,71 +264,116 @@ that would persist a paper trade.
   alerting currently relies on the PostHog monitoring rule rather than a direct
   email from the run path.
 
-Dynamic model/error/journal content is HTML-escaped. Missing configuration
-returns an explicit skipped result and logs locally; Resend failures throw a
-typed delivery error rather than returning success-shaped `void`.
+Dynamic model/error/journal content is HTML-escaped. Outside production,
+missing ACS configuration returns an explicit console-only skipped result.
+Production requires complete ACS configuration; provider failures/timeouts
+throw a typed delivery error rather than returning success-shaped `void`.
+Target smoke requires an actual `sent` result and persisted delivery audit.
 
-### Vercel logs
-- Default function logs for typed upstream/internal errors and lease-release failures.
+### Container Apps and Log Analytics
+- Web/job logs capture typed upstream/internal errors and lease-release
+  failures.
+- Azure Monitor declares terminal job-failure alerts plus a fail-closed
+  missing-hourly-success alert bound to the current schedule activation
+  timestamp.
 
-Operational dashboards, alert thresholds, Supabase cron checks, and the paper-trading evidence checklist are documented in [`specs/monitoring.md`](./monitoring.md).
+Operational dashboards, alert thresholds, Container Apps Job checks, and the
+paper-trading evidence checklist are documented in
+[`specs/monitoring.md`](./monitoring.md).
 
 ---
 
 ## 9. Environment variables
 
-Production configuration is mode-aware (see
-[`.env.example`](../.env.example)). Database, route-auth, and admin values are
-required for deployment; Foundry values are required before `shadow` or `paper`
-can request a model decision.
+Production configuration is validated at startup (see
+[`.env.example`](../.env.example)). The Azure OpenAI base URL and deployment
+name retain valid target shapes even in disabled mode; production also requires
+the workload identity client ID and complete ACS configuration.
 
 | Variable | Purpose | Required |
 |---|---|---|
-| `ANTHROPIC_FOUNDRY_BASE_URL` | Foundry Anthropic base URL ending in `/anthropic` | shadow/paper |
-| `ANTHROPIC_FOUNDRY_API_KEY` | Foundry project key | shadow/paper |
-| `ANTHROPIC_FOUNDRY_DEPLOYMENT` | Foundry Claude deployment name | shadow/paper |
-| `ANTHROPIC_FOUNDRY_API_VERSION` | Foundry Anthropic API version | optional |
-| `DATABASE_URL` | Supabase Postgres URL (use `?pgbouncer=true` for runtime) | yes |
+| `AZURE_OPENAI_BASE_URL` | Dedicated Azure OpenAI v1 base URL ending `/openai/v1` | yes |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | Environment deployment: `krypto-dev-luna` or `krypto-prod-luna` | yes |
+| `AZURE_CLIENT_ID` | Runtime/ops user-assigned identity client ID used for Entra authentication | production |
+| `DATABASE_URL` | Least-privilege `krypto_app` PostgreSQL URL | yes |
 | `DIRECT_URL` | Direct/session database URL for migration and initialization commands | deployment only |
-| `POSTHOG_API_KEY` | PostHog ingest key | operational gate; local no-op if absent |
+| `POSTHOG_API_KEY` | Environment-specific PostHog ingest key; dev/prod keys must differ | operational gate |
 | `POSTHOG_HOST` | PostHog host | optional, default `https://us.i.posthog.com` |
-| `CRON_SECRET` | Auth header for cron-triggered routes | yes |
-| `RESEND_API_KEY` | Resend API key for emails | optional (no-op if absent) |
-| `ALERT_EMAIL_TO` | Recipient for guardrail/daily emails | optional |
-| `ALERT_EMAIL_FROM` | Verified sender domain | optional |
+| `CRON_SECRET` | Auth header for scheduler-triggered routes | yes |
+| `ROLLOUT_MODE` | `disabled`, `shadow`, or `paper`; releases land `disabled` | production |
+| `AZURE_COMMUNICATION_CONNECTION_STRING` | ACS connection string generated in Azure and read from Key Vault; never GitHub | production |
+| `AZURE_COMMUNICATION_EMAIL_SENDER` | Azure-managed ACS sender emitted by the environment deployment | production |
+| `ALERT_EMAIL_TO` | Recipient for guardrail/daily emails | production |
 | `ADMIN_PASSWORD` | Admin dashboard password | yes |
 | `ADMIN_SESSION_SECRET` | HMAC key for expiring admin cookies | yes in production |
 
-Rollout mode is validated when a run begins. Foundry configuration is validated
-only when inference is actually required, so `disabled` mode remains a safe
-deployable default even before model credentials are installed.
+Rollout mode is validated when a run begins. Luna configuration is validated
+at startup, while inference is skipped in disabled mode. Foundry accepts no
+application API key: runtime/ops UAMIs receive only Cognitive Services OpenAI
+User and use Entra tokens.
 
 ---
 
 ## 10. Deployment model
 
-- **Hosting:** Vercel (linked project, `develop/v2` → `main` branch deploys to prod).
-- **Database:** Supabase Postgres. Reviewed Drizzle migrations are applied with
-  `DIRECT_URL` via `npm run db:migrate`; the transaction-pooler
-  `DATABASE_URL` is runtime-only.
+- **State:** implemented in source, **not provisioned**. No Azure URL or live
+  Azure evidence exists.
+- **Subscription/region:** select **Visual Studio Enterprise Subscription** at
+  runtime; deploy `rg-krypto-platform`, `rg-krypto-dev`, and
+  `rg-krypto-prod` in `westus3`. A subscription owner must register/wait for
+  required providers, including `Microsoft.Network`, before bootstrap;
+  deployment workflows check only. All mutation roles remain
+  resource-group-scoped. Platform/dev/prod-deploy receive only the one-action
+  provider-state reader at subscription scope; platform additionally receives
+  Cognitive Services Usages Reader. Platform and prod-deploy Locks Contributor
+  remain scoped to their respective resource groups. Never publish
+  subscription/internal IDs.
+- **Foundry:** Bicep-managed `ai-krypto-westus3` with local auth disabled,
+  exact OpenAI `gpt-5.6-luna` `2026-07-09` `GlobalStandard` deployments
+  `krypto-dev-luna`/`krypto-prod-luna`, capacity 10 each. Catalog/quota
+  validation passes both target name/capacity pairs and subtracts only exact
+  replaceable target capacity on the same format/model/version/SKU dimension.
+- **Hosting:** Next.js runs in Azure Container Apps. Web and ops images are
+  digest-pinned in separate dev/prod ACRs.
+- **Database:** private Azure PostgreSQL Flexible Server 17. Reviewed Drizzle
+  migrations use `DIRECT_URL`; runtime uses least-privilege `DATABASE_URL`.
 - **Singleton initialization:** `npm run db:init` inserts the account only when
   absent and never deletes history.
-- **Cron target:** Supabase `pg_cron` + `pg_net`, with two fixed,
-  privilege-restricted functions:
-  - hourly → `POST https://<vercel-host>/api/agent/run`
-  - daily 00:00 UTC → `POST https://<vercel-host>/api/agent/daily-summary`
-  - both require the Vault-selected `shadow` or `paper` mode in
-    `x-required-rollout-mode`
-- **Current cron status:** the unsafe v2 arbitrary-path migration has been
-  removed. The Drizzle history installs fixed restricted functions, while
-  `supabase/operations/enable-krypto-cron.sql` performs the separate post-smoke
-  transaction and verifies exact function configuration, reviewed body
-  digests, the latest smoke-approved Vault URL/secret fingerprint, and both
-  final job definitions before commit. Activation rejects unexpected matching
-  jobs and queued endpoint requests; disablement removes and verifies both.
-- **Smoke test + rollback:** see [`specs/deployment.md`](./deployment.md).
+- **Scheduling:** Container Apps Jobs call the same routes at hourly and daily
+  UTC schedules. `release.bicep` always lands disabled/manual.
+  `rollout.bicep` owns schedule/mode mutation;
+  `schedule-monitoring.bicep` independently owns missing-success alert state.
+  Monitoring is enabled and validated before Schedule; disable paths verify
+  Manual jobs before disabling monitoring.
+- **Foundation/access dependency:** deploy environment foundations for dev and
+  prod, then bind both runtime/ops identity pairs through the protected
+  `azure-platform-access.yml` workflow before full releases.
+- **Dev rollout:** disabled/manual evidence → shadow/manual →
+  one unique `manual-shadow:` hourly execution → post-run activation-check
+  proving the exact safe no-trade `AgentRun` and released lease → monitored
+  Schedule with digest/generation-namespaced idempotency → observed scheduled
+  success. Activation failure rolls back automatically to disabled/manual.
+- **Prod rollout:** force-disable and verified-backup the current release
+  before environment mutation; the current-release backup execution ID ends
+  `-current` to prevent same-SHA evidence collision. Then deploy the new release
+  disabled/manual. Prod deploy and rotation share one concurrency lock. No
+  executable production promotion workflow is shipped or approved; any future
+  promotion requires a new evidence-bound design and review.
+- **Email:** each environment has ACS Email with an Azure-managed domain.
+  Azure generates the connection string and writes it directly to Key Vault;
+  GitHub never carries it.
+- **Evidence:** job starts clone the complete live execution template via
+  `--yaml`, always inject `JOB_EXECUTION_ID`, and permit only three validated
+  attended-proof overrides (`SCHEDULED_IDEMPOTENCY_KEY`,
+  `EXPECTED_SHADOW_IDEMPOTENCY_KEY`,
+  `EXPECTED_SHADOW_STARTED_AFTER`). Reports are immutable and validated
+  against exact SHA/digest bindings. The helper rejects volumes and volume
+  mounts because Azure cannot preserve them through this override path;
+  current jobs use none.
+- **Runbook:** see [`specs/deployment.md`](./deployment.md).
 
-ADR `0003-pg-cron-over-vercel-cron.md` records why we chose Supabase `pg_cron` over Vercel Cron.
+ADR `0008-azure-native-deployment-architecture.md` supersedes ADR 0003 for the
+current target.
 
 ---
 
@@ -336,10 +383,10 @@ ADR `0003-pg-cron-over-vercel-cron.md` records why we chose Supabase `pg_cron` o
 |---|---|
 | Mid-trade crash | Database transaction rolls back; post-commit retries resolve by run idempotency instead of re-executing. |
 | Coinbase API unreachable | Abort run with HTTP 502; next cron tick retries naturally. |
-| Azure-hosted LLM 429/timeout | At most 2 total attempts, 20 seconds per attempt, with attempt count and latency persisted/emitted. |
+| Foundry Luna 429/timeout | At most 2 total attempts, 20 seconds per attempt, with attempt count and latency persisted/emitted. |
 | Drawdown breach | Lock + alert. Review immutable history, then use the audited admin unlock with an explicit reason; direct SQL unlock is not an operator path. |
 | Crashed run lease | A later invocation can recover an expired lease. The admin endpoint clears only expired/unowned leases and rejects active owners. |
-| Cron HTTP timeout | Vercel kills > 60s; `pg_net` records the response status — see Supabase `net._http_response`. |
+| Scheduled job/HTTP timeout | Container Apps Job fails; Azure Monitor and persisted run state expose the failure. Missing hourly success also alerts after the activation-bound two-hour window. |
 
 ---
 
@@ -385,37 +432,38 @@ The following are explicitly deferred to v3 (see [`rfcs/0001-v3-live-trading.md`
 The following are not goals of this project at any phase:
 
 - **Guaranteed profit or specific daily return targets.** Success is defined by evidence-based metrics relative to cash and buy-and-hold baselines (see `specs/evaluation.md` and ADR 0007). A $100/day figure was previously cited in this document; it has been removed (ADR 0007).
-- **Production deployment before v2.1 is complete.** The v2 code baseline has blocking issues (§14) that must be resolved first.
+- **Production activation before readiness gates pass.** Provisioning must land
+  disabled/manual; paper and any future live execution require separate
+  evidence and approval.
 
 ---
 
 ## 14. Current baseline and known limitations
 
-The local v2.1/v2.2 release candidate has passing coverage-gated Jest validation
-plus real-PostgreSQL migration, transaction, accounting, lease, and orchestration
-evidence.
+The source includes coverage-gated Jest and real-PostgreSQL suites for
+migration, transaction, accounting, lease, and orchestration behavior. Their
+results are engineering evidence only and do not prove a live Azure target.
 Deterministic authorization, mandatory stop-loss, exact accounting,
 transactional/idempotent execution, owned expiring leases, structured model
-output, disabled/shadow/paper modes, additive NULL-safe cron migration, and the
-engineering-only evidence-pipeline foundation are implemented.
+output, disabled/shadow/paper modes, reviewed non-destructive migrations, and
+the engineering-only evidence-pipeline foundation are implemented.
 
 Production is still blocked by:
 
-- **Replacement initialization:** the clean PostgreSQL 17 target passed
-  read-only inventory with no application tables, migrations, cron, queued
-  requests, or retained position. The reviewed migration, initialization,
-  baseline backup, and Vault steps remain.
-- **Production smoke/evidence:** Foundry, Coinbase, email, analytics, admin,
-  disabled/shadow/paper, cron, backup, and rollback have not been proven on the
-  target Vercel/Supabase deployment.
+- **Azure provisioning:** the dedicated platform account/model, both
+  foundations, and Foundry workload-access bindings have not been deployed.
+- **Replacement initialization:** no Azure PostgreSQL target exists. Reviewed
+  migration, initialization, and baseline restore-verified backup remain.
+- **Production smoke/evidence:** Luna/Entra, Coinbase, ACS Email, separate
+  PostHog projects, admin, disabled/shadow/paper modes, Container Apps Jobs,
+  alerts, backup, and rollback have not been proven on a live Azure target.
 - **Historical and paper evidence:** imported walk-forward reports are
   deliberately classified engineering-only and cannot satisfy release gates.
   Real holdout datasets and the required 30-day production paper window do not
   exist yet.
-- **Synthetic scenario shortfall:** 3 of 8 fixture scenarios beat cash and 0 of
-  8 beat both cash and buy-and-hold; these remain engineering tests rather than
-  financial evidence.
+- **Synthetic scenarios:** fixture outcomes remain engineering tests rather
+  than financial or live-target evidence.
 
-Full issue list: `specs/readiness.md` §3.
-Release gates (v2.1, v2.2, v3): `specs/readiness.md` §4.
+Current decision and blockers: `specs/readiness.md` §1.
+Paper and live gates: `specs/readiness.md` §10–§11.
 Evaluation methodology: `specs/evaluation.md`.

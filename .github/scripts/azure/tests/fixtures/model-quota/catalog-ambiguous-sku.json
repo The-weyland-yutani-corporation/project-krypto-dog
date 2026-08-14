@@ -1,0 +1,23 @@
+[
+  {
+    "format": "OpenAI",
+    "name": "gpt-5.6-luna",
+    "version": "2026-07-09",
+    "skus": [
+      {
+        "name": "GlobalStandard",
+        "usageName": "OpenAI.GlobalStandard.gpt-5.6-luna",
+        "capacity": {
+          "maximum": 100
+        }
+      },
+      {
+        "name": "GlobalStandard",
+        "usageName": "OpenAI.GlobalStandard.gpt-5.6-luna-duplicate",
+        "capacity": {
+          "maximum": 100
+        }
+      }
+    ]
+  }
+]

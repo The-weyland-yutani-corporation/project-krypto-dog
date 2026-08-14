@@ -23,8 +23,17 @@ export interface TradingAccountSnapshot {
   accountingStatus: "RECONCILED" | "QUARANTINED" | "UNINITIALIZED";
 }
 
-export const tradeDecisionSchema = z
-  .object({
+// Azure structured outputs support only a subset of JSON Schema. Keep the
+// provider-facing schema constraint-light and apply the full domain contract
+// locally after parsing.
+export const tradeDecisionWireSchema = z.object({
+  action: z.enum(["HOLD", "BUY", "SELL"]),
+  notionalUSD: z.number().nullable(),
+  reasoning: z.string(),
+});
+
+export const tradeDecisionSchema = tradeDecisionWireSchema
+  .extend({
     action: z.enum(["HOLD", "BUY", "SELL"]),
     notionalUSD: z.number().finite().positive().nullable(),
     reasoning: z.string().trim().min(1).max(2000),

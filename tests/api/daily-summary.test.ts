@@ -64,7 +64,8 @@ describe("POST /api/agent/daily-summary", () => {
   it("records skipped delivery as degraded evidence", async () => {
     mockedSendDailySummary.mockResolvedValue({
       status: "skipped",
-      reason: "RESEND_API_KEY is not configured",
+      reason:
+        "Missing ACS email configuration: AZURE_COMMUNICATION_CONNECTION_STRING",
     });
 
     const response = await POST(request());
@@ -88,7 +89,9 @@ describe("POST /api/agent/daily-summary", () => {
 
   it("returns 502 and records provider delivery failures", async () => {
     mockedSendDailySummary.mockRejectedValue(
-      new EmailDeliveryError("Resend rejected daily summary"),
+      new EmailDeliveryError(
+        "ACS email daily summary ended with status Failed",
+      ),
     );
 
     const response = await POST(request());
@@ -96,7 +99,7 @@ describe("POST /api/agent/daily-summary", () => {
 
     expect(response.status).toBe(502);
     expect(body).toMatchObject({
-      error: "Resend rejected daily summary",
+      error: "ACS email daily summary ended with status Failed",
       alertAuditRecorded: true,
     });
     expect(mockDb._insertChain.values).toHaveBeenCalledWith(

@@ -1,5 +1,5 @@
-// Subscription-scoped bootstrap: one-time setup that creates the dev and
-// prod resource groups and four GitHub OIDC-federated user-assigned
+// Subscription-scoped bootstrap: one-time setup that creates the platform,
+// dev, and prod resource groups and four GitHub OIDC-federated user-assigned
 // identities, one per approved GitHub Environment, each scoped only to the
 // one resource group it is allowed to deploy into:
 //
@@ -14,15 +14,18 @@
 //                            types; grants no Microsoft.Authorization/
 //                            roleAssignments/write since rollout.bicep
 //                            never creates a role assignment)
-//   - platform            -> the EXISTING resource group that already
-//                            holds the Microsoft Foundry account
-//                            (platform.bicep only; never given any right
-//                            in the dev or prod resource groups, and
-//                            neither the dev nor prod identities are given
-//                            any right in the platform resource group)
+//   - platform            -> platform resource group (platform.bicep and
+//                            platform-access.bicep only; the one-time account
+//                            template includes a delete lock and is deployed
+//                            by the bootstrap operator; this identity is never
+//                            given any right in the dev or prod resource
+//                            groups, and neither the dev nor prod identities
+//                            are given any right in the platform resource
+//                            group)
 //
 // Run this once (or whenever environment/repo names change) before
-// platform.bicep, environment.bicep, release.bicep, or rollout.bicep.
+// platform-account.bicep, platform.bicep, platform-access.bicep,
+// environment.bicep, release.bicep, or rollout.bicep.
 //
 // NOTE: only the dev/prod-vs-platform resource group scoping above is an
 // Azure RBAC-enforced boundary (none of these identities has any Azure
@@ -45,17 +48,29 @@
 //     --parameters infra/params/bootstrap.bicepparam
 targetScope = 'subscription'
 
-@description('Azure region for the resource groups (resource group location only; individual resources choose their own region params later).')
-param location string
+@description('Approved Azure region for all Project Krypto resource groups.')
+@allowed([
+  'westus3'
+])
+param location string = 'westus3'
 
 @description('Dev resource group name.')
+@allowed([
+  'rg-krypto-dev'
+])
 param devResourceGroupName string = 'rg-krypto-dev'
 
 @description('Prod resource group name.')
+@allowed([
+  'rg-krypto-prod'
+])
 param prodResourceGroupName string = 'rg-krypto-prod'
 
-@description('Resource group name that already holds the existing Microsoft Foundry account platform.bicep deploys into. This template does not create it — it must already exist — so the platform GitHub OIDC identity can be scoped to exactly this one resource group and nothing else, never to the dev or prod resource groups.')
-param platformResourceGroupName string
+@description('Dedicated resource group for the shared Microsoft Foundry account and its dev/prod model deployments.')
+@allowed([
+  'rg-krypto-platform'
+])
+param platformResourceGroupName string = 'rg-krypto-platform'
 
 @description('GitHub repository owner (org or user), e.g. VeVarunSharma.')
 param githubOrg string
@@ -72,7 +87,7 @@ param prodDeployGithubEnvironmentName string = 'production-deploy'
 @description('GitHub repository Environment name federated to the prod promotion identity (runs rollout.bicep for prod only — the one template that flips ROLLOUT_MODE/trigger types).')
 param prodPromotionGithubEnvironmentName string = 'production-promotion'
 
-@description('GitHub repository Environment name federated to the platform identity (runs platform.bicep only).')
+@description('GitHub repository Environment name federated to the platform identity (runs platform.bicep and platform-access.bicep only).')
 param platformGithubEnvironmentName string = 'platform'
 
 @description('Dev GitHub OIDC identity name.')
@@ -87,7 +102,7 @@ param prodPromotionIdentityName string = 'id-github-oidc-prod-promotion'
 @description('Platform GitHub OIDC identity name.')
 param platformIdentityName string = 'id-github-oidc-platform'
 
-@description('Tags applied to both resource groups.')
+@description('Tags applied to all three resource groups and their OIDC identities.')
 param tags object = {
   project: 'project-krypto'
 }
@@ -102,6 +117,12 @@ resource prodResourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
   name: prodResourceGroupName
   location: location
   tags: union(tags, { environment: 'prod' })
+}
+
+resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
+  name: platformResourceGroupName
+  location: location
+  tags: union(tags, { environment: 'platform' })
 }
 
 // Dev: one identity runs environment.bicep, release.bicep, and
@@ -135,6 +156,7 @@ module prodDeployOidcIdentity 'modules/oidc-identity.bicep' = {
     githubRepo: githubRepo
     githubEnvironmentName: prodDeployGithubEnvironmentName
     includeRoleAssignmentAdmin: true
+    includeLocksContributor: true
     tags: union(tags, { environment: 'prod' })
   }
 }
@@ -157,29 +179,123 @@ module prodPromotionOidcIdentity 'modules/oidc-identity.bicep' = {
   }
 }
 
-// Platform: runs ONLY platform.bicep, which declares Cognitive Services
-// model deployments under the existing Foundry account and creates no
-// role assignment, so Contributor alone is sufficient. Scoped to the
-// existing platform resource group only — resourceGroup(name) targets it
-// without this template creating or otherwise managing it, so this
-// identity is never given any right in the dev or prod resource groups
-// and the dev/prod identities are never given any right here.
+// Platform: runs ONLY the dedicated platform templates. platform-access.bicep
+// creates the four reviewed Cognitive Services OpenAI User bindings for the
+// dev/prod runtime and ops identities, so this identity needs the current
+// RBAC-granting built-in role in addition to Contributor.
+//
+// SECURITY TRADE-OFF: Role Based Access Control Administrator is scoped to
+// rg-krypto-platform only, never the subscription or the dev/prod resource
+// groups. That scope is narrow, but the built-in role is NOT constrained to
+// assigning only Cognitive Services OpenAI User. A compromised or
+// over-broadly-approved platform workflow could assign Owner (or another
+// privileged role) inside rg-krypto-platform. This remains a protected
+// GitHub Environment/process control, not an Azure-enforced restriction on
+// which role may be assigned. Keep platform workflow/template review and
+// environment protection rules as mandatory controls.
 module platformOidcIdentity 'modules/oidc-identity.bicep' = {
   name: 'platform-oidc-identity'
-  scope: resourceGroup(platformResourceGroupName)
+  scope: platformResourceGroup
   params: {
     identityName: platformIdentityName
     location: location
     githubOrg: githubOrg
     githubRepo: githubRepo
     githubEnvironmentName: platformGithubEnvironmentName
-    includeRoleAssignmentAdmin: false
+    includeRoleAssignmentAdmin: true
+    includeLocksContributor: true
     tags: union(tags, { environment: 'platform' })
+  }
+}
+
+// The platform workflow validates live model quota before deployment. That
+// usage endpoint is subscription-scoped, so the otherwise platform-RG-scoped
+// identity receives this one read-only subscription role and no subscription
+// mutation permission.
+var cognitiveServicesUsagesReaderRoleId = 'bba48692-92b0-4667-a9ad-c31c7b334ac2'
+resource platformQuotaReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(
+    subscription().id,
+    platformIdentityName,
+    cognitiveServicesUsagesReaderRoleId
+  )
+  properties: {
+    principalId: platformOidcIdentity.outputs.identityPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      cognitiveServicesUsagesReaderRoleId
+    )
+  }
+}
+
+// RG-scoped deployment identities cannot read subscription provider
+// registration state. Define one minimal read-only custom role rather than
+// granting broad subscription Reader.
+var providerRegistrationReaderRoleId = guid(
+  subscription().id,
+  'project-krypto-provider-registration-reader'
+)
+resource providerRegistrationReaderRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: providerRegistrationReaderRoleId
+  properties: {
+    roleName: 'Project Krypto Provider Registration Reader'
+    description: 'Reads Azure resource-provider registration state for fail-closed deployment preflight.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: [
+          'Microsoft.Resources/subscriptions/providers/read'
+        ]
+        notActions: []
+        dataActions: []
+        notDataActions: []
+      }
+    ]
+    assignableScopes: [
+      subscription().id
+    ]
+  }
+}
+
+resource devProviderRegistrationReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(subscription().id, devIdentityName, providerRegistrationReaderRoleId)
+  properties: {
+    principalId: devOidcIdentity.outputs.identityPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: providerRegistrationReaderRole.id
+  }
+}
+
+resource prodDeployProviderRegistrationReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(
+    subscription().id,
+    prodDeployIdentityName,
+    providerRegistrationReaderRoleId
+  )
+  properties: {
+    principalId: prodDeployOidcIdentity.outputs.identityPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: providerRegistrationReaderRole.id
+  }
+}
+
+resource platformProviderRegistrationReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(
+    subscription().id,
+    platformIdentityName,
+    providerRegistrationReaderRoleId
+  )
+  properties: {
+    principalId: platformOidcIdentity.outputs.identityPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: providerRegistrationReaderRole.id
   }
 }
 
 output devResourceGroupName string = devResourceGroup.name
 output prodResourceGroupName string = prodResourceGroup.name
+output platformResourceGroupName string = platformResourceGroup.name
 
 output devIdentityClientId string = devOidcIdentity.outputs.identityClientId
 output devIdentityPrincipalId string = devOidcIdentity.outputs.identityPrincipalId

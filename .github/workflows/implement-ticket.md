@@ -24,11 +24,12 @@ permissions:
 imports:
   - .github/agents/project-krypto-dev.md
 env:
-  AZURE_OPENAI_ENDPOINT: https://stub.openai.azure.com
-  AZURE_OPENAI_API_KEY: stub
-  AZURE_OPENAI_DEPLOYMENT_NAME: claude-sonnet-stub
-  CDP_API_KEY_NAME: stub
-  CDP_API_KEY_PRIVATE_KEY: stub
+  AZURE_OPENAI_BASE_URL: https://stub.openai.azure.com/openai/v1/
+  AZURE_OPENAI_DEPLOYMENT_NAME: krypto-test-luna
+  AZURE_CLIENT_ID: 00000000-0000-0000-0000-000000000000
+  AZURE_COMMUNICATION_CONNECTION_STRING: endpoint=https://stub.communication.azure.com/;accesskey=stub
+  AZURE_COMMUNICATION_EMAIL_SENDER: DoNotReply@stub.azurecomm.net
+  ALERT_EMAIL_TO: operator@example.com
   DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
   POSTHOG_API_KEY: phc_stub
   CRON_SECRET: stub
