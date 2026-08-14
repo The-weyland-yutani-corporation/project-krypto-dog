@@ -130,20 +130,24 @@ jobs:
 
       # The automatic workflow_run path is already provably safe by
       # construction (see this job's `if:` condition). A manually
-      # dispatched SHA is arbitrary operator input and must additionally
-      # be proven to be a real ancestor of origin/main AND to have its
-      # own successful, push-triggered CI run before it reaches any
-      # deploy step -- a hard, non-format check.
-      - name: Verify manually-dispatched SHA is an ancestor of main with a successful push CI run
+      # dispatched SHA is arbitrary operator input and must additionally have
+      # successful push CI and be on the branch authorized for its stage:
+      # foundation may come from protected develop/azure; full requires main.
+      - name: Verify manually-dispatched SHA branch and successful push CI
         if: env.EVENT_NAME == 'workflow_dispatch'
         env:
           RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
+          DEPLOYMENT_STAGE: ${{ steps.resolve.outputs.deployment_stage }}
           TARGET_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          target_branch=main
+          if [ "${DEPLOYMENT_STAGE}" = "foundation" ]; then
+            target_branch=develop/azure
+          fi
           .github/scripts/azure/verify-deploy-sha.sh \
             --sha "${RESOLVED_SHA}" \
-            --branch main \
+            --branch "${target_branch}" \
             --repo "${TARGET_REPO}" \
             --ci-workflow ci.yml
 
