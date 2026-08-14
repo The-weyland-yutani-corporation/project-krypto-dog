@@ -3,10 +3,10 @@
 This tree implements the Azure-native target accepted by
 [`specs/decisions/0008-azure-native-deployment-architecture.md`](../specs/decisions/0008-azure-native-deployment-architecture.md).
 
-> **Deployment state: NOT PROVISIONED.** The target contract is implemented
-> in Bicep and workflows, but no Project Krypto Azure resource, URL, live
-> what-if/apply result, or live evidence report exists. Resource names below
-> are planned names, not proof of deployment.
+> **Deployment state (2026-08-14): FOUNDATIONS PROVISIONED; RELEASES NOT
+> DEPLOYED.** Bootstrap, the Foundry account, workload-access bindings, and both
+> environment foundations exist. No model deployment, Container App, job,
+> release evidence report, schedule, or public Azure URL exists.
 >
 > **Paper only.** Templates support `disabled`, `shadow`, and `paper`.
 > Nothing provisions or authorizes live-money execution.
@@ -30,6 +30,24 @@ This tree implements the Azure-native target accepted by
 
 `eastus2` was a rejected candidate because the selected subscription cannot
 provision PostgreSQL there. It is not a current target.
+
+## Live provisioning checkpoint
+
+| Surface | Live state | Evidence |
+|---|---|---|
+| Subscription/bootstrap | Required providers registered; three resource groups and four GitHub OIDC identities exist | Bootstrap complete |
+| GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a separate dev PostHog key; required-reviewer rules are unsupported by the private-repo billing plan, so mutation workflows are manual/paused behind branch, exact-SHA, and CI gates | Configuration staged; reviewer enforcement unavailable |
+| Foundry account | `ai-krypto-westus3` exists with local auth disabled and its `CanNotDelete` lock verified; exact catalog/quota validation passed, but both Luna deployments are absent after Azure error `715-123420` (“unusual activity”) | [Platform run failed at model deployment](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
+| Foundry workload access | Dev/prod runtime and ops identities each have Cognitive Services OpenAI User | Applied |
+| Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
+| Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
+| Releases | No web Container App, scheduler/ops job, image release, target smoke, schedule, or public URL exists in either environment | Not deployed |
+| Analytics | Prod PostHog key is staged; a separate dev project key is still missing | Blocked |
+
+Azure Support API ticket creation failed because the subscription has no
+eligible support plan. Resolving error `715-123420` requires portal/account
+support action. Do not start a full release until the model deployments and
+separate dev PostHog key exist.
 
 ## Subscription prerequisite
 
@@ -99,7 +117,10 @@ receive it.
 Azure enforces resource-group scope, not the intended template list. A
 resource-group Contributor can deploy other resources in that group.
 Template separation therefore also depends on protected workflow files,
-GitHub Environment reviewers, branch rules, and CODEOWNERS.
+GitHub Environment reviewers, branch rules, and CODEOWNERS. Required-reviewer
+rules are not available on the current private-repo billing plan, so the
+current workflows remain manual/paused with branch, exact-SHA, and CI gates;
+reviewer-backed automation must not be assumed.
 
 No executable production promotion workflow is shipped or approved. The
 `production-promotion` name denotes the separately reviewed forced-disable
@@ -114,7 +135,8 @@ their own resource-group scope. The platform identity has Locks Contributor in
 Locks Contributor in `rg-krypto-prod` because `environment.bicep` creates the
 prod PostgreSQL, Key Vault, and evidence-storage locks. Role Based Access
 Control Administrator is powerful within those resource groups; it is not a
-role-assignment allow-list. Keep protected reviews mandatory.
+role-assignment allow-list. Keep mutation workflows manual/paused until an
+equivalent reviewer-enforced boundary is available.
 
 All mutation permissions remain resource-group-scoped. Subscription scope is
 read-only: the minimal provider-state role above, plus **Cognitive Services
@@ -234,6 +256,10 @@ required.
 7. Full dev release and monitored shadow activation.
 8. Full prod release, ending disabled/manual. No production promotion
    workflow is shipped or approved.
+
+Current checkpoint: steps 1, 2, 4, 5, and 6 are complete. Step 3 created and
+verified the account but is blocked before model apply/smoke. Steps 7 and 8
+have not started.
 
 Both foundation workflows publish a nonsecret handoff artifact containing
 identity IDs, evidence metadata, ACS sender, and monitoring IDs. The access
@@ -531,6 +557,6 @@ Never use real secret values for compile-only validation.
   host, and recipient to avoid unintended drift.
 - A partial deterministic prod release is neither a valid current release nor
   a fresh environment; the prod workflow fails closed.
-- No live Azure result is implied by this document. Follow
-  [`specs/deployment.md`](../specs/deployment.md) and retain the first real
-  workflow evidence before changing status.
+- Live results are limited to the bootstrap/platform/foundation/access
+  checkpoint documented above. No release, application URL, ops-job report,
+  target smoke, or schedule result is implied.

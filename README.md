@@ -22,16 +22,18 @@
 
 > **Autonomous LLM-driven swing-trading agent for ETH/USDC.**
 > v2.1 safety core and the Azure target are implemented in source.
-> **NOT production-ready:** Azure is not provisioned, no Azure URL exists, and
-> every live deployment, smoke, rollout, and evidence gate remains pending.
+> **NOT production-ready:** Azure bootstrap, platform-account, access, and
+> environment foundations exist, but no release, Container App, job, or public
+> Azure URL exists.
 
 | | |
 |---|---|
-| **Status** | Azure deployment is implemented in source but **NOT PROVISIONED**. No Azure URL or live Azure evidence exists. |
+| **Status** | **Foundations provisioned; releases blocked.** Required providers, resource groups/OIDC, the Foundry account, workload access, and both environment foundations are live. No release, Container App, job, target smoke, schedule, or public Azure URL exists. |
 | **Hosted today (observed baseline)** | Historical Vercel build + fresh Supabase PostgreSQL 17 replacement. Neither is the Azure release candidate. See [`specs/architecture.md`](./specs/architecture.md). |
-| **Target (implemented, not provisioned)** | Azure `westus3`: Container Apps + Jobs, private PostgreSQL Flexible Server 17, Key Vault, per-environment ACR/ACS Email, distinct dev/prod PostHog projects, and dedicated `rg-krypto-platform` account `ai-krypto-westus3`. Exact OpenAI `gpt-5.6-luna` `2026-07-09` `GlobalStandard` deployments use capacity 10 each. No Azure app URL or live Azure evidence exists yet. |
+| **Azure state (2026-08-14)** | `rg-krypto-platform`, `rg-krypto-dev`, and `rg-krypto-prod` exist in `westus3`. `ai-krypto-westus3` and both environment foundations are deployed. The planned OpenAI `gpt-5.6-luna` deployments remain absent. |
+| **Current blockers** | Azure rejects model deployment with error `715-123420` (“unusual activity”) despite valid catalog/quota. Support API ticket creation failed because the subscription has no eligible support plan; portal/account support action is required. A separate dev PostHog project key is also missing; the prod key is staged. |
 | **Stack** | Next.js 16 (App Router) · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
-| **Scheduling state** | There is no approved production schedule. Planned Azure jobs do not exist until provisioning succeeds. |
+| **Scheduling state** | No Azure jobs or approved production schedule exist. Production has no release and no promotion workflow. |
 | **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
 | **Architecture and live links** | [`specs/architecture.md`](./specs/architecture.md) — hosted baseline, target diagrams, planned resources, live endpoint register, rollout safety, and operator consoles |
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
@@ -177,37 +179,39 @@ tests/                    # Jest unit + integration tests
 
 > **WARNING:** No executable production promotion workflow is shipped or
 > approved.
-> The Azure target is not provisioned. Platform/foundation/access deployment,
-> migration, initialization, restore-verified backup, provider/target smoke,
-> monitoring, and controlled disabled/shadow/paper rollout remain. See
+> Azure foundations are provisioned, but model deployment and every full
+> release/evidence/rollout gate remain. No Container App or job exists. See
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
-> **Target platform: Azure-native, implemented, not yet provisioned.** The
+> **Target platform: Azure-native; foundations provisioned, releases blocked.**
+> The
 > approved deployment plan supersedes Vercel/Supabase with a fully
 > Azure-native target (ADR
 > [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
 > The Bicep templates, GitHub Actions workflows, and application-side
 > deployment code for that target all exist in this repo — see
 > [`infra/README.md`](./infra/README.md) and
-> [`specs/deployment.md`](./specs/deployment.md). **No real Azure
-> environment has been provisioned and no live deploy/evidence exists
-> yet**; provider registration, the one-time bootstrap, and GitHub Environment
-> setup in
-> `specs/deployment.md` §1–§2 are still outstanding manual prerequisites.
+> [`specs/deployment.md`](./specs/deployment.md). Required providers,
+> bootstrap/OIDC, the Foundry account, workload access, and both environment
+> foundations are live. No release or public application URL exists.
 > See [`specs/architecture.md`](./specs/architecture.md) for diagrams,
 > planned resource names, the exact current-vs-target state, and safe
 > operator links. The selected runtime subscription is **Visual Studio
 > Enterprise Subscription**; do not publish its subscription ID.
 
-Don't deploy blind. After selecting the approved subscription, an authorized
-subscription owner must run
-`.github/scripts/azure/register-providers.sh` before any bootstrap what-if;
-protected deployment workflows only check that registration. Bootstrap creates
-`rg-krypto-platform`,
-`rg-krypto-dev`, and `rg-krypto-prod` in `westus3`. Deploy the protected
-platform account/model flow, deploy `foundation` for **both** application
-environments, bind their runtime/ops identities with the protected platform
-access flow, and only then run full releases. Dev uses a staged
+Observed live runs:
+
+- [Platform account succeeded; model deployment failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884)
+- [Dev foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
+- [Prod foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
+
+GitHub Environments, branch restrictions, and protected values are configured.
+Required-reviewer rules are unavailable on the private repository's billing
+plan, so mutation workflows remain manual/paused and require the configured
+branch, exact SHA, and successful CI gates. Resolve the Azure model restriction
+and provision a separate dev PostHog key before any full dev release.
+
+After those blockers clear, dev uses a staged
 disabled/manual → shadow/manual → unique manual shadow run → post-run
 activation proof → monitored schedule sequence with automatic fail-closed
 rollback. Missing-success monitoring is
@@ -218,10 +222,7 @@ force-disables and backs up the current release before any environment
 mutation, then lands the new release disabled/manual. The
 `production-promotion` identity/environment exists only for forced-disable
 steps in prod deploy and rotation. Any future production promotion requires a
-new evidence-bound design and trading-safety review. Dispatch the first dev
-run manually at the exact CI-passed SHA
-because `workflow_run` uses the default-branch workflow version; automatic dev
-pushes are eligible only after that workflow reaches `main`. Follow
+new evidence-bound design and trading-safety review. Follow
 [`specs/deployment.md`](./specs/deployment.md) (the implemented Azure
 runbook). The prior Vercel/Supabase runbook is preserved, unmodified
 except for its archive banner, at

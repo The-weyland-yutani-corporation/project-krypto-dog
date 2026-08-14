@@ -1,10 +1,10 @@
 # Deployment runbook (Azure)
 
-> **Implemented, not provisioned.** The Bicep templates and protected GitHub
-> Actions workflows described here exist, but no Project Krypto Azure
-> resource has been provisioned and no live Azure what-if, apply, ops job,
-> smoke, backup, or schedule evidence exists. There is no Azure application
-> URL. Treat every step as pending until retained run evidence proves it.
+> **Live state (2026-08-14): foundations provisioned; releases blocked.**
+> Required providers, bootstrap/OIDC, the Foundry account, workload-access
+> bindings, and both environment foundations exist. No Luna deployment,
+> release, Container App, job, ops report, target smoke, schedule, or public
+> Azure application URL exists.
 >
 > **Paper/live safety is unchanged.** `ROLLOUT_MODE` supports only
 > `disabled`, `shadow`, and `paper`. Nothing in this runbook authorizes
@@ -45,7 +45,27 @@ Azure resource IDs, database URLs, Key Vault URLs, evidence URLs, or other
 internal deployment identifiers. Protected workflow variables may carry
 those values without making them public documentation.
 
+### Current live checkpoint
+
+| Stage | Live state | Evidence |
+|---|---|---|
+| Providers/bootstrap | Required providers are registered; platform/dev/prod resource groups and four GitHub OIDC identities exist | Complete |
+| GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a distinct dev PostHog key. Required-reviewer rules are unsupported by the private-repo billing plan; mutation workflows are manual/paused behind branch, exact-SHA, and CI gates. | Staged; no reviewer enforcement |
+| Foundry platform | `ai-krypto-westus3` exists with local auth disabled and `CanNotDelete` verified. Catalog/quota validation passed; model apply failed with Azure `715-123420` (“unusual activity”). | [Platform run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
+| Workload access | Dev/prod runtime and ops identities have Cognitive Services OpenAI User | Complete |
+| Dev foundation | Foundation resource set deployed; no release resources | [Passed run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
+| Prod foundation | Foundation resource set deployed; no release resources | [Passed run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
+| Release/rollout | No Container App, job, public URL, schedule, or promotion workflow exists | Not started |
+
+Azure Support API ticket creation failed because the subscription has no
+eligible support plan. Portal/account support action is required to resolve
+`715-123420`. Prod PostHog is staged; a separate dev project key must be added
+before any full dev release.
+
 ## 1. One-time local bootstrap
+
+**Current status: complete.** Re-run only for reviewed bootstrap drift; do not
+publish its protected outputs.
 
 An operator with the required subscription permissions selects the approved
 subscription at runtime by display name:
@@ -102,9 +122,15 @@ az deployment sub create \
 Record the deployment outputs in a protected operator handoff. Client and
 principal IDs are configuration inputs, not documentation values.
 
-## 2. Protected GitHub Environments
+## 2. GitHub Environments and current manual gate
 
-Create required-reviewer protection rules before populating values.
+**Current status: configured but reviewer enforcement unavailable.** The four
+Environments, branch restrictions, and protected variables/secrets are
+configured except for the separate dev PostHog key. The private repository's
+billing plan does not support required-reviewer rules. Keep mutation workflows
+manual/paused and require the configured branch, exact 40-hex SHA, and
+successful CI. Do not enable automatic mutation without an equivalent reviewed
+approval boundary.
 
 | Environment | Workflows | Required variables | Required secrets |
 |---|---|---|---|
@@ -146,8 +172,17 @@ Requirements:
 
 ## 3. Provision the dedicated Foundry platform
 
-Run `azure-platform.yml` manually under the protected `platform` Environment.
-It has separate protected mutation boundaries:
+**Current status: account live; model blocked.** The
+[platform run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884)
+created and verified `ai-krypto-westus3`, disabled local auth, verified the
+`CanNotDelete` lock, and passed exact catalog/quota validation. Azure rejected
+both model deployments with error `715-123420` (“unusual activity”), so no
+model smoke ran. Support API ticket creation failed because the subscription
+has no eligible support plan; resolve the account restriction through
+portal/account support, then rerun the exact reviewed workflow.
+
+Run `azure-platform.yml` manually under the environment-scoped `platform`
+Environment. It has separate what-if/apply mutation boundaries:
 
 1. **Account plan** — what-if `platform-account.bicep`, reject deletes, retain
    the artifact.
@@ -174,6 +209,15 @@ capacity is allowed.
 
 ## 4. Deploy both environment foundations
 
+**Current status: complete.** The
+[dev foundation run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
+and
+[prod foundation run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
+passed. Both foundations now contain ACR, private PostgreSQL 17, Key Vault,
+evidence storage, a Container Apps environment, ACS Email with an Azure-managed
+domain, Log Analytics/alerts, and runtime/scheduler/ops identities. Neither run
+created a release, web Container App, or job.
+
 `azure-deploy-dev.yml` and `azure-deploy-prod.yml` accept:
 
 - `commit_sha`: exact 40-hex commit; and
@@ -186,10 +230,9 @@ run.
 ### First dev-run caveat
 
 GitHub evaluates a `workflow_run` trigger using the workflow file from the
-repository's default branch. Therefore the **first dev deployment must be a
-manual dispatch with the exact CI-passed SHA**. Do not rely on a dev push to
-pick up this new workflow until the updated workflow itself has reached
-`main`. Future successful pushes to `develop/azure` may auto-deploy after that.
+repository's default branch. Dispatch only manually at the exact CI-passed SHA
+while required-reviewer enforcement is unavailable. Automatic mutation remains
+paused; do not re-enable it solely because a workflow version reaches `main`.
 
 ### Foundation order
 
@@ -209,6 +252,10 @@ principal IDs in one account-scoped access deployment.
 
 ## 5. Bind Foundry workload access
 
+**Current status: complete.** Dev/prod runtime and ops identities each have
+exactly one Cognitive Services OpenAI User assignment. This does not make a
+release ready while the model deployments are absent.
+
 Run `azure-platform-access.yml` only after both foundation artifacts exist.
 Supply exactly the retained principal IDs for:
 
@@ -217,8 +264,8 @@ Supply exactly the retained principal IDs for:
 - prod runtime; and
 - prod ops.
 
-The workflow format-validates them, runs a protected what-if job, publishes
-the what-if artifact, then runs a separate protected apply job. It grants
+The workflow format-validates them, runs an environment-scoped what-if job,
+publishes the what-if artifact, then runs a separate apply job. It grants
 exactly one **Cognitive Services OpenAI User** assignment per principal at the
 `ai-krypto-westus3` account scope. Scheduler identities receive no Foundry
 role.
@@ -229,9 +276,10 @@ keyless model access.
 
 ## 6. Dev full release and schedule activation
 
-After platform access is bound, manually run the first dev `full` release at
-the exact CI-passed SHA. Subsequent eligible `develop/azure` pushes can use the
-automatic path described above.
+**Current status: not started and blocked.** No dev release resources or URL
+exist. Resolve the Luna deployment restriction and add a distinct dev PostHog
+key first. Then manually run `full` at the exact CI-passed SHA; the automatic
+path remains paused while reviewer enforcement is unavailable.
 
 The implemented order is:
 
@@ -276,6 +324,9 @@ original deployment as failed. A failed activation is never accepted merely
 because rollback succeeded.
 
 ## 7. Prod full release (no promotion workflow)
+
+**Current status: not started.** Prod has foundation resources only: no
+release, Container App, job, URL, or schedule exists.
 
 Prod deploy and secret rotation use one concurrency group:
 `azure-production-mutation`. Runs queue rather than cancel one another. No
@@ -448,10 +499,10 @@ rotation share `azure-production-mutation`.
 | Pause application behavior | Use the audited admin **Pause Agent** control in addition to disabling schedules |
 | Retire resources | Use a separately reviewed decommission plan; resource-group deletion is not a release operation |
 
-After a successful first deployment, update
+After a successful first full release and target smoke, update
 [`architecture.md`](./architecture.md)'s live endpoint register with only the
 public Container App origin and evidence link. Until then it must continue to
-say **Not deployed / No URL yet**.
+say **Foundation deployed / No URL**.
 
 ## Further reading
 
