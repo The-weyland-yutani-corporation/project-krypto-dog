@@ -16,6 +16,7 @@
     "test:watch": "jest --watch",
     "smoke:llm": "npx tsx scripts/smoke-llm.ts",
     "smoke:providers": "npx tsx scripts/smoke-providers.ts",
+    "foundry:agent": "npx tsx scripts/foundry-agent.ts",
     "harness:up": "npx tsx scripts/agent-harness.ts up",
     "harness:status": "npx tsx scripts/agent-harness.ts status",
     "harness:down": "npx tsx scripts/agent-harness.ts down",
@@ -69,6 +70,7 @@
     "node": ">=22.13.0 <23"
   },
   "dependencies": {
+    "@azure/ai-projects": "^2.4.0",
     "@azure/communication-email": "^1.1.0",
     "@azure/identity": "^4.13.1",
     "@langchain/core": "^1.1.35",

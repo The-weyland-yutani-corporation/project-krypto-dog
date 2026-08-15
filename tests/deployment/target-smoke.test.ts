@@ -253,7 +253,7 @@ describe("target deployment smoke", () => {
     );
 
     expect(report.passed).toBe(true);
-    expect(report.checks).toHaveLength(15);
+    expect(report.checks).toHaveLength(16);
     expect(report.checks.every((check) => check.status === "pass")).toBe(
       true,
     );
@@ -670,6 +670,75 @@ describe("target deployment smoke", () => {
     expect(runProviders).not.toHaveBeenCalled();
     expect(
       report.checks.find((check) => check.id === "database-postconditions"),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+  });
+
+  it("runs final no-trade checks even when provider validation fails", async () => {
+    let fullInspectionCount = 0;
+    const createApproval = jest.fn();
+    const report = await runTargetSmoke(
+      {
+        baseUrl: "https://krypto.example.com",
+        expectedHost: "krypto.example.com",
+        databaseUrl: "******db.example.com/postgres",
+        cronSecret: "cron-secret",
+        adminPassword: "admin-password",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
+      },
+      {
+        fetchImpl: successfulFetch,
+        createBinding: async () => undefined,
+        createApproval,
+        inspectBefore: async () => ({
+          tradeCount: 4,
+          activeKryptoCronJobs: 0,
+          pendingKryptoHttpRequests: 0,
+          state: {
+            present: true,
+            accountingStatus: "RECONCILED",
+            openPosition: false,
+            activeLease: false,
+          },
+        }),
+        inspectAfter: async ({ idempotencyKeys }) => {
+          if (
+            idempotencyKeys.length === 1 &&
+            idempotencyKeys[0]?.includes("mode-mismatch")
+          ) {
+            return {
+              runCount: 0,
+              disabledRunCount: 0,
+              tradeCount: 4,
+              leaseReleased: true,
+              deliveryStatus: null,
+            };
+          }
+          fullInspectionCount += 1;
+          return {
+            runCount: 2,
+            disabledRunCount: 2,
+            tradeCount: fullInspectionCount === 1 ? 4 : 5,
+            leaseReleased: true,
+            deliveryStatus: "sent",
+          };
+        },
+        runProviders: async () => {
+          throw new Error("Provider smoke failed");
+        },
+      },
+    );
+
+    expect(report.passed).toBe(false);
+    expect(createApproval).not.toHaveBeenCalled();
+    expect(
+      report.checks.find((check) => check.id === "provider-connectivity"),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+    expect(
+      report.checks.find(
+        (check) => check.id === "final-database-postconditions",
+      ),
     ).toEqual(expect.objectContaining({ status: "block" }));
   });
 });

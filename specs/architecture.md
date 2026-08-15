@@ -93,10 +93,14 @@ flowchart TB
 ```
 
 Runtime and ops user-assigned managed identities authenticate to Foundry
-through Microsoft Entra ID. Each receives exactly **Cognitive Services
-OpenAI User** at the account scope. Scheduler identities call the app and
-receive no direct model role. Foundry local authentication/API keys are
-disabled.
+through Microsoft Entra ID. Each receives **Foundry Agent Consumer** only on
+its matching dev or prod project. Scheduler identities call the app and receive
+no direct agent/model role. The dedicated account disables local auth; the
+shared operational fallback account still permits legacy local/model key auth,
+although Project Krypto stores no key. That account-level exception and the
+legacy account-scoped direct-model roles remain blockers until the live
+pre-agent image is replaced, post-provider no-trade smoke passes, and the
+account owner disables local auth or approves migration.
 
 ### Deployment identity security boundary
 
@@ -136,8 +140,9 @@ after bootstrap.
 | Dev deployment | `krypto-dev-luna`, capacity 10 |
 | Prod deployment | `krypto-prod-luna`, capacity 10 |
 | Upgrade policy | `NoAutoUpgrade` |
-| Runtime API | Azure OpenAI v1 base URL ending `/openai/v1` |
-| Runtime auth | User-assigned managed identity selected by `AZURE_CLIENT_ID` |
+| Runtime API | Foundry project Responses API with immutable agent reference |
+| Runtime auth | Project-scoped Foundry Agent Consumer on the user-assigned identity selected by `AZURE_CLIENT_ID` |
+| Agent isolation | `krypto-dev-agents` / `krypto-prod-agents`; toolless prompt agents `krypto-dev-decision` / `krypto-prod-decision` |
 
 The existing platform fallback was selected only after the dedicated account
 returned Azure `715-123420`. The same exact catalog/quota contract applies.
@@ -148,9 +153,9 @@ It passes both target deployment-name/capacity pairs and subtracts only exact
 existing target capacity on the same format/model/version/SKU dimension,
 making exact reruns idempotent without crediting unrelated capacity. It has
 separate environment-scoped what-if/apply jobs for the account and model
-deployments. `azure-platform-access.yml` has its own pair for workload role
-bindings. They are currently manual/paused; no required-reviewer enforcement is
-available on this repository plan.
+deployments. Agent projects, definitions, and project-scoped access use the
+reviewed authenticated local operator path while GitHub Actions billing blocks
+hosted jobs.
 
 ## Resource map and live state
 
@@ -161,6 +166,7 @@ All listed foundation and release resources are live.
 | Resource group | `rg-krypto-platform` | `rg-krypto-dev` | `rg-krypto-prod` | All live |
 | Foundry account | Dedicated `ai-krypto-westus3`; operational `ghcp-foundry-eastus2` | — | — | Both live; operational account hosts models |
 | Model deployment | — | `krypto-dev-luna` | `krypto-prod-luna` | Both live on operational account; Entra smokes passed |
+| Foundry prompt agent | — | `krypto-dev-decision@1` | `krypto-prod-decision@1` | Both active; exact-definition and structured `HOLD` smokes passed |
 | VNet | — | `vnet-krypto-dev` | `vnet-krypto-prod` | Both live |
 | Container Apps environment | — | `cae-krypto-dev` | `cae-krypto-prod` | Both live |
 | Web app | — | `ca-dev-web` | `ca-prod-web` | Both live; dev shadow, prod disabled |
@@ -235,9 +241,10 @@ a new evidence-bound design and review.
   GitHub.
 - The runtime receives `AZURE_COMMUNICATION_CONNECTION_STRING`,
   `AZURE_COMMUNICATION_EMAIL_SENDER`, and `ALERT_EMAIL_TO`.
-- Foundry runtime configuration is `AZURE_OPENAI_BASE_URL`,
-  `AZURE_OPENAI_DEPLOYMENT_NAME`, and `AZURE_CLIENT_ID`; there is no model API
-  key.
+- Foundry runtime configuration is `AZURE_FOUNDRY_PROJECT_ENDPOINT`,
+  `AZURE_FOUNDRY_AGENT_NAME`, immutable `AZURE_FOUNDRY_AGENT_VERSION`, and
+  `AZURE_CLIENT_ID`; there is no model or agent API key. Direct Azure OpenAI
+  settings are optional platform-operator diagnostics only.
 
 ## Live endpoint register
 

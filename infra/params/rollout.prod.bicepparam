@@ -36,8 +36,16 @@ param dailyJobName = 'caj-prod-daily-summary'
 param webImageName = 'krypto-web'
 param imageDigest = 'sha256:REPLACE_WITH_CURRENTLY_RELEASED_DIGEST'
 
-param azureOpenAIBaseUrl = 'https://ghcp-foundry-eastus2.openai.azure.com/openai/v1/'
-param azureOpenAIDeploymentName = 'krypto-prod-luna'
+param azureFoundryProjectEndpoint = 'https://ghcp-foundry-eastus2.services.ai.azure.com/api/projects/krypto-prod-agents'
+param azureFoundryAgentName = 'krypto-prod-decision'
+param azureFoundryAgentVersion = '1'
+
+// Forced-disable runs may execute before the agent-integrated image replaces
+// the live pre-agent image. Preserve that image's startup contract without
+// granting the new release a direct-model configuration.
+param legacyDirectModelCompatibility = true
+param legacyAzureOpenAIBaseUrl = 'https://ghcp-foundry-eastus2.openai.azure.com/openai/v1/'
+param legacyAzureOpenAIDeploymentName = 'krypto-prod-luna'
 
 param posthogHost = 'https://us.i.posthog.com'
 param posthogEnvironment = 'prod'

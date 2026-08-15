@@ -141,11 +141,14 @@ param opsImageDigest string
 @maxLength(40)
 param releaseSha string
 
-@description('Azure OpenAI v1 base URL for the dedicated Foundry account, ending in /openai/v1/.')
-param azureOpenAIBaseUrl string
+@description('Environment-specific Foundry project endpoint used for prompt-agent invocation.')
+param azureFoundryProjectEndpoint string
 
-@description('Azure OpenAI model deployment name for this environment.')
-param azureOpenAIDeploymentName string
+@description('Environment-specific read-only Foundry decision agent name.')
+param azureFoundryAgentName string
+
+@description('Immutable Foundry decision agent version.')
+param azureFoundryAgentVersion string
 
 @description('PostHog ingestion host.')
 param posthogHost string = 'https://us.i.posthog.com'
@@ -476,8 +479,9 @@ module webApp 'modules/container-app-web.bicep' = {
     rolloutMode: 'disabled'
     nonSecretEnv: [
       { name: 'NODE_ENV', value: 'production' }
-      { name: 'AZURE_OPENAI_BASE_URL', value: azureOpenAIBaseUrl }
-      { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
+      { name: 'AZURE_FOUNDRY_PROJECT_ENDPOINT', value: azureFoundryProjectEndpoint }
+      { name: 'AZURE_FOUNDRY_AGENT_NAME', value: azureFoundryAgentName }
+      { name: 'AZURE_FOUNDRY_AGENT_VERSION', value: azureFoundryAgentVersion }
       { name: 'AZURE_CLIENT_ID', value: runtimeIdentityClientId }
       { name: 'APP_ORIGIN', value: targetBaseUrl }
       { name: 'POSTHOG_HOST', value: posthogHost }
@@ -740,8 +744,9 @@ module targetSmokeJob 'modules/container-app-job.bicep' = {
       // runTargetSmoke() -> runProviderSmoke() exercises Foundry and
       // PostHog directly. Foundry authenticates as the ops user-assigned
       // identity selected by AZURE_CLIENT_ID in opsCommonNonSecretEnv.
-      { name: 'AZURE_OPENAI_BASE_URL', value: azureOpenAIBaseUrl }
-      { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
+      { name: 'AZURE_FOUNDRY_PROJECT_ENDPOINT', value: azureFoundryProjectEndpoint }
+      { name: 'AZURE_FOUNDRY_AGENT_NAME', value: azureFoundryAgentName }
+      { name: 'AZURE_FOUNDRY_AGENT_VERSION', value: azureFoundryAgentVersion }
       { name: 'POSTHOG_HOST', value: posthogHost }
       { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
     ])

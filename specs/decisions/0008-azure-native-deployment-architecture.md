@@ -110,6 +110,10 @@ its Vercel/Supabase framing.
    target capacity on that same format/model/version/SKU dimension, so reruns
    do not double-count replaceable capacity.
 
+   Runtime inference was subsequently moved behind toolless, version-pinned
+   Foundry prompt agents by [ADR 0009](./0009-foundry-prompt-agent-boundary.md);
+   this item remains the model-hosting contract.
+
 8. **Production availability: single-zone initially, with 35-day
    point-in-time-recovery (PITR).** Zone-redundant HA is deferred; PITR
    window is set to the maximum operationally required for this stage
@@ -171,6 +175,7 @@ its Vercel/Supabase framing.
   deployments, so subscription/account-level quota remains aggregate even
   though names, capacities, identities, and runtime configuration are
   separated. Entra-only access removes shared model-key rotation.
+
 - **Trade-off:** Container Apps Jobs' Bicep-defined schedules mean an
   uncommitted or unreviewed manual schedule change is not captured by the
   Git-based recovery path in item 10; operational changes to schedules must

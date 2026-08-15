@@ -26,6 +26,7 @@ import {
 import { configuredModelVersion } from "@/agent/run-flow";
 import { smokeLunaStructuredOutput } from "@/deployment/provider-smoke";
 import {
+  resolveAzureFoundryAgentConfig,
   resolveAzureOpenAIConfig,
   validateEnv,
 } from "@/lib/config";
@@ -43,6 +44,9 @@ const ALL_ENV_KEYS = [
   "OPENAI_API_KEY",
   "AZURE_OPENAI_BASE_URL",
   "AZURE_OPENAI_DEPLOYMENT_NAME",
+  "AZURE_FOUNDRY_PROJECT_ENDPOINT",
+  "AZURE_FOUNDRY_AGENT_NAME",
+  "AZURE_FOUNDRY_AGENT_VERSION",
   "AZURE_CLIENT_ID",
   "DATABASE_URL",
   "POSTHOG_API_KEY",
@@ -74,6 +78,10 @@ function withEnv(
     AZURE_OPENAI_BASE_URL:
       "https://test-resource.openai.azure.com/openai/v1",
     AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-test-luna",
+    AZURE_FOUNDRY_PROJECT_ENDPOINT:
+      "https://test-resource.services.ai.azure.com/api/projects/krypto-test-agents",
+    AZURE_FOUNDRY_AGENT_NAME: "krypto-test-decision",
+    AZURE_FOUNDRY_AGENT_VERSION: "1",
     DATABASE_URL: "postgres://localhost:5432/test",
     POSTHOG_API_KEY: "phc_test",
     POSTHOG_ENVIRONMENT: "dev",
@@ -86,6 +94,7 @@ function withEnv(
     AZURE_COMMUNICATION_EMAIL_SENDER: "DoNotReply@test.azurecomm.net",
     ALERT_EMAIL_TO: "operator@example.com",
   });
+
   for (const [key, value] of Object.entries(overrides)) {
     if (value === undefined) {
       delete process.env[key];
@@ -107,6 +116,42 @@ function withEnv(
     }
   }
 }
+
+describe("resolveAzureFoundryAgentConfig", () => {
+  it("resolves an immutable environment-specific agent binding", () => {
+    expect(
+      resolveAzureFoundryAgentConfig({
+        AZURE_FOUNDRY_PROJECT_ENDPOINT:
+          "https://resource.services.ai.azure.com/api/projects/krypto-dev-agents/",
+        AZURE_FOUNDRY_AGENT_NAME: "krypto-dev-decision",
+        AZURE_FOUNDRY_AGENT_VERSION: "1",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+      }),
+    ).toEqual({
+      projectEndpoint:
+        "https://resource.services.ai.azure.com/api/projects/krypto-dev-agents",
+      agentName: "krypto-dev-decision",
+      agentVersion: "1",
+      clientId: TEST_CLIENT_ID,
+    });
+  });
+
+  it.each([
+    {
+      AZURE_FOUNDRY_PROJECT_ENDPOINT:
+        "https://resource.openai.azure.com/openai/v1",
+      AZURE_FOUNDRY_AGENT_NAME: "krypto-dev-decision",
+      AZURE_FOUNDRY_AGENT_VERSION: "1",
+    },
+    {
+      AZURE_FOUNDRY_PROJECT_ENDPOINT:
+        "https://resource.services.ai.azure.com/api/projects/krypto-dev-agents",
+      AZURE_FOUNDRY_AGENT_NAME: "krypto-dev-decision",
+    },
+  ])("rejects an incomplete or non-project binding", (env) => {
+    expect(resolveAzureFoundryAgentConfig(env)).toBeUndefined();
+  });
+});
 
 describe("resolveAzureOpenAIConfig", () => {
   it("resolves and normalizes the explicit Azure OpenAI v1 configuration", () => {
@@ -194,8 +239,10 @@ describe("configuredModelVersion", () => {
     expect(
       configuredModelVersion({
         AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-prod-luna",
+        AZURE_FOUNDRY_AGENT_NAME: "krypto-prod-decision",
+        AZURE_FOUNDRY_AGENT_VERSION: "1",
       }),
-    ).toBe("krypto-prod-luna");
+    ).toBe("krypto-prod-decision@1");
   });
 
   it("does not record a deprecated Anthropic deployment", () => {
@@ -222,6 +269,18 @@ describe("validateEnv", () => {
     withEnv({}, () => {
       expect(() => validateEnv()).not.toThrow();
     });
+  });
+
+  it("does not require direct-model diagnostics for application startup", () => {
+    withEnv(
+      {
+        AZURE_OPENAI_BASE_URL: undefined,
+        AZURE_OPENAI_DEPLOYMENT_NAME: undefined,
+      },
+      () => {
+        expect(() => validateEnv()).not.toThrow();
+      },
+    );
   });
 
   it("accepts production with a selected user-assigned managed identity", () => {

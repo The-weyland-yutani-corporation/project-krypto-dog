@@ -33,7 +33,10 @@ and must not be used for a new release.
 | SKU and capacity | `GlobalStandard`; dev 10 and prod 10 |
 | Model deployments | `krypto-dev-luna` / `krypto-prod-luna` |
 | Model auth | Project Krypto uses Microsoft Entra ID only; no model API key is stored or mounted |
-| Runtime model config | `AZURE_OPENAI_BASE_URL` ending `/openai/v1`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_CLIENT_ID` |
+| Agent projects | `krypto-dev-agents` / `krypto-prod-agents` |
+| Agent names | `krypto-dev-decision` / `krypto-prod-decision` |
+| Runtime agent config | `AZURE_FOUNDRY_PROJECT_ENDPOINT`, `AZURE_FOUNDRY_AGENT_NAME`, immutable `AZURE_FOUNDRY_AGENT_VERSION`, `AZURE_CLIENT_ID` |
+| Runtime agent auth | Project-scoped **Foundry Agent Consumer**; no agent or model API key |
 | Email | Per-environment ACS Email with Azure-managed domain |
 | Analytics | Every event carries mandatory `deployment_environment`; a distinct dev project remains required before production promotion |
 
@@ -52,8 +55,8 @@ those values without making them public documentation.
 |---|---|---|
 | Providers/bootstrap | Required providers are registered; platform/dev/prod resource groups and four GitHub OIDC identities exist | Complete |
 | GitHub controls | Environments, branch restrictions, variables, and release secrets are configured. Required-reviewer rules are unsupported by the private-repo billing plan; mutation workflows are manual/paused behind branch, exact-SHA, and CI gates. | Staged; no reviewer enforcement |
-| Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra plain/structured smokes. | Operational fallback complete |
-| Workload access | Dev/prod runtime and ops identities have Cognitive Services OpenAI User on the operational account | Complete |
+| Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments and isolated prompt agents on `ghcp-foundry-eastus2` succeeded. Both immutable agent version `1` deployments passed exact structured `HOLD` smokes. | Operational agents complete |
+| Workload access | Dev/prod runtime and ops identities each have project-scoped Foundry Agent Consumer. Legacy account-scoped direct-model roles remain only until the currently deployed pre-agent app image is replaced. | Agent access complete; compatibility-role removal pending app release |
 | Dev release | Live in shadow; manual activation and first scheduled execution passed with zero trades | Retained exact-SHA evidence |
 | Prod release | Live disabled/manual; migration, restore-verified backup, target smoke, and no-schedule checks passed | Release `ce7acc872f05899691ae44d4d826c9c8c94355c7` |
 | Release/rollout | Dev Schedule active; production has no schedule or promotion workflow | Complete for approved deployment scope |
@@ -137,7 +140,7 @@ approval boundary.
 
 | Environment | Workflows | Required variables | Required secrets |
 |---|---|---|---|
-| `platform` | `azure-platform.yml`, `azure-platform-access.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
+| `platform` | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
 | `development` | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
 | `production-deploy` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
 | `production-promotion` | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
@@ -188,7 +191,11 @@ model deployment with error `715-123420` (“unusual activity”). The exact dev
 and prod Luna deployments were then created serially on the established
 `ghcp-foundry-eastus2` account, granted to the four workload identities with
 **Cognitive Services OpenAI User**, and passed Entra plain plus strict
-structured `HOLD` smokes. Keep the dedicated account for a future migration.
+structured `HOLD` smokes. Those account-scoped roles are now a temporary
+compatibility bridge for the deployed pre-agent image; the new projects use
+project-scoped Foundry Agent Consumer and the old roles are removed only after
+the agent-integrated image passes target smoke. Keep the dedicated account for
+a future migration.
 
 `azure-platform.yml` remains the dedicated-account migration workflow. It has
 separate what-if/apply mutation boundaries:
@@ -256,38 +263,43 @@ ops identities, and ACS Email resources. It publishes nonsecret principal IDs,
 ACS sender, evidence metadata, and monitoring IDs. It does not build images,
 create a release, or enable a schedule.
 
-Both foundations are mandatory because the next step binds all four workload
-principal IDs in one account-scoped access deployment.
+Both foundations are mandatory because the next step binds each runtime/ops
+principal to its matching Foundry project. The four principal IDs are supplied
+explicitly to the reviewed `foundry-agents.bicep` deployment.
 
-## 5. Bind Foundry workload access
+## 5. Deploy Foundry agents and bind workload access
 
-**Current status: complete.** Dev/prod runtime and ops identities each have
-exactly one Cognitive Services OpenAI User assignment. This does not make a
-release ready while the model deployments are absent.
+**Current status: agents and project-scoped access complete; app cutover
+pending.** `infra/foundry-agents.bicep` creates separate dev/prod projects,
+assigns Foundry User to each project identity and attended deployer, and assigns
+Foundry Agent Consumer to only the matching runtime/ops identities. Scheduler
+identities receive no Foundry role.
 
-Run `azure-platform-access.yml` only after both foundation artifacts exist.
-Supply exactly the retained principal IDs for:
+Because GitHub-hosted jobs are blocked at startup by the account Actions billing
+state, the authenticated local operator path was used. The reviewed
+`npm run foundry:agent` command deployed a toolless prompt agent in each project,
+fetched and exactly attested the persisted definition, and invoked the exact
+version with a no-trade structured `HOLD`.
 
-- dev runtime;
-- dev ops;
-- prod runtime; and
-- prod ops.
+The deployed versions are pinned in the reviewed release/rollout parameter
+files. Changing a version therefore requires a source review. Target smoke
+invokes that exact version and then repeats database postconditions to prove no
+trade was added and the lease remains released.
 
-The workflow format-validates them, runs an environment-scoped what-if job,
-publishes the what-if artifact, then runs a separate apply job. The operational fallback has exactly one **Cognitive Services OpenAI User**
-assignment per runtime/ops principal at the established account scope.
-Scheduler identities receive no Foundry role.
-
-Do not proceed to a full release until the live assignment verification
-passes. This is the dependency bridge between the application foundations and
-keyless model access.
+Do not delete legacy account-scoped Cognitive Services OpenAI User assignments
+until that environment's new app image passes target smoke. The live pre-agent
+image still uses direct model inference, so early deletion would break dev
+shadow runs. After cutover, delete the legacy assignment and verify that only
+project-scoped Foundry Agent Consumer remains.
 
 ## 6. Dev full release and schedule activation
 
-**Current status: ready to start.** No dev release resources or URL exist.
-Operational Luna and environment-tagged PostHog are staged. Manually run
-`full` at the exact CI-passed SHA; the automatic path remains paused while
-reviewer enforcement is unavailable.
+**Current status: pre-agent release live; agent cutover pending.** Dev is
+shadow/scheduled on the previously validated image. The Foundry prompt agent is
+active and smoke-tested, but the new app image has not been released because
+GitHub-hosted Actions cannot start while the account billing block remains.
+Run `full` at the exact CI-passed SHA after that external block is cleared, or
+use the equivalent retained local release procedure.
 
 The implemented order is:
 

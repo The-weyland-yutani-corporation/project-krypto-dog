@@ -55,6 +55,7 @@ export type AgentErrorType =
   | "LLM_RATE_LIMIT"
   | "LLM_TIMEOUT"
   | "LLM_MODEL"
+  | "LLM_BINDING"
   | "AUTHORIZATION"
   | "CONFLICT"
   | "PERSISTENCE"
@@ -73,6 +74,21 @@ export class AgentUpstreamError extends Error {
   ) {
     super(message);
     this.name = "AgentUpstreamError";
+  }
+}
+
+export class AgentBindingMismatchError extends AgentUpstreamError {
+  constructor(
+    readonly expectedBinding: string,
+    readonly actualBinding: string,
+  ) {
+    super(
+      "LLM_BINDING",
+      `Foundry agent binding mismatch: expected ${expectedBinding}, received ${actualBinding}.`,
+      502,
+      false,
+    );
+    this.name = "AgentBindingMismatchError";
   }
 }
 

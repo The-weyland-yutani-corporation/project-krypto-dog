@@ -1,0 +1,6 @@
+defaultEnvironment: prod
+environments:
+  prod:
+    projectEndpoint: https://ghcp-foundry-eastus2.services.ai.azure.com/api/projects/krypto-prod-agents
+    agentName: krypto-prod-decision
+    agentVersion: "1"

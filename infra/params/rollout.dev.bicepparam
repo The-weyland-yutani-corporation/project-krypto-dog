@@ -32,8 +32,10 @@ param dailyJobName = 'caj-dev-daily-summary'
 param webImageName = 'krypto-web'
 param imageDigest = 'sha256:REPLACE_WITH_CURRENTLY_RELEASED_DIGEST'
 
-param azureOpenAIBaseUrl = 'https://ghcp-foundry-eastus2.openai.azure.com/openai/v1/'
-param azureOpenAIDeploymentName = 'krypto-dev-luna'
+param azureFoundryProjectEndpoint = 'https://ghcp-foundry-eastus2.services.ai.azure.com/api/projects/krypto-dev-agents'
+param azureFoundryAgentName = 'krypto-dev-decision'
+param azureFoundryAgentVersion = '1'
+param legacyDirectModelCompatibility = false
 
 param posthogHost = 'https://us.i.posthog.com'
 param posthogEnvironment = 'dev'

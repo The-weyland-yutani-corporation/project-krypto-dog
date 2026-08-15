@@ -1,0 +1,6 @@
+defaultEnvironment: dev
+environments:
+  dev:
+    projectEndpoint: https://ghcp-foundry-eastus2.services.ai.azure.com/api/projects/krypto-dev-agents
+    agentName: krypto-dev-decision
+    agentVersion: "1"

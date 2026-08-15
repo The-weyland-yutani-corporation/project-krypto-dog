@@ -3,10 +3,10 @@
 This tree implements the Azure-native target accepted by
 [`specs/decisions/0008-azure-native-deployment-architecture.md`](../specs/decisions/0008-azure-native-deployment-architecture.md).
 
-> **Deployment state (2026-08-15): FOUNDATIONS + FALLBACK LUNA + RELEASES
-> DEPLOYED.** Bootstrap, both environment foundations, operational Luna
-> deployments, workload access, and dev/prod releases exist. Dev is
-> shadow/scheduled; production is disabled/manual.
+> **Deployment state (2026-08-15): RELEASES + FOUNDRY AGENTS DEPLOYED.** Dev is
+> shadow/scheduled; production is disabled/manual. Isolated dev/prod prompt
+> agents version `1` are active and passed exact structured `HOLD` smokes. The
+> next reviewed app release performs the runtime cutover.
 >
 > **Paper only.** Templates support `disabled`, `shadow`, and `paper`.
 > Nothing provisions or authorizes live-money execution.
@@ -23,8 +23,8 @@ This tree implements the Azure-native target accepted by
 - Model: OpenAI `gpt-5.6-luna`, version `2026-07-09`,
   `GlobalStandard`.
 - Deployments: `krypto-dev-luna` and `krypto-prod-luna`, capacity 10 each.
-- Runtime/ops callers use Microsoft Entra ID and only **Cognitive Services
-  OpenAI User**. Project Krypto does not mount model API keys.
+- Runtime/ops callers use Microsoft Entra ID and project-scoped **Foundry Agent
+  Consumer**. Project Krypto does not mount model or agent API keys.
 - Email is per-environment Azure Communication Services Email with an
   Azure-managed domain.
 - Every event is tagged with `deployment_environment`; separate PostHog
@@ -40,10 +40,11 @@ provision PostgreSQL there. It is not a current target.
 | Subscription/bootstrap | Required providers registered; three resource groups and four GitHub OIDC identities exist | Bootstrap complete |
 | GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a separate dev PostHog key; required-reviewer rules are unsupported by the private-repo billing plan, so mutation workflows are manual/paused behind branch, exact-SHA, and CI gates | Configuration staged; reviewer enforcement unavailable |
 | Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
-| Foundry workload access | Dev/prod runtime and ops identities each have Cognitive Services OpenAI User on the operational account | Applied |
+| Foundry agents | Separate dev/prod projects and toolless prompt agents version `1` are active; exact-definition and structured `HOLD` smokes passed | Applied |
+| Foundry workload access | Dev/prod runtime and ops identities each have project-scoped Foundry Agent Consumer; legacy direct-model roles await app-image cutover | Applied with documented migration dependency |
 | Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
 | Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
-| Releases | Dev/prod web Container Apps and scheduler/ops jobs are deployed; dev completed target-smoke and scheduled-run evidence; production remains disabled/manual | Deployed with safety state |
+| Releases | Dev/prod web Container Apps and scheduler/ops jobs are deployed; dev completed target-smoke and scheduled-run evidence, prod remains disabled/manual, and both still run the pre-agent image until the reviewed cutover release | Deployed with safety state |
 | Analytics | Shared ingestion key temporarily staged with mandatory dev/prod event tags; separate projects remain a promotion gate | Release-testable |
 
 Azure Support API ticket creation for the dedicated account failed because the
@@ -72,7 +73,7 @@ infra/
   bootstrap.bicep          subscription scope: three RGs, four OIDC identities, minimal read-only roles
   platform-account.bicep   rg-krypto-platform: dedicated Foundry account + delete lock
   platform.bicep           rg-krypto-platform: pinned dev/prod Luna deployments
-  platform-access.bicep    rg-krypto-platform: runtime/ops inference role bindings
+  foundry-agents.bicep     operational account RG: isolated projects and project-scoped agent RBAC
   environment.bicep        per environment: foundation resources and identities
   release.bicep            per environment: disabled/manual app, jobs, and Key Vault secrets
   rollout.bicep            per environment: rollout mode and job trigger state
@@ -88,7 +89,7 @@ infra/
 | `bootstrap.bicep` | Platform/dev/prod resource groups; four OIDC identities and RG roles; one-action provider-state reader role/assignments; platform **Cognitive Services Usages Reader** | Other subscription permissions, application resources, model deployments, secrets |
 | `platform-account.bicep` | Dedicated Foundry account and `CanNotDelete` lock | Model deployments or workload access |
 | `platform.bicep` | Exact dev/prod model deployments and platform smoke role | Account lifecycle or application identities |
-| `platform-access.bicep` | Four account-scoped workload role assignments | Model/account mutation |
+| `foundry-agents.bicep` | Dev/prod Foundry projects; project identities/deployer Foundry User; matching runtime/ops Agent Consumer | Models, application resources, or trading permissions |
 | `environment.bicep` | Network, ACR, Container Apps environment, PostgreSQL, Key Vault, evidence storage, ACS Email, Log Analytics, Action Group/failed-job alert, runtime/scheduler/ops identities, and prod PostgreSQL/Key Vault/storage delete locks | App release, schedule activation, application secret payloads |
 | `release.bicep` | Web app, scheduler jobs, five ops jobs, application Key Vault secrets/RBAC | Any schedule; it hardcodes disabled/manual |
 | `rollout.bicep` | Web rollout mode and scheduler trigger state | Monitoring, new images, Key Vault values, role assignments, ops-job definitions |
@@ -103,7 +104,7 @@ Foundry workload access exists; releases are not.
 
 | Identity | GitHub Environment | Resource-group roles | Subscription read-only roles | Intended templates |
 |---|---|---|---|---|
-| `id-github-oidc-platform` | `platform` | `rg-krypto-platform`: Contributor, Role Based Access Control Administrator, Locks Contributor | **Project Krypto Provider Registration Reader**; **Cognitive Services Usages Reader** | `platform-account.bicep`, `platform.bicep`, `platform-access.bicep` |
+| `id-github-oidc-platform` | `platform` | `rg-krypto-platform`: Contributor, Role Based Access Control Administrator, Locks Contributor | **Project Krypto Provider Registration Reader**; **Cognitive Services Usages Reader** | `platform-account.bicep`, `platform.bicep` |
 | `id-github-oidc-dev` | `development` | `rg-krypto-dev`: Contributor, Role Based Access Control Administrator | **Project Krypto Provider Registration Reader** | `environment.bicep`, `release.bicep`, `rollout.bicep`, `schedule-monitoring.bicep` |
 | `id-github-oidc-prod-deploy` | `production-deploy` | `rg-krypto-prod`: Contributor, Role Based Access Control Administrator, Locks Contributor | **Project Krypto Provider Registration Reader** | `environment.bicep`, `release.bicep` |
 | `id-github-oidc-prod-promotion` | `production-promotion` | `rg-krypto-prod`: Contributor | none | Forced-disable jobs in prod deploy/rotation only: `rollout.bicep`, then `schedule-monitoring.bicep` |
@@ -198,8 +199,7 @@ invents a fallback.
 
 `platform.bicep` grants the protected platform smoke principal
 **Cognitive Services OpenAI User** for attended no-trade verification.
-`platform-access.bicep` independently grants the same one role at account
-scope to:
+`foundry-agents.bicep` grants project-scoped **Foundry Agent Consumer** to:
 
 - dev runtime;
 - dev ops;
@@ -210,12 +210,14 @@ Schedulers invoke the application and receive no direct Foundry access.
 Runtime configuration is:
 
 ```text
-AZURE_OPENAI_BASE_URL=<protected account endpoint ending /openai/v1>
-AZURE_OPENAI_DEPLOYMENT_NAME=krypto-dev-luna | krypto-prod-luna
+AZURE_FOUNDRY_PROJECT_ENDPOINT=<environment project endpoint>
+AZURE_FOUNDRY_AGENT_NAME=krypto-dev-decision | krypto-prod-decision
+AZURE_FOUNDRY_AGENT_VERSION=<exact attested immutable version>
 AZURE_CLIENT_ID=<matching runtime-or-ops UAMI client ID>
 ```
 
-There is no model API key or dated runtime API-version setting.
+There is no model/agent API key or dated runtime API-version setting. Optional
+direct-model diagnostics are restricted to an attended platform operator.
 
 ## Per-environment foundation
 
@@ -253,19 +255,22 @@ required.
    `azure-platform.yml` path remains available for a future migration.
 4. `azure-deploy-dev.yml` with `deployment_stage=foundation`.
 5. `azure-deploy-prod.yml` with `deployment_stage=foundation`.
-6. Environment-scoped manual `azure-platform-access.yml` with the four retained
-   runtime/ops principal IDs.
+6. Authenticated local `foundry-agents.bicep` apply plus exact dev/prod agent
+   deploy/attestation/HOLD smokes (GitHub-hosted Actions billing is blocked).
 7. Full dev release and monitored shadow activation.
 8. Full prod release, ending disabled/manual. No production promotion
    workflow is shipped or approved.
 
-Current checkpoint: steps 1 through 8 are complete. Dev is shadow/scheduled
-with monitored activation evidence, and prod is deployed disabled/manual.
+Current checkpoint: all steps are complete for the pre-agent application.
+Dev is shadow/scheduled with monitored activation evidence, and prod is
+deployed disabled/manual. Agent resources and access are also complete; repeat
+steps 7 and 8 with the agent-integrated image before deleting legacy
+account-scoped model roles.
 
 Both foundation workflows publish a nonsecret handoff artifact containing
-identity IDs, evidence metadata, ACS sender, and monitoring IDs. The access
-workflow consumes the principal IDs through explicit reviewed inputs; it
-does not guess them.
+identity IDs, evidence metadata, ACS sender, and monitoring IDs. The Foundry
+Agent deployment consumes the retained principal IDs explicitly; it does not
+guess them.
 
 Manual workflows support `foundation` and `full`; the workflow definition maps
 `workflow_run` events to `full`. Automatic mutation is currently paused because
@@ -319,9 +324,9 @@ secret resource, not the whole vault.
 
 | Identity | Workload | Secret access | Other access |
 |---|---|---|---|
-| runtime | Web Container App | `database-url`, `cron-secret`, `posthog-api-key`, `azure-communication-connection-string`, `admin-password`, `admin-session-secret` | ACR pull; Foundry OpenAI User |
+| runtime | Web Container App | `database-url`, `cron-secret`, `posthog-api-key`, `azure-communication-connection-string`, `admin-password`, `admin-session-secret` | ACR pull; project-scoped Foundry Agent Consumer |
 | scheduler | Hourly and daily jobs | `cron-secret` only | ACR pull; no Foundry role |
-| ops | Five manual jobs | Union of `database-url`, `direct-url`, `cron-secret`, `admin-password`, `posthog-api-key`, `runtime-database-password`, `deployment-approval-secret` | ACR pull; evidence-container writer; Foundry OpenAI User |
+| ops | Five manual jobs | Union of `database-url`, `direct-url`, `cron-secret`, `admin-password`, `posthog-api-key`, `runtime-database-password`, `deployment-approval-secret` | ACR pull; evidence-container writer; project-scoped Foundry Agent Consumer |
 
 The ops identity never receives the ACS connection string or admin session
 secret. Target smoke validates ACS by asking the running app to send and
@@ -334,7 +339,7 @@ The web Container App receives:
 
 | Kind | Settings |
 |---|---|
-| Nonsecret | `NODE_ENV=production`, `AZURE_OPENAI_BASE_URL`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_CLIENT_ID`, `APP_ORIGIN`, `POSTHOG_HOST`, `ALERT_EMAIL_TO`, `AZURE_COMMUNICATION_EMAIL_SENDER`, `ROLLOUT_MODE` |
+| Nonsecret | `NODE_ENV=production`, `AZURE_FOUNDRY_PROJECT_ENDPOINT`, `AZURE_FOUNDRY_AGENT_NAME`, immutable `AZURE_FOUNDRY_AGENT_VERSION`, `AZURE_CLIENT_ID`, `APP_ORIGIN`, `POSTHOG_HOST`, `ALERT_EMAIL_TO`, `AZURE_COMMUNICATION_EMAIL_SENDER`, `ROLLOUT_MODE` |
 | Key Vault-backed | `DATABASE_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `AZURE_COMMUNICATION_CONNECTION_STRING`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET` |
 
 `DIRECT_URL` never reaches the runtime.
@@ -505,7 +510,7 @@ availability or create live evidence:
 az bicep build --file infra/bootstrap.bicep
 az bicep build --file infra/platform-account.bicep
 az bicep build --file infra/platform.bicep
-az bicep build --file infra/platform-access.bicep
+az bicep build --file infra/foundry-agents.bicep
 az bicep build --file infra/environment.bicep
 az bicep build --file infra/release.bicep
 az bicep build --file infra/rollout.bicep
@@ -546,8 +551,11 @@ Never use real secret values for compile-only validation.
 
 ## Known limitations
 
-- The Foundry data-plane endpoint is public at the network layer, but local
-  auth is disabled and callers still require the reviewed Entra role.
+- The operational fallback account is shared and still has legacy local/model
+  key authentication enabled. Project Krypto stores no key and Agent calls use
+  Entra with project-scoped Agent Consumer, but account-wide local auth remains
+  a production-promotion blocker. Disable it with the account owner or migrate
+  to the Entra-only dedicated account before any promotion design.
 - Container Apps ingress is external; PostgreSQL alone is private-only.
 - Key Vault and evidence storage use public network paths with Azure RBAC,
   not private endpoints.
@@ -558,6 +566,6 @@ Never use real secret values for compile-only validation.
   host, and recipient to avoid unintended drift.
 - A partial deterministic prod release is neither a valid current release nor
   a fresh environment; the prod workflow fails closed.
-- Live results are limited to the bootstrap/platform/foundation/access
-  checkpoint documented above. No release, application URL, ops-job report,
-  target smoke, or schedule result is implied.
+- Live pre-agent releases and evidence exist: dev is shadow/scheduled and prod
+  disabled/manual. The agent-integrated image release and subsequent operational
+  account role retirement are not yet implied.
