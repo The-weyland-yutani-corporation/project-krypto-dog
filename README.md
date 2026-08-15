@@ -22,16 +22,16 @@
 
 > **Autonomous LLM-driven swing-trading agent for ETH/USDC.**
 > v2.1 safety core and the Azure target are implemented in source.
-> **NOT production-ready:** Azure bootstrap, platform-account, access, and
-> environment foundations exist, but no release, Container App, job, or public
-> Azure URL exists.
+> **NOT production-ready:** Azure foundations and fallback Luna deployments
+> exist, but no release, Container App, job, target smoke, or public Azure URL
+> exists.
 
 | | |
 |---|---|
-| **Status** | **Foundations provisioned; releases blocked.** Required providers, resource groups/OIDC, the Foundry account, workload access, and both environment foundations are live. No release, Container App, job, target smoke, schedule, or public Azure URL exists. |
+| **Status** | **Foundations and Luna provisioned; releases pending.** Required providers, resource groups/OIDC, both Luna deployments, workload access, and both environment foundations are live. No release, Container App, job, target smoke, schedule, or public Azure URL exists. |
 | **Hosted today (observed baseline)** | Historical Vercel build + fresh Supabase PostgreSQL 17 replacement. Neither is the Azure release candidate. See [`specs/architecture.md`](./specs/architecture.md). |
-| **Azure state (2026-08-14)** | `rg-krypto-platform`, `rg-krypto-dev`, and `rg-krypto-prod` exist in `westus3`. `ai-krypto-westus3` and both environment foundations are deployed. The planned OpenAI `gpt-5.6-luna` deployments remain absent. |
-| **Current blockers** | Azure rejects model deployment with error `715-123420` (“unusual activity”) despite valid catalog/quota. Support API ticket creation failed because the subscription has no eligible support plan; portal/account support action is required. A separate dev PostHog project key is also missing; the prod key is staged. |
+| **Azure state (2026-08-14)** | Application foundations remain in `westus3`. The dedicated `ai-krypto-westus3` account exists but is model-empty after `715-123420`. Operational dev/prod `gpt-5.6-luna` deployments now run on the established `ghcp-foundry-eastus2` account and passed Entra plain + strict structured `HOLD` smokes. |
+| **Current blockers** | Full dev release/evidence is the next gate. Dev temporarily uses the existing PostHog ingestion key with a mandatory `deployment_environment=dev` property; a truly separate dev PostHog project remains required before any future production promotion design. |
 | **Stack** | Next.js 16 (App Router) · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
 | **Scheduling state** | No Azure jobs or approved production schedule exist. Production remains disabled with no release and no promotion workflow. |
 | **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
@@ -179,11 +179,11 @@ tests/                    # Jest unit + integration tests
 
 > **WARNING:** No executable production promotion workflow is shipped or
 > approved.
-> Azure foundations are provisioned, but model deployment and every full
-> release/evidence/rollout gate remain. No Container App or job exists. See
+> Azure foundations and operational Luna deployments are provisioned, but every
+> full release/evidence/rollout gate remains. No Container App or job exists. See
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
-> **Target platform: Azure-native; foundations provisioned, releases blocked.**
+> **Target platform: Azure-native; foundations/models provisioned, releases pending.**
 > The approved deployment plan supersedes Vercel/Supabase with a fully
 > Azure-native target (ADR
 > [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
@@ -191,7 +191,7 @@ tests/                    # Jest unit + integration tests
 > deployment code for that target all exist in this repo — see
 > [`infra/README.md`](./infra/README.md) and
 > [`specs/deployment.md`](./specs/deployment.md). Required providers,
-> bootstrap/OIDC, the Foundry account, workload access, and both environment
+> bootstrap/OIDC, operational Luna, workload access, and both environment
 > foundations are live. No release or public application URL exists.
 > See [`specs/architecture.md`](./specs/architecture.md) for diagrams,
 > live/planned resource names, the exact current-vs-target state, and safe
@@ -200,16 +200,16 @@ tests/                    # Jest unit + integration tests
 
 Observed live runs:
 
-- [Platform account succeeded; model deployment failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884)
+- [Dedicated account succeeded; model deployment failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
 - [Dev foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
 - [Prod foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
 
-GitHub Environments, branch restrictions, and protected values are configured
-except for a separate dev PostHog key. Required-reviewer rules are unavailable
-on the private repository's billing plan, so mutation workflows remain
-manual/paused and require the configured branch, exact SHA, and successful CI
-gates. Resolve the Azure model restriction and provision the dev key before any
-full dev release.
+GitHub Environments, branch restrictions, and protected values are configured.
+Required-reviewer rules are unavailable on the private repository's billing
+plan, so mutation workflows remain manual/paused and require the configured
+branch, exact SHA, and successful CI gates. The full dev release is the next
+gate; shared-key PostHog telemetry is environment-tagged and cannot qualify as
+final project isolation for production promotion.
 
 After those blockers clear, dev uses a staged
 disabled/manual → shadow/manual → unique manual shadow run → post-run

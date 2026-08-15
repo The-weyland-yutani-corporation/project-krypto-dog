@@ -1,8 +1,8 @@
 # Deployment and trading readiness
 
-> **State snapshot: 2026-08-14 — FOUNDATIONS PROVISIONED; RELEASES BLOCKED.**
-> Required providers, bootstrap/OIDC, the Foundry account, workload-access
-> bindings, and both environment foundations are live. No Luna deployment,
+> **State snapshot: 2026-08-14 — FOUNDATIONS + LUNA PROVISIONED; RELEASES
+> PENDING.** Required providers, bootstrap/OIDC, operational Luna deployments,
+> workload access, and both environment foundations are live. No application
 > release, Container App, job, application URL, ops-job report, target smoke,
 > backup, activation check, or scheduled-run evidence exists.
 >
@@ -18,9 +18,9 @@ observations remain historical only; its archived procedure is
 
 | Scope | Current decision | Blocking reason |
 |---|---|---|
-| Azure platform | **Blocked** | Account/local-auth/lock, catalog/quota, and workload access are live; model apply fails with Azure `715-123420`, and no model smoke can run |
-| Azure dev | **Not ready** | Foundation/access passed, but Luna deployments and a distinct dev PostHog key are missing; no release/evidence/activation exists |
-| Azure prod | **Not ready** | Foundation/access passed, but no model or disabled/manual release exists; no promotion workflow is shipped or approved |
+| Azure platform | **Operational fallback ready** | Dev/prod Luna deployments on the established account passed Entra plain and structured `HOLD` smokes; the dedicated account remains model-empty |
+| Azure dev | **Ready for full release gate** | Foundation, Luna, workload access, ACS, and environment-tagged PostHog config are staged; release/evidence/activation remain |
+| Azure prod | **Not ready** | Foundation/model/access passed, but no disabled/manual release exists and dev proof must complete first; no promotion workflow is shipped |
 | v2.2 paper rollout | **Not ready** | No observed scheduled Azure execution, qualifying paper evidence window, or approved production promotion design |
 | v3 live execution | **Not authorized** | Live execution is outside the current implementation and requires its own approval gates |
 
@@ -34,16 +34,16 @@ not satisfy a live Azure gate.
 | Runtime-selected subscription | **Visual Studio Enterprise Subscription**; never publish its ID/internal identifiers |
 | Region | `westus3` |
 | Resource groups | `rg-krypto-platform`, `rg-krypto-dev`, `rg-krypto-prod` |
-| Foundry account | Bicep-managed `ai-krypto-westus3` |
+| Operational Foundry account | `ghcp-foundry-eastus2` until the dedicated account is unblocked |
 | Model | OpenAI `gpt-5.6-luna` version `2026-07-09` |
 | Deployment SKU/capacity | `GlobalStandard`; desired dev 10 + prod 10, with deployment-pair-aware incremental validation against the exact quota dimension |
 | Deployment names | `krypto-dev-luna`, `krypto-prod-luna` |
-| Foundry auth | Local auth/API keys disabled; runtime and ops UAMIs receive only **Cognitive Services OpenAI User** |
+| Foundry auth | Project Krypto mounts no model API key; runtime and ops UAMIs receive only **Cognitive Services OpenAI User** |
 | Deployment mutation scope | All mutation roles are resource-group-scoped; prod-deploy and platform Locks Contributor remain in their respective resource groups |
 | Deployment subscription reads | One-action Project Krypto Provider Registration Reader on platform/dev/prod-deploy; Cognitive Services Usages Reader additionally on platform; no broad Reader |
 | Runtime model config | `AZURE_OPENAI_BASE_URL` ending `/openai/v1`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_CLIENT_ID` |
 | Email | Separate dev/prod Azure Communication Services Email resources with Azure-managed domains |
-| Analytics | Separate PostHog project keys for dev and prod |
+| Analytics | Mandatory `deployment_environment` property now; distinct PostHog projects remain a production-promotion prerequisite |
 
 `eastus2` was rejected because the selected subscription is restricted from
 PostgreSQL provisioning there. It is a historical constraint, not a valid
@@ -56,7 +56,7 @@ Six Azure workflow surfaces implement or validate the target:
 | Workflow | Responsibility | Current live status |
 |---|---|---|
 | `azure-infra-validate.yml` | Source validation for Bicep, parameters, workflow contracts, and Azure helper tests | Validation-only; cannot produce live deployment evidence |
-| `azure-platform.yml` | Dedicated Foundry account/model plan, apply, exact catalog/quota check, and no-trade smoke | [Run failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884): account/local-auth/lock and catalog/quota passed; model apply blocked by `715-123420`; smoke not run |
+| `azure-platform.yml` | Dedicated Foundry account/model plan, apply, exact catalog/quota check, and no-trade smoke | Dedicated account/model attempt failed after account/catalog/quota; operational fallback models and smokes were completed separately |
 | `azure-platform-access.yml` | Separate plan/apply for four runtime/ops account-role bindings | Applied; dev/prod runtime and ops each have Cognitive Services OpenAI User |
 | `azure-deploy-dev.yml` | Dev `foundation` or `full` release and monitored shadow activation | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875); full release not run |
 | `azure-deploy-prod.yml` | Prod `foundation` or `full` release ending disabled/manual | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745); full release not run |
@@ -64,8 +64,7 @@ Six Azure workflow surfaces implement or validate the target:
 
 Platform account/model mutation and platform access each use separate
 environment-scoped what-if and apply jobs. GitHub Environments, branch
-restrictions, and protected values are configured except for the separate dev
-PostHog key. Required-reviewer rules are unsupported by the private-repo
+restrictions, and protected values are configured. Required-reviewer rules are unsupported by the private-repo
 billing plan, so mutation workflows are manual/paused behind configured branch,
 exact-SHA, and CI gates. Dev/prod workflows still support `foundation` and
 `full`, but automatic mutation is not currently enabled.
@@ -75,10 +74,11 @@ No executable production promotion workflow is shipped or approved.
 identity/environment used within prod deploy and rotation. Any future
 production promotion requires a new evidence-bound design and review.
 
-Azure Support API ticket creation for `715-123420` failed because the
-subscription has no eligible support plan. Portal/account support action is
-required; this blocker must not be bypassed with another model, SKU, region, or
-credential mode.
+Azure Support API ticket creation for the dedicated-account `715-123420`
+failure was unavailable without an eligible support plan. The established
+account fallback preserves the exact model/version/SKU/capacity and Entra auth
+contract, so it is an approved operational workaround rather than a model or
+credential downgrade.
 
 ## 4. Mandatory provisioning order
 
@@ -100,17 +100,17 @@ credential mode.
   forced-disable-only `production-promotion` GitHub Environments, including
   branch restrictions and the currently available protected values. Required
   reviewers are unavailable on the current plan; keep mutation manual/paused.
-- [ ] Add a distinct dev PostHog project key; do not reuse the staged prod key.
+- [x] Stage a dev telemetry fallback with mandatory
+      `deployment_environment=dev`; do not count it as final project isolation.
 - [x] Run the Foundry account what-if/apply; verify local auth disabled and the
   `CanNotDelete` lock.
 - [x] Prove the exact model catalog match and quota availability for the two
   target deployment-name/capacity pairs. Subtract only exact existing target
   capacity on the same format/model/version/SKU dimension.
-- [ ] Resolve Azure error `715-123420` through portal/account support, then run
-  the exact model what-if/apply without changing model, version, SKU, capacity,
-  region, or auth.
-- [ ] Pass the Entra-authenticated plain-response and structured `HOLD`
-  no-trade platform smokes.
+- [x] Deploy exact Luna dev/prod fallbacks on the established account after the
+      dedicated account returned `715-123420`.
+- [x] Pass Entra-authenticated plain-response and strict structured `HOLD`
+      smokes against both fallback deployments.
 - [x] Deploy the dev foundation.
 - [x] Deploy the prod foundation.
 - [x] Retain both foundation handoffs and bind the exact dev/prod runtime and
@@ -145,10 +145,9 @@ RUNTIME_DATABASE_PASSWORD
 DEPLOYMENT_APPROVAL_SECRET
 ```
 
-Current state: Environment variables/secrets are staged, but the prod PostHog
-key is the only environment-specific PostHog key available. A distinct dev
-project key is still required. No release has run to validate runtime secret
-bindings.
+Current state: Environment variables/secrets are staged. Dev temporarily uses
+the existing ingestion key, but `POSTHOG_ENVIRONMENT` is mandatory and every
+event is tagged. No release has run to validate runtime secret bindings.
 
 Readiness requirements:
 
@@ -156,8 +155,8 @@ Readiness requirements:
 - [ ] `DIRECT_URL` uses `krypto_owner`; both database URLs target the same
   private PostgreSQL 17 database with `sslmode=require`.
 - [ ] `DEPLOYMENT_APPROVAL_SECRET` differs from `CRON_SECRET`.
-- [ ] Dev and prod `POSTHOG_API_KEY` values identify separate projects. Prod is
-  staged; dev is missing.
+- [x] Dev/prod events are query-isolated by mandatory deployment tags.
+- [ ] Move dev to a distinct PostHog project before production promotion.
 - [ ] No long-lived Azure credential or Foundry API key is stored in GitHub.
 
 ACS connection strings are not GitHub secrets or workflow inputs.
@@ -168,8 +167,8 @@ directly to that environment's Key Vault. Runtime configuration is
 
 ## 6. Dev release and activation gate
 
-Current dev is foundation-only. No release/app/jobs exist, and full deployment
-is blocked by the absent Luna deployments and missing separate dev PostHog key.
+Current dev is foundation-only. No release/app/jobs exist; the full release is
+now the next gate.
 
 The approved dev sequence is indivisible:
 
@@ -233,11 +232,11 @@ No provider is ready until retained live evidence proves all applicable rows:
 | Gate | Required evidence | Current state |
 |---|---|---|
 | Azure resource providers | Owner registration completed; applicable deployment workflow `--check-only` checks passed | **Passed** |
-| Foundry | Exact account/model/version/SKU/capacity, local auth disabled, Entra plain + structured `HOLD` smokes | **Blocked:** account/auth/lock live; model absent after `715-123420`; smokes not run |
+| Foundry | Exact account/model/version/SKU/capacity and Entra plain + structured `HOLD` smokes | **Passed on operational fallback:** both deployments live; no model API key used |
 | Quota | One exact catalog `usageName`, one exact quota dimension, and sufficient incremental capacity after subtracting only exact replaceable target deployments | **Passed** in the failed platform run |
 | Coinbase | Authenticated provider smoke from the deployed target | Pending |
 | ACS Email | Environment-specific sender; actual `sent` result and persisted delivery audit | **Partial:** both managed-domain foundations live; runtime delivery pending |
-| PostHog | Distinct dev/prod keys and environment-specific ingestion proof | **Blocked:** prod staged; separate dev key missing |
+| PostHog | Mandatory environment tagging now; distinct projects before promotion | **Staged:** shared-key fallback tagged; target ingestion proof pending |
 | Database | Migration/init report, private target validation, app/owner role separation | **Partial:** both private PostgreSQL 17 foundations live; release validation pending |
 | Backup | Restore-verified backup bound to exact target SHA/digest | Pending |
 | Admin/auth | Target-smoke proof without disclosing credentials | Pending |
@@ -320,7 +319,7 @@ checkpoint. Do not mark either environment release-ready or add an Azure URL to
 [`architecture.md`](./architecture.md) until the matching full release and
 target smoke succeed. Until then:
 
-- the platform account is live but both Luna deployments remain blocked;
+- operational Luna deployments are live; the dedicated account remains model-empty;
 - dev and prod are **foundation only**, with no Container App or job;
 - there is no approved Azure application URL;
 - foundation alerts exist, but there is no live target smoke, backup,

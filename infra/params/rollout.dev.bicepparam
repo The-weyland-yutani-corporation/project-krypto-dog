@@ -32,10 +32,11 @@ param dailyJobName = 'caj-dev-daily-summary'
 param webImageName = 'krypto-web'
 param imageDigest = 'sha256:REPLACE_WITH_CURRENTLY_RELEASED_DIGEST'
 
-param azureOpenAIBaseUrl = 'https://ai-krypto-westus3.openai.azure.com/openai/v1/'
+param azureOpenAIBaseUrl = 'https://ghcp-foundry-eastus2.openai.azure.com/openai/v1/'
 param azureOpenAIDeploymentName = 'krypto-dev-luna'
 
 param posthogHost = 'https://us.i.posthog.com'
+param posthogEnvironment = 'dev'
 param alertEmailTo = 'varun.sharma.exe@gmail.com'
 param communicationEmailSender = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender'
 

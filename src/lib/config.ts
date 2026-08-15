@@ -69,6 +69,7 @@ const envSchema = z
     DATABASE_URL: z.string().url(),
     POSTHOG_API_KEY: z.string().min(1),
     POSTHOG_HOST: z.string().url().optional(),
+    POSTHOG_ENVIRONMENT: z.enum(["dev", "prod"]).optional(),
     CRON_SECRET: z.string().min(1),
     ROLLOUT_MODE: z.enum(["disabled", "shadow", "paper"]).optional(),
     AZURE_COMMUNICATION_CONNECTION_STRING: z.string().min(1).optional(),
@@ -112,6 +113,13 @@ const envSchema = z
         ctx.issues.push({
           code: "custom",
           message: "ADMIN_SESSION_SECRET is required in production.",
+          input: ctx.value,
+        });
+      }
+      if (!env.POSTHOG_ENVIRONMENT) {
+        ctx.issues.push({
+          code: "custom",
+          message: "POSTHOG_ENVIRONMENT is required in production.",
           input: ctx.value,
         });
       }

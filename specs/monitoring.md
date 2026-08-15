@@ -38,12 +38,14 @@ Release thresholds and authorization are in
 
 ## PostHog isolation
 
-Create separate **dev** and **prod** PostHog projects and store their distinct
-project keys as `POSTHOG_API_KEY` in the corresponding protected GitHub
-Environment. Reusing one key would mix deployment smoke, shadow, and prod
-evidence and is not accepted.
+Every event must carry `deployment_environment=dev|prod`; production startup
+fails if `POSTHOG_ENVIRONMENT` is absent. A shared ingestion key is temporarily
+accepted for dev validation because the environment property makes every query
+filterable, but it does not satisfy final project isolation. Create separate
+**dev** and **prod** PostHog projects before any production promotion design.
 
-Each project should have a "Project Krypto Ops" dashboard:
+Each dashboard/query must filter `deployment_environment`. The eventual
+per-project "Project Krypto Ops" dashboards should include:
 
 1. **Run status**
    - event `agent_run_completed`;

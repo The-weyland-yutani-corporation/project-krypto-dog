@@ -1,8 +1,8 @@
 # Deployment architecture and service map
 
-> **State snapshot: 2026-08-14 — FOUNDATIONS PROVISIONED; RELEASES BLOCKED.**
-> Bootstrap, the Foundry account, workload-access bindings, and both
-> environment foundations are live. No Luna model deployment, release,
+> **State snapshot: 2026-08-14 — FOUNDATIONS + LUNA PROVISIONED; RELEASES
+> PENDING.** Bootstrap, both environment foundations, fallback Luna
+> deployments, and workload-access bindings are live. No application release,
 > Container App, job, schedule, or public Azure application URL exists.
 
 This document is the concise source of truth for current deployment state,
@@ -18,20 +18,20 @@ template and identity detail lives in
 |---|---|---|
 | Azure subscription | Runtime selection is **Visual Studio Enterprise Subscription**. Required providers are registered; bootstrap created the three resource groups and four GitHub OIDC identities. Its subscription ID and internal identifiers remain unpublished. | **Bootstrap complete** |
 | Region | `westus3` hosts `rg-krypto-platform`, `rg-krypto-dev`, and `rg-krypto-prod`. | **Provisioned** |
-| Platform | `ai-krypto-westus3` exists; local auth is disabled and its `CanNotDelete` lock is verified. | [Account live; platform run later failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
-| Model | Exact catalog/quota validation passed for OpenAI `gpt-5.6-luna` `2026-07-09`, `GlobalStandard`, capacity 10 each. Both deployments are absent because Azure returned `715-123420` (“unusual activity”). Support API ticket creation failed for lack of an eligible support plan; portal/account support action is required. | **Blocked** |
+| Platform | Dedicated `ai-krypto-westus3` exists with local auth disabled and a verified `CanNotDelete` lock, but remains model-empty after Azure `715-123420`. | [Dedicated-account attempt](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
+| Model | Operational `krypto-dev-luna` and `krypto-prod-luna` deployments exist on established account `ghcp-foundry-eastus2`: OpenAI `gpt-5.6-luna` `2026-07-09`, `GlobalStandard`, capacity 10 each. Entra plain and strict structured `HOLD` smokes passed. | **Provisioned fallback** |
 | Azure dev | Foundation resources and runtime/scheduler/ops identities exist; runtime/ops have Cognitive Services OpenAI User. No release/app/jobs exist. | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
 | Azure prod | Foundation resources and runtime/scheduler/ops identities exist; runtime/ops have Cognitive Services OpenAI User. Production remains disabled with no release/app/jobs; no promotion workflow is shipped or approved. | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
 | Email | Dev and prod ACS Email resources and Azure-managed domains exist as foundation resources. No runtime delivery smoke has run. | **Foundation provisioned** |
-| Analytics | Prod PostHog key is staged; a separate dev project key is missing. | **Dev blocked; ingestion unverified** |
+| Analytics | Dev temporarily reuses the existing ingestion key, but every event is fail-closed tagged `deployment_environment=dev`; prod uses `prod`. Separate projects remain a future promotion gate. | **Release-testable; promotion-isolation pending** |
 | Azure evidence | Live platform/foundation workflow runs exist. No ops-job report, backup, target smoke, activation check, or scheduled execution exists because no release is deployed. | **Foundation evidence only** |
 | Historical host | An older Vercel build and a fresh Supabase PostgreSQL replacement were observed previously. Neither is the Azure release candidate. | Historical baseline only |
 | Scheduling | No Container Apps Jobs or approved production schedule exist. | **No release** |
 
-GitHub Environments, branch restrictions, and protected values are configured
-except for the separate dev PostHog key. Required-reviewer rules are unsupported
-by the private repository's billing plan, so mutation workflows remain
-manual/paused behind configured branch, exact-SHA, and CI gates.
+GitHub Environments, branch restrictions, and protected values are configured.
+Required-reviewer rules are unsupported by the private repository's billing
+plan, so mutation workflows remain manual/paused behind configured branch,
+exact-SHA, and CI gates.
 
 Describe the bootstrap/account/foundations as provisioned, but do not describe
 either application release as deployed until target-smoke evidence passes and
@@ -43,12 +43,13 @@ this map is updated.
 flowchart TB
   GH["GitHub Actions<br/>Environments + OIDC<br/>manual/paused mutation"]
 
-  subgraph PLATFORM["rg-krypto-platform · westus3 · provisioned"]
-    ACCOUNT["Foundry account · LIVE<br/>ai-krypto-westus3<br/>local auth disabled + delete lock"]
-    DEV_MODEL["krypto-dev-luna<br/>NOT DEPLOYED · blocked 715-123420"]
-    PROD_MODEL["krypto-prod-luna<br/>NOT DEPLOYED · blocked 715-123420"]
-    ACCOUNT --> DEV_MODEL
-    ACCOUNT --> PROD_MODEL
+  subgraph PLATFORM["model platform"]
+    ACCOUNT["Dedicated future account · LIVE<br/>ai-krypto-westus3<br/>model-empty"]
+    SHARED["Operational account · LIVE<br/>ghcp-foundry-eastus2"]
+    DEV_MODEL["krypto-dev-luna · LIVE"]
+    PROD_MODEL["krypto-prod-luna · LIVE"]
+    SHARED --> DEV_MODEL
+    SHARED --> PROD_MODEL
   end
 
   subgraph DEV["rg-krypto-dev · foundation provisioned"]
@@ -128,9 +129,9 @@ after bootstrap.
 
 | Setting | Approved value |
 |---|---|
-| Resource group | `rg-krypto-platform` |
-| Foundry account | `ai-krypto-westus3` |
-| Region | `westus3` |
+| Application platform resource group | `rg-krypto-platform` |
+| Operational Foundry account | `ghcp-foundry-eastus2` |
+| Model region | `eastus2`; application/data foundations remain `westus3` |
 | Publisher/model/version | OpenAI `gpt-5.6-luna` `2026-07-09` |
 | SKU | `GlobalStandard` |
 | Dev deployment | `krypto-dev-luna`, capacity 10 |
@@ -139,7 +140,10 @@ after bootstrap.
 | Runtime API | Azure OpenAI v1 base URL ending `/openai/v1` |
 | Runtime auth | User-assigned managed identity selected by `AZURE_CLIENT_ID` |
 
-`azure-platform.yml` verifies one exact catalog mapping and the desired
+The existing platform fallback was selected only after the dedicated account
+returned Azure `715-123420`. The same exact catalog/quota contract applies.
+`azure-platform.yml` remains the dedicated-account migration path and verifies
+one exact catalog mapping and the desired
 aggregate capacity (10 + 10 = 20) against the matching live quota dimension.
 It passes both target deployment-name/capacity pairs and subtracts only exact
 existing target capacity on the same format/model/version/SKU dimension,
@@ -156,8 +160,8 @@ Names below are either live foundation resources or planned release resources.
 | Resource | Platform/shared | Dev | Prod | Live state |
 |---|---|---|---|---|
 | Resource group | `rg-krypto-platform` | `rg-krypto-dev` | `rg-krypto-prod` | All live |
-| Foundry account | `ai-krypto-westus3` | — | — | Live; local auth disabled; lock verified |
-| Model deployment | — | `krypto-dev-luna` | `krypto-prod-luna` | Not deployed; blocked |
+| Foundry account | Dedicated `ai-krypto-westus3`; operational `ghcp-foundry-eastus2` | — | — | Both live; operational account hosts models |
+| Model deployment | — | `krypto-dev-luna` | `krypto-prod-luna` | Both live on operational account; Entra smokes passed |
 | VNet | — | `vnet-krypto-dev` | `vnet-krypto-prod` | Both live |
 | Container Apps environment | — | `cae-krypto-dev` | `cae-krypto-prod` | Both live |
 | Web app | — | `ca-dev-web` | `ca-prod-web` | Not deployed |
@@ -171,8 +175,10 @@ Names below are either live foundation resources or planned release resources.
 | Daily job | — | `caj-dev-daily-summary` | `caj-prod-daily-summary` | Not deployed |
 | Ops jobs | — | `caj-dev-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` | `caj-prod-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` | Not deployed |
 
-Separate PostHog projects remain required. The prod key is staged as an
-environment secret; the separate dev key is missing.
+The shared ingestion key is temporarily staged for dev and prod, but
+`POSTHOG_ENVIRONMENT` is required in production and every event carries
+`deployment_environment=dev|prod`. Separate projects remain required before
+any future production promotion design.
 
 ## Provisioning and release flow
 
@@ -200,9 +206,8 @@ flowchart TD
   ACCESS --> PROD_FULL
 ```
 
-Both foundations and all four `azure-platform-access.yml` bindings now exist.
-Full release remains blocked by the absent Luna deployments and missing
-separate dev PostHog key; bypassing those gates is not approved.
+Both foundations and all four operational-account role bindings now exist.
+The next gate is the full dev release and retained target-smoke evidence.
 
 Dev schedule activation deploys and validates `schedule-monitoring.bicep` with
 the current activation timestamp before `rollout.bicep` may set either job to
@@ -256,8 +261,8 @@ deployment outputs.
 | GitHub Actions | [Workflow runs](https://github.com/VeVarunSharma/project-krypto-dog/actions) | Platform, access, foundation, release, and evidence runs |
 | GitHub Environments | [Environment settings](https://github.com/VeVarunSharma/project-krypto-dog/settings/environments) | Configured environment values and branch restrictions; required reviewers are unavailable on the current plan, so mutation remains manual/paused |
 | Azure | [Azure portal](https://portal.azure.com/) | Select **Visual Studio Enterprise Subscription**, then the existing platform/dev/prod resource groups; do not publish internal URLs or IDs |
-| Microsoft Foundry | [Foundry portal](https://ai.azure.com/) | Inspect the live `ai-krypto-westus3` account and resolve the blocked model deployment through portal/account support |
-| PostHog | [PostHog US](https://us.posthog.com/) | Prod is staged; create and stage a distinct dev project key |
+| Microsoft Foundry | [Foundry portal](https://ai.azure.com/) | Operate `ghcp-foundry-eastus2`; retain `ai-krypto-westus3` for a future dedicated migration |
+| PostHog | [PostHog US](https://us.posthog.com/) | Inspect mandatory dev/prod event tags; create a separate dev project before future production promotion |
 
 ## Source-of-truth links
 

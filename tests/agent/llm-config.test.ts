@@ -46,6 +46,7 @@ const ALL_ENV_KEYS = [
   "AZURE_CLIENT_ID",
   "DATABASE_URL",
   "POSTHOG_API_KEY",
+  "POSTHOG_ENVIRONMENT",
   "CRON_SECRET",
   "ADMIN_PASSWORD",
   "ADMIN_SESSION_SECRET",
@@ -73,6 +74,7 @@ function withEnv(
     AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-test-luna",
     DATABASE_URL: "postgres://localhost:5432/test",
     POSTHOG_API_KEY: "phc_test",
+    POSTHOG_ENVIRONMENT: "dev",
     CRON_SECRET: "test-secret",
     ADMIN_PASSWORD: "test-password",
     ADMIN_SESSION_SECRET: "test-admin-session-secret",
@@ -286,6 +288,7 @@ describe("validateEnv", () => {
     "AZURE_COMMUNICATION_CONNECTION_STRING",
     "AZURE_COMMUNICATION_EMAIL_SENDER",
     "ALERT_EMAIL_TO",
+    "POSTHOG_ENVIRONMENT",
   ])("requires %s in production", (name) => {
     withEnv(
       {

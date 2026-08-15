@@ -36,7 +36,7 @@
 | LLM engine | Dedicated Microsoft Foundry account `ai-krypto-westus3`; OpenAI `gpt-5.6-luna` `2026-07-09` via Azure OpenAI v1 and Microsoft Entra identity |
 | Execution venue | Deterministic transactional paper executor using validated Coinbase market data. A future v3 live venue must implement the gated `ExecutionAdapter` contract. |
 | Database | Azure Database for PostgreSQL Flexible Server 17 (private VNet target) via **Drizzle ORM** |
-| Observability | Separate dev/prod PostHog projects + Container Apps/Log Analytics + Azure Monitor alerts |
+| Observability | Mandatory dev/prod PostHog event tags; separate projects before production promotion + Container Apps/Log Analytics + Azure Monitor alerts |
 | Design system | Root [`DESIGN.md`](../DESIGN.md): shadcn/ui + Tailwind trading-terminal UI, EvilCharts-style Recharts graphs |
 | Hosting | Azure Container Apps (`westus3`) |
 | Scheduling | Azure Container Apps Jobs: hourly agent run and daily summary; Manual until approved activation |
@@ -297,7 +297,8 @@ the workload identity client ID and complete ACS configuration.
 | `AZURE_CLIENT_ID` | Runtime/ops user-assigned identity client ID used for Entra authentication | production |
 | `DATABASE_URL` | Least-privilege `krypto_app` PostgreSQL URL | yes |
 | `DIRECT_URL` | Direct/session database URL for migration and initialization commands | deployment only |
-| `POSTHOG_API_KEY` | Environment-specific PostHog ingest key; dev/prod keys must differ | operational gate |
+| `POSTHOG_API_KEY` | PostHog ingest key; temporary dev fallback may share the key only with mandatory environment tagging | operational |
+| `POSTHOG_ENVIRONMENT` | `dev` or `prod`; attached to every event and required in production | yes |
 | `POSTHOG_HOST` | PostHog host | optional, default `https://us.i.posthog.com` |
 | `CRON_SECRET` | Auth header for scheduler-triggered routes | yes |
 | `ROLLOUT_MODE` | `disabled`, `shadow`, or `paper`; releases land `disabled` | production |
