@@ -142,6 +142,12 @@ resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' existing = {
   name: keyVaultName
 }
 
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2025-01-01' existing = {
+  name: last(split(containerAppsEnvironmentId, '/'))
+}
+
+var targetBaseUrl = 'https://${webAppName}.${containerAppsEnvironment.properties.defaultDomain}'
+
 resource databaseUrlSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' existing = {
   parent: keyVault
   name: 'database-url'
@@ -187,6 +193,7 @@ module webApp 'modules/container-app-web.bicep' = {
       { name: 'AZURE_OPENAI_BASE_URL', value: azureOpenAIBaseUrl }
       { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
       { name: 'AZURE_CLIENT_ID', value: runtimeIdentityClientId }
+      { name: 'APP_ORIGIN', value: targetBaseUrl }
       { name: 'POSTHOG_HOST', value: posthogHost }
       { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
       { name: 'ALERT_EMAIL_TO', value: alertEmailTo }
@@ -203,8 +210,6 @@ module webApp 'modules/container-app-web.bicep' = {
     tags: envTags
   }
 }
-
-var targetBaseUrl = 'https://${webApp.outputs.fqdn}'
 
 module hourlyAgentRunJob 'modules/container-app-job.bicep' = {
   name: 'hourly-agent-run-job-rollout'

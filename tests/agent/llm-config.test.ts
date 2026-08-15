@@ -48,6 +48,7 @@ const ALL_ENV_KEYS = [
   "POSTHOG_API_KEY",
   "POSTHOG_ENVIRONMENT",
   "CRON_SECRET",
+  "APP_ORIGIN",
   "ADMIN_PASSWORD",
   "ADMIN_SESSION_SECRET",
   "AZURE_COMMUNICATION_CONNECTION_STRING",
@@ -76,6 +77,7 @@ function withEnv(
     POSTHOG_API_KEY: "phc_test",
     POSTHOG_ENVIRONMENT: "dev",
     CRON_SECRET: "test-secret",
+    APP_ORIGIN: "https://krypto.example.com",
     ADMIN_PASSWORD: "test-password",
     ADMIN_SESSION_SECRET: "test-admin-session-secret",
     AZURE_COMMUNICATION_CONNECTION_STRING:
@@ -289,12 +291,30 @@ describe("validateEnv", () => {
     "AZURE_COMMUNICATION_EMAIL_SENDER",
     "ALERT_EMAIL_TO",
     "POSTHOG_ENVIRONMENT",
+    "APP_ORIGIN",
   ])("requires %s in production", (name) => {
     withEnv(
       {
         NODE_ENV: "production",
         AZURE_CLIENT_ID: TEST_CLIENT_ID,
         [name]: undefined,
+      },
+      () => {
+        expect(() => validateEnv()).toThrow("Invalid environment variables");
+      },
+    );
+  });
+
+  it.each([
+    "http://krypto.example.com",
+    "https://krypto.example.com/admin",
+    "https://user:password@krypto.example.com",
+  ])("rejects unsafe production APP_ORIGIN %s", (appOrigin) => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+        APP_ORIGIN: appOrigin,
       },
       () => {
         expect(() => validateEnv()).toThrow("Invalid environment variables");

@@ -212,6 +212,15 @@ resource communicationService 'Microsoft.Communication/communicationServices@202
   name: communicationServiceName
 }
 
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2025-01-01' existing = {
+  name: last(split(containerAppsEnvironmentId, '/'))
+}
+
+// An "origin"/"base URL" for the deployed web app: scheme + host, no path.
+// APP_ORIGIN makes CSRF validation independent of the reverse proxy's internal
+// request URL. The same value is reused for scheduler and evidence checks.
+var targetBaseUrl = 'https://${webAppName}.${containerAppsEnvironment.properties.defaultDomain}'
+
 // Each application secret is its own named resource (rather than a loop
 // array) so every role assignment below can scope to an unambiguous,
 // statically named resource symbol instead of a dynamically computed
@@ -470,6 +479,7 @@ module webApp 'modules/container-app-web.bicep' = {
       { name: 'AZURE_OPENAI_BASE_URL', value: azureOpenAIBaseUrl }
       { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
       { name: 'AZURE_CLIENT_ID', value: runtimeIdentityClientId }
+      { name: 'APP_ORIGIN', value: targetBaseUrl }
       { name: 'POSTHOG_HOST', value: posthogHost }
       { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
       { name: 'ALERT_EMAIL_TO', value: alertEmailTo }
@@ -494,12 +504,6 @@ module webApp 'modules/container-app-web.bicep' = {
     runtimeAdminSessionSecretAccess
   ]
 }
-
-// An "origin"/"base URL" for the deployed web app: scheme + host, no path.
-// Reused verbatim as TARGET_BASE_URL (scheduler jobs, target-smoke) and as
-// TARGET_ORIGIN (activation-check) — both mean the same thing here since
-// no custom domain is provisioned by this infra tree yet.
-var targetBaseUrl = 'https://${webApp.outputs.fqdn}'
 
 module hourlyAgentRunJob 'modules/container-app-job.bicep' = {
   name: 'hourly-agent-run-job'

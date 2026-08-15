@@ -305,6 +305,7 @@ the workload identity client ID and complete ACS configuration.
 | `AZURE_COMMUNICATION_CONNECTION_STRING` | ACS connection string generated in Azure and read from Key Vault; never GitHub | production |
 | `AZURE_COMMUNICATION_EMAIL_SENDER` | Azure-managed ACS sender emitted by the environment deployment | production |
 | `ALERT_EMAIL_TO` | Recipient for guardrail/daily emails | production |
+| `APP_ORIGIN` | Exact HTTPS public origin for admin CSRF validation | yes in production |
 | `ADMIN_PASSWORD` | Admin dashboard password | yes |
 | `ADMIN_SESSION_SECRET` | HMAC key for expiring admin cookies | yes in production |
 

@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { normalizeAppOrigin } from "@/lib/app-origin";
 
 // ---------------------------------------------------------------------------
 // Azure OpenAI v1 endpoint validation
@@ -71,6 +72,7 @@ const envSchema = z
     POSTHOG_HOST: z.string().url().optional(),
     POSTHOG_ENVIRONMENT: z.enum(["dev", "prod"]).optional(),
     CRON_SECRET: z.string().min(1),
+    APP_ORIGIN: z.string().optional(),
     ROLLOUT_MODE: z.enum(["disabled", "shadow", "paper"]).optional(),
     AZURE_COMMUNICATION_CONNECTION_STRING: z.string().min(1).optional(),
     AZURE_COMMUNICATION_EMAIL_SENDER: z.email().optional(),
@@ -120,6 +122,17 @@ const envSchema = z
         ctx.issues.push({
           code: "custom",
           message: "POSTHOG_ENVIRONMENT is required in production.",
+          input: ctx.value,
+        });
+      }
+      const appOrigin = env.APP_ORIGIN
+        ? normalizeAppOrigin(env.APP_ORIGIN)
+        : undefined;
+      if (!appOrigin || !appOrigin.startsWith("https://")) {
+        ctx.issues.push({
+          code: "custom",
+          message:
+            "APP_ORIGIN must be an HTTPS origin with no path, query, credentials, or fragment in production.",
           input: ctx.value,
         });
       }
