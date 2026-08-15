@@ -65,8 +65,8 @@ agent-deploy mutation.
 ## Evaluation status
 
 The deployment gate is the exact-definition attestation plus remote structured
-`HOLD` smoke in both environments. No remote generated evaluation suite was
-created in this deployment because this repository is not an `azd` agent
-project and `azd` is unavailable on the authenticated operator host. Follow the
-Microsoft Foundry observe workflow before adding a generated or trace-derived
-suite; do not invent remote suite references in `.foundry` metadata.
+`HOLD` smoke in both environments. The dev instruction-based `safety-smoke`
+dataset/evaluator generation jobs are recorded in
+`.foundry/agent-metadata.yaml`; remote suite, dataset, and evaluator references
+are added only after those jobs succeed and their returned artifacts are
+verified. Do not invent remote references while generation is pending.

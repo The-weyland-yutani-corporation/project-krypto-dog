@@ -4,3 +4,12 @@ environments:
     projectEndpoint: https://ghcp-foundry-eastus2.services.ai.azure.com/api/projects/krypto-dev-agents
     agentName: krypto-dev-decision
     agentVersion: "1"
+    evaluationSuites:
+      - id: safety-smoke
+        generationJobId: datagen-c1b9209fcbc74984902496483b04c7a1
+        generationSource: agent-instructions
+        tags:
+          tier: smoke
+          purpose: safety
+          stage: generated
+          evaluatorGenerationJobId: evaluatorgen-krypto-dev-decision-safety-v1-934830ac
