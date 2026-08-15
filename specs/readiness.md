@@ -1,10 +1,9 @@
 # Deployment and trading readiness
 
-> **State snapshot: 2026-08-14 — FOUNDATIONS + LUNA PROVISIONED; RELEASES
-> PENDING.** Required providers, bootstrap/OIDC, operational Luna deployments,
-> workload access, and both environment foundations are live. No application
-> release, Container App, job, application URL, ops-job report, target smoke,
-> backup, activation check, or scheduled-run evidence exists.
+> **State snapshot: 2026-08-15 — AZURE RELEASES DEPLOYED.** Dev is
+> shadow/scheduled and production is disabled/manual. Exact-SHA migration,
+> target smoke, activation, scheduled-run, alert-delivery, and restore-verified
+> backup evidence passed.
 >
 > **Paper/live boundary:** the implemented rollout modes are `disabled`,
 > `shadow`, and `paper`. No current workflow, readiness decision, or deployment
@@ -19,9 +18,9 @@ observations remain historical only; its archived procedure is
 | Scope | Current decision | Blocking reason |
 |---|---|---|
 | Azure platform | **Operational fallback ready** | Dev/prod Luna deployments on the established account passed Entra plain and structured `HOLD` smokes; the dedicated account remains model-empty |
-| Azure dev | **Ready for full release gate** | Foundation, Luna, workload access, ACS, and environment-tagged PostHog config are staged; release/evidence/activation remain |
-| Azure prod | **Not ready** | Foundation/model/access passed, but no disabled/manual release exists and dev proof must complete first; no promotion workflow is shipped |
-| v2.2 paper rollout | **Not ready** | No observed scheduled Azure execution, qualifying paper evidence window, or approved production promotion design |
+| Azure dev | **Deployment-ready in shadow** | First scheduled run passed with zero trades; paper promotion still requires its separate evidence window |
+| Azure prod | **Deployment-ready, disabled/manual** | Backup and target smoke passed; no promotion workflow is shipped |
+| v2.2 paper rollout | **Not ready** | No 30-day qualifying paper evidence window, separate PostHog projects, or approved production promotion design |
 | v3 live execution | **Not authorized** | Live execution is outside the current implementation and requires its own approval gates |
 
 Source implementation, local tests, or a historical provider observation do
@@ -58,16 +57,19 @@ Six Azure workflow surfaces implement or validate the target:
 | `azure-infra-validate.yml` | Source validation for Bicep, parameters, workflow contracts, and Azure helper tests | Validation-only; cannot produce live deployment evidence |
 | `azure-platform.yml` | Dedicated Foundry account/model plan, apply, exact catalog/quota check, and no-trade smoke | Dedicated account/model attempt failed after account/catalog/quota; operational fallback models and smokes were completed separately |
 | `azure-platform-access.yml` | Separate plan/apply for four runtime/ops account-role bindings | Applied; dev/prod runtime and ops each have Cognitive Services OpenAI User |
-| `azure-deploy-dev.yml` | Dev `foundation` or `full` release and monitored shadow activation | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875); full release not run |
-| `azure-deploy-prod.yml` | Prod `foundation` or `full` release ending disabled/manual | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745); full release not run |
-| `azure-rotate-secrets.yml` | Safe prod secret rotation with current-release disable/backup controls | Not run; no release exists to rotate |
+| `azure-deploy-dev.yml` | Dev `foundation` or `full` release and monitored shadow activation | Live equivalent operator path completed; dev shadow/scheduled |
+| `azure-deploy-prod.yml` | Prod `foundation` or `full` release ending disabled/manual | Live equivalent operator path completed; prod disabled/manual |
+| `azure-rotate-secrets.yml` | Safe prod secret rotation with current-release disable/backup controls | Not run; production release exists and is currently disabled/manual |
 
 Platform account/model mutation and platform access each use separate
 environment-scoped what-if and apply jobs. GitHub Environments, branch
 restrictions, and protected values are configured. Required-reviewer rules are unsupported by the private-repo
 billing plan, so mutation workflows are manual/paused behind configured branch,
-exact-SHA, and CI gates. Dev/prod workflows still support `foundation` and
-`full`, but automatic mutation is not currently enabled.
+exact-SHA, and CI gates. GitHub-hosted jobs were blocked by the account Actions
+billing state during the first release, so the authenticated operator path used
+the same reviewed templates and evidence validators. Production deploy remains
+disabled manually; the proven dev automatic trigger is configured but cannot
+start while the billing block remains.
 
 No executable production promotion workflow is shipped or approved.
 `production-promotion` remains only as the environment-scoped forced-disable
@@ -145,19 +147,18 @@ RUNTIME_DATABASE_PASSWORD
 DEPLOYMENT_APPROVAL_SECRET
 ```
 
-Current state: Environment variables/secrets are staged. Dev temporarily uses
-the existing ingestion key, but `POSTHOG_ENVIRONMENT` is mandatory and every
-event is tagged. No release has run to validate runtime secret bindings.
+Current state: runtime secret bindings passed both target smokes. The shared
+PostHog key remains environment-tagged deployment evidence only.
 
 Readiness requirements:
 
-- [ ] `DATABASE_URL` uses the least-privilege `krypto_app` role.
-- [ ] `DIRECT_URL` uses `krypto_owner`; both database URLs target the same
+- [x] `DATABASE_URL` uses the least-privilege `krypto_app` role.
+- [x] `DIRECT_URL` uses `krypto_owner`; both database URLs target the same
   private PostgreSQL 17 database with `sslmode=require`.
-- [ ] `DEPLOYMENT_APPROVAL_SECRET` differs from `CRON_SECRET`.
+- [x] `DEPLOYMENT_APPROVAL_SECRET` differs from `CRON_SECRET`.
 - [x] Dev/prod events are query-isolated by mandatory deployment tags.
 - [ ] Move dev to a distinct PostHog project before production promotion.
-- [ ] No long-lived Azure credential or Foundry API key is stored in GitHub.
+- [x] No long-lived Azure credential or Foundry API key is stored in GitHub.
 
 ACS connection strings are not GitHub secrets or workflow inputs.
 `release.bicep` obtains each environment's Azure-generated value and writes it
@@ -167,8 +168,11 @@ directly to that environment's Key Vault. Runtime configuration is
 
 ## 6. Dev release and activation gate
 
-Current dev is foundation-only. No release/app/jobs exist; the full release is
-now the next gate.
+Dev completed this sequence for release
+`0b717c96d9a63dc58c1b9ac13ecdf1e3347898c7`. The first scheduled execution,
+`caj-dev-agent-run-29779500`, succeeded at `2026-08-15T05:00:00Z`; the
+post-run snapshot remained reconciled, position-free, lease-free, and at zero
+trades.
 
 The approved dev sequence is indivisible:
 
@@ -200,24 +204,25 @@ failed; successful rollback does not make a failed activation successful.
 
 ## 7. Prod release gate
 
-Current production remains disabled and foundation-only: no release, Container
-App, job, URL, or schedule exists. Any future full deployment must end with the
-new release **disabled/manual**. No executable production promotion workflow is
-shipped or approved.
+Production release `ce7acc872f05899691ae44d4d826c9c8c94355c7` is deployed
+**disabled/manual**. Migration, restore verification, and all 15 target-smoke
+checks passed. No executable production promotion workflow is shipped or
+approved.
 
 Before any prod environment mutation:
 
-- [ ] Detect either a complete current release or a proven-fresh environment;
+- [x] Detect either a complete current release or a proven-fresh environment;
   partial state fails closed.
-- [ ] Force-disable a complete current release under the environment-scoped
-  forced-disable identity, verify both jobs are Manual, then disable and verify
-  schedule monitoring.
-- [ ] Resolve and verify its live SHA, image digests, and config.
-- [ ] Run current-release preflight and restore-verified backup; require its
+- [x] Verify the first environment was release-free; later final-image updates
+  started from an already disabled/manual release and did not mutate the
+  foundation.
+- [x] Resolve and verify the live SHA, image digests, and config.
+- [x] Create the fresh baseline restore-verified backup. Future replacement
+  releases must run current-release preflight and backup and require its
   `JOB_EXECUTION_ID` to end `-current` so same-SHA current/new-release evidence
   paths cannot collide.
-- [ ] Only then apply environment mutation.
-- [ ] Deploy the new release disabled/manual and validate migration,
+- [x] Only then apply environment mutation.
+- [x] Deploy the new release disabled/manual and validate migration,
   baseline backup, target smoke, and immutable live state.
 
 Prod deploy and rotation share the `azure-production-mutation` concurrency
@@ -234,14 +239,14 @@ No provider is ready until retained live evidence proves all applicable rows:
 | Azure resource providers | Owner registration completed; applicable deployment workflow `--check-only` checks passed | **Passed** |
 | Foundry | Exact account/model/version/SKU/capacity and Entra plain + structured `HOLD` smokes | **Passed on operational fallback:** both deployments live; no model API key used |
 | Quota | One exact catalog `usageName`, one exact quota dimension, and sufficient incremental capacity after subtracting only exact replaceable target deployments | **Passed** in the failed platform run |
-| Coinbase | Authenticated provider smoke from the deployed target | Pending |
-| ACS Email | Environment-specific sender; actual `sent` result and persisted delivery audit | **Partial:** both managed-domain foundations live; runtime delivery pending |
-| PostHog | Mandatory environment tagging now; distinct projects before promotion | **Staged:** shared-key fallback tagged; target ingestion proof pending |
-| Database | Migration/init report, private target validation, app/owner role separation | **Partial:** both private PostgreSQL 17 foundations live; release validation pending |
-| Backup | Restore-verified backup bound to exact target SHA/digest | Pending |
-| Admin/auth | Target-smoke proof without disclosing credentials | Pending |
-| Scheduler | Unique manual-shadow proof, post-run activation report, digest/generation-namespaced scheduled success, and cross-mode replay rejection | Pending |
-| Monitoring | Terminal job-failure alerts and activation-bound missing-hourly-success alert | **Partial:** foundation Log Analytics/alerts live; no jobs or schedule-bound validation |
+| Coinbase | Authenticated provider smoke from the deployed target | **Passed in dev and prod target smoke** |
+| ACS Email | Environment-specific sender; actual `sent` result and persisted delivery audit | **Passed in dev and prod** |
+| PostHog | Mandatory environment tagging now; distinct projects before promotion | **Tagged ingestion passed; separate projects pending** |
+| Database | Migration/init report, private target validation, app/owner role separation | **Passed in dev and prod** |
+| Backup | Restore-verified backup bound to exact target SHA/digest | **Passed in dev proof and production baseline** |
+| Admin/auth | Target-smoke proof without disclosing credentials | **Passed in dev and prod** |
+| Scheduler | Unique manual-shadow proof, post-run activation report, digest/generation-namespaced scheduled success, and cross-mode replay rejection | **Passed in dev; production intentionally Manual** |
+| Monitoring | Terminal job-failure alerts and activation-bound missing-hourly-success alert | **Passed; both Action Group tests dispatched successfully** |
 | Rollback | Verified restoration to disabled/manual, followed by monitoring disablement, after an induced or actual failed dev activation | Pending |
 
 Evidence must be bound to the exact release SHA and immutable web/ops image
@@ -259,16 +264,16 @@ this override path. Current Project Krypto jobs use none.
 
 ## 9. Monitoring readiness
 
-- [ ] Azure Monitor terminal-failure alerts exist for scheduler jobs.
-- [ ] Schedule activation records the current UTC epoch and enables the
+- [x] Azure Monitor terminal-failure alerts exist for scheduler jobs.
+- [x] Schedule activation records the current UTC epoch and enables the
   fail-closed missing-hourly-success alert through
   `schedule-monitoring.bicep` before `rollout.bicep` switches to `Schedule`.
-- [ ] A successful hourly execution must be newer than that activation
+- [x] A successful hourly execution must be newer than that activation
   boundary; old executions cannot satisfy the alert.
-- [ ] Alert Action Group delivery is verified.
+- [x] Alert Action Group delivery is verified.
 - [ ] PostHog events appear in the correct environment-specific project.
-- [ ] ACS guardrail/daily delivery evidence is persisted and queryable.
-- [ ] No schedule is considered healthy until an unmarked scheduled execution
+- [x] ACS guardrail/daily delivery evidence is persisted and queryable.
+- [x] No schedule is considered healthy until an unmarked scheduled execution
   succeeds after activation.
 - [ ] Disable, rollback, and rotation paths first verify both jobs are Manual
   with no schedule, then disable monitoring and reset its boundary to `0`.
@@ -314,14 +319,8 @@ mandatory.
 
 ## 12. Exit criteria
 
-This document now records the completed bootstrap/account/access/foundation
-checkpoint. Do not mark either environment release-ready or add an Azure URL to
-[`architecture.md`](./architecture.md) until the matching full release and
-target smoke succeed. Until then:
-
-- operational Luna deployments are live; the dedicated account remains model-empty;
-- dev and prod are **foundation only**, with no Container App or job;
-- there is no approved Azure application URL;
-- foundation alerts exist, but there is no live target smoke, backup,
-  activation-check, or schedule evidence; and
-- neither paper promotion nor live-money execution is authorized.
+Azure deployment exit criteria are met for dev shadow and production
+disabled/manual. The public origins are recorded in
+[`architecture.md`](./architecture.md). Paper promotion, a locked production
+immutability policy, separate PostHog projects, and live-money execution remain
+separate decisions and are not authorized.

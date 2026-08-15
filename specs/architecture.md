@@ -1,9 +1,9 @@
 # Deployment architecture and service map
 
-> **State snapshot: 2026-08-14 — FOUNDATIONS + LUNA PROVISIONED; RELEASES
-> PENDING.** Bootstrap, both environment foundations, fallback Luna
-> deployments, and workload-access bindings are live. No application release,
-> Container App, job, schedule, or public Azure application URL exists.
+> **State snapshot: 2026-08-15 — DEV SHADOW/SCHEDULED; PRODUCTION
+> DISABLED/MANUAL.** Both Azure releases, fallback Luna deployments, workload
+> access, target smokes, and retained evidence are live. No paper promotion or
+> live-money execution is authorized.
 
 This document is the concise source of truth for current deployment state,
 the approved Azure topology, live/planned resource names, and safe operator entry
@@ -20,22 +20,21 @@ template and identity detail lives in
 | Region | `westus3` hosts `rg-krypto-platform`, `rg-krypto-dev`, and `rg-krypto-prod`. | **Provisioned** |
 | Platform | Dedicated `ai-krypto-westus3` exists with local auth disabled and a verified `CanNotDelete` lock, but remains model-empty after Azure `715-123420`. | [Dedicated-account attempt](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
 | Model | Operational `krypto-dev-luna` and `krypto-prod-luna` deployments exist on established account `ghcp-foundry-eastus2`: OpenAI `gpt-5.6-luna` `2026-07-09`, `GlobalStandard`, capacity 10 each. Entra plain and strict structured `HOLD` smokes passed. | **Provisioned fallback** |
-| Azure dev | Foundation resources and runtime/scheduler/ops identities exist; runtime/ops have Cognitive Services OpenAI User. No release/app/jobs exist. | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
-| Azure prod | Foundation resources and runtime/scheduler/ops identities exist; runtime/ops have Cognitive Services OpenAI User. Production remains disabled with no release/app/jobs; no promotion workflow is shipped or approved. | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
-| Email | Dev and prod ACS Email resources and Azure-managed domains exist as foundation resources. No runtime delivery smoke has run. | **Foundation provisioned** |
-| Analytics | Dev temporarily reuses the existing ingestion key, but every event is fail-closed tagged `deployment_environment=dev`; prod uses `prod`. Separate projects remain a future promotion gate. | **Release-testable; promotion-isolation pending** |
-| Azure evidence | Live platform/foundation workflow runs exist. No ops-job report, backup, target smoke, activation check, or scheduled execution exists because no release is deployed. | **Foundation evidence only** |
+| Azure dev | `ca-dev-web` is live in `shadow`; hourly/daily jobs are scheduled and monitored. Migration, target smoke, one manual shadow run, activation check, alert dispatch, scheduled success, and post-run zero-trade checks passed. | **Deployed and shadow-ready** |
+| Azure prod | `ca-prod-web` is live in `disabled`; all seven jobs are `Manual`. Migration, restore-verified backup, target smoke, exact-digest, zero-trade, and no-schedule checks passed. | **Deployed disabled/manual** |
+| Email | Dev and prod ACS Email target smokes returned `sent` and persisted delivery audits. | **Passed** |
+| Analytics | Dev and prod target smokes flushed environment-tagged events. A separate production project remains a future promotion gate. | **Deployment smoke passed; promotion isolation pending** |
+| Azure evidence | Exact-SHA migration, preflight/smoke, activation, scheduled-run, and backup reports are retained. Production retention is 90 days and remains `Unlocked` pending irreversible approval. | **Release evidence retained** |
 | Historical host | An older Vercel build and a fresh Supabase PostgreSQL replacement were observed previously. Neither is the Azure release candidate. | Historical baseline only |
-| Scheduling | No Container Apps Jobs or approved production schedule exist. | **No release** |
+| Scheduling | Dev hourly/daily jobs are `Schedule`; production and all ops jobs remain `Manual`. | **Dev shadow only** |
 
 GitHub Environments, branch restrictions, and protected values are configured.
 Required-reviewer rules are unsupported by the private repository's billing
-plan, so mutation workflows remain manual/paused behind configured branch,
-exact-SHA, and CI gates.
-
-Describe the bootstrap/account/foundations as provisioned, but do not describe
-either application release as deployed until target-smoke evidence passes and
-this map is updated.
+plan. GitHub-hosted jobs were blocked by the account's Actions billing state, so
+the first releases used the authenticated operator path with reviewed templates,
+immutable image digests, and the same fail-closed evidence validators.
+Production deploy remains disabled manually; the proven dev trigger is
+configured for use after the billing block is resolved.
 
 ## Azure topology and release gaps
 
@@ -52,10 +51,10 @@ flowchart TB
     SHARED --> PROD_MODEL
   end
 
-  subgraph DEV["rg-krypto-dev · foundation provisioned"]
+  subgraph DEV["rg-krypto-dev · shadow/scheduled"]
     DEV_ACR["Dev ACR · LIVE"]
-    DEV_APP["ca-dev-web · NOT DEPLOYED"]
-    DEV_JOBS["Container Apps Jobs<br/>NOT DEPLOYED"]
+    DEV_APP["ca-dev-web · LIVE<br/>shadow"]
+    DEV_JOBS["Container Apps Jobs · LIVE<br/>hourly/daily Schedule"]
     DEV_PG["PostgreSQL 17 · LIVE<br/>private VNet"]
     DEV_KV["Key Vault · LIVE"]
     DEV_ACS["ACS Email · LIVE<br/>Azure-managed domain"]
@@ -63,10 +62,10 @@ flowchart TB
     DEV_EVIDENCE["Evidence storage · LIVE"]
   end
 
-  subgraph PROD["rg-krypto-prod · foundation provisioned"]
+  subgraph PROD["rg-krypto-prod · disabled/manual"]
     PROD_ACR["Prod ACR · LIVE"]
-    PROD_APP["ca-prod-web · NOT DEPLOYED"]
-    PROD_JOBS["Container Apps Jobs<br/>NOT DEPLOYED"]
+    PROD_APP["ca-prod-web · LIVE<br/>disabled"]
+    PROD_JOBS["Container Apps Jobs · LIVE<br/>all Manual"]
     PROD_PG["PostgreSQL 17 · LIVE<br/>private VNet"]
     PROD_KV["Key Vault · LIVE"]
     PROD_ACS["ACS Email · LIVE<br/>Azure-managed domain"]
@@ -155,7 +154,7 @@ available on this repository plan.
 
 ## Resource map and live state
 
-Names below are either live foundation resources or planned release resources.
+All listed foundation and release resources are live.
 
 | Resource | Platform/shared | Dev | Prod | Live state |
 |---|---|---|---|---|
@@ -164,16 +163,16 @@ Names below are either live foundation resources or planned release resources.
 | Model deployment | — | `krypto-dev-luna` | `krypto-prod-luna` | Both live on operational account; Entra smokes passed |
 | VNet | — | `vnet-krypto-dev` | `vnet-krypto-prod` | Both live |
 | Container Apps environment | — | `cae-krypto-dev` | `cae-krypto-prod` | Both live |
-| Web app | — | `ca-dev-web` | `ca-prod-web` | Not deployed |
+| Web app | — | `ca-dev-web` | `ca-prod-web` | Both live; dev shadow, prod disabled |
 | PostgreSQL server | — | `psql-krypto-dev` | `psql-krypto-prod` | Both live; private PostgreSQL 17 |
 | ACR | — | `acrkryptodev` | `acrkryptoprod` | Both live |
 | Key Vault | — | `kv-krypto-dev` | `kv-krypto-prod` | Both live |
 | Evidence storage | — | `stkryptodevevid` | `stkryptoprodevid` | Both live |
 | Communication Service | — | `acs-krypto-dev` | `acs-krypto-prod` | Both live |
 | Email Communication Service | — | `email-krypto-dev` | `email-krypto-prod` | Both live with managed domains |
-| Hourly job | — | `caj-dev-agent-run` | `caj-prod-agent-run` | Not deployed |
-| Daily job | — | `caj-dev-daily-summary` | `caj-prod-daily-summary` | Not deployed |
-| Ops jobs | — | `caj-dev-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` | `caj-prod-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` | Not deployed |
+| Hourly job | — | `caj-dev-agent-run` | `caj-prod-agent-run` | Dev Schedule; prod Manual |
+| Daily job | — | `caj-dev-daily-summary` | `caj-prod-daily-summary` | Dev Schedule; prod Manual |
+| Ops jobs | — | `caj-dev-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` | `caj-prod-{migrate-init,preflight,verified-backup,target-smoke,activation-check}` | All live and Manual |
 
 The shared ingestion key is temporarily staged for dev and prod, but
 `POSTHOG_ENVIRONMENT` is required in production and every event carries
@@ -186,15 +185,15 @@ any future production promotion design.
 flowchart TD
   PROVIDERS["COMPLETE<br/>required providers registered"]
   BOOT["COMPLETE<br/>resource groups + OIDC identities"]
-  PLATFORM["PARTIAL<br/>account live; model blocked"]
+  PLATFORM["COMPLETE<br/>operational fallback models"]
   DEV_FOUNDATION["COMPLETE<br/>dev foundation"]
   PROD_FOUNDATION["COMPLETE<br/>prod foundation"]
   ACCESS["COMPLETE<br/>four OpenAI User bindings"]
-  DEV_FULL["BLOCKED<br/>dev full release"]
-  DEV_MANUAL["PENDING<br/>manual shadow + activation proof"]
-  DEV_SCHEDULE["PENDING<br/>activate monitored Schedule"]
-  DEV_OBSERVE["PENDING<br/>observe scheduled success"]
-  PROD_FULL["NOT STARTED<br/>prod disabled/manual release"]
+  DEV_FULL["COMPLETE<br/>dev full release"]
+  DEV_MANUAL["COMPLETE<br/>manual shadow + activation proof"]
+  DEV_SCHEDULE["COMPLETE<br/>monitored Schedule"]
+  DEV_OBSERVE["COMPLETE<br/>scheduled success"]
+  PROD_FULL["COMPLETE<br/>prod disabled/manual release"]
 
   PROVIDERS --> BOOT
   BOOT --> PLATFORM
@@ -206,8 +205,8 @@ flowchart TD
   ACCESS --> PROD_FULL
 ```
 
-Both foundations and all four operational-account role bindings now exist.
-The next gate is the full dev release and retained target-smoke evidence.
+Both release contracts and all four operational-account role bindings are
+verified. Dev remains shadow-only; production remains disabled/manual.
 
 Dev schedule activation deploys and validates `schedule-monitoring.bicep` with
 the current activation timestamp before `rollout.bicep` may set either job to
@@ -242,13 +241,10 @@ a new evidence-bound design and review.
 
 ## Live endpoint register
 
-No URL is recorded until the matching deployment and retained target-smoke
-evidence pass.
-
 | Environment | App | Resource group | Public URL | Status |
 |---|---|---|---|---|
-| Azure dev | `ca-dev-web` (not created) | `rg-krypto-dev` (foundation live) | No URL | **Foundation deployed; release blocked** |
-| Azure prod | `ca-prod-web` (not created) | `rg-krypto-prod` (foundation live) | No URL | **Foundation deployed; no release or promotion workflow** |
+| Azure dev | `ca-dev-web` | `rg-krypto-dev` | https://ca-dev-web.wonderfulmoss-0222e5e1.westus3.azurecontainerapps.io/ | **Shadow; hourly/daily Schedule** |
+| Azure prod | `ca-prod-web` | `rg-krypto-prod` | https://ca-prod-web.ambitioussea-a305198e.westus3.azurecontainerapps.io/ | **Disabled; all jobs Manual; no promotion workflow** |
 
 Do not publish subscription IDs, full Azure resource IDs, PostgreSQL FQDNs,
 Key Vault URLs, evidence-container URLs, identity IDs, or other protected

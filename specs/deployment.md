@@ -1,10 +1,10 @@
 # Deployment runbook (Azure)
 
-> **Live state (2026-08-14): foundations and fallback Luna provisioned;
-> releases pending.** Required providers, bootstrap/OIDC, workload access,
-> both environment foundations, and dev/prod Luna deployments exist. No
-> application release, Container App, job, ops report, target smoke, schedule,
-> or public Azure application URL exists.
+> **Live state (2026-08-15): both Azure releases deployed.** Dev is
+> `shadow` with monitored hourly/daily schedules. Production is `disabled`
+> with all jobs `Manual`. Migration, provider/email/admin target smoke,
+> restore-verified production backup, alert delivery, and exact-digest checks
+> passed. No production promotion is shipped or authorized.
 >
 > **Paper/live safety is unchanged.** `ROLLOUT_MODE` supports only
 > `disabled`, `shadow`, and `paper`. Nothing in this runbook authorizes
@@ -54,12 +54,13 @@ those values without making them public documentation.
 | GitHub controls | Environments, branch restrictions, variables, and release secrets are configured. Required-reviewer rules are unsupported by the private-repo billing plan; mutation workflows are manual/paused behind branch, exact-SHA, and CI gates. | Staged; no reviewer enforcement |
 | Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra plain/structured smokes. | Operational fallback complete |
 | Workload access | Dev/prod runtime and ops identities have Cognitive Services OpenAI User on the operational account | Complete |
-| Dev foundation | Foundation resource set deployed; no release resources | [Passed run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
-| Prod foundation | Foundation resource set deployed; production remains disabled with no release resources | [Passed run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
-| Release/rollout | No Container App, job, public URL, schedule, or promotion workflow exists | Not started |
+| Dev release | Live in shadow; manual activation and first scheduled execution passed with zero trades | Retained exact-SHA evidence |
+| Prod release | Live disabled/manual; migration, restore-verified backup, target smoke, and no-schedule checks passed | Release `ce7acc872f05899691ae44d4d826c9c8c94355c7` |
+| Release/rollout | Dev Schedule active; production has no schedule or promotion workflow | Complete for approved deployment scope |
 
 The dedicated account can be revisited through portal/account support, but it
-no longer blocks releases. Dev uses the shared PostHog ingestion key only with
+does not block the deployed fallback. Dev and prod use the shared PostHog
+ingestion key only with
 the mandatory environment property; this permits dev validation without
 misclassifying dev events as prod, but separate projects remain mandatory
 before any future production promotion workflow is designed.
@@ -332,8 +333,9 @@ because rollback succeeded.
 
 ## 7. Prod full release (no promotion workflow)
 
-**Current status: not started.** Prod has foundation resources only: no
-release, Container App, job, URL, or schedule exists.
+**Current status: complete for the approved disabled/manual scope.** Production
+release `ce7acc872f05899691ae44d4d826c9c8c94355c7` is deployed; all seven jobs
+are Manual and there is no schedule.
 
 Prod deploy and secret rotation use one concurrency group:
 `azure-production-mutation`. Runs queue rather than cancel one another. No
@@ -419,9 +421,8 @@ Evidence paths are:
 
 Missing, unreadable, ambiguous, or mismatched evidence is failure. The ops
 identity writes to the immutable container; GitHub OIDC identities have
-read-only container-scoped access. Production retention is 90 days and still
-requires the documented one-time irreversible immutability-policy lock after
-foundation provisioning.
+read-only container-scoped access. Production retention is 90 days. Its policy remains `Unlocked`; locking it is a
+separate irreversible operator decision, not implied by deployment.
 
 ## 9. Mandatory smoke gates
 
@@ -506,10 +507,9 @@ rotation share `azure-production-mutation`.
 | Pause application behavior | Use the audited admin **Pause Agent** control in addition to disabling schedules |
 | Retire resources | Use a separately reviewed decommission plan; resource-group deletion is not a release operation |
 
-After a successful first full release and target smoke, update
-[`architecture.md`](./architecture.md)'s live endpoint register with only the
-public Container App origin and evidence link. Until then it must continue to
-say **Foundation deployed / No URL**.
+The public origins are recorded in
+[`architecture.md`](./architecture.md). Keep private database, Key Vault,
+evidence-storage, identity, and full resource identifiers out of public docs.
 
 ## Further reading
 

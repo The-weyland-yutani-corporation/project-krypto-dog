@@ -21,19 +21,19 @@
 ```
 
 > **Autonomous LLM-driven swing-trading agent for ETH/USDC.**
-> v2.1 safety core and the Azure target are implemented in source.
-> **NOT production-ready:** Azure foundations and fallback Luna deployments
-> exist, but no release, Container App, job, target smoke, or public Azure URL
-> exists.
+> The Azure dev and production releases are deployed.
+> Dev is `shadow` with monitored schedules; production is deliberately
+> `disabled` with every job `Manual`. **Paper promotion and live-money
+> execution are not authorized.**
 
 | | |
 |---|---|
-| **Status** | **Foundations and Luna provisioned; releases pending.** Required providers, resource groups/OIDC, both Luna deployments, workload access, and both environment foundations are live. No release, Container App, job, target smoke, schedule, or public Azure URL exists. |
-| **Hosted today (observed baseline)** | Historical Vercel build + fresh Supabase PostgreSQL 17 replacement. Neither is the Azure release candidate. See [`specs/architecture.md`](./specs/architecture.md). |
-| **Azure state (2026-08-14)** | Application foundations remain in `westus3`. The dedicated `ai-krypto-westus3` account exists but is model-empty after `715-123420`. Operational dev/prod `gpt-5.6-luna` deployments now run on the established `ghcp-foundry-eastus2` account and passed Entra plain + strict structured `HOLD` smokes. |
-| **Current blockers** | Full dev release/evidence is the next gate. Dev temporarily uses the existing PostHog ingestion key with a mandatory `deployment_environment=dev` property; a truly separate dev PostHog project remains required before any future production promotion design. |
+| **Status** | **Azure releases deployed.** Dev passed migration, target smoke, manual-shadow activation, alert delivery, and its first scheduled run. Production passed migration, restore-verified backup, and target smoke, and remains disabled/manual. |
+| **Hosted today** | [Azure dev](https://ca-dev-web.wonderfulmoss-0222e5e1.westus3.azurecontainerapps.io/) · [Azure production](https://ca-prod-web.ambitioussea-a305198e.westus3.azurecontainerapps.io/) |
+| **Azure state (2026-08-15)** | Application/data resources run in `westus3`. Operational dev/prod `gpt-5.6-luna` deployments run on `ghcp-foundry-eastus2` with Entra authentication. The dedicated `ai-krypto-westus3` account remains model-empty after `715-123420`. |
+| **Current blockers** | A separate PostHog project and a new evidence-bound promotion design remain mandatory before production may leave `disabled`. The 90-day production evidence policy remains `Unlocked` pending separate irreversible approval. |
 | **Stack** | Next.js 16 (App Router) · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
-| **Scheduling state** | No Azure jobs or approved production schedule exist. Production remains disabled with no release and no promotion workflow. |
+| **Scheduling state** | Dev hourly/daily jobs are monitored `Schedule` jobs in `shadow`; production jobs are all `Manual` and production has no promotion workflow. |
 | **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
 | **Architecture and live links** | [`specs/architecture.md`](./specs/architecture.md) — hosted baseline, target diagrams, planned resources, live endpoint register, rollout safety, and operator consoles |
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
@@ -183,7 +183,7 @@ tests/                    # Jest unit + integration tests
 > full release/evidence/rollout gate remains. No Container App or job exists. See
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
-> **Target platform: Azure-native; foundations/models provisioned, releases pending.**
+> **Target platform: Azure-native; dev and production releases deployed.**
 > The approved deployment plan supersedes Vercel/Supabase with a fully
 > Azure-native target (ADR
 > [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
@@ -191,8 +191,8 @@ tests/                    # Jest unit + integration tests
 > deployment code for that target all exist in this repo — see
 > [`infra/README.md`](./infra/README.md) and
 > [`specs/deployment.md`](./specs/deployment.md). Required providers,
-> bootstrap/OIDC, operational Luna, workload access, and both environment
-> foundations are live. No release or public application URL exists.
+> bootstrap/OIDC, operational Luna, workload access, both foundations, and both
+> releases are live. Dev is shadow/scheduled; production is disabled/manual.
 > See [`specs/architecture.md`](./specs/architecture.md) for diagrams,
 > live/planned resource names, the exact current-vs-target state, and safe
 > operator links. The selected runtime subscription is **Visual Studio
@@ -206,20 +206,21 @@ Observed live runs:
 
 GitHub Environments, branch restrictions, and protected values are configured.
 Required-reviewer rules are unavailable on the private repository's billing
-plan, so mutation workflows remain manual/paused and require the configured
-branch, exact SHA, and successful CI gates. The full dev release is the next
-gate; shared-key PostHog telemetry is environment-tagged and cannot qualify as
+plan. GitHub-hosted jobs were also blocked at startup by the account's Actions
+billing state, so the first releases used the authenticated operator path with
+the same reviewed templates, exact source trees, immutable digests, and
+fail-closed evidence checks. Branch protection was restored after each reviewed
+merge. Shared-key PostHog telemetry is environment-tagged but cannot qualify as
 final project isolation for production promotion.
 
-After those blockers clear, dev uses a staged
+Dev completed the staged
 disabled/manual → shadow/manual → unique manual shadow run → post-run
 activation proof → monitored schedule sequence with automatic fail-closed
-rollback. Missing-success monitoring is
+rollback. Missing-success monitoring was
 enabled and validated before a Schedule rollout; disable, rollback, and
 rotation paths first verify both jobs are Manual and only then disable
-monitoring. Prod
-force-disables and backs up the current release before any environment
-mutation, then lands the new release disabled/manual. The
+monitoring. Production landed disabled/manual and its fresh baseline backup was
+restore-verified before target smoke. The
 `production-promotion` identity/environment exists only for forced-disable
 steps in prod deploy and rotation. Any future production promotion requires a
 new evidence-bound design and trading-safety review. Follow

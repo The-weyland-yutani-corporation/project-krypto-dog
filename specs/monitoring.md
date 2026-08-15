@@ -3,10 +3,9 @@
 This runbook defines the minimum observability required before any recurring
 paper-trading schedule is accepted. It does not authorize live trading.
 
-> **Azure state (2026-08-14): foundations provisioned; no release.** Dev/prod
-> Log Analytics and foundation alerts exist, but no Container App or job is
-> deployed. Therefore no runtime/job telemetry, target-smoke evidence,
-> schedule-bound alert validation, or scheduled execution exists.
+> **Azure state (2026-08-15): releases and monitoring live.** Dev is
+> shadow/scheduled with activation-bound missing-success monitoring; production
+> is disabled/manual. Both Action Groups returned successful test dispatches.
 
 Release thresholds and authorization are in
 [`readiness.md`](./readiness.md); deployment order is in
@@ -40,8 +39,8 @@ Release thresholds and authorization are in
 
 Every event must carry `deployment_environment=dev|prod`; production startup
 fails if `POSTHOG_ENVIRONMENT` is absent. A shared ingestion key is temporarily
-accepted for dev validation because the environment property makes every query
-filterable, but it does not satisfy final project isolation. Create separate
+accepted for deployment validation because the environment property makes every
+query filterable, but it does not satisfy final project isolation. Create separate
 **dev** and **prod** PostHog projects before any production promotion design.
 
 Each dashboard/query must filter `deployment_environment`. The eventual
@@ -195,8 +194,7 @@ lock so forced-disable and secret mutations cannot overlap.
 
 ## Operator checks after release deployment
 
-These commands are examples only. The resource groups exist, but the referenced
-jobs do not:
+These commands inspect the live jobs:
 
 ```bash
 az containerapp job execution list \
