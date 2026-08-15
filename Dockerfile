@@ -161,10 +161,11 @@ ARG AZCOPY_SHA256_AMD64=99400b4640aac6467a27f4d99c29ba5f96b5723a0377908fec172a80
 ARG AZCOPY_SHA256_ARM64=5ef6fb329a54a2a17af55e2b9bddf2975ef4fa60a9de538fa41da6dfbeca0340
 ARG TARGETARCH
 RUN set -eu; \
-    case "${TARGETARCH}" in \
+    resolved_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "${resolved_arch}" in \
       amd64) azcopy_arch=x86_64; azcopy_sha256="${AZCOPY_SHA256_AMD64}" ;; \
       arm64) azcopy_arch=arm64; azcopy_sha256="${AZCOPY_SHA256_ARM64}" ;; \
-      *) echo "Unsupported TARGETARCH '${TARGETARCH}' for AzCopy; add a pinned version+checksum for it above." >&2; exit 1 ;; \
+      *) echo "Unsupported target architecture '${resolved_arch}' for AzCopy; add a pinned version+checksum for it above." >&2; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/azcopy.deb \
       "https://github.com/Azure/azure-storage-azcopy/releases/download/v${AZCOPY_VERSION}/azcopy-${AZCOPY_VERSION}.${azcopy_arch}.deb"; \
