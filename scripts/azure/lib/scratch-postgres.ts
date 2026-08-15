@@ -99,7 +99,7 @@ export async function startScratchPostgres(): Promise<ScratchPostgresHandle> {
         "-l",
         logFile,
         "-o",
-        `-F -p ${port} -h 127.0.0.1`,
+        `-F -p ${port} -h 127.0.0.1 -c unix_socket_directories=`,
         "-w",
         "start",
       ],

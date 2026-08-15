@@ -81,6 +81,7 @@ describe("scripts/azure/lib/scratch-postgres", () => {
       arg.includes("-h 127.0.0.1"),
     );
     expect(hostFlagArg).toBeDefined();
+    expect(hostFlagArg).toContain("-c unix_socket_directories=");
 
     mockedRunCli.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" }); // pg_ctl stop
     await handle.stop();
