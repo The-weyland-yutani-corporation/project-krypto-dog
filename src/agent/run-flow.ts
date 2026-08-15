@@ -47,12 +47,14 @@ import {
 } from "@/lib/analytics";
 import { executePaperTrade } from "@/trading/paper-executor";
 import {
+  AgentBindingMismatchError,
   AgentUpstreamError,
   RequiredRolloutModeError,
   TradeConflictError,
   TradingConfigurationError,
   TradingDomainError,
 } from "@/trading/errors";
+import { sendGuardrailAlert } from "@/lib/email";
 import {
   DEFAULT_STRATEGY_CONFIG,
   resolveTradingMode,
@@ -97,7 +99,12 @@ type InvocationAcquisition =
 export function configuredModelVersion(
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  return env.AZURE_OPENAI_DEPLOYMENT_NAME ?? null;
+  const agentName = env.AZURE_FOUNDRY_AGENT_NAME;
+  const agentVersion = env.AZURE_FOUNDRY_AGENT_VERSION;
+  if (agentName && agentVersion) {
+    return `${agentName}@${agentVersion}`;
+  }
+  return null;
 }
 
 function databaseMode(mode: TradingMode): "DISABLED" | "SHADOW" | "PAPER" {
@@ -569,6 +576,28 @@ async function persistJournal(
   });
 }
 
+async function persistBindingMismatchJournal(
+  runId: string,
+  market: TradingMarketSnapshot,
+  error: AgentBindingMismatchError,
+): Promise<void> {
+  await db.insert(agentJournal).values({
+    agentRunId: runId,
+    entryText: [
+      "Guardrail triggered: Foundry agent binding mismatch.",
+      `Expected binding: ${error.expectedBinding}.`,
+      `Actual binding: ${error.actualBinding}.`,
+      "No trade was authorized or executed.",
+    ].join("\n"),
+    marketConditions: {
+      ...marketRecord(market),
+      guardrail: "foundry-agent-binding",
+      expectedBinding: error.expectedBinding,
+      actualBinding: error.actualBinding,
+    },
+  });
+}
+
 function finalizeAnalytics(
   result: AgentRunResult,
   triggerSource: AgentTriggerSource,
@@ -714,6 +743,8 @@ export async function executeAgentRun(
 
   const { runId, leaseOwner } = acquisition;
   let committedResult: AgentRunResult | null = null;
+  let tradingContext: Awaited<ReturnType<typeof loadTradingContext>> | null =
+    null;
 
   try {
     if (modeError) throw modeError;
@@ -733,7 +764,7 @@ export async function executeAgentRun(
       return { kind: "ok", result };
     }
 
-    const context = await loadTradingContext();
+    const context = (tradingContext = await loadTradingContext());
     await markAccountToMarket(context, leaseOwner);
     const policy = evaluateTradePolicy(
       context.account,
@@ -939,6 +970,54 @@ export async function executeAgentRun(
         httpStatus: 500,
       };
     }
+    let bindingMismatchJournalWritten = false;
+    if (error instanceof AgentBindingMismatchError) {
+      const details = {
+        expectedBinding: error.expectedBinding,
+        actualBinding: error.actualBinding,
+        reason: "agent response binding did not match the configured version",
+      };
+      trackGuardrailTriggered(
+        "foundry-agent-binding",
+        details,
+        options.triggerSource,
+      );
+      if (tradingContext) {
+        try {
+          await persistBindingMismatchJournal(
+            runId,
+            tradingContext.market,
+            error,
+          );
+          bindingMismatchJournalWritten = true;
+        } catch (journalError) {
+          console.error(
+            "[agent] Failed to persist Foundry binding guardrail journal:",
+            journalError,
+          );
+          trackGuardrailTriggered(
+            "foundry-agent-binding-journal",
+            {
+              ...details,
+              persistenceError:
+                journalError instanceof Error
+                  ? journalError.message
+                  : String(journalError),
+            },
+            options.triggerSource,
+          );
+        }
+      }
+      void sendGuardrailAlert("Foundry agent binding", {
+        error: message,
+      }).catch((alertError) => {
+        console.error(
+          "[agent] Failed to send Foundry binding guardrail alert:",
+          alertError,
+        );
+      });
+    }
+
     const result: AgentRunResult = {
       runId,
       status: "error",
@@ -957,6 +1036,7 @@ export async function executeAgentRun(
             }
           : undefined,
       durationMs: completedAt.getTime() - startedMs,
+      journalWritten: bindingMismatchJournalWritten || undefined,
     };
     await completeRun(
       runId,

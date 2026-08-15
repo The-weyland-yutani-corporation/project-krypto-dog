@@ -4,7 +4,10 @@ import {
   type BaseMessage,
 } from "@langchain/core/messages";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { getLLM } from "./llm";
+import {
+  getFoundryDecisionInvoker,
+  type FoundryDecisionInvoker,
+} from "./foundry-agent";
 import {
   tradeDecisionSchema,
   tradeDecisionWireSchema,
@@ -30,6 +33,7 @@ interface DecisionInput {
 
 interface GenerateDecisionOptions {
   model?: BaseChatModel;
+  agentInvoker?: FoundryDecisionInvoker;
   signal?: AbortSignal;
   timeoutMs?: number;
   maxAttempts?: number;
@@ -48,6 +52,11 @@ type ProviderTokenUsage = Pick<
   NonNullable<DecisionResult["tokenUsage"]>,
   "promptTokens" | "completionTokens" | "totalTokens"
 >;
+
+interface ProviderDecisionResponse {
+  parsed: unknown;
+  usage?: ProviderTokenUsage;
+}
 
 function extractTokenUsage(
   message: BaseMessage,
@@ -128,15 +137,9 @@ export async function generateTradeDecision(
     );
   }
 
-  const model = options.model ?? getLLM();
-  if (!model.withStructuredOutput) {
-    throw new Error("Configured model does not support structured output");
+  if (options.model && options.agentInvoker) {
+    throw new Error("Configure either a model or a Foundry agent invoker, not both");
   }
-
-  const structuredModel = model.withStructuredOutput(tradeDecisionWireSchema, {
-    name: "trade_decision",
-    includeRaw: true,
-  });
 
   const timeoutMs = boundedPositiveInteger(
     options.timeoutMs,
@@ -153,22 +156,54 @@ export async function generateTradeDecision(
     DEFAULT_RETRY_DELAY_MS,
     5_000,
   );
-  const messages = [
-    new SystemMessage(
-      "You are a read-only ETH/USDC paper-trading decision model. Deterministic code enforces every rule and may reject your proposal.",
-    ),
-    new HumanMessage(buildDecisionPrompt(input)),
-  ];
+  const prompt = buildDecisionPrompt(input);
+  let invokeAttempt: (signal: AbortSignal) => Promise<ProviderDecisionResponse>;
+  if (options.model) {
+    if (!options.model.withStructuredOutput) {
+      throw new Error("Configured model does not support structured output");
+    }
+    const structuredModel = options.model.withStructuredOutput(
+      tradeDecisionWireSchema,
+      {
+        name: "trade_decision",
+        includeRaw: true,
+      },
+    );
+    const messages = [
+      new SystemMessage(
+        "You are a read-only ETH/USDC paper-trading decision model. Deterministic code enforces every rule and may reject your proposal.",
+      ),
+      new HumanMessage(prompt),
+    ];
+    invokeAttempt = async (signal) => {
+      const response = await structuredModel.invoke(messages, { signal });
+      return {
+        parsed: response.parsed,
+        usage: extractTokenUsage(response.raw),
+      };
+    };
+  } else {
+    const agentInvoker = options.agentInvoker ?? getFoundryDecisionInvoker();
+    invokeAttempt = async (signal) => {
+      const response = await agentInvoker(prompt, signal);
+      return {
+        parsed: response.decision,
+        usage: {
+          promptTokens: response.tokenUsage.inputTokens,
+          completionTokens: response.tokenUsage.outputTokens,
+          totalTokens: response.tokenUsage.totalTokens,
+        },
+      };
+    };
+  }
 
-  let response: Awaited<ReturnType<typeof structuredModel.invoke>> | undefined;
+  let response: ProviderDecisionResponse | undefined;
   let finalError: unknown;
   let attemptCount = 0;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attemptCount = attempt;
     try {
-      response = await structuredModel.invoke(messages, {
-        signal: attemptSignal(options.signal, timeoutMs),
-      });
+      response = await invokeAttempt(attemptSignal(options.signal, timeoutMs));
       break;
     } catch (error) {
       const classified = classifyLlmError(error);
@@ -186,7 +221,7 @@ export async function generateTradeDecision(
     throw classifyLlmError(finalError);
   }
 
-  const usage = extractTokenUsage(response.raw);
+  const usage = response.usage;
   return {
     decision: tradeDecisionSchema.parse(response.parsed),
     tokenUsage: {

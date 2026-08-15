@@ -68,12 +68,13 @@ docker exec -i krypto-postgres psql -U krypto -d krypto -c 'SELECT 1;'
 cp .env.example .env
 ```
 
-Use this baseline for **no-LLM smoke mode**. The URL must retain the valid
-Azure OpenAI v1 shape even though disabled mode never calls it:
+Use this baseline for **no-agent smoke mode**. Agent configuration remains
+shape-valid even though disabled mode never invokes it:
 
 ```dotenv
-AZURE_OPENAI_BASE_URL=https://stub.openai.azure.com/openai/v1/
-AZURE_OPENAI_DEPLOYMENT_NAME=krypto-dev-luna
+AZURE_FOUNDRY_PROJECT_ENDPOINT=https://stub.services.ai.azure.com/api/projects/krypto-test-agents
+AZURE_FOUNDRY_AGENT_NAME=krypto-test-decision
+AZURE_FOUNDRY_AGENT_VERSION=1
 
 DATABASE_URL=******localhost:5433/krypto
 DIRECT_URL=******localhost:5433/krypto
@@ -95,11 +96,16 @@ az login
 az account set --subscription "Visual Studio Enterprise Subscription"
 ```
 
-Set `AZURE_OPENAI_BASE_URL` to the dedicated account's HTTPS endpoint ending
-in `/openai/v1/` and use `AZURE_OPENAI_DEPLOYMENT_NAME=krypto-dev-luna`.
-Leave model API keys unset: local calls use `DefaultAzureCredential` and the
-attended Azure CLI identity must have reviewed inference access. Azure runtime
-instead sets `AZURE_CLIENT_ID` to its user-assigned managed identity.
+Set `AZURE_FOUNDRY_PROJECT_ENDPOINT` to the dev project endpoint,
+`AZURE_FOUNDRY_AGENT_NAME=krypto-dev-decision`, and
+`AZURE_FOUNDRY_AGENT_VERSION` to the exact attested version. Leave model and
+agent API keys unset: local calls use `DefaultAzureCredential` and the attended
+Azure CLI identity must have reviewed project access. Azure runtime instead sets
+`AZURE_CLIENT_ID` to its user-assigned managed identity.
+
+The optional direct-model diagnostic `npm run smoke:llm` additionally needs
+`AZURE_OPENAI_BASE_URL` and `AZURE_OPENAI_DEPLOYMENT_NAME`; application runs do
+not.
 
 For optional local email delivery, set
 `AZURE_COMMUNICATION_CONNECTION_STRING`,

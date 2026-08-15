@@ -83,7 +83,37 @@ describe("generateTradeDecision", () => {
         latencyMs: expect.any(Number),
       },
     });
+
     expect(model.withStructuredOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the Foundry agent boundary by default when an invoker is supplied", async () => {
+    const agentInvoker = jest.fn(async () => ({
+      decision: {
+        action: "HOLD" as const,
+        notionalUSD: null,
+        reasoning: "Read-only agent proposal.",
+      },
+      tokenUsage: {
+        inputTokens: 12,
+        outputTokens: 4,
+        totalTokens: 16,
+      },
+    }));
+
+    const result = await generateTradeDecision(input, { agentInvoker });
+
+    expect(result.decision.action).toBe("HOLD");
+    expect(result.tokenUsage).toMatchObject({
+      promptTokens: 12,
+      completionTokens: 4,
+      totalTokens: 16,
+      attemptCount: 1,
+    });
+    expect(agentInvoker).toHaveBeenCalledWith(
+      expect.stringContaining('"eligibleActions"'),
+      expect.any(AbortSignal),
+    );
   });
 
   it("applies full domain constraints locally after Azure-compatible parsing", async () => {
@@ -144,6 +174,39 @@ describe("generateTradeDecision", () => {
 
     const result = await generateTradeDecision(input, {
       model: retryingModel,
+      retryDelayMs: 1,
+    });
+
+    expect(result.decision.action).toBe("HOLD");
+    expect(result.tokenUsage?.attemptCount).toBe(2);
+    expect(calls).toBe(2);
+  });
+
+  it("retries a Foundry timeout and then succeeds", async () => {
+    let calls = 0;
+    const agentInvoker = jest.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error("Foundry request timed out"), {
+          name: "TimeoutError",
+        });
+      }
+      return {
+        decision: {
+          action: "HOLD" as const,
+          notionalUSD: null,
+          reasoning: "Wait",
+        },
+        tokenUsage: {
+          inputTokens: 8,
+          outputTokens: 2,
+          totalTokens: 10,
+        },
+      };
+    });
+
+    const result = await generateTradeDecision(input, {
+      agentInvoker,
       retryDelayMs: 1,
     });
 

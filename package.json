@@ -15,6 +15,7 @@
     "test:agentic-sdlc": "jest --runInBand tests/agentic-sdlc",
     "test:watch": "jest --watch",
     "smoke:llm": "npx tsx scripts/smoke-llm.ts",
+    "foundry:agent": "npx tsx scripts/foundry-agent.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
@@ -47,6 +48,7 @@
     "node": ">=22.13.0 <23"
   },
   "dependencies": {
+    "@azure/ai-projects": "^2.4.0",
     "@azure/communication-email": "^1.1.0",
     "@azure/identity": "^4.13.1",
     "@langchain/core": "^1.1.35",

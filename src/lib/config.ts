@@ -2,17 +2,17 @@ import { z } from "zod/v4";
 import { normalizeAppOrigin } from "@/lib/app-origin";
 
 // ---------------------------------------------------------------------------
-// Azure OpenAI v1 endpoint validation
+// Optional direct Azure OpenAI v1 diagnostic endpoint validation
 // ---------------------------------------------------------------------------
 //
 // AZURE_OPENAI_BASE_URL is the complete v1 data-plane base URL, for example:
 //   https://your-resource.openai.azure.com/openai/v1
 //   https://your-resource.services.ai.azure.com/openai/v1
 //
-// AZURE_OPENAI_DEPLOYMENT_NAME is the environment-specific Azure deployment
-// name. AZURE_CLIENT_ID selects the user-assigned managed identity in Azure.
-// Authentication is always Microsoft Entra ID; API keys and dated API versions
-// are intentionally not part of the runtime configuration.
+// The application decision path uses the versioned Foundry Agent configuration
+// below. These Azure OpenAI values are retained only for attended platform
+// diagnostics. Authentication is always Microsoft Entra ID; API keys and dated
+// API versions are intentionally unsupported.
 
 function normalizeBaseURL(value: string): string {
   return value.replace(/\/+$/, "");
@@ -36,9 +36,36 @@ function isAzureOpenAIBaseURL(value: string): boolean {
   }
 }
 
+function normalizeFoundryProjectEndpoint(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function isAzureFoundryProjectEndpoint(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const path = normalizeFoundryProjectEndpoint(url.pathname);
+    return (
+      url.protocol === "https:" &&
+      url.hostname.endsWith(".services.ai.azure.com") &&
+      /^\/api\/projects\/[A-Za-z0-9][A-Za-z0-9_.-]{1,63}$/.test(path) &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
 export interface AzureOpenAIConfig {
   baseURL: string;
   deployment: string;
+  clientId?: string;
+}
+
+export interface AzureFoundryAgentConfig {
+  projectEndpoint: string;
+  agentName: string;
+  agentVersion: string;
   clientId?: string;
 }
 
@@ -60,11 +87,42 @@ export function resolveAzureOpenAIConfig(
   };
 }
 
+export function resolveAzureFoundryAgentConfig(
+  env: Record<string, string | undefined>,
+): AzureFoundryAgentConfig | undefined {
+  if (
+    !env.AZURE_FOUNDRY_PROJECT_ENDPOINT ||
+    !env.AZURE_FOUNDRY_AGENT_NAME ||
+    !env.AZURE_FOUNDRY_AGENT_VERSION ||
+    !isAzureFoundryProjectEndpoint(env.AZURE_FOUNDRY_PROJECT_ENDPOINT) ||
+    !/^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/.test(
+      env.AZURE_FOUNDRY_AGENT_NAME,
+    ) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(
+      env.AZURE_FOUNDRY_AGENT_VERSION,
+    )
+  ) {
+    return undefined;
+  }
+
+  return {
+    projectEndpoint: normalizeFoundryProjectEndpoint(
+      env.AZURE_FOUNDRY_PROJECT_ENDPOINT,
+    ),
+    agentName: env.AZURE_FOUNDRY_AGENT_NAME,
+    agentVersion: env.AZURE_FOUNDRY_AGENT_VERSION,
+    clientId: env.AZURE_CLIENT_ID,
+  };
+}
+
 const envSchema = z
   .object({
     // Azure OpenAI v1 with Microsoft Entra authentication
-    AZURE_OPENAI_BASE_URL: z.string().url(),
+    AZURE_OPENAI_BASE_URL: z.string().url().optional(),
     AZURE_OPENAI_DEPLOYMENT_NAME: z.string().min(1).optional(),
+    AZURE_FOUNDRY_PROJECT_ENDPOINT: z.string().url().optional(),
+    AZURE_FOUNDRY_AGENT_NAME: z.string().min(1).optional(),
+    AZURE_FOUNDRY_AGENT_VERSION: z.string().min(1).optional(),
     AZURE_CLIENT_ID: z.string().uuid().optional(),
     // Other runtime config
     DATABASE_URL: z.string().url(),
@@ -83,21 +141,32 @@ const envSchema = z
   })
   .check((ctx) => {
     const env = ctx.value;
-    if (!env.AZURE_OPENAI_DEPLOYMENT_NAME) {
+    if (
+      (env.AZURE_OPENAI_BASE_URL || env.AZURE_OPENAI_DEPLOYMENT_NAME) &&
+      !resolveAzureOpenAIConfig(
+        env as Record<string, string | undefined>,
+      )
+    ) {
       ctx.issues.push({
         code: "custom",
         message:
-          "AZURE_OPENAI_DEPLOYMENT_NAME is required for Azure OpenAI.",
+          "Optional direct Azure OpenAI diagnostics require both " +
+          "AZURE_OPENAI_BASE_URL ending in /openai/v1 and " +
+          "AZURE_OPENAI_DEPLOYMENT_NAME.",
         input: ctx.value,
       });
     }
 
-    if (!isAzureOpenAIBaseURL(env.AZURE_OPENAI_BASE_URL)) {
+    if (
+      !resolveAzureFoundryAgentConfig(
+        env as Record<string, string | undefined>,
+      )
+    ) {
       ctx.issues.push({
         code: "custom",
         message:
-          "AZURE_OPENAI_BASE_URL must be an HTTPS Azure OpenAI v1 endpoint " +
-          "ending in /openai/v1.",
+          "AZURE_FOUNDRY_PROJECT_ENDPOINT, AZURE_FOUNDRY_AGENT_NAME, and " +
+          "AZURE_FOUNDRY_AGENT_VERSION must identify one immutable Foundry Agent.",
         input: ctx.value,
       });
     }

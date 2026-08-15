@@ -1,16 +1,18 @@
 import {
-  DefaultAzureCredential,
-  ManagedIdentityCredential,
   getBearerTokenProvider,
 } from "@azure/identity";
 import { ChatOpenAI } from "@langchain/openai";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import {
+  AZURE_OPENAI_TOKEN_SCOPE,
+  createAzureCredential,
+} from "@/agent/azure-credential";
 import { resolveAzureOpenAIConfig } from "@/lib/config";
 import { TradingConfigurationError } from "@/trading/errors";
 
 let llmInstance: BaseChatModel | null = null;
 
-export const AZURE_OPENAI_TOKEN_SCOPE = "https://ai.azure.com/.default";
+export { AZURE_OPENAI_TOKEN_SCOPE } from "@/agent/azure-credential";
 
 /**
  * Build the GPT-5.6 Luna client against Azure OpenAI's v1 API.
@@ -40,20 +42,7 @@ export function buildLLM(): BaseChatModel {
     );
   }
 
-  if (process.env.NODE_ENV === "production" && !config.clientId) {
-    throw new TradingConfigurationError(
-      "AZURE_CLIENT_ID is required in production to select the user-assigned managed identity.",
-    );
-  }
-
-  const credential =
-    process.env.NODE_ENV === "production"
-      ? new ManagedIdentityCredential(config.clientId!)
-      : config.clientId
-        ? new DefaultAzureCredential({
-            managedIdentityClientId: config.clientId,
-          })
-        : new DefaultAzureCredential();
+  const credential = createAzureCredential(config.clientId);
   const tokenProvider = getBearerTokenProvider(
     credential,
     AZURE_OPENAI_TOKEN_SCOPE,
