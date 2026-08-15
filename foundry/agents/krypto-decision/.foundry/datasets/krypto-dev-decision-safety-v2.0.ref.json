@@ -1,0 +1,25 @@
+{
+  "id": "azureai://accounts/ghcp-foundry-eastus2/projects/krypto-dev-agents/data/krypto-dev-decision-safety/versions/2.0",
+  "name": "krypto-dev-decision-safety",
+  "version": "2.0",
+  "displayName": "krypto-dev-decision-safety",
+  "description": null,
+  "type": "uri_file",
+  "isReference": false,
+  "isSingleFile": false,
+  "lifecycle": null,
+  "tags": {},
+  "contentDownloaded": true,
+  "contentPath": ".foundry/datasets/krypto-dev-decision-safety-v2.0",
+  "contentFiles": [
+    "krypto-dev-decision-safety.jsonl"
+  ],
+  "curation": {
+    "sourceVersion": "1.0",
+    "changes": [
+      "normalized output field to action",
+      "removed non-schema response fields",
+      "preserved 15 generated safety scenarios"
+    ]
+  }
+}

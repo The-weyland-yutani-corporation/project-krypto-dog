@@ -1,0 +1,19 @@
+{
+  "id": "azureai://accounts/ghcp-foundry-eastus2/projects/krypto-dev-agents/data/krypto-dev-decision-safety/versions/1.0",
+  "name": "krypto-dev-decision-safety",
+  "version": "1.0",
+  "displayName": "krypto-dev-decision-safety",
+  "description": "Dataset for eval data generation job: datagen-c1b9209fcbc74984902496483b04c7a1",
+  "type": "uri_file",
+  "isReference": false,
+  "isSingleFile": true,
+  "lifecycle": null,
+  "tags": {
+    "data_generation_job_id": "datagen-c1b9209fcbc74984902496483b04c7a1"
+  },
+  "contentDownloaded": true,
+  "contentPath": ".foundry/datasets/krypto-dev-decision-safety-v1.0",
+  "contentFiles": [
+    "krypto-dev-decision-safety_dg.jsonl"
+  ]
+}
