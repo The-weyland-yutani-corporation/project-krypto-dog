@@ -5,7 +5,7 @@ import { buildLLM } from "@/agent/llm";
 import { getMarketDataProvider } from "@/lib/market-data-provider";
 import {
   flushPostHog,
-  getPostHogClient,
+  capturePostHog,
   shutdownPostHog,
 } from "@/lib/posthog";
 
@@ -155,7 +155,7 @@ export async function smokePostHog(): Promise<
   const startedAt = Date.now();
   const smokeId = crypto.randomUUID();
   try {
-    getPostHogClient().capture({
+    capturePostHog({
       distinctId: "krypto-deployment-smoke",
       event: "deployment_smoke",
       properties: {

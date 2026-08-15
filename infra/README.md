@@ -3,10 +3,10 @@
 This tree implements the Azure-native target accepted by
 [`specs/decisions/0008-azure-native-deployment-architecture.md`](../specs/decisions/0008-azure-native-deployment-architecture.md).
 
-> **Deployment state (2026-08-14): FOUNDATIONS PROVISIONED; RELEASES NOT
-> DEPLOYED.** Bootstrap, the Foundry account, workload-access bindings, and both
-> environment foundations exist. No model deployment, Container App, job,
-> release evidence report, schedule, or public Azure URL exists.
+> **Deployment state (2026-08-14): FOUNDATIONS + FALLBACK LUNA PROVISIONED;
+> RELEASES NOT DEPLOYED.** Bootstrap, both environment foundations, operational
+> Luna deployments, and workload access exist. No Container App, job, release
+> evidence report, schedule, or public Azure URL exists.
 >
 > **Paper only.** Templates support `disabled`, `shadow`, and `paper`.
 > Nothing provisions or authorizes live-money execution.
@@ -18,15 +18,17 @@ This tree implements the Azure-native target accepted by
 - Region: `westus3`.
 - Resource groups: `rg-krypto-platform`, `rg-krypto-dev`,
   `rg-krypto-prod`.
-- Dedicated Foundry account: `ai-krypto-westus3`.
+- Dedicated future Foundry account: `ai-krypto-westus3`.
+- Operational model host: established `ghcp-foundry-eastus2`.
 - Model: OpenAI `gpt-5.6-luna`, version `2026-07-09`,
   `GlobalStandard`.
 - Deployments: `krypto-dev-luna` and `krypto-prod-luna`, capacity 10 each.
-- Foundry local authentication is disabled. Runtime/ops callers use Microsoft
-  Entra ID and only **Cognitive Services OpenAI User**.
+- Runtime/ops callers use Microsoft Entra ID and only **Cognitive Services
+  OpenAI User**. Project Krypto does not mount model API keys.
 - Email is per-environment Azure Communication Services Email with an
   Azure-managed domain.
-- Dev and prod use separate PostHog project keys.
+- Every event is tagged with `deployment_environment`; separate PostHog
+  projects remain required before production promotion.
 
 `eastus2` was a rejected candidate because the selected subscription cannot
 provision PostgreSQL there. It is not a current target.
@@ -37,17 +39,16 @@ provision PostgreSQL there. It is not a current target.
 |---|---|---|
 | Subscription/bootstrap | Required providers registered; three resource groups and four GitHub OIDC identities exist | Bootstrap complete |
 | GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a separate dev PostHog key; required-reviewer rules are unsupported by the private-repo billing plan, so mutation workflows are manual/paused behind branch, exact-SHA, and CI gates | Configuration staged; reviewer enforcement unavailable |
-| Foundry account | `ai-krypto-westus3` exists with local auth disabled and its `CanNotDelete` lock verified; exact catalog/quota validation passed, but both Luna deployments are absent after Azure error `715-123420` (“unusual activity”) | [Platform run failed at model deployment](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
-| Foundry workload access | Dev/prod runtime and ops identities each have Cognitive Services OpenAI User | Applied |
+| Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
+| Foundry workload access | Dev/prod runtime and ops identities each have Cognitive Services OpenAI User on the operational account | Applied |
 | Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
 | Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
 | Releases | No web Container App, scheduler/ops job, image release, target smoke, schedule, or public URL exists in either environment | Not deployed |
-| Analytics | Prod PostHog key is staged; a separate dev project key is still missing | Blocked |
+| Analytics | Shared ingestion key temporarily staged with mandatory dev/prod event tags; separate projects remain a promotion gate | Release-testable |
 
-Azure Support API ticket creation failed because the subscription has no
-eligible support plan. Resolving error `715-123420` requires portal/account
-support action. Do not start a full release until the model deployments and
-separate dev PostHog key exist.
+Azure Support API ticket creation for the dedicated account failed because the
+subscription has no eligible support plan. The established account removes
+that release blocker; keep the dedicated account for a future migration.
 
 ## Subscription prerequisite
 
@@ -247,8 +248,9 @@ required.
 
 1. Subscription owner runs `register-providers.sh` and waits for `Registered`.
 2. Local `bootstrap.bicep`.
-3. Environment-scoped manual `azure-platform.yml` account/model plan and apply,
-   then no-trade smoke.
+3. Provision the exact Luna deployment pair and run Entra no-trade smokes.
+   Current operation uses established `ghcp-foundry-eastus2`; the dedicated
+   `azure-platform.yml` path remains available for a future migration.
 4. `azure-deploy-dev.yml` with `deployment_stage=foundation`.
 5. `azure-deploy-prod.yml` with `deployment_stage=foundation`.
 6. Environment-scoped manual `azure-platform-access.yml` with the four retained
@@ -257,9 +259,8 @@ required.
 8. Full prod release, ending disabled/manual. No production promotion
    workflow is shipped or approved.
 
-Current checkpoint: steps 1, 2, 4, 5, and 6 are complete. Step 3 created and
-verified the account but is blocked before model apply/smoke. Steps 7 and 8
-have not started.
+Current checkpoint: steps 1 through 6 are complete. Steps 7 and 8 have not
+started.
 
 Both foundation workflows publish a nonsecret handoff artifact containing
 identity IDs, evidence metadata, ACS sender, and monitoring IDs. The access
@@ -288,10 +289,11 @@ DEPLOYMENT_APPROVAL_SECRET
 
 `environment.bicep` separately accepts `POSTGRES_ADMIN_PASSWORD`.
 
-Dev and prod use independent values. In particular,
-`POSTHOG_API_KEY` must identify a separate PostHog project per environment.
-All corresponding `.bicepparam` calls use `readEnvironmentVariable()` with
-no fallback, so missing values fail closed.
+Dev and prod use independent safety/auth values. The temporary PostHog
+shared-key fallback is allowed only because `POSTHOG_ENVIRONMENT` is mandatory
+and attached to every event; separate projects remain required before
+production promotion. All corresponding `.bicepparam` calls use
+`readEnvironmentVariable()` with no fallback, so missing values fail closed.
 
 ACS is intentionally different:
 

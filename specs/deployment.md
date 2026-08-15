@@ -1,10 +1,10 @@
 # Deployment runbook (Azure)
 
-> **Live state (2026-08-14): foundations provisioned; releases blocked.**
-> Required providers, bootstrap/OIDC, the Foundry account, workload-access
-> bindings, and both environment foundations exist. No Luna deployment,
-> release, Container App, job, ops report, target smoke, schedule, or public
-> Azure application URL exists.
+> **Live state (2026-08-14): foundations and fallback Luna provisioned;
+> releases pending.** Required providers, bootstrap/OIDC, workload access,
+> both environment foundations, and dev/prod Luna deployments exist. No
+> application release, Container App, job, ops report, target smoke, schedule,
+> or public Azure application URL exists.
 >
 > **Paper/live safety is unchanged.** `ROLLOUT_MODE` supports only
 > `disabled`, `shadow`, and `paper`. Nothing in this runbook authorizes
@@ -27,14 +27,15 @@ and must not be used for a new release.
 | Region | `westus3` |
 | Platform resource group | `rg-krypto-platform` |
 | Dev/prod resource groups | `rg-krypto-dev` / `rg-krypto-prod` |
-| Foundry account | `ai-krypto-westus3` |
+| Operational Foundry account | Established `ghcp-foundry-eastus2` (temporary shared model host) |
+| Dedicated future account | `ai-krypto-westus3` (live, local auth disabled, model-empty after `715-123420`) |
 | Model | OpenAI `gpt-5.6-luna`, version `2026-07-09` |
 | SKU and capacity | `GlobalStandard`; dev 10 and prod 10 |
 | Model deployments | `krypto-dev-luna` / `krypto-prod-luna` |
-| Model auth | Microsoft Entra ID only; Foundry local auth/API keys disabled |
+| Model auth | Project Krypto uses Microsoft Entra ID only; no model API key is stored or mounted |
 | Runtime model config | `AZURE_OPENAI_BASE_URL` ending `/openai/v1`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_CLIENT_ID` |
 | Email | Per-environment ACS Email with Azure-managed domain |
-| Analytics | Distinct PostHog project key for dev and prod |
+| Analytics | Every event carries mandatory `deployment_environment`; a distinct dev project remains required before production promotion |
 
 The rejected candidate region `eastus2` is a **historical constraint, not a
 target**: the selected subscription is restricted from PostgreSQL
@@ -50,17 +51,18 @@ those values without making them public documentation.
 | Stage | Live state | Evidence |
 |---|---|---|
 | Providers/bootstrap | Required providers are registered; platform/dev/prod resource groups and four GitHub OIDC identities exist | Complete |
-| GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a distinct dev PostHog key. Required-reviewer rules are unsupported by the private-repo billing plan; mutation workflows are manual/paused behind branch, exact-SHA, and CI gates. | Staged; no reviewer enforcement |
-| Foundry platform | `ai-krypto-westus3` exists with local auth disabled and `CanNotDelete` verified. Catalog/quota validation passed; model apply failed with Azure `715-123420` (“unusual activity”). | [Platform run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
-| Workload access | Dev/prod runtime and ops identities have Cognitive Services OpenAI User | Complete |
+| GitHub controls | Environments, branch restrictions, variables, and release secrets are configured. Required-reviewer rules are unsupported by the private-repo billing plan; mutation workflows are manual/paused behind branch, exact-SHA, and CI gates. | Staged; no reviewer enforcement |
+| Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra plain/structured smokes. | Operational fallback complete |
+| Workload access | Dev/prod runtime and ops identities have Cognitive Services OpenAI User on the operational account | Complete |
 | Dev foundation | Foundation resource set deployed; no release resources | [Passed run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
 | Prod foundation | Foundation resource set deployed; production remains disabled with no release resources | [Passed run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
 | Release/rollout | No Container App, job, public URL, schedule, or promotion workflow exists | Not started |
 
-Azure Support API ticket creation failed because the subscription has no
-eligible support plan. Portal/account support action is required to resolve
-`715-123420`. Prod PostHog is staged; a separate dev project key must be added
-before any full dev release.
+The dedicated account can be revisited through portal/account support, but it
+no longer blocks releases. Dev uses the shared PostHog ingestion key only with
+the mandatory environment property; this permits dev validation without
+misclassifying dev events as prod, but separate projects remain mandatory
+before any future production promotion workflow is designed.
 
 ## 1. One-time local bootstrap
 
@@ -126,7 +128,7 @@ principal IDs are configuration inputs, not documentation values.
 
 **Current status: configured but reviewer enforcement unavailable.** The four
 Environments, branch restrictions, and protected variables/secrets are
-configured except for the separate dev PostHog key. The private repository's
+configured. The private repository's
 billing plan does not support required-reviewer rules. Keep mutation workflows
 manual/paused and require the configured branch, exact 40-hex SHA, and
 successful CI. Do not enable automatic mutation without an equivalent reviewed
@@ -160,7 +162,9 @@ Requirements:
 - Locks Contributor remains resource-group-scoped: platform uses it for the
   Foundry account lock; prod deploy uses it for the prod PostgreSQL, Key Vault,
   and evidence-storage locks created by `environment.bicep`.
-- Dev and prod `POSTHOG_API_KEY` values must belong to separate projects.
+- `POSTHOG_ENVIRONMENT` must be `dev` or `prod` and is attached to every event.
+  The temporary shared key is accepted for dev validation only; separate
+  projects remain required before future production promotion.
 - There is no Foundry API-key secret.
 - There is no ACS connection-string GitHub secret. `release.bicep` calls
   `listKeys()` on the per-environment Communication Service and writes the
@@ -170,19 +174,20 @@ Requirements:
 - `DATABASE_URL` uses `krypto_app`; `DIRECT_URL` uses `krypto_owner`. Both
   target the same private server/database with `sslmode=require`.
 
-## 3. Provision the dedicated Foundry platform
+## 3. Provision the Foundry model platform
 
-**Current status: account live; model blocked.** The
+**Current status: operational fallback live.** The
 [platform run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884)
 created and verified `ai-krypto-westus3`, disabled local auth, verified the
 `CanNotDelete` lock, and passed exact catalog/quota validation. Azure rejected
-both model deployments with error `715-123420` (“unusual activity”), so no
-model smoke ran. Support API ticket creation failed because the subscription
-has no eligible support plan; resolve the account restriction through
-portal/account support, then rerun the exact reviewed workflow.
+model deployment with error `715-123420` (“unusual activity”). The exact dev
+and prod Luna deployments were then created serially on the established
+`ghcp-foundry-eastus2` account, granted to the four workload identities with
+**Cognitive Services OpenAI User**, and passed Entra plain plus strict
+structured `HOLD` smokes. Keep the dedicated account for a future migration.
 
-Run `azure-platform.yml` manually under the environment-scoped `platform`
-Environment. It has separate what-if/apply mutation boundaries:
+`azure-platform.yml` remains the dedicated-account migration workflow. It has
+separate what-if/apply mutation boundaries:
 
 1. **Account plan** — what-if `platform-account.bicep`, reject deletes, retain
    the artifact.
@@ -265,10 +270,9 @@ Supply exactly the retained principal IDs for:
 - prod ops.
 
 The workflow format-validates them, runs an environment-scoped what-if job,
-publishes the what-if artifact, then runs a separate apply job. It grants
-exactly one **Cognitive Services OpenAI User** assignment per principal at the
-`ai-krypto-westus3` account scope. Scheduler identities receive no Foundry
-role.
+publishes the what-if artifact, then runs a separate apply job. The operational fallback has exactly one **Cognitive Services OpenAI User**
+assignment per runtime/ops principal at the established account scope.
+Scheduler identities receive no Foundry role.
 
 Do not proceed to a full release until the live assignment verification
 passes. This is the dependency bridge between the application foundations and
@@ -276,10 +280,10 @@ keyless model access.
 
 ## 6. Dev full release and schedule activation
 
-**Current status: not started and blocked.** No dev release resources or URL
-exist. Resolve the Luna deployment restriction and add a distinct dev PostHog
-key first. Then manually run `full` at the exact CI-passed SHA; the automatic
-path remains paused while reviewer enforcement is unavailable.
+**Current status: ready to start.** No dev release resources or URL exist.
+Operational Luna and environment-tagged PostHog are staged. Manually run
+`full` at the exact CI-passed SHA; the automatic path remains paused while
+reviewer enforcement is unavailable.
 
 The implemented order is:
 

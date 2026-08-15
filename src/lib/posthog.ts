@@ -40,6 +40,26 @@ export function getPostHogClient(): PostHog {
   return client;
 }
 
+export function capturePostHog(
+  message: Parameters<PostHog["capture"]>[0],
+): void {
+  const deploymentEnvironment = process.env.POSTHOG_ENVIRONMENT;
+  if (
+    process.env.NODE_ENV === "production" &&
+    deploymentEnvironment !== "dev" &&
+    deploymentEnvironment !== "prod"
+  ) {
+    throw new Error("POSTHOG_ENVIRONMENT must be dev or prod in production.");
+  }
+  getPostHogClient().capture({
+    ...message,
+    properties: {
+      ...(message.properties ?? {}),
+      deployment_environment: deploymentEnvironment ?? "local",
+    },
+  });
+}
+
 export async function flushPostHog(): Promise<void> {
   if (client) {
     await client.flush();

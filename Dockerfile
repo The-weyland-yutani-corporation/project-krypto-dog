@@ -64,6 +64,7 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
     ALERT_EMAIL_TO=operator@example.com \
     DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build \
     POSTHOG_API_KEY=build-placeholder \
+    POSTHOG_ENVIRONMENT=dev \
     CRON_SECRET=build-placeholder \
     ADMIN_PASSWORD=build-placeholder \
     ADMIN_SESSION_SECRET=build-placeholder \

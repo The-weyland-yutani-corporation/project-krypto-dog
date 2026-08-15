@@ -150,6 +150,13 @@ param azureOpenAIDeploymentName string
 @description('PostHog ingestion host.')
 param posthogHost string = 'https://us.i.posthog.com'
 
+@description('PostHog event environment tag. Keeps dev/prod events query-isolated even during a temporary shared-key fallback.')
+@allowed([
+  'dev'
+  'prod'
+])
+param posthogEnvironment string = environmentName
+
 @description('Alert email recipient.')
 param alertEmailTo string
 
@@ -464,6 +471,7 @@ module webApp 'modules/container-app-web.bicep' = {
       { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
       { name: 'AZURE_CLIENT_ID', value: runtimeIdentityClientId }
       { name: 'POSTHOG_HOST', value: posthogHost }
+      { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
       { name: 'ALERT_EMAIL_TO', value: alertEmailTo }
       { name: 'AZURE_COMMUNICATION_EMAIL_SENDER', value: communicationEmailSender }
     ]
@@ -731,6 +739,7 @@ module targetSmokeJob 'modules/container-app-job.bicep' = {
       { name: 'AZURE_OPENAI_BASE_URL', value: azureOpenAIBaseUrl }
       { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
       { name: 'POSTHOG_HOST', value: posthogHost }
+      { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
     ])
     keyVaultSecretEnv: [
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }

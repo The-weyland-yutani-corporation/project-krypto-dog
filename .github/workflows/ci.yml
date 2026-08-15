@@ -62,6 +62,7 @@ jobs:
           ALERT_EMAIL_TO: operator@example.com
           DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
           POSTHOG_API_KEY: phc_stub
+          POSTHOG_ENVIRONMENT: dev
           CRON_SECRET: stub
           ADMIN_PASSWORD: stub
           ADMIN_SESSION_SECRET: stub

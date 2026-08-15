@@ -86,6 +86,13 @@ param azureOpenAIDeploymentName string
 @description('PostHog ingestion host. Must match the value release.bicep deployed.')
 param posthogHost string = 'https://us.i.posthog.com'
 
+@description('PostHog event environment tag. Must match release.bicep.')
+@allowed([
+  'dev'
+  'prod'
+])
+param posthogEnvironment string = environmentName
+
 @description('Alert email recipient. Must match the value release.bicep deployed.')
 param alertEmailTo string
 
@@ -181,6 +188,7 @@ module webApp 'modules/container-app-web.bicep' = {
       { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
       { name: 'AZURE_CLIENT_ID', value: runtimeIdentityClientId }
       { name: 'POSTHOG_HOST', value: posthogHost }
+      { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
       { name: 'ALERT_EMAIL_TO', value: alertEmailTo }
       { name: 'AZURE_COMMUNICATION_EMAIL_SENDER', value: communicationEmailSender }
     ]

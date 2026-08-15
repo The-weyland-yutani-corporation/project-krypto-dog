@@ -1,4 +1,4 @@
-import { getPostHogClient } from "./posthog";
+import { capturePostHog } from "./posthog";
 import type { AgentRunResult } from "./types";
 
 const DISTINCT_ID = "krypto-agent";
@@ -9,7 +9,7 @@ export function trackAgentRunStarted(
   triggerSource: AgentTriggerSource = "cron",
 ): void {
   try {
-    getPostHogClient().capture({
+    capturePostHog({
       distinctId: DISTINCT_ID,
       event: "agent_run_started",
       properties: {
@@ -27,7 +27,7 @@ export function trackAgentRunCompleted(
   triggerSource: AgentTriggerSource = "cron",
 ): void {
   try {
-    getPostHogClient().capture({
+    capturePostHog({
       distinctId: DISTINCT_ID,
       event: "agent_run_completed",
       properties: {
@@ -56,7 +56,7 @@ export function trackGuardrailTriggered(
   triggerSource: AgentTriggerSource = "cron",
 ): void {
   try {
-    getPostHogClient().capture({
+    capturePostHog({
       distinctId: DISTINCT_ID,
       event: "guardrail_triggered",
       properties: {
@@ -80,7 +80,7 @@ export function trackTradeExecuted(trade: {
   pnlUSD?: number;
 }): void {
   try {
-    getPostHogClient().capture({
+    capturePostHog({
       distinctId: DISTINCT_ID,
       event: "trade_executed",
       properties: {
@@ -106,7 +106,7 @@ export function trackLLMTokenUsage(usage: {
   latencyMs: number;
 }): void {
   try {
-    getPostHogClient().capture({
+    capturePostHog({
       distinctId: DISTINCT_ID,
       event: "llm_token_usage",
       properties: {
