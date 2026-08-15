@@ -459,7 +459,7 @@ jobs:
       - name: Require a full-template Container Apps execution helper
         run: |
           set -euo pipefail
-          if ! grep -Eq '^[[:space:]]*[^#[:space:]].*--yaml([[:space:]]|$)' .github/scripts/azure/run-ops-job.sh; then
+          if ! grep -Eq '^[[:space:]]*--yaml([[:space:]]|$)' .github/scripts/azure/run-ops-job.sh; then
             echo "The current run-ops-job.sh uses an env-only job start override. Azure replaces the execution template when any override is supplied." >&2
             echo "Missing helper: fetch the complete live properties.template, merge JOB_EXECUTION_ID into its env list, and start the execution with az containerapp job start --yaml." >&2
             exit 1
@@ -1053,7 +1053,7 @@ jobs:
       - name: Require a full-template Container Apps execution helper
         run: |
           set -euo pipefail
-          if ! grep -Eq '^[[:space:]]*[^#[:space:]].*--yaml([[:space:]]|$)' .github/scripts/azure/run-ops-job.sh; then
+          if ! grep -Eq '^[[:space:]]*--yaml([[:space:]]|$)' .github/scripts/azure/run-ops-job.sh; then
             echo "The current run-ops-job.sh uses an env-only job start override. Azure replaces the execution template when any override is supplied." >&2
             echo "Missing helper: fetch the complete live properties.template, merge JOB_EXECUTION_ID into its env list, and start the execution with az containerapp job start --yaml." >&2
             exit 1
