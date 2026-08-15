@@ -97,9 +97,9 @@ const UNSAFE_CHANGE_TYPES = new Set(["Delete", "Unsupported", "Ignore"]);
 function isUnchangedExternalIgnore(change) {
   return (
     change?.changeType === "Ignore" &&
-    change.deploymentId == null &&
-    change.symbolicName == null &&
-    change.delta == null &&
+    change.deploymentId === null &&
+    change.symbolicName === null &&
+    change.delta === null &&
     change.before != null &&
     change.after != null &&
     isDeepStrictEqual(change.before, change.after)

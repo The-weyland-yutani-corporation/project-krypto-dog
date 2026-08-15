@@ -30,6 +30,7 @@ const CASES = [
   { file: "unsafe-delete-postgres.json", expectSafe: false },
   { file: "unsafe-unsupported-keyvault.json", expectSafe: false },
   { file: "unsafe-ignore-storage.json", expectSafe: false },
+  { file: "unsafe-ignore-missing-metadata-storage.json", expectSafe: false },
   { file: "unsafe-delete-storage-blob-container.json", expectSafe: false },
 
   // Regression coverage for the resourceTypeFromId() "first vs last
