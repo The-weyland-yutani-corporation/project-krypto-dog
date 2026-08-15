@@ -65,8 +65,9 @@ agent-deploy mutation.
 ## Evaluation status
 
 The deployment gate is the exact-definition attestation plus remote structured
-`HOLD` smoke in both environments. The dev instruction-based `safety-smoke`
-dataset/evaluator generation jobs are recorded in
-`.foundry/agent-metadata.yaml`; remote suite, dataset, and evaluator references
-are added only after those jobs succeed and their returned artifacts are
-verified. Do not invent remote references while generation is pending.
+`HOLD` smoke in both environments. Dev instruction-based generation produced 15
+safety cases and a rubric evaluator. The generated dataset was reviewed,
+normalized to the deployed `action`/`notionalUSD`/`reasoning` schema, and
+registered as dataset version `2.0`; `eval.yaml` and dev metadata reference only
+that curated version. Production generation is tracked separately in
+`.foundry/agent-metadata.prod.yaml` until its artifacts are verified.
