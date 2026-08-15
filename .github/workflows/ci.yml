@@ -64,6 +64,7 @@ jobs:
           POSTHOG_API_KEY: phc_stub
           POSTHOG_ENVIRONMENT: dev
           CRON_SECRET: stub
+          APP_ORIGIN: https://stub.example.com
           ADMIN_PASSWORD: stub
           ADMIN_SESSION_SECRET: stub
         run: npm run build

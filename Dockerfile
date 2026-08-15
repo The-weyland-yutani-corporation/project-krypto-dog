@@ -66,6 +66,7 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
     POSTHOG_API_KEY=build-placeholder \
     POSTHOG_ENVIRONMENT=dev \
     CRON_SECRET=build-placeholder \
+    APP_ORIGIN=https://build-placeholder.example.com \
     ADMIN_PASSWORD=build-placeholder \
     ADMIN_SESSION_SECRET=build-placeholder \
     ROLLOUT_MODE=disabled

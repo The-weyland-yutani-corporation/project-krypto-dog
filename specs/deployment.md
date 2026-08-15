@@ -165,6 +165,9 @@ Requirements:
 - `POSTHOG_ENVIRONMENT` must be `dev` or `prod` and is attached to every event.
   The temporary shared key is accepted for dev validation only; separate
   projects remain required before future production promotion.
+- `APP_ORIGIN` is the exact HTTPS Container App origin. Admin CSRF validation
+  uses it instead of the reverse proxy's internal request URL and rejects a
+  missing or non-origin value in production.
 - There is no Foundry API-key secret.
 - There is no ACS connection-string GitHub secret. `release.bicep` calls
   `listKeys()` on the per-environment Communication Service and writes the
