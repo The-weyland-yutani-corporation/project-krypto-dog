@@ -3,9 +3,10 @@
 // results. Rejects the deployment (nonzero exit) if the what-if JSON
 // contains, for PostgreSQL, Key Vault, evidence storage, or a resource
 // lock protecting any of those:
-//   - a top-level `changeType` of Delete, Unsupported, or Ignore (any of
-//     these can destroy or silently bypass review of a protected
-//     resource -- see "Change types" in
+//   - a top-level `changeType` of Delete or Unsupported, or an Ignore that is
+//     not an unattributed external resource with identical before/after
+//     payloads (ambiguous Ignore results can silently bypass review of a
+//     protected resource -- see "Change types" in
 //     https://learn.microsoft.com/azure/azure-resource-manager/templates/deploy-what-if,
 //     and the "Unsupported"/"Ignore" values in the WhatIfChangeType SDK
 //     enum), or
@@ -37,6 +38,7 @@
 // what-if JSON parses and contains zero unsafe changes.
 
 import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 
 // Matches a resourceType string (as returned by resourceTypeFromId below)
 // against each protected resource family. `(\/.*)?$` intentionally allows
@@ -85,12 +87,24 @@ const SENSITIVE_PROPERTY_PATHS = {
 // Top-level `changeType` values that are unsafe for a protected resource
 // regardless of any property-level detail: Delete destroys the resource;
 // Unsupported means Azure could not determine the effect of the change
-// (fail closed rather than assume safety); Ignore means the resource
-// exists but is being skipped from evaluation entirely (see "What-if
-// limits" in the Microsoft Learn article above -- reaching a nested
-// template expansion limit silently sets remaining resources to Ignore,
-// which must never be treated as "no risk").
+// (fail closed rather than assume safety). Ignore normally means the resource
+// is skipped from evaluation (see "What-if limits" in the Microsoft Learn
+// article above); the loop below makes one narrow exception for the fully
+// identical, unattributed external-resource shape ARM emits for incremental
+// resource-group what-if.
 const UNSAFE_CHANGE_TYPES = new Set(["Delete", "Unsupported", "Ignore"]);
+
+function isUnchangedExternalIgnore(change) {
+  return (
+    change?.changeType === "Ignore" &&
+    change.deploymentId == null &&
+    change.symbolicName == null &&
+    change.delta == null &&
+    change.before != null &&
+    change.after != null &&
+    isDeepStrictEqual(change.before, change.after)
+  );
+}
 
 function fail(message) {
   process.stderr.write(`reject-unsafe-whatif-deletes: ${message}\n`);
@@ -265,6 +279,15 @@ for (const change of changes) {
   const resourceType = resourceTypeFromId(resourceId);
   const family = protectedFamilyForType(resourceType);
   if (!family) continue;
+
+  // Incremental resource-group what-if includes resources outside the
+  // template as unattributed Ignore entries. Accept only the provably
+  // unchanged shape Azure emits for those external resources. Any missing
+  // payload, template attribution, delta, or before/after difference remains
+  // unsafe and is rejected below.
+  if (isUnchangedExternalIgnore(change)) {
+    continue;
+  }
 
   if (UNSAFE_CHANGE_TYPES.has(changeType)) {
     reportUnsafe(resourceId, resourceType, `changeType=${changeType}`);
