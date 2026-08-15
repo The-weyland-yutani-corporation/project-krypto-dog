@@ -15,12 +15,14 @@
 using '../environment.bicep'
 
 param environmentName = 'dev'
-param location = 'eastus2'
+param location = 'westus3'
 param namePrefix = 'krypto-dev'
 
 param acrName = 'acrkryptodev'
 param keyVaultName = 'kv-krypto-dev'
 param evidenceStorageAccountName = 'stkryptodevevid'
+param communicationServiceName = 'acs-krypto-dev'
+param emailServiceName = 'email-krypto-dev'
 
 // Principal ID of the "development" GitHub Environment's OIDC deployment
 // identity (bootstrap.bicep output devIdentityPrincipalId). Grants that
@@ -45,7 +47,7 @@ param postgresStorageSizeGB = 32
 param postgresBackupRetentionDays = 35
 
 param alertEmails = [
-  'ops-dev@example.com'
+  'varun.sharma.exe@gmail.com'
 ]
 
 // Dev may keep evidence in an immutability-protected state for a much

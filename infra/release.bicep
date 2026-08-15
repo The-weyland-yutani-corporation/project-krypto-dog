@@ -16,15 +16,16 @@
 // key the existing routes require are always attached correctly. The ops
 // identity (shared, for now, across all five manual jobs) is granted only
 // the secrets at least one of those jobs actually reads — DATABASE_URL,
-// DIRECT_URL, CRON_SECRET, ADMIN_PASSWORD (every job), plus
-// ANTHROPIC_FOUNDRY_API_KEY and POSTHOG_API_KEY (target-smoke only, since
-// src/deployment/target-smoke.ts's runTargetSmoke() directly exercises
-// both providers) and runtime-database-password /
+// DIRECT_URL, CRON_SECRET, ADMIN_PASSWORD (every job), plus POSTHOG_API_KEY
+// (target-smoke only, since src/deployment/target-smoke.ts's
+// runTargetSmoke() directly exercises that provider) and
+// runtime-database-password /
 // AZURE_RUNTIME_LOGIN_PASSWORD (migrate-init only, for the fresh-
-// deployment runtime login role bootstrap) — never RESEND_API_KEY or
-// ADMIN_SESSION_SECRET, which no operation reads. Each job resource's own
-// env/secret list is narrowed further still to just what that one
-// operation reads (see scripts/azure/ops-job.ts and
+// deployment runtime login role bootstrap) — never the ACS connection
+// string or ADMIN_SESSION_SECRET, which no operation reads. Foundry uses
+// the ops job's managed identity rather than a model API key. Each job
+// resource's own env/secret list is narrowed further still to just what
+// that one operation reads (see scripts/azure/ops-job.ts and
 // scripts/azure/operations/*.ts) even where the ops identity's Key Vault
 // RBAC is broader than any single job's own mounted env.
 //
@@ -67,6 +68,9 @@ param registryLoginServer string
 @description('Existing runtime identity resource ID from environment.bicep output.')
 param runtimeIdentityId string
 
+@description('Existing runtime identity client ID (appId) from environment.bicep output. Passed as AZURE_CLIENT_ID so Azure Identity selects this user-assigned identity for Foundry authentication.')
+param runtimeIdentityClientId string
+
 @description('Existing scheduler identity resource ID from environment.bicep output.')
 param schedulerIdentityId string
 
@@ -87,6 +91,12 @@ param runtimeIdentityPrincipalId string
 
 @description('Full bare HTTPS evidence container URL from environment.bicep output (EVIDENCE_CONTAINER_URL — managed-identity auth only, never a credential/query string embedded in the URL). Passed to every operations job as a non-secret env var.')
 param evidenceContainerUrl string
+
+@description('Existing Azure Communication Services resource name from environment.bicep output. Its connection string is written directly to Key Vault with listKeys() and is never passed through GitHub.')
+param communicationServiceName string
+
+@description('Azure-managed ACS Email sender address from environment.bicep output.')
+param communicationEmailSender string
 
 @description('Web Container App name.')
 param webAppName string = 'ca-${environmentName}-web'
@@ -131,23 +141,24 @@ param opsImageDigest string
 @maxLength(40)
 param releaseSha string
 
-@description('Azure AI Foundry Anthropic base URL, ending in /anthropic. Not a secret, but environment-specific.')
-param anthropicFoundryBaseUrl string
+@description('Azure OpenAI v1 base URL for the dedicated Foundry account, ending in /openai/v1/.')
+param azureOpenAIBaseUrl string
 
-@description('Azure AI Foundry Claude deployment name for this environment.')
-param anthropicFoundryDeployment string
-
-@description('Azure AI Foundry Anthropic API version.')
-param anthropicFoundryApiVersion string = '2024-10-21'
+@description('Azure OpenAI model deployment name for this environment.')
+param azureOpenAIDeploymentName string
 
 @description('PostHog ingestion host.')
 param posthogHost string = 'https://us.i.posthog.com'
 
+@description('PostHog event environment tag. Keeps dev/prod events query-isolated even during a temporary shared-key fallback.')
+@allowed([
+  'dev'
+  'prod'
+])
+param posthogEnvironment string = environmentName
+
 @description('Alert email recipient.')
 param alertEmailTo string
-
-@description('Alert email sender.')
-param alertEmailFrom string
 
 @description('Fresh-deployment Azure PostgreSQL runtime login role name (see src/deployment/bootstrap-runtime-role.ts / AZURE_RUNTIME_LOGIN_ROLE). Nonsecret — it is a role name, not a credential. Passed only to the migrate-init operations job, which is the one operation that may need to create/rotate this login role\'s credential and grant it krypto_runtime membership on a fresh environment.')
 param runtimeDatabaseLoginRole string = 'krypto_app'
@@ -164,17 +175,9 @@ param directUrl string
 @secure()
 param cronSecret string
 
-@description('Azure AI Foundry API key. Supplied at deploy time; never committed.')
-@secure()
-param anthropicFoundryApiKey string
-
 @description('PostHog API key. Supplied at deploy time; never committed.')
 @secure()
 param posthogApiKey string
-
-@description('Resend API key. Supplied at deploy time; never committed.')
-@secure()
-param resendApiKey string
 
 @description('Admin dashboard password. Supplied at deploy time; never committed. Also required by the target-smoke operations job.')
 @secure()
@@ -205,6 +208,19 @@ resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' existing = {
   name: keyVaultName
 }
 
+resource communicationService 'Microsoft.Communication/communicationServices@2025-09-01' existing = {
+  name: communicationServiceName
+}
+
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2025-01-01' existing = {
+  name: last(split(containerAppsEnvironmentId, '/'))
+}
+
+// An "origin"/"base URL" for the deployed web app: scheme + host, no path.
+// APP_ORIGIN makes CSRF validation independent of the reverse proxy's internal
+// request URL. The same value is reused for scheduler and evidence checks.
+var targetBaseUrl = 'https://${webAppName}.${containerAppsEnvironment.properties.defaultDomain}'
+
 // Each application secret is its own named resource (rather than a loop
 // array) so every role assignment below can scope to an unambiguous,
 // statically named resource symbol instead of a dynamically computed
@@ -233,14 +249,6 @@ resource cronSecretSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   }
 }
 
-resource anthropicFoundryApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
-  parent: keyVault
-  name: 'anthropic-foundry-api-key'
-  properties: {
-    value: anthropicFoundryApiKey
-  }
-}
-
 resource posthogApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   parent: keyVault
   name: 'posthog-api-key'
@@ -249,11 +257,11 @@ resource posthogApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   }
 }
 
-resource resendApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
+resource communicationConnectionStringSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   parent: keyVault
-  name: 'resend-api-key'
+  name: 'azure-communication-connection-string'
   properties: {
-    value: resendApiKey
+    value: communicationService.listKeys().primaryConnectionString
   }
 }
 
@@ -313,16 +321,6 @@ resource runtimeCronSecretAccess 'Microsoft.Authorization/roleAssignments@2022-0
   }
 }
 
-resource runtimeAnthropicFoundryApiKeyAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, 'anthropic-foundry-api-key', runtimeIdentityPrincipalId, 'runtime')
-  scope: anthropicFoundryApiKeySecret
-  properties: {
-    principalId: runtimeIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
-  }
-}
-
 resource runtimePosthogApiKeyAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, 'posthog-api-key', runtimeIdentityPrincipalId, 'runtime')
   scope: posthogApiKeySecret
@@ -333,9 +331,9 @@ resource runtimePosthogApiKeyAccess 'Microsoft.Authorization/roleAssignments@202
   }
 }
 
-resource runtimeResendApiKeyAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, 'resend-api-key', runtimeIdentityPrincipalId, 'runtime')
-  scope: resendApiKeySecret
+resource runtimeCommunicationConnectionStringAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, 'azure-communication-connection-string', runtimeIdentityPrincipalId, 'runtime')
+  scope: communicationConnectionStringSecret
   properties: {
     principalId: runtimeIdentityPrincipalId
     principalType: 'ServicePrincipal'
@@ -382,15 +380,14 @@ resource schedulerCronSecretAccess 'Microsoft.Authorization/roleAssignments@2022
 // DATABASE_URL), plus the fresh-deployment runtime-login-role credential
 // (runtime-database-password, AZURE_RUNTIME_LOGIN_PASSWORD). preflight
 // and verified-backup: DATABASE_URL + DIRECT_URL. target-smoke:
-// CRON_SECRET + ADMIN_PASSWORD + DIRECT_URL, plus
-// ANTHROPIC_FOUNDRY_API_KEY + POSTHOG_API_KEY because
+// CRON_SECRET + ADMIN_PASSWORD + DIRECT_URL, plus POSTHOG_API_KEY because
 // src/deployment/target-smoke.ts's runTargetSmoke() calls
-// runProviderSmoke(), which directly exercises the Foundry LLM and
-// PostHog providers (see src/deployment/provider-smoke.ts) — never
-// RESEND_API_KEY, which no operation reads. activation-check: CRON_SECRET
-// + DIRECT_URL. None of the five ops scripts import the app's shared
-// config module wholesale, so this identity still does NOT need
-// RESEND_API_KEY or ADMIN_SESSION_SECRET.
+// runProviderSmoke(), which directly exercises PostHog (see
+// src/deployment/provider-smoke.ts). Foundry uses this identity's Entra
+// token, and target smoke asks the runtime app to send email, so the ops
+// identity needs neither a model key nor the ACS connection string.
+// activation-check: CRON_SECRET + DIRECT_URL. None of the five ops scripts
+// need ADMIN_SESSION_SECRET.
 resource opsDatabaseUrlAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, 'database-url', opsIdentityPrincipalId, 'ops')
   scope: databaseUrlSecret
@@ -424,18 +421,6 @@ resource opsCronSecretAccess 'Microsoft.Authorization/roleAssignments@2022-04-01
 resource opsAdminPasswordAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, 'admin-password', opsIdentityPrincipalId, 'ops')
   scope: adminPasswordSecret
-  properties: {
-    principalId: opsIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
-  }
-}
-
-// target-smoke only: src/deployment/provider-smoke.ts's smokeFoundry()/
-// smokePostHog() require these directly.
-resource opsAnthropicFoundryApiKeyAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, 'anthropic-foundry-api-key', opsIdentityPrincipalId, 'ops')
-  scope: anthropicFoundryApiKeySecret
   properties: {
     principalId: opsIdentityPrincipalId
     principalType: 'ServicePrincipal'
@@ -491,19 +476,20 @@ module webApp 'modules/container-app-web.bicep' = {
     rolloutMode: 'disabled'
     nonSecretEnv: [
       { name: 'NODE_ENV', value: 'production' }
-      { name: 'ANTHROPIC_FOUNDRY_BASE_URL', value: anthropicFoundryBaseUrl }
-      { name: 'ANTHROPIC_FOUNDRY_DEPLOYMENT', value: anthropicFoundryDeployment }
-      { name: 'ANTHROPIC_FOUNDRY_API_VERSION', value: anthropicFoundryApiVersion }
+      { name: 'AZURE_OPENAI_BASE_URL', value: azureOpenAIBaseUrl }
+      { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
+      { name: 'AZURE_CLIENT_ID', value: runtimeIdentityClientId }
+      { name: 'APP_ORIGIN', value: targetBaseUrl }
       { name: 'POSTHOG_HOST', value: posthogHost }
+      { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
       { name: 'ALERT_EMAIL_TO', value: alertEmailTo }
-      { name: 'ALERT_EMAIL_FROM', value: alertEmailFrom }
+      { name: 'AZURE_COMMUNICATION_EMAIL_SENDER', value: communicationEmailSender }
     ]
     keyVaultSecretEnv: [
       { name: 'DATABASE_URL', keyVaultUrl: databaseUrlSecret.properties.secretUri }
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }
-      { name: 'ANTHROPIC_FOUNDRY_API_KEY', keyVaultUrl: anthropicFoundryApiKeySecret.properties.secretUri }
       { name: 'POSTHOG_API_KEY', keyVaultUrl: posthogApiKeySecret.properties.secretUri }
-      { name: 'RESEND_API_KEY', keyVaultUrl: resendApiKeySecret.properties.secretUri }
+      { name: 'AZURE_COMMUNICATION_CONNECTION_STRING', keyVaultUrl: communicationConnectionStringSecret.properties.secretUri }
       { name: 'ADMIN_PASSWORD', keyVaultUrl: adminPasswordSecret.properties.secretUri }
       { name: 'ADMIN_SESSION_SECRET', keyVaultUrl: adminSessionSecretSecret.properties.secretUri }
     ]
@@ -512,19 +498,12 @@ module webApp 'modules/container-app-web.bicep' = {
   dependsOn: [
     runtimeDatabaseUrlAccess
     runtimeCronSecretAccess
-    runtimeAnthropicFoundryApiKeyAccess
     runtimePosthogApiKeyAccess
-    runtimeResendApiKeyAccess
+    runtimeCommunicationConnectionStringAccess
     runtimeAdminPasswordAccess
     runtimeAdminSessionSecretAccess
   ]
 }
-
-// An "origin"/"base URL" for the deployed web app: scheme + host, no path.
-// Reused verbatim as TARGET_BASE_URL (scheduler jobs, target-smoke) and as
-// TARGET_ORIGIN (activation-check) — both mean the same thing here since
-// no custom domain is provisioned by this infra tree yet.
-var targetBaseUrl = 'https://${webApp.outputs.fqdn}'
 
 module hourlyAgentRunJob 'modules/container-app-job.bicep' = {
   name: 'hourly-agent-run-job'
@@ -549,6 +528,7 @@ module hourlyAgentRunJob 'modules/container-app-job.bicep' = {
       { name: 'TARGET_BASE_URL', value: targetBaseUrl }
       { name: 'SCHEDULED_ROUTE', value: '/api/agent/run' }
       { name: 'ROLLOUT_MODE', value: 'disabled' }
+      { name: 'SCHEDULED_IDEMPOTENCY_NAMESPACE', value: '${imageDigest}-0' }
     ]
     keyVaultSecretEnv: [
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }
@@ -613,6 +593,7 @@ var opsCommonNonSecretEnv = [
   // (they remain UserAssigned-only — no SystemAssigned identity is
   // enabled anywhere in this template).
   { name: 'AZCOPY_MSI_CLIENT_ID', value: opsIdentityClientId }
+  { name: 'AZURE_CLIENT_ID', value: opsIdentityClientId }
 ]
 
 module migrateInitJob 'modules/container-app-job.bicep' = {
@@ -756,21 +737,18 @@ module targetSmokeJob 'modules/container-app-job.bicep' = {
       // src/deployment/target-smoke.ts's runTargetSmoke() hard-requires
       // ROLLOUT_MODE=disabled before it will run at all.
       { name: 'ROLLOUT_MODE', value: 'disabled' }
-      // runTargetSmoke() -> runProviderSmoke() -> smokeFoundry()/
-      // smokePostHog() (src/deployment/provider-smoke.ts) directly
-      // exercise the Foundry LLM and PostHog providers, so this job also
-      // needs the same nonsecret Foundry/PostHog config the web app gets
-      // — never RESEND_API_KEY, which no operation reads.
-      { name: 'ANTHROPIC_FOUNDRY_BASE_URL', value: anthropicFoundryBaseUrl }
-      { name: 'ANTHROPIC_FOUNDRY_DEPLOYMENT', value: anthropicFoundryDeployment }
-      { name: 'ANTHROPIC_FOUNDRY_API_VERSION', value: anthropicFoundryApiVersion }
+      // runTargetSmoke() -> runProviderSmoke() exercises Foundry and
+      // PostHog directly. Foundry authenticates as the ops user-assigned
+      // identity selected by AZURE_CLIENT_ID in opsCommonNonSecretEnv.
+      { name: 'AZURE_OPENAI_BASE_URL', value: azureOpenAIBaseUrl }
+      { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
       { name: 'POSTHOG_HOST', value: posthogHost }
+      { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
     ])
     keyVaultSecretEnv: [
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }
       { name: 'ADMIN_PASSWORD', keyVaultUrl: adminPasswordSecret.properties.secretUri }
       { name: 'DIRECT_URL', keyVaultUrl: directUrlSecret.properties.secretUri }
-      { name: 'ANTHROPIC_FOUNDRY_API_KEY', keyVaultUrl: anthropicFoundryApiKeySecret.properties.secretUri }
       { name: 'POSTHOG_API_KEY', keyVaultUrl: posthogApiKeySecret.properties.secretUri }
       { name: 'DEPLOYMENT_APPROVAL_SECRET', keyVaultUrl: deploymentApprovalSecretSecret.properties.secretUri }
     ]
@@ -780,7 +758,6 @@ module targetSmokeJob 'modules/container-app-job.bicep' = {
     opsCronSecretAccess
     opsAdminPasswordAccess
     opsDirectUrlAccess
-    opsAnthropicFoundryApiKeyAccess
     opsPosthogApiKeyAccess
     opsDeploymentApprovalSecretAccess
   ]

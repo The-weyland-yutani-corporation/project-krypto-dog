@@ -9,9 +9,10 @@ Local testing has two modes:
 1. **No-LLM smoke mode** — sets `ROLLOUT_MODE=disabled` so the route exercises
    auth, `AgentRun` persistence, owned lease acquire/release, telemetry, DB
    access, dashboard, and daily summary without Coinbase or Foundry.
-2. **Live local shadow/paper mode** — uses real Foundry Anthropic credentials
-   and real Coinbase market data. Start with `shadow`; use `paper` only when
-   deliberate local execution is desired.
+2. **Live local shadow/paper mode** — uses the dedicated Foundry-hosted
+   GPT-5.6 Luna deployment through Microsoft Entra ID plus real Coinbase
+   market data. Start with `shadow`; use `paper` only when deliberate local
+   execution is desired.
 
 Neither mode proves the strategy can make money. Profitability requires the
 evaluation methodology described in [`specs/evaluation.md`](./evaluation.md) and
@@ -25,14 +26,15 @@ deterministic backtest/scenario harness is described in
 - Docker running locally.
 - PostgreSQL 17 client tools (`psql`, `pg_dump`, and `pg_restore`) for the
   migration and verified-backup suites. The Docker Compose database also runs
-  PostgreSQL 17 to match the production Supabase target.
+  PostgreSQL 17 to match the Azure PostgreSQL target.
   On Homebrew systems where another PostgreSQL major is linked, use:
   ```bash
   export PATH="$(brew --prefix postgresql@17)/bin:$PATH"
   ```
-- Supabase CLI 2.109.1 or newer for commands that read `supabase/config.toml`.
-  Older 1.x clients reject the PostgreSQL 17 setting. Without upgrading a
-  global install, use `npx --yes supabase@2.109.1 <command>`.
+- Supabase CLI 2.109.1 or newer only for legacy-baseline compatibility tests
+  that read `supabase/config.toml`. It is not part of the Azure target. Older
+  1.x clients reject the PostgreSQL 17 setting; use
+  `npx --yes supabase@2.109.1 <command>` when those tests require it.
 - Dependencies installed:
   ```bash
   npm install
@@ -66,12 +68,12 @@ docker exec -i krypto-postgres psql -U krypto -d krypto -c 'SELECT 1;'
 cp .env.example .env
 ```
 
-Use this baseline for **no-LLM smoke mode**:
+Use this baseline for **no-LLM smoke mode**. The URL must retain the valid
+Azure OpenAI v1 shape even though disabled mode never calls it:
 
 ```dotenv
-ANTHROPIC_FOUNDRY_BASE_URL=https://stub.services.ai.azure.com/anthropic
-ANTHROPIC_FOUNDRY_API_KEY=stub
-ANTHROPIC_FOUNDRY_DEPLOYMENT=claude-sonnet-stub
+AZURE_OPENAI_BASE_URL=https://stub.openai.azure.com/openai/v1/
+AZURE_OPENAI_DEPLOYMENT_NAME=krypto-dev-luna
 
 DATABASE_URL=******localhost:5433/krypto
 DIRECT_URL=******localhost:5433/krypto
@@ -85,8 +87,24 @@ ADMIN_PASSWORD=local-admin-password
 ADMIN_SESSION_SECRET=local-admin-session-secret
 ```
 
-For **live local paper mode**, replace the `ANTHROPIC_FOUNDRY_*` values with
-real Azure AI Foundry Anthropic credentials (base URL, API key, deployment name).
+For **live local shadow/paper mode**, authenticate interactively and select
+the approved subscription:
+
+```bash
+az login
+az account set --subscription "Visual Studio Enterprise Subscription"
+```
+
+Set `AZURE_OPENAI_BASE_URL` to the dedicated account's HTTPS endpoint ending
+in `/openai/v1/` and use `AZURE_OPENAI_DEPLOYMENT_NAME=krypto-dev-luna`.
+Leave model API keys unset: local calls use `DefaultAzureCredential` and the
+attended Azure CLI identity must have reviewed inference access. Azure runtime
+instead sets `AZURE_CLIENT_ID` to its user-assigned managed identity.
+
+For optional local email delivery, set
+`AZURE_COMMUNICATION_CONNECTION_STRING`,
+`AZURE_COMMUNICATION_EMAIL_SENDER`, and `ALERT_EMAIL_TO`. Never copy an Azure
+environment connection string into GitHub or commit it.
 
 Do not commit `.env`.
 
@@ -98,7 +116,7 @@ npm run typecheck:scripts
 npm run test:coverage
 npm run build
 npm run test:integration
-npm run deployment:preflight
+npm run deployment:preflight -- --provider azure
 npm run deployment:backup -- --out deployment-evidence/local-backup
 npm run smoke:target -- --base-url http://localhost:3000 --confirm-host localhost
 npm run backtest:all
@@ -110,14 +128,12 @@ market-data/indicator, admin-auth/route-auth/operations-health, accounting,
 policy, strategy configuration, and shared paper-execution modules. Global and
 critical per-module thresholds are enforced in `jest.config.ts`.
 
-`deployment:preflight` is read-only and accepts `DIRECT_URL` plus
-`DATABASE_URL`. It requires both URLs to identify the same database cluster and
-provides the same complete schema, row-count, position, lease, migration, cron,
-queued-HTTP, canonical-function, table/column ACL, and Vault
-schema/relation/routine
-privilege evidence used by the production pre-migration gate. It also
-fingerprints the ordered Drizzle history and detects protected public views or
-any executable public `SECURITY DEFINER` routine.
+`deployment:preflight -- --provider azure` is read-only and accepts
+`DIRECT_URL` plus `DATABASE_URL`. It requires both URLs to identify the same
+database cluster and reports schema, row-count, position, lease, migration,
+table/column ACL, protected-view, executable `SECURITY DEFINER`, and legacy
+scheduler/Vault-object retirement evidence used by the Azure pre-migration
+gate. It also fingerprints the ordered Drizzle history.
 
 `deployment:backup` requires `DIRECT_URL` and `DATABASE_URL`, proves they name
 the same PostgreSQL database and cluster, writes that binding into the
@@ -130,15 +146,16 @@ bootstrap before restoring their custom-format table archive. A database with
 only migration metadata and no Krypto application table is refused.
 
 `smoke:target` requires an already-running application, explicit
-`ROLLOUT_MODE=disabled`, `DIRECT_URL`, target cron/admin credentials, and
-Foundry/PostHog configuration. It binds `DIRECT_URL` to the deployed runtime
+`ROLLOUT_MODE=disabled`, `DIRECT_URL`, `CRON_SECRET`, admin credentials, and
+working Luna, Coinbase, ACS Email, and PostHog configuration. It binds
+`DIRECT_URL` to the deployed runtime
 with a unique immutable journal challenge, requires disabled mode inside both
 run requests before lease acquisition, first proves a valid mismatched mode is
 rejected through a no-mutation route probe that cannot enter orchestration,
 rejects queued endpoint requests, writes only smoke-evidence records, verifies
 the trade count is unchanged, and accepts HTTP only for loopback targets. A
 passing run finishes by recording an immutable target
-origin/cron-secret-fingerprint approval that cron enablement must match.
+origin/cron-secret-fingerprint approval that schedule activation must match.
 
 ## 3. Apply schema and seed
 
@@ -232,8 +249,9 @@ Check:
 
 ## 6. Daily summary smoke test
 
-The daily summary route does not call the LLM. With no Resend config it logs a
-no-op path and returns an explicit skipped delivery result.
+The daily summary route does not call the LLM. Outside production, omitted ACS
+configuration logs a console-only path and returns an explicit skipped
+delivery result. This is useful locally but cannot satisfy target smoke.
 
 ```bash
 curl -i -X POST http://localhost:3000/api/agent/daily-summary \
@@ -245,15 +263,16 @@ curl -i -X POST http://localhost:3000/api/agent/daily-summary \
 Expected:
 
 ```json
-{"generated":true,"delivery":{"status":"skipped","reason":"RESEND_API_KEY is not configured"},"tradesCount":0,"totalPnlUSD":0}
+{"generated":true,"delivery":{"status":"skipped","reason":"Missing ACS email configuration: ..."},"tradesCount":0,"totalPnlUSD":0}
 ```
 
 Seed data or real paper runs will change the counts and PnL.
 
 ## 7. Live local paper run
 
-Use this only after no-LLM smoke passes and real Azure-hosted Anthropic
-credentials are present in `.env`.
+Use this only after no-LLM smoke passes, `az login` is authenticated to an
+identity allowed to invoke `krypto-dev-luna`, and the real Azure OpenAI v1
+base URL is present in `.env`.
 
 Reset to a clean paper account if needed:
 
@@ -322,9 +341,9 @@ npm run db:init
 | `500 AgentState singleton not found` | Singleton not initialized | `npm run db:init` |
 | `409 Agent is already running` | Active owned lease | Inspect `leaseOwner`/`leaseExpiresAt`; wait for expiry or use the admin recovery path only after expiry |
 | `401 Unauthorized` | Wrong or missing `x-cron-secret` | Use the exact `CRON_SECRET` from `.env` |
-| `400 Required rollout mode is missing` | Cron request omitted its deployment binding | Send `x-required-rollout-mode` with the exact current mode |
+| `400 Required rollout mode is missing` | Scheduler request omitted its deployment binding | Send `x-required-rollout-mode` with the exact current mode |
 | Rollout configuration error | Invalid `ROLLOUT_MODE` | Use `disabled`, `shadow`, or `paper` |
-| LLM auth/model error | Stub Foundry values used while unpaused | Pause for no-LLM smoke, or provide real Azure AI Foundry Anthropic values |
+| LLM auth/model error | Stub endpoint, missing Azure CLI login/role, wrong Luna deployment, or wrong v1 base URL | Pause for no-LLM smoke, or authenticate and use the approved `krypto-dev-luna` deployment |
 | `Execution cooldown is active` | A trade happened within 2 hours | Wait, reset DB, or test a non-trade route |
 | `Account safety lock is active` or `Maximum drawdown reached (...)` | Drawdown safety threshold was reached | Inspect trades/journals, then use the audited **Clear Safety Lock** admin action with a reason |
 | Coinbase API error | Network/Coinbase transient or invalid/stale candles | Retry later and inspect the typed market-data error |
@@ -380,9 +399,8 @@ maximum eligible SELL before BUY, selects the maximum eligible BUY next, and
 HOLDs when neither is eligible. `always-hold` suppresses optional actions but
 does not suppress a mandatory production stop-loss.
 
-These scenarios are engineering tests, not financial proof. Current results:
-3 of 8 synthetic scenarios beat the cash baseline, 2 of 8 beat buy-and-hold,
-and 0 of 8 beat both.
+These scenarios and their outcomes are engineering tests, not financial proof
+or live Azure evidence.
 See `specs/evaluation.md` §3 for the distinction between engineering fixtures and
 financial evidence, and `specs/readiness.md` §1 for the current baseline.
 

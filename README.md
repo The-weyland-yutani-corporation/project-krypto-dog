@@ -21,25 +21,26 @@
 ```
 
 > **Autonomous LLM-driven swing-trading agent for ETH/USDC.**
-> v2.1 safety core is implemented and locally verified. **NOT production-ready**
-> until the clean target is migrated, initialized, backed up, deployed in
-> disabled mode, and passes target smoke, controlled rollout, and evidence gates.
+> v2.1 safety core and the Azure target are implemented in source.
+> **NOT production-ready:** Azure foundations and fallback Luna deployments
+> exist, but no release, Container App, job, target smoke, or public Azure URL
+> exists.
 
 | | |
 |---|---|
-| **Status** | Azure deployment implementation is locally verified; Azure dev/prod remain unprovisioned. The hosted Vercel/Supabase baseline is not the current release candidate. |
-| **Hosted today (observed baseline)** | Historical Vercel build + fresh Supabase PostgreSQL 17 replacement + existing Foundry/PostHog configuration. See the state map in [`specs/architecture.md`](./specs/architecture.md). |
-| **Target (implemented, not provisioned)** | Fully Azure-native: Azure Container Apps + Jobs, private Azure Database for PostgreSQL Flexible Server 17, Key Vault, per-environment ACR, Bicep, and GitHub Actions OIDC. No Azure app URL or live Azure evidence exists yet. |
-| **Stack** | Next.js 16 (App Router) · TypeScript · structured Anthropic output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
-| **Hosted trigger state** | The fresh Supabase inventory found no active Krypto cron jobs or queued HTTP requests; there is no approved production schedule. |
+| **Status** | **Foundations and Luna provisioned; releases pending.** Required providers, resource groups/OIDC, both Luna deployments, workload access, and both environment foundations are live. No release, Container App, job, target smoke, schedule, or public Azure URL exists. |
+| **Hosted today (observed baseline)** | Historical Vercel build + fresh Supabase PostgreSQL 17 replacement. Neither is the Azure release candidate. See [`specs/architecture.md`](./specs/architecture.md). |
+| **Azure state (2026-08-14)** | Application foundations remain in `westus3`. The dedicated `ai-krypto-westus3` account exists but is model-empty after `715-123420`. Operational dev/prod `gpt-5.6-luna` deployments now run on the established `ghcp-foundry-eastus2` account and passed Entra plain + strict structured `HOLD` smokes. |
+| **Current blockers** | Full dev release/evidence is the next gate. Dev temporarily uses the existing PostHog ingestion key with a mandatory `deployment_environment=dev` property; a truly separate dev PostHog project remains required before any future production promotion design. |
+| **Stack** | Next.js 16 (App Router) · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
+| **Scheduling state** | No Azure jobs or approved production schedule exist. Production remains disabled with no release and no promotion workflow. |
 | **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
-| **Architecture and live links** | [`specs/architecture.md`](./specs/architecture.md) — hosted baseline, target diagrams, planned resources, live endpoint register, promotion flow, and operator consoles |
+| **Architecture and live links** | [`specs/architecture.md`](./specs/architecture.md) — hosted baseline, target diagrams, planned resources, live endpoint register, rollout safety, and operator consoles |
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
 | **Deploy** | [`specs/deployment.md`](./specs/deployment.md) (Azure runbook) · [`infra/README.md`](./infra/README.md) (Bicep infrastructure design) |
 | **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |
 | **Monitoring** | [`specs/monitoring.md`](./specs/monitoring.md) |
 | **Readiness** | [`specs/readiness.md`](./specs/readiness.md) |
-| **Production readiness contract** | [`specs/production-readiness-prd.v1.md`](./specs/production-readiness-prd.v1.md) — paper-only controls, ownership, authorization, and gate thresholds |
 | **Evaluation** | [`specs/evaluation.md`](./specs/evaluation.md) |
 | **Design** | [`DESIGN.md`](./DESIGN.md) |
 | **Decisions** | [`specs/decisions/`](./specs/decisions/) (ADRs) |
@@ -57,14 +58,16 @@ When scheduling is enabled, an hourly job hits `POST /api/agent/run`. The route:
    exposure, and take-profit eligibility.
 4. Executes mandatory safety exits without the model. For optional actions,
    requests exactly one structured `HOLD`, `BUY`, or `SELL` proposal from the
-   Foundry-hosted Anthropic model with bounded timeout/retry behavior.
+   dedicated Foundry-hosted OpenAI `gpt-5.6-luna` deployment with bounded
+   timeout/retry behavior and Microsoft Entra authentication.
 5. Re-authorizes every invariant against a freshly locked database row. In
    paper mode, the trade, fixed-point accounting transition, run outcome, and
    reconciliation state commit atomically and idempotently.
 6. Persists the journal/run result, emits and flushes telemetry, and releases
    only the lease owned by that invocation.
 
-A separate daily-summary cron emails the previous 24h of trades + PnL.
+A separate daily-summary job emails the previous 24h of trades + PnL through
+the environment's Azure Communication Services Email resource.
 
 ## Local quick-start
 
@@ -78,9 +81,12 @@ docker compose up -d
 
 # 3. Configure env
 cp .env.example .env
-# Fill in ANTHROPIC_FOUNDRY_* (or legacy AZURE_OPENAI_*), POSTHOG_API_KEY,
-# CRON_SECRET, ADMIN_PASSWORD, ADMIN_SESSION_SECRET.
-# Resend vars are optional — emails fall back to console logs.
+# For attended model calls, run `az login` and fill in AZURE_OPENAI_BASE_URL
+# (ending /openai/v1) plus AZURE_OPENAI_DEPLOYMENT_NAME. Azure runtime also
+# requires AZURE_CLIENT_ID. Fill in POSTHOG_API_KEY, CRON_SECRET,
+# ADMIN_PASSWORD, and ADMIN_SESSION_SECRET.
+# ACS Email vars may be omitted locally; non-production delivery then reports
+# an explicit console-only skipped result.
 
 # 4. Apply reviewed schema migrations + initialize singleton
 npm run db:migrate
@@ -118,9 +124,9 @@ open http://localhost:3000/admin/login
 | `npm run test:migrations` | Real-PostgreSQL migration, privilege/tamper, decimal, transaction, lease, run-flow, preflight, and backup tests |
 | `npm run db:studio` | Drizzle Studio (browse the DB) |
 | `npm run smoke:llm` | Verify Foundry model access without tools or trading |
-| `npm run deployment:preflight` | Prove runtime/direct DB identity and exact schema/migration, lease, cron/queued HTTP, function-integrity, table/column, and Vault privilege state |
-| `npm run deployment:backup -- --out <dir>` | Bind `DATABASE_URL`/`DIRECT_URL`, refuse active cron/queued HTTP and migration-only targets, create checksummed archives, and optionally prove a local restore |
-| `npm run smoke:target -- --base-url <url> --confirm-host <host>` | Bind runtime/direct DB and cron configuration, prove mismatched-mode rejection plus disabled runs, auth, postconditions, email, Foundry, Coinbase, and PostHog |
+| `npm run deployment:preflight -- --provider azure` | Prove runtime/direct DB identity, exact schema/migration state, leases, ACLs, and retirement of legacy scheduler/Vault objects |
+| `npm run deployment:backup -- --out <dir>` | Bind `DATABASE_URL`/`DIRECT_URL`, refuse active legacy scheduler/queued HTTP state and migration-only targets, create checksummed archives, and optionally prove a local restore |
+| `npm run smoke:target -- --base-url <url> --confirm-host <host>` | Bind runtime/direct DB and scheduler auth, prove mismatched-mode rejection plus disabled runs, admin/postconditions, ACS Email, Luna/Entra, Coinbase, and PostHog |
 | `npm run backtest -- --scenario scenarios/dip-recovery.json` | Run deterministic paper scenario evaluation |
 | `npm run backtest:all` | Emit aggregate JSON for every engineering scenario |
 | `npm run evidence:import -- --input <dataset.json> --out <materialized.json>` | Strictly validate and hash a versioned JSON evidence dataset |
@@ -160,8 +166,9 @@ src/
   lib/                    # Indicators, analytics, email, config, types
   proxy.ts                # Admin route protection
 drizzle/                  # Generated migrations
-infra/                     # Bicep dev/prod platform, release, and rollout
-.github/workflows/azure-* # OIDC validation, deploy, rotate, and promote flows
+infra/                     # Bicep platform account/model/access, dev/prod foundation,
+                           # release, rollout, and schedule monitoring
+.github/workflows/azure-* # OIDC platform/access, validation, deploy, and rotation flows
 supabase/operations/      # Historical Vercel/Supabase cron operations
 specs/                    # Product spec, ADRs, RFCs, deployment runbook
 scripts/                  # One-shot scripts (seed, etc.)
@@ -170,32 +177,52 @@ tests/                    # Jest unit + integration tests
 
 ## Deploying
 
-> **WARNING:** Do not promote the current source to production paper mode yet.
-> The local safety core is verified and the clean replacement database passed
-> fresh-target inventory, but migration, initialization, baseline backup,
-> Vault/email configuration, target smoke, and controlled disabled/shadow/paper
-> rollout remain. See
+> **WARNING:** No executable production promotion workflow is shipped or
+> approved.
+> Azure foundations and operational Luna deployments are provisioned, but every
+> full release/evidence/rollout gate remains. No Container App or job exists. See
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
-> **Target platform: Azure-native, implemented, not yet provisioned.** The
-> approved deployment plan supersedes Vercel/Supabase with a fully
+> **Target platform: Azure-native; foundations/models provisioned, releases pending.**
+> The approved deployment plan supersedes Vercel/Supabase with a fully
 > Azure-native target (ADR
 > [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
 > The Bicep templates, GitHub Actions workflows, and application-side
-> deployment code for that target all exist in this repo and are locally
-> validated — see [`infra/README.md`](./infra/README.md) and
-> [`specs/deployment.md`](./specs/deployment.md). **No real Azure
-> environment has been provisioned and no live deploy/evidence exists
-> yet**; the one-time bootstrap and GitHub Environment setup in
-> `specs/deployment.md` §1–§2 are still outstanding manual prerequisites.
+> deployment code for that target all exist in this repo — see
+> [`infra/README.md`](./infra/README.md) and
+> [`specs/deployment.md`](./specs/deployment.md). Required providers,
+> bootstrap/OIDC, operational Luna, workload access, and both environment
+> foundations are live. No release or public application URL exists.
 > See [`specs/architecture.md`](./specs/architecture.md) for diagrams,
-> planned resource names, the exact current-vs-target state, and safe links
-> to each existing service console.
+> live/planned resource names, the exact current-vs-target state, and safe
+> operator links. The selected runtime subscription is **Visual Studio
+> Enterprise Subscription**; do not publish its subscription ID.
 
-Don't deploy blind -- there are ordered steps including bootstrap, GitHub
-Environment/OIDC setup, environment/release Bicep deploys, ops-job
-evidence (preflight, migration, backup, smoke, activation-check), and a
-separate two-step shadow/paper promotion. Follow
+Observed live runs:
+
+- [Dedicated account succeeded; model deployment failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
+- [Dev foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
+- [Prod foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
+
+GitHub Environments, branch restrictions, and protected values are configured.
+Required-reviewer rules are unavailable on the private repository's billing
+plan, so mutation workflows remain manual/paused and require the configured
+branch, exact SHA, and successful CI gates. The full dev release is the next
+gate; shared-key PostHog telemetry is environment-tagged and cannot qualify as
+final project isolation for production promotion.
+
+After those blockers clear, dev uses a staged
+disabled/manual → shadow/manual → unique manual shadow run → post-run
+activation proof → monitored schedule sequence with automatic fail-closed
+rollback. Missing-success monitoring is
+enabled and validated before a Schedule rollout; disable, rollback, and
+rotation paths first verify both jobs are Manual and only then disable
+monitoring. Prod
+force-disables and backs up the current release before any environment
+mutation, then lands the new release disabled/manual. The
+`production-promotion` identity/environment exists only for forced-disable
+steps in prod deploy and rotation. Any future production promotion requires a
+new evidence-bound design and trading-safety review. Follow
 [`specs/deployment.md`](./specs/deployment.md) (the implemented Azure
 runbook). The prior Vercel/Supabase runbook is preserved, unmodified
 except for its archive banner, at

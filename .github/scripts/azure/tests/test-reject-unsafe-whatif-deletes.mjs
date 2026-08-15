@@ -25,10 +25,12 @@ const CASES = [
   { file: "safe-modify-postgres-unrelated-field.json", expectSafe: true },
   { file: "safe-modify-noeffect-sensitive-path.json", expectSafe: true },
   { file: "safe-modify-tags-only.json", expectSafe: true },
+  { file: "safe-ignore-unchanged-external-storage.json", expectSafe: true },
 
   { file: "unsafe-delete-postgres.json", expectSafe: false },
   { file: "unsafe-unsupported-keyvault.json", expectSafe: false },
   { file: "unsafe-ignore-storage.json", expectSafe: false },
+  { file: "unsafe-ignore-missing-metadata-storage.json", expectSafe: false },
   { file: "unsafe-delete-storage-blob-container.json", expectSafe: false },
 
   // Regression coverage for the resourceTypeFromId() "first vs last

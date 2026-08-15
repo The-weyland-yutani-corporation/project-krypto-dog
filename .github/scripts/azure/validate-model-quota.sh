@@ -16,15 +16,23 @@
 #     --model-name <model> \
 #     --model-version <version> \
 #     --sku-name <sku> \
-#     --capacity <int>
+#     --deployment-name <name> --capacity <int> \
+#     [--deployment-name <name> --capacity <int> ...]
+#
+# Deployment/capacity pairs are repeatable. The script computes projected
+# incremental demand by subtracting only exact existing target deployments
+# already consuming the same model/version/SKU quota dimension. This keeps
+# first deploys and idempotent reruns safe.
 #
 # Exits nonzero (fails closed) if:
-#   - the account/model/version/format/SKU combination is not present in
+#   - exactly one account/model/version/format/SKU match is not present in
 #     the account's *live* `az cognitiveservices account list-models`
 #     catalog, or
-#   - the SKU's usage/limit data cannot be read, or
+#   - that exact SKU match has no nonempty `usageName`, or
+#   - exactly one quota entry with name.value equal to that usageName is not
+#     present, or its usage/limit data cannot be read, or
 #   - (limit - currentValue) for the matching quota dimension is less than
-#     the requested capacity.
+#     the aggregate requested capacity.
 #
 # This script performs read-only `az cognitiveservices` calls; it never
 # deploys, creates, or modifies anything.
@@ -41,7 +49,8 @@ model_format=""
 model_name=""
 model_version=""
 sku_name=""
-capacity=""
+capacities=()
+deployment_names=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -52,24 +61,48 @@ while [ $# -gt 0 ]; do
     --model-name) model_name="${2:?--model-name requires a value}"; shift 2 ;;
     --model-version) model_version="${2:?--model-version requires a value}"; shift 2 ;;
     --sku-name) sku_name="${2:?--sku-name requires a value}"; shift 2 ;;
-    --capacity) capacity="${2:?--capacity requires a value}"; shift 2 ;;
+    --deployment-name) deployment_names+=("${2:?--deployment-name requires a value}"); shift 2 ;;
+    --capacity) capacities+=("${2:?--capacity requires a value}"); shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
-for name in account_name resource_group location model_format model_name model_version sku_name capacity; do
+for name in account_name resource_group location model_format model_name model_version sku_name; do
   if [ -z "${!name}" ]; then
     echo "--${name//_/-} is required." >&2
     exit 1
   fi
 done
 
-resource_group="$(azure_validate_resource_group "${resource_group}")"
-
-if ! [[ "${capacity}" =~ ^[0-9]+$ ]] || [ "${capacity}" -le 0 ]; then
-  echo "--capacity must be a positive integer." >&2
+if [ "${#capacities[@]}" -eq 0 ] ||
+   [ "${#deployment_names[@]}" -ne "${#capacities[@]}" ]; then
+  echo "At least one paired --deployment-name/--capacity is required." >&2
   exit 1
 fi
+
+account_name="$(azure_validate_safe_token "account-name" "${account_name}")"
+resource_group="$(azure_validate_resource_group "${resource_group}")"
+location="$(azure_validate_location "${location}")"
+model_format="$(azure_validate_safe_token "model-format" "${model_format}")"
+model_name="$(azure_validate_safe_token "model-name" "${model_name}")"
+model_version="$(azure_validate_safe_token "model-version" "${model_version}")"
+sku_name="$(azure_validate_safe_token "sku-name" "${sku_name}")"
+
+aggregate_capacity=0
+validated_deployment_names=()
+for index in "${!capacities[@]}"; do
+  requested_capacity="${capacities[$index]}"
+  requested_capacity="$(azure_validate_capacity "${requested_capacity}")"
+  capacities[$index]="${requested_capacity}"
+  deployment_name="$(azure_validate_safe_token "deployment-name" "${deployment_names[$index]}")"
+  if printf '%s\n' "${validated_deployment_names[@]}" | grep -Fxq "${deployment_name}"; then
+    echo "Duplicate --deployment-name '${deployment_name}' is not allowed." >&2
+    exit 1
+  fi
+  validated_deployment_names+=("${deployment_name}")
+  aggregate_capacity=$((aggregate_capacity + requested_capacity))
+done
+deployment_names=("${validated_deployment_names[@]}")
 
 echo "Fetching live model catalog for account '${account_name}' in resource group '${resource_group}'."
 models_json="$(az cognitiveservices account list-models \
@@ -77,77 +110,136 @@ models_json="$(az cognitiveservices account list-models \
   --resource-group "${resource_group}" \
   --output json)"
 
-match_count="$(printf '%s' "${models_json}" | jq \
+catalog_sku_matches="$(printf '%s' "${models_json}" | jq -c \
   --arg format "${model_format}" \
   --arg name "${model_name}" \
   --arg version "${model_version}" \
   --arg sku "${sku_name}" \
   '[
      .[]
-     | select(.model.format == $format and .model.name == $name and .model.version == $version)
-     | select((.skus // []) | any(.name == $sku))
-   ] | length')"
-
-if [ "${match_count}" -lt 1 ]; then
-  echo "Model/SKU not found in the live catalog: format='${model_format}' name='${model_name}' version='${model_version}' sku='${sku_name}'. Refusing to deploy an unverified model/SKU combination." >&2
-  exit 1
-fi
-
-sku_capacity_limit="$(printf '%s' "${models_json}" | jq -r \
-  --arg format "${model_format}" \
-  --arg name "${model_name}" \
-  --arg version "${model_version}" \
-  --arg sku "${sku_name}" \
-  '[
-     .[]
-     | select(.model.format == $format and .model.name == $name and .model.version == $version)
+     | select(.format == $format and .name == $name and .version == $version)
      | (.skus // [])[]
      | select(.name == $sku)
-     | (.capacity.maximum // .capacity.default // empty)
-   ] | first // empty')"
+   ]')"
 
-if [ -n "${sku_capacity_limit}" ] && [[ "${sku_capacity_limit}" =~ ^[0-9]+$ ]]; then
-  if [ "${capacity}" -gt "${sku_capacity_limit}" ]; then
-    echo "Requested capacity ${capacity} exceeds the SKU's own reported maximum capacity ${sku_capacity_limit} for '${sku_name}'." >&2
+catalog_match_count="$(printf '%s' "${catalog_sku_matches}" | jq 'length')"
+if [ "${catalog_match_count}" -ne 1 ]; then
+  echo "Expected exactly one exact catalog SKU match for format='${model_format}' name='${model_name}' version='${model_version}' sku='${sku_name}', but found ${catalog_match_count}. Refusing an absent or ambiguous model/SKU mapping." >&2
+  exit 1
+fi
+
+usage_name="$(printf '%s' "${catalog_sku_matches}" | jq -r \
+  '.[0].usageName
+   | if type == "string" and length > 0 then . else empty end')"
+
+if [ -z "${usage_name}" ]; then
+  echo "The one exact catalog SKU match for '${model_format}/${model_name}/${model_version}/${sku_name}' has no nonempty usageName. Refusing to guess a quota dimension." >&2
+  exit 1
+fi
+
+sku_capacity_limit_json="$(printf '%s' "${catalog_sku_matches}" | jq -c \
+  '.[0].capacity.maximum // null')"
+
+if [ "${sku_capacity_limit_json}" != "null" ]; then
+  if ! [[ "${sku_capacity_limit_json}" =~ ^[0-9]+$ ]]; then
+    echo "Exact catalog SKU '${sku_name}' reported a non-integer maximum capacity: ${sku_capacity_limit_json}." >&2
     exit 1
   fi
+  for requested_capacity in "${capacities[@]}"; do
+    if [ "${requested_capacity}" -gt "${sku_capacity_limit_json}" ]; then
+      echo "Requested per-deployment capacity ${requested_capacity} exceeds the SKU's reported maximum capacity ${sku_capacity_limit_json} for '${sku_name}'." >&2
+      exit 1
+    fi
+  done
 else
-  echo "Live catalog did not report a maximum/default capacity for SKU '${sku_name}' -- proceeding to the subscription/region quota check only."
+  echo "Live catalog did not report a maximum capacity for SKU '${sku_name}' -- proceeding to the exact subscription/region quota check."
 fi
 
-echo "Model/SKU '${model_format}/${model_name}/${model_version}/${sku_name}' confirmed in the live catalog. Checking subscription/region quota in '${location}'."
+echo "Exact catalog SKU '${model_format}/${model_name}/${model_version}/${sku_name}' maps to usageName '${usage_name}'. Checking subscription/region quota in '${location}'."
 
 usage_json="$(az cognitiveservices usage list --location "${location}" --output json)"
+deployments_json="$(az cognitiveservices account deployment list \
+  --name "${account_name}" \
+  --resource-group "${resource_group}" \
+  --output json)"
 
-# Cognitive Services usage entries are keyed by a metric name; account
-# deployment capacity typically reports under a name containing the SKU or
-# a generic "AccountDeploymentCapacity"-style dimension. Match defensively
-# by SKU name substring but never silently skip the check -- an unmatched
-# entry is a hard failure, not an assumed pass.
-quota_entry="$(printf '%s' "${usage_json}" | jq -c \
-  --arg sku "${sku_name}" \
-  '[.[] | select((.name.value // "") | test($sku; "i"))] | first // empty')"
+# `usageName` is the catalog's authoritative join key. Substring,
+# case-insensitive, SKU-only, and first-match selection are all intentionally
+# forbidden: each could bind this deployment to a different quota dimension.
+quota_matches="$(printf '%s' "${usage_json}" | jq -c \
+  --arg usage_name "${usage_name}" \
+  '[.[] | select(.name.value == $usage_name)]')"
 
-if [ -z "${quota_entry}" ] || [ "${quota_entry}" = "null" ]; then
-  echo "No subscription/region quota entry found in '${location}' matching SKU '${sku_name}'. Refusing to deploy without a confirmed quota check." >&2
+quota_match_count="$(printf '%s' "${quota_matches}" | jq 'length')"
+if [ "${quota_match_count}" -eq 0 ]; then
+  echo "No quota entry in '${location}' has name.value exactly equal to catalog usageName '${usage_name}'. Refusing to deploy without an exact quota dimension." >&2
+  exit 1
+fi
+if [ "${quota_match_count}" -ne 1 ]; then
+  echo "Expected exactly one quota entry in '${location}' for catalog usageName '${usage_name}', but found ${quota_match_count}. Refusing an ambiguous quota dimension." >&2
   exit 1
 fi
 
-current_value="$(printf '%s' "${quota_entry}" | jq -r '.currentValue // empty')"
-quota_limit="$(printf '%s' "${quota_entry}" | jq -r '.limit // empty')"
+quota_values_are_integers="$(printf '%s' "${quota_matches}" | jq -r \
+  '.[0]
+   | ((.currentValue | type) == "number")
+     and ((.currentValue | floor) == .currentValue)
+     and (.currentValue >= 0)
+     and ((.limit | type) == "number")
+     and ((.limit | floor) == .limit)
+     and (.limit >= 0)')"
 
-if [ -z "${current_value}" ] || [ -z "${quota_limit}" ]; then
-  echo "Quota entry for SKU '${sku_name}' is missing currentValue/limit fields: ${quota_entry}" >&2
+if [ "${quota_values_are_integers}" != "true" ]; then
+  echo "Exact quota entry for usageName '${usage_name}' must contain nonnegative integer currentValue and limit fields: ${quota_matches}" >&2
   exit 1
 fi
 
-current_value_int="${current_value%.*}"
-quota_limit_int="${quota_limit%.*}"
+current_value="$(printf '%s' "${quota_matches}" | jq -r '.[0].currentValue | floor')"
+quota_limit="$(printf '%s' "${quota_matches}" | jq -r '.[0].limit | floor')"
 
-available=$(( quota_limit_int - current_value_int ))
-if [ "${available}" -lt "${capacity}" ]; then
-  echo "Insufficient quota in '${location}' for SKU '${sku_name}': requested capacity ${capacity}, available ${available} (limit ${quota_limit_int}, current usage ${current_value_int})." >&2
+replaceable_existing_capacity=0
+for index in "${!deployment_names[@]}"; do
+  deployment_name="${deployment_names[$index]}"
+  deployment_matches="$(printf '%s' "${deployments_json}" | jq -c \
+    --arg deployment_name "${deployment_name}" \
+    '[.[] | select(.name == $deployment_name)]')"
+  deployment_match_count="$(printf '%s' "${deployment_matches}" | jq 'length')"
+  if [ "${deployment_match_count}" -gt 1 ]; then
+    echo "Expected at most one existing deployment named '${deployment_name}', found ${deployment_match_count}." >&2
+    exit 1
+  fi
+  if [ "${deployment_match_count}" -eq 1 ]; then
+    exact_dimension="$(printf '%s' "${deployment_matches}" | jq -r \
+      --arg format "${model_format}" \
+      --arg name "${model_name}" \
+      --arg version "${model_version}" \
+      --arg sku "${sku_name}" \
+      '.[0]
+       | (.properties.model.format == $format
+          and .properties.model.name == $name
+          and .properties.model.version == $version
+          and .sku.name == $sku)')"
+    if [ "${exact_dimension}" = "true" ]; then
+      existing_capacity="$(printf '%s' "${deployment_matches}" | jq -r \
+        '.[0].sku.capacity
+         | if type == "number" and floor == . and . >= 0 then . else empty end')"
+      if [ -z "${existing_capacity}" ]; then
+        echo "Existing exact deployment '${deployment_name}' has no nonnegative integer SKU capacity." >&2
+        exit 1
+      fi
+      replaceable_existing_capacity=$((replaceable_existing_capacity + existing_capacity))
+    fi
+  fi
+done
+
+incremental_capacity=$((aggregate_capacity - replaceable_existing_capacity))
+if [ "${incremental_capacity}" -lt 0 ]; then
+  incremental_capacity=0
+fi
+available=$((quota_limit - current_value))
+if [ "${available}" -lt "${incremental_capacity}" ]; then
+  echo "Insufficient quota in '${location}' for usageName '${usage_name}': desired aggregate ${aggregate_capacity}, exact replaceable existing ${replaceable_existing_capacity}, incremental required ${incremental_capacity}, available ${available} (limit ${quota_limit}, current usage ${current_value})." >&2
   exit 1
 fi
 
-echo "Quota check passed: requested capacity ${capacity} <= available ${available} (limit ${quota_limit_int}, current usage ${current_value_int}) for SKU '${sku_name}' in '${location}'."
+echo "Quota check passed: desired aggregate ${aggregate_capacity}, exact replaceable existing ${replaceable_existing_capacity}, incremental required ${incremental_capacity} <= available ${available} (limit ${quota_limit}, current usage ${current_value}) for exact usageName '${usage_name}' in '${location}'."

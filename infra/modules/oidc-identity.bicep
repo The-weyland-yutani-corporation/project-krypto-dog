@@ -14,14 +14,23 @@ param location string
 @description('GitHub repository owner (org or user), e.g. VeVarunSharma.')
 param githubOrg string
 
+@description('Immutable GitHub repository owner ID used by the repository OIDC subject customization.')
+param githubOwnerId string
+
 @description('GitHub repository name, e.g. project-krypto-dog.')
 param githubRepo string
+
+@description('Immutable GitHub repository ID used by the repository OIDC subject customization.')
+param githubRepoId string
 
 @description('GitHub repository Environment name this identity is federated to, e.g. development, production-deploy, production-promotion, or platform.')
 param githubEnvironmentName string
 
-@description('Whether to also grant Role Based Access Control Administrator (needed to create Microsoft.Authorization/roleAssignments, e.g. for the environment.bicep/release.bicep deploys that grant AcrPull/Key Vault Secrets User/Storage Blob Data Contributor to workload identities). Leave false for identities that only ever deploy templates with no new role assignments (e.g. the prod promotion identity running rollout.bicep, or the platform identity running platform.bicep) — narrower than Contributor + an RBAC-granting role.')
+@description('Whether to also grant Role Based Access Control Administrator (needed to create Microsoft.Authorization/roleAssignments, e.g. for environment/release workload bindings or platform Foundry inference bindings). Leave false for identities that deploy no role assignments, such as prod promotion.')
 param includeRoleAssignmentAdmin bool = true
+
+@description('Whether to grant Locks Contributor in this resource group. Used only by the protected platform identity so platform-account.bicep can create and maintain its CanNotDelete lock.')
+param includeLocksContributor bool = false
 
 @description('Tags applied to the identity.')
 param tags object = {}
@@ -51,6 +60,8 @@ var contributorRoleId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
 // could still assign Owner (or any other role) within that resource
 // group if not otherwise prevented by branch/environment protection.
 var rbacAdministratorRoleId = 'f58310d9-a9f6-439a-9e8d-f62e7b41a168'
+// Locks Contributor: manage resource locks without broader resource access.
+var locksContributorRoleId = '28bf596f-4eb7-45ce-b5bc-6cf482fec137'
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' = {
   name: identityName
@@ -66,7 +77,7 @@ resource federatedCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/f
     audiences: [
       'api://AzureADTokenExchange'
     ]
-    subject: 'repo:${githubOrg}/${githubRepo}:environment:${githubEnvironmentName}'
+    subject: 'repo:${githubOrg}@${githubOwnerId}/${githubRepo}@${githubRepoId}:environment:${githubEnvironmentName}'
   }
 }
 
@@ -85,6 +96,15 @@ resource userAccessAdministratorAssignment 'Microsoft.Authorization/roleAssignme
     principalId: identity.properties.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', rbacAdministratorRoleId)
+  }
+}
+
+resource locksContributorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (includeLocksContributor) {
+  name: guid(resourceGroup().id, identity.id, locksContributorRoleId)
+  properties: {
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', locksContributorRoleId)
   }
 }
 

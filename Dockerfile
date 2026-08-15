@@ -56,12 +56,17 @@ RUN mkdir -p public
 # real secret is baked into any image layer. Actual configuration is
 # supplied at container start via Key-Vault-sourced environment variables.
 ENV NEXT_TELEMETRY_DISABLED=1 \
-    ANTHROPIC_FOUNDRY_BASE_URL=https://build-placeholder.services.ai.azure.com/anthropic \
-    ANTHROPIC_FOUNDRY_API_KEY=build-placeholder \
-    ANTHROPIC_FOUNDRY_DEPLOYMENT=build-placeholder \
+    AZURE_OPENAI_BASE_URL=https://build-placeholder.openai.azure.com/openai/v1/ \
+    AZURE_OPENAI_DEPLOYMENT_NAME=build-placeholder \
+    AZURE_CLIENT_ID=00000000-0000-0000-0000-000000000000 \
+    AZURE_COMMUNICATION_CONNECTION_STRING="endpoint=https://build-placeholder.communication.azure.com/;accesskey=build-placeholder" \
+    AZURE_COMMUNICATION_EMAIL_SENDER=DoNotReply@build-placeholder.azurecomm.net \
+    ALERT_EMAIL_TO=operator@example.com \
     DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build \
     POSTHOG_API_KEY=build-placeholder \
+    POSTHOG_ENVIRONMENT=dev \
     CRON_SECRET=build-placeholder \
+    APP_ORIGIN=https://build-placeholder.example.com \
     ADMIN_PASSWORD=build-placeholder \
     ADMIN_SESSION_SECRET=build-placeholder \
     ROLLOUT_MODE=disabled
@@ -157,10 +162,11 @@ ARG AZCOPY_SHA256_AMD64=99400b4640aac6467a27f4d99c29ba5f96b5723a0377908fec172a80
 ARG AZCOPY_SHA256_ARM64=5ef6fb329a54a2a17af55e2b9bddf2975ef4fa60a9de538fa41da6dfbeca0340
 ARG TARGETARCH
 RUN set -eu; \
-    case "${TARGETARCH}" in \
+    resolved_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "${resolved_arch}" in \
       amd64) azcopy_arch=x86_64; azcopy_sha256="${AZCOPY_SHA256_AMD64}" ;; \
       arm64) azcopy_arch=arm64; azcopy_sha256="${AZCOPY_SHA256_ARM64}" ;; \
-      *) echo "Unsupported TARGETARCH '${TARGETARCH}' for AzCopy; add a pinned version+checksum for it above." >&2; exit 1 ;; \
+      *) echo "Unsupported target architecture '${resolved_arch}' for AzCopy; add a pinned version+checksum for it above." >&2; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/azcopy.deb \
       "https://github.com/Azure/azure-storage-azcopy/releases/download/v${AZCOPY_VERSION}/azcopy-${AZCOPY_VERSION}.${azcopy_arch}.deb"; \

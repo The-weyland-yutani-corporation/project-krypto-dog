@@ -17,12 +17,13 @@
 using '../rollout.bicep'
 
 param environmentName = 'prod'
-param location = 'eastus2'
+param location = 'westus3'
 
 param keyVaultName = 'kv-krypto-prod'
 param containerAppsEnvironmentId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId'
 param registryLoginServer = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer'
 param runtimeIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId'
+param runtimeIdentityClientId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId'
 param schedulerIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId'
 
 param webAppName = 'ca-prod-web'
@@ -35,20 +36,20 @@ param dailyJobName = 'caj-prod-daily-summary'
 param webImageName = 'krypto-web'
 param imageDigest = 'sha256:REPLACE_WITH_CURRENTLY_RELEASED_DIGEST'
 
-param anthropicFoundryBaseUrl = 'https://REPLACE_WITH_FOUNDRY_RESOURCE.services.ai.azure.com/anthropic'
-param anthropicFoundryDeployment = 'krypto-prod-claude'
-param anthropicFoundryApiVersion = '2024-10-21'
+param azureOpenAIBaseUrl = 'https://ghcp-foundry-eastus2.openai.azure.com/openai/v1/'
+param azureOpenAIDeploymentName = 'krypto-prod-luna'
 
 param posthogHost = 'https://us.i.posthog.com'
-param alertEmailTo = 'ops@example.com'
-param alertEmailFrom = 'krypto@example.com'
+param posthogEnvironment = 'prod'
+param alertEmailTo = 'varun.sharma.exe@gmail.com'
+param communicationEmailSender = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender'
 
 // Production default. Do not change in this committed file — promote via
 // an explicit, separately reviewed --parameters override instead.
 param rolloutMode = 'disabled'
 param hourlyTriggerType = 'Manual'
 param dailyTriggerType = 'Manual'
-
+param scheduleGenerationUnixSeconds = '0'
 param tags = {
   project: 'project-krypto'
 }

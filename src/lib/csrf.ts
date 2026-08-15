@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { normalizeAppOrigin } from "@/lib/app-origin";
 
 /**
  * Defense-in-depth CSRF check for admin POST endpoints.
@@ -12,8 +13,20 @@ import { NextRequest, NextResponse } from "next/server";
  * Returns null on success, or a JSON 403 response on failure.
  */
 export function checkSameOrigin(request: NextRequest): NextResponse | null {
-  const requestOrigin = request.nextUrl.origin;
+  const configuredOrigin = process.env.APP_ORIGIN;
+  const requestOrigin = configuredOrigin
+    ? normalizeAppOrigin(configuredOrigin)
+    : process.env.NODE_ENV === "production"
+      ? undefined
+      : request.nextUrl.origin;
   const headerOrigin = request.headers.get("origin");
+
+  if (!requestOrigin) {
+    return NextResponse.json(
+      { error: "Request origin could not be validated" },
+      { status: 403 },
+    );
+  }
 
   if (headerOrigin) {
     return headerOrigin === requestOrigin

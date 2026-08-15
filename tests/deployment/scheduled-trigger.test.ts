@@ -6,6 +6,8 @@ import {
   ScheduledTriggerRequestError,
   validateCronSecret,
   validateRolloutMode,
+  validateScheduledIdempotencyKey,
+  validateScheduledIdempotencyNamespace,
   validateScheduledRoute,
   validateTargetBaseUrl,
 } from "@/deployment/scheduled-trigger";
@@ -131,6 +133,64 @@ describe("validateRolloutMode", () => {
     expect(validateRolloutMode("PAPER")).toBe("paper");
   });
 
+  describe("validateScheduledIdempotencyKey", () => {
+    it("accepts a bounded manual shadow proof key", () => {
+      expect(
+        validateScheduledIdempotencyKey(
+          "manual-shadow:run123-a1",
+          "/api/agent/run",
+          "shadow",
+        ),
+      ).toBe("manual-shadow:run123-a1");
+    });
+
+    describe("validateScheduledIdempotencyNamespace", () => {
+      const digest = `sha256:${"a".repeat(64)}-1776081600`;
+
+      it("accepts an image-and-activation namespace for agent runs", () => {
+        expect(
+          validateScheduledIdempotencyNamespace(digest, "/api/agent/run"),
+        ).toBe(digest);
+      });
+
+      it("rejects malformed and daily-summary namespaces", () => {
+        expect(() =>
+          validateScheduledIdempotencyNamespace("release-main", "/api/agent/run"),
+        ).toThrow(ScheduledTriggerConfigError);
+        expect(() =>
+          validateScheduledIdempotencyNamespace(
+            digest,
+            "/api/agent/daily-summary",
+          ),
+        ).toThrow(ScheduledTriggerConfigError);
+      });
+    });
+
+    it("rejects unsafe keys and daily-summary overrides", () => {
+      expect(() =>
+        validateScheduledIdempotencyKey(
+          "cron:2026-08-13T12",
+          "/api/agent/run",
+          "shadow",
+        ),
+      ).toThrow(ScheduledTriggerConfigError);
+      expect(() =>
+        validateScheduledIdempotencyKey(
+          "manual-shadow:run123",
+          "/api/agent/daily-summary",
+          "shadow",
+        ),
+      ).toThrow(ScheduledTriggerConfigError);
+      expect(() =>
+        validateScheduledIdempotencyKey(
+          "manual-shadow:run123",
+          "/api/agent/run",
+          "paper",
+        ),
+      ).toThrow(/requires ROLLOUT_MODE=shadow/);
+    });
+  });
+
   it("rejects invalid or missing values", () => {
     expect(() => validateRolloutMode("live")).toThrow(
       ScheduledTriggerConfigError,
@@ -149,6 +209,8 @@ describe("resolveScheduledTriggerConfig", () => {
     expect(config.cronSecret).toBe("trigger-secret");
     expect(config.rolloutMode).toBe("disabled");
     expect(config.targetUrl.toString()).toBe("https://krypto.example.com/");
+    expect(config.explicitIdempotencyKey).toBeUndefined();
+    expect(config.idempotencyNamespace).toBeUndefined();
   });
 
   it("throws on the first invalid field", () => {
@@ -188,6 +250,28 @@ describe("buildIdempotencyKey", () => {
     expect(
       buildIdempotencyKey("/api/agent/daily-summary", new Date()),
     ).toBeUndefined();
+  });
+
+  it("uses an explicit manual-shadow key instead of the hourly key", () => {
+    expect(
+      buildIdempotencyKey(
+        "/api/agent/run",
+        new Date("2026-08-12T16:30:00.000Z"),
+        "manual-shadow:run123-a1",
+      ),
+    ).toBe("manual-shadow:run123-a1");
+  });
+
+  it("namespaces scheduled keys by image and activation generation", () => {
+    const namespace = `sha256:${"b".repeat(64)}-1776081600`;
+    expect(
+      buildIdempotencyKey(
+        "/api/agent/run",
+        new Date("2026-08-12T16:30:00.000Z"),
+        undefined,
+        namespace,
+      ),
+    ).toBe(`cron:${namespace}:2026-08-12T16`);
   });
 });
 
@@ -235,6 +319,50 @@ describe("runScheduledTrigger", () => {
     const [, init] = fetchImpl.mock.calls[0];
     const headers = new Headers(init?.headers as HeadersInit);
     expect(headers.has("x-idempotency-key")).toBe(false);
+  });
+
+  it("sends the explicit manual shadow idempotency key", async () => {
+    const fetchImpl = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >(async () => Response.json({ ok: true }));
+
+    await runScheduledTrigger({
+      env: {
+        ...VALID_ENV,
+        ROLLOUT_MODE: "shadow",
+        SCHEDULED_IDEMPOTENCY_KEY: "manual-shadow:run123-a1",
+      },
+      fetchImpl,
+    });
+
+    const [, init] = fetchImpl.mock.calls[0];
+    const headers = new Headers(init?.headers as HeadersInit);
+    expect(headers.get("x-idempotency-key")).toBe("manual-shadow:run123-a1");
+  });
+
+  it("sends an image-and-activation namespaced scheduled key", async () => {
+    const namespace = `sha256:${"c".repeat(64)}-1776081600`;
+    const fetchImpl = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >(async () => Response.json({ ok: true }));
+
+    await runScheduledTrigger({
+      env: {
+        ...VALID_ENV,
+        ROLLOUT_MODE: "shadow",
+        SCHEDULED_IDEMPOTENCY_NAMESPACE: namespace,
+      },
+      now: new Date("2026-08-12T16:30:00.000Z"),
+      fetchImpl,
+    });
+
+    const [, init] = fetchImpl.mock.calls[0];
+    const headers = new Headers(init?.headers as HeadersInit);
+    expect(headers.get("x-idempotency-key")).toBe(
+      `cron:${namespace}:2026-08-12T16`,
+    );
   });
 
   it("treats a non-2xx response as a failure", async () => {

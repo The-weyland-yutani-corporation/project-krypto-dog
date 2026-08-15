@@ -22,6 +22,8 @@ const REQUIRED_ENV = {
   CRON_SECRET: "cron-secret-value",
   IMAGE_DIGEST: `sha256:${"1".repeat(64)}`,
   DEPLOYMENT_APPROVAL_SECRET: "b".repeat(40),
+  EXPECTED_SHADOW_IDEMPOTENCY_KEY: "manual-shadow:run123-a1",
+  EXPECTED_SHADOW_STARTED_AFTER: "2026-08-13T12:00:00Z",
 };
 
 describe("scripts/azure/operations/activation-check", () => {
@@ -65,6 +67,9 @@ describe("scripts/azure/operations/activation-check", () => {
       targetOrigin: REQUIRED_ENV.TARGET_ORIGIN,
       cronSecret: REQUIRED_ENV.CRON_SECRET,
       approvalSecret: REQUIRED_ENV.DEPLOYMENT_APPROVAL_SECRET,
+      expectedShadowIdempotencyKey:
+        REQUIRED_ENV.EXPECTED_SHADOW_IDEMPOTENCY_KEY,
+      expectedShadowStartedAfter: REQUIRED_ENV.EXPECTED_SHADOW_STARTED_AFTER,
     });
   });
 

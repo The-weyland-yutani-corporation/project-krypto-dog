@@ -9,8 +9,8 @@
 // string embedded) — see scripts/azure/lib/evidence-upload.ts.
 //
 // Every @secure() parameter (databaseUrl, directUrl, cronSecret,
-// anthropicFoundryApiKey, posthogApiKey, resendApiKey, adminPassword,
-// adminSessionSecret, runtimeDatabasePassword, deploymentApprovalSecret) is
+// posthogApiKey, adminPassword, adminSessionSecret, runtimeDatabasePassword,
+// deploymentApprovalSecret) is
 // deliberately NOT set with a literal value. Each
 // is resolved from an environment variable at deploy time via
 // readEnvironmentVariable() with NO fallback default: a missing
@@ -28,12 +28,13 @@
 using '../release.bicep'
 
 param environmentName = 'prod'
-param location = 'eastus2'
+param location = 'westus3'
 
 param keyVaultName = 'kv-krypto-prod'
 param containerAppsEnvironmentId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId'
 param registryLoginServer = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer'
 param runtimeIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId'
+param runtimeIdentityClientId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId'
 param runtimeIdentityPrincipalId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityPrincipalId'
 param schedulerIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId'
 param schedulerIdentityPrincipalId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityPrincipalId'
@@ -41,6 +42,8 @@ param opsIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityId'
 param opsIdentityPrincipalId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityPrincipalId'
 param opsIdentityClientId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityClientId'
 param evidenceContainerUrl = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_evidenceContainerUrl'
+param communicationServiceName = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationServiceName'
+param communicationEmailSender = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender'
 
 param webAppName = 'ca-prod-web'
 param hourlyJobName = 'caj-prod-agent-run'
@@ -67,13 +70,12 @@ param opsImageDigest = 'sha256:REPLACE_WITH_PUSHED_OPS_DIGEST'
 // deployed.
 param releaseSha = 'REPLACE_WITH_REAL_COMMIT_SHA000000000000'
 
-param anthropicFoundryBaseUrl = 'https://REPLACE_WITH_FOUNDRY_RESOURCE.services.ai.azure.com/anthropic'
-param anthropicFoundryDeployment = 'krypto-prod-claude'
-param anthropicFoundryApiVersion = '2024-10-21'
+param azureOpenAIBaseUrl = 'https://ghcp-foundry-eastus2.openai.azure.com/openai/v1/'
+param azureOpenAIDeploymentName = 'krypto-prod-luna'
 
 param posthogHost = 'https://us.i.posthog.com'
-param alertEmailTo = 'ops@example.com'
-param alertEmailFrom = 'krypto@example.com'
+param posthogEnvironment = 'prod'
+param alertEmailTo = 'varun.sharma.exe@gmail.com'
 
 // Fresh-deployment Azure PostgreSQL runtime login role name. Nonsecret —
 // a role name, not a credential. Default matches the database
@@ -84,9 +86,7 @@ param runtimeDatabaseLoginRole = 'krypto_app'
 param databaseUrl = readEnvironmentVariable('DATABASE_URL_PROD')
 param directUrl = readEnvironmentVariable('DIRECT_URL_PROD')
 param cronSecret = readEnvironmentVariable('CRON_SECRET_PROD')
-param anthropicFoundryApiKey = readEnvironmentVariable('ANTHROPIC_FOUNDRY_API_KEY_PROD')
 param posthogApiKey = readEnvironmentVariable('POSTHOG_API_KEY_PROD')
-param resendApiKey = readEnvironmentVariable('RESEND_API_KEY_PROD')
 param adminPassword = readEnvironmentVariable('ADMIN_PASSWORD_PROD')
 param adminSessionSecret = readEnvironmentVariable('ADMIN_SESSION_SECRET_PROD')
 param runtimeDatabasePassword = readEnvironmentVariable('RUNTIME_DATABASE_PASSWORD_PROD')

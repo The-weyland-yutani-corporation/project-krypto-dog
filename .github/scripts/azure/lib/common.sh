@@ -176,13 +176,19 @@ azure_validate_operation() {
 # never be crafted to collide or to break the immutable evidence path.
 azure_new_job_execution_id() {
   local operation="$1"
+  local discriminator="${2:-}"
   azure_validate_operation "${operation}" >/dev/null
+  if [ -n "${discriminator}" ] &&
+     ! [[ "${discriminator}" =~ ^[a-z0-9][a-z0-9-]{0,15}$ ]]; then
+    echo "JOB_EXECUTION_ID discriminator must be 1-16 lowercase alphanumeric/hyphen characters." >&2
+    return 1
+  fi
   local run_id="${GITHUB_RUN_ID:-0}"
   local run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
   if ! [[ "${run_id}" =~ ^[0-9]+$ ]] || ! [[ "${run_attempt}" =~ ^[0-9]+$ ]]; then
     echo "GITHUB_RUN_ID/GITHUB_RUN_ATTEMPT must be numeric." >&2
     return 1
   fi
-  local candidate="run${run_id}-a${run_attempt}-${operation}"
+  local candidate="run${run_id}-a${run_attempt}-${operation}${discriminator:+-${discriminator}}"
   azure_validate_job_execution_id "${candidate}"
 }

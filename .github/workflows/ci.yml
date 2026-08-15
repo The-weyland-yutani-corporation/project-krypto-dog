@@ -54,12 +54,17 @@ jobs:
         # Stub env vars so config/Zod schemas resolve without real secrets;
         # build does not call validateEnv() at runtime.
         env:
-          ANTHROPIC_FOUNDRY_BASE_URL: https://stub.services.ai.azure.com/anthropic
-          ANTHROPIC_FOUNDRY_API_KEY: stub
-          ANTHROPIC_FOUNDRY_DEPLOYMENT: claude-sonnet-stub
+          AZURE_OPENAI_BASE_URL: https://stub.openai.azure.com/openai/v1/
+          AZURE_OPENAI_DEPLOYMENT_NAME: krypto-test-luna
+          AZURE_CLIENT_ID: 00000000-0000-0000-0000-000000000000
+          AZURE_COMMUNICATION_CONNECTION_STRING: endpoint=https://stub.communication.azure.com/;accesskey=stub
+          AZURE_COMMUNICATION_EMAIL_SENDER: DoNotReply@stub.azurecomm.net
+          ALERT_EMAIL_TO: operator@example.com
           DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
           POSTHOG_API_KEY: phc_stub
+          POSTHOG_ENVIRONMENT: dev
           CRON_SECRET: stub
+          APP_ORIGIN: https://stub.example.com
           ADMIN_PASSWORD: stub
           ADMIN_SESSION_SECRET: stub
         run: npm run build
