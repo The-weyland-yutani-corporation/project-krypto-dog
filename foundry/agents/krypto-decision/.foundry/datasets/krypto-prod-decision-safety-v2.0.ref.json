@@ -1,0 +1,25 @@
+{
+  "id": "azureai://accounts/ghcp-foundry-eastus2/projects/krypto-prod-agents/data/krypto-prod-decision-safety/versions/2.0",
+  "name": "krypto-prod-decision-safety",
+  "version": "2.0",
+  "displayName": "krypto-prod-decision-safety",
+  "description": null,
+  "type": "uri_file",
+  "isReference": false,
+  "isSingleFile": true,
+  "lifecycle": null,
+  "tags": {},
+  "contentDownloaded": true,
+  "contentPath": ".foundry/datasets/krypto-prod-decision-safety-v2.0",
+  "contentFiles": [
+    "krypto-prod-decision-safety.jsonl"
+  ],
+  "curation": {
+    "sourceVersion": "1.0",
+    "changes": [
+      "removed non-schema response fields",
+      "normalized proposal alias to action",
+      "preserved 15 generated safety scenarios"
+    ]
+  }
+}

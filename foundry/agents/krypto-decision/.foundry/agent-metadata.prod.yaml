@@ -7,9 +7,21 @@ environments:
     evaluationSuites:
       - id: safety-smoke
         generationJobId: datagen-7a9f9445e8b24bc1b10197ca4773797f
+        generationJobStatus: succeeded
         generationSource: agent-instructions
+        dataset: krypto-prod-decision-safety
+        datasetVersion: "2.0"
+        datasetFile: .foundry/datasets/krypto-prod-decision-safety-v2.0.ref.json
+        datasetContentPath: .foundry/datasets/krypto-prod-decision-safety-v2.0
+        datasetUri: azureai://accounts/ghcp-foundry-eastus2/projects/krypto-prod-agents/data/krypto-prod-decision-safety/versions/2.0
+        evaluators:
+          - name: krypto-prod-decision-safety
+            version: "1"
+            threshold: 0.5
+            definitionFile: .foundry/evaluators/krypto-prod-decision-safety-v1.json
         tags:
           tier: smoke
           purpose: safety
-          stage: generated
+          stage: curated
           evaluatorGenerationJobId: evaluatorgen-krypto-prod-decision-safety-v1-400e898a
+          evaluatorGenerationJobStatus: succeeded

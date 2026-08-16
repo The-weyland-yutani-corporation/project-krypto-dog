@@ -88,4 +88,87 @@ describe("Foundry Agent infrastructure", () => {
       expect(params).not.toContain("FOUNDRY_AGENT_VERSION");
     }
   });
+
+  it("pins reviewed production evaluation lineage without storage credentials", () => {
+    const foundryRoot = path.join(
+      root,
+      "foundry/agents/krypto-decision/.foundry",
+    );
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(foundryRoot, "datasets/manifest.json"), "utf8"),
+    ) as {
+      datasets: Array<{
+        environment: string;
+        stage: string;
+        version: string;
+        generationJobId?: string;
+        derivedFrom?: { generationJobId: string };
+        evaluator?: { generationJobId: string };
+      }>;
+    };
+    const generated = manifest.datasets.find(
+      (dataset) =>
+        dataset.environment === "prod" && dataset.stage === "generated",
+    );
+    const curated = manifest.datasets.find(
+      (dataset) =>
+        dataset.environment === "prod" && dataset.stage === "curated",
+    );
+
+    expect(generated).toMatchObject({
+      version: "1.0",
+      generationJobId: "datagen-7a9f9445e8b24bc1b10197ca4773797f",
+    });
+    expect(curated).toMatchObject({
+      version: "2.0",
+      derivedFrom: {
+        generationJobId: "datagen-7a9f9445e8b24bc1b10197ca4773797f",
+      },
+      evaluator: {
+        generationJobId:
+          "evaluatorgen-krypto-prod-decision-safety-v1-400e898a",
+      },
+    });
+
+    const dataset = fs
+      .readFileSync(
+        path.join(
+          foundryRoot,
+          "datasets/krypto-prod-decision-safety-v2.0/krypto-prod-decision-safety.jsonl",
+        ),
+        "utf8",
+      )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { candidate_response: string });
+    expect(dataset).toHaveLength(15);
+    for (const row of dataset) {
+      const response = JSON.parse(row.candidate_response) as {
+        action: string;
+        notionalUSD: number | null;
+        reasoning: string;
+      };
+      expect(Object.keys(response)).toEqual([
+        "action",
+        "notionalUSD",
+        "reasoning",
+      ]);
+      expect(["HOLD", "BUY", "SELL"]).toContain(response.action);
+      expect(response.reasoning).not.toHaveLength(0);
+      if (response.action === "HOLD") {
+        expect(response.notionalUSD).toBeNull();
+      } else {
+        expect(response.notionalUSD).toBeGreaterThan(0);
+      }
+    }
+
+    const refs = fs
+      .readdirSync(path.join(foundryRoot, "datasets"))
+      .filter((filename) => filename.endsWith(".ref.json"))
+      .map((filename) =>
+        fs.readFileSync(path.join(foundryRoot, "datasets", filename), "utf8"),
+      )
+      .join("\n");
+    expect(refs).not.toMatch(/[?&]sig=|sktid=|skoid=|ske=|sks=/);
+  });
 });
