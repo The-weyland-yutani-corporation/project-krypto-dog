@@ -36,7 +36,7 @@ and must not be used for a new release.
 | Agent projects | `krypto-dev-agents` / `krypto-prod-agents` |
 | Agent names | `krypto-dev-decision` / `krypto-prod-decision` |
 | Runtime agent config | `AZURE_FOUNDRY_PROJECT_ENDPOINT`, `AZURE_FOUNDRY_AGENT_NAME`, immutable `AZURE_FOUNDRY_AGENT_VERSION`, `AZURE_CLIENT_ID` |
-| Runtime agent auth | Project-scoped **Foundry Agent Consumer** + **Foundry Project Runtime User** + **Cognitive Services Data Reader**; no agent or model API key |
+| Runtime agent auth | Project-scoped custom **Project Krypto Foundry Agent Invoker**; no agent or model API key |
 | Email | Per-environment ACS Email with Azure-managed domain |
 | Analytics | Every event carries mandatory `deployment_environment`; a distinct dev project remains required before production promotion |
 
@@ -56,7 +56,7 @@ those values without making them public documentation.
 | Providers/bootstrap | Required providers are registered; platform/dev/prod resource groups and four GitHub OIDC identities exist | Complete |
 | GitHub controls | Environments, branch restrictions, variables, and release secrets are configured. Required-reviewer rules are unsupported by the private-repo billing plan; mutation workflows are manual/paused behind branch, exact-SHA, and CI gates. | Staged; no reviewer enforcement |
 | Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments and isolated prompt agents on `ghcp-foundry-eastus2` succeeded. Both immutable agent version `1` deployments passed exact structured `HOLD` smokes. | Operational agents complete |
-| Workload access | Dev runtime/ops have the proven project-scoped three-role runtime set. The reviewed source grants prod the same set, but live prod remains untouched until an approved apply. Legacy account-scoped direct-model roles remain until each pre-agent image is replaced. | Dev proven; prod source ready; compatibility-role removal pending cutover |
+| Workload access | Dev runtime/ops have the proven custom-only Project Krypto Foundry Agent Invoker. The reviewed source grants prod the same project-scoped role, but live prod remains untouched until an approved apply. Legacy account-scoped direct-model roles remain until each pre-agent image is replaced. | Dev proven; prod source ready; compatibility-role removal pending cutover |
 | Dev release | Live in shadow; manual activation and first scheduled execution passed with zero trades | Retained exact-SHA evidence |
 | Prod release | Live disabled/manual; migration, restore-verified backup, target smoke, and no-schedule checks passed | Release `ce7acc872f05899691ae44d4d826c9c8c94355c7` |
 | Release/rollout | Dev Schedule active; production has no schedule or promotion workflow | Complete for approved deployment scope |
@@ -122,6 +122,9 @@ az deployment sub create \
 - the custom **Project Krypto Provider Registration Reader**, containing only
   `Microsoft.Resources/subscriptions/providers/read`, assigned at subscription
   scope to the platform, dev, and prod-deploy identities; and
+- the custom **Project Krypto Foundry Agent Invoker** role definition with exact
+  agent read/write, Responses read/write, and endpoint-interaction data actions
+  and no subscription-level assignment; and
 - one subscription-scoped, read-only **Cognitive Services Usages Reader**
   assignment for `id-github-oidc-platform`.
 
@@ -193,9 +196,9 @@ and prod Luna deployments were then created serially on the established
 **Cognitive Services OpenAI User**, and passed Entra plain plus strict
 structured `HOLD` smokes. Those account-scoped roles are now a temporary
 compatibility bridge for the deployed pre-agent image; the new projects use
-the project-scoped narrow runtime role set and the old roles are removed only
-after the agent-integrated image passes target smoke. Keep the dedicated account
-for a future migration.
+the project-scoped custom invoker and the old roles are removed only after the
+agent-integrated image passes target smoke. Keep the dedicated account for a
+future migration.
 
 `azure-platform.yml` remains the dedicated-account migration workflow. It has
 separate what-if/apply mutation boundaries:
@@ -272,10 +275,17 @@ explicitly to the reviewed `foundry-agents.bicep` deployment.
 **Current status: agent resources complete; dev access proven; prod access
 source ready; app cutover pending.** `infra/foundry-agents.bicep` creates separate dev/prod projects,
 assigns Foundry User to each project identity and attended deployer, and assigns
-Foundry Agent Consumer, Foundry Project Runtime User, and Cognitive Services
-Data Reader to only the matching runtime/ops identities. Scheduler identities
-receive no Foundry role. The narrow set is proven live in dev; production source
-is reviewed here but live prod remains unchanged until an approved apply.
+Project Krypto Foundry Agent Invoker to only the matching runtime/ops identities.
+Scheduler identities receive no Foundry role. The custom-only assignment is
+proven live in dev; production source is reviewed here but live prod remains
+unchanged until an approved apply.
+
+The custom role has empty `Actions`, `NotActions`, and `NotDataActions`. Its only
+data actions are `agents/read`, `agents/write`, `responses/read`,
+`responses/write`, and `endpoints/interact/action`. Incremental ARM deployment
+does not delete superseded assignments, so rollout evidence must verify the
+three partial built-ins are absent and exactly one custom invoker remains per
+runtime/ops identity.
 
 Because GitHub-hosted jobs are blocked at startup by the account Actions billing
 state, the authenticated local operator path was used. The reviewed
@@ -292,7 +302,7 @@ Do not delete legacy account-scoped Cognitive Services OpenAI User assignments
 until that environment's new app image passes target smoke. The live pre-agent
 image still uses direct model inference, so early deletion would break dev
 shadow runs. After cutover, delete the legacy assignment and verify that only
-the project-scoped narrow three-role runtime set remains.
+the project-scoped custom invoker remains.
 
 ## 6. Dev full release and schedule activation
 

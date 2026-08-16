@@ -313,9 +313,8 @@ also requires the workload identity client ID and complete ACS configuration.
 
 Rollout mode is validated when a run begins. Agent configuration is validated
 at startup, while inference is skipped in disabled mode. Foundry accepts no
-application API key: runtime/ops UAMIs use project-scoped Foundry Agent
-Consumer, Foundry Project Runtime User, and Cognitive Services Data Reader with
-Entra tokens.
+application API key: runtime/ops UAMIs use the project-scoped custom Project
+Krypto Foundry Agent Invoker with Entra tokens.
 
 ---
 
@@ -363,7 +362,7 @@ Entra tokens.
   Manual jobs before disabling monitoring.
 - **Foundation/access dependency:** deploy environment foundations for dev and
   prod, then create isolated Foundry projects/agents and bind each runtime/ops
-  pair to the project-scoped narrow three-role runtime set before full releases.
+  pair to the project-scoped custom invoker before full releases.
 - **Dev rollout:** disabled/manual evidence → shadow/manual →
   one unique `manual-shadow:` hourly execution → post-run activation-check
   proving the exact safe no-trade `AgentRun` and released lease → monitored

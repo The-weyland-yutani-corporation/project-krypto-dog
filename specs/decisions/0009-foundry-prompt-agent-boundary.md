@@ -34,12 +34,14 @@ trade. The application pins every invocation to an immutable agent version,
 verifies the response binding, parses the full domain schema locally, and then
 runs the unchanged deterministic authorization and paper-execution path.
 
-Runtime and ops identities receive the project-scoped narrow runtime set:
-**Foundry Agent Consumer**, **Foundry Project Runtime User**, and
-**Cognitive Services Data Reader**. The project managed identities and attended
-deployer receive **Foundry User** only at the matching project scope.
-Direct-model diagnostics remain a platform-operator concern, not an application
-runtime capability.
+Runtime and ops identities receive only the project-scoped custom
+**Project Krypto Foundry Agent Invoker**. Live managed-identity proof established
+that version-pinned prompt invocation requires exactly agent read/write,
+Responses read/write, and endpoint interaction. The role grants no Actions,
+delete, state, key, or infrastructure permissions. The project managed
+identities and attended deployer receive **Foundry User** only at the matching
+project scope. Direct-model diagnostics remain a platform-operator concern, not
+an application runtime capability.
 
 The compatibility cutover is ordered: deploy and smoke agents, release the
 agent-integrated application, pass post-invocation no-trade database checks,
@@ -52,7 +54,7 @@ migration dependency.
 
 - Positive: Microsoft Foundry owns real, versioned Agent resources while
   deterministic authorization and execution remain outside model control.
-- Positive: Dev/prod project, agent, model, version, and consumer RBAC bindings
+- Positive: Dev/prod project, agent, model, version, and invoker RBAC bindings
   are explicit and independently testable.
 - Positive: The remote agent cannot call tools or application services.
 - Positive: Binding drift becomes a typed, journaled, alerted guardrail event.
@@ -61,6 +63,9 @@ migration dependency.
 - Trade-off: Every agent version update requires a reviewed parameter-source
   change and an application release before legacy direct-model access can be
   removed.
+- Trade-off: Foundry's message-creation path requires `agents/write`; a custom
+  role is necessary to grant it without broader Foundry User or unrelated
+  delete/state/key permissions.
 - Follow-up: Complete the reviewed application image rollout when GitHub Actions
   billing permits or through the equivalent retained local release procedure,
   then delete the four legacy account-scoped inference roles.

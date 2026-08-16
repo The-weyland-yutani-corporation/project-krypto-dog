@@ -93,13 +93,14 @@ flowchart TB
 ```
 
 Runtime and ops user-assigned managed identities authenticate to Foundry
-through Microsoft Entra ID. Each receives only the matching project's narrow
-runtime set: **Foundry Agent Consumer**, **Foundry Project Runtime User**, and
-**Cognitive Services Data Reader**. Scheduler identities call the app and
-receive no direct agent/model role. The dedicated account disables local auth;
-the shared operational fallback account still permits legacy local/model key
-auth, although Project Krypto stores no key. That account-level exception and
-the legacy account-scoped direct-model roles remain blockers until the live
+through Microsoft Entra ID. Each receives only the matching project's custom
+**Project Krypto Foundry Agent Invoker** role. Its five data actions permit
+agent read/write, Responses read/write, and endpoint interaction; it grants no
+delete, state, key, or control-plane action. Scheduler identities call the app
+and receive no direct agent/model role. The dedicated account disables local
+auth; the shared operational fallback account still permits legacy local/model
+key auth, although Project Krypto stores no key. That account-level exception
+and the legacy account-scoped direct-model roles remain blockers until the live
 pre-agent image is replaced, post-provider no-trade smoke passes, and the
 account owner disables local auth or approves migration.
 
@@ -142,7 +143,7 @@ after bootstrap.
 | Prod deployment | `krypto-prod-luna`, capacity 10 |
 | Upgrade policy | `NoAutoUpgrade` |
 | Runtime API | Foundry project Responses API with immutable agent reference |
-| Runtime auth | Project-scoped Foundry Agent Consumer + Foundry Project Runtime User + Cognitive Services Data Reader on the UAMI selected by `AZURE_CLIENT_ID` |
+| Runtime auth | Project-scoped custom Project Krypto Foundry Agent Invoker on the UAMI selected by `AZURE_CLIENT_ID` |
 | Agent isolation | `krypto-dev-agents` / `krypto-prod-agents`; toolless prompt agents `krypto-dev-decision` / `krypto-prod-decision` |
 
 The existing platform fallback was selected only after the dedicated account

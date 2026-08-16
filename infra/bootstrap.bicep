@@ -243,6 +243,37 @@ resource platformQuotaReader 'Microsoft.Authorization/roleAssignments@2022-04-01
   }
 }
 
+// Version-pinned prompt-agent invocation creates internal agent messages in
+// addition to Responses resources. Keep this custom data-plane role narrower
+// than Foundry User and exclude agent deletion, state mutation, key access, and
+// every control-plane action.
+var foundryAgentInvokerRoleId = '44dfdabf-22ec-45f5-923b-b42e44bdad76'
+resource foundryAgentInvokerRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: foundryAgentInvokerRoleId
+  properties: {
+    roleName: 'Project Krypto Foundry Agent Invoker'
+    description: 'Invoke a versioned Project Krypto Foundry prompt agent without agent deletion, state mutation, key access, or infrastructure permissions.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: []
+        notActions: []
+        dataActions: [
+          'Microsoft.CognitiveServices/accounts/AIServices/agents/read'
+          'Microsoft.CognitiveServices/accounts/AIServices/agents/write'
+          'Microsoft.CognitiveServices/accounts/AIServices/responses/read'
+          'Microsoft.CognitiveServices/accounts/AIServices/responses/write'
+          'Microsoft.CognitiveServices/accounts/AIServices/endpoints/interact/action'
+        ]
+        notDataActions: []
+      }
+    ]
+    assignableScopes: [
+      subscription().id
+    ]
+  }
+}
+
 // RG-scoped deployment identities cannot read subscription provider
 // registration state. Define one minimal read-only custom role rather than
 // granting broad subscription Reader.

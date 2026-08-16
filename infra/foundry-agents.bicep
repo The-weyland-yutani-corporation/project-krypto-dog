@@ -50,9 +50,7 @@ param tags object = {
 }
 
 var foundryUserRoleId = '53ca6127-db72-4b80-b1b0-d745d6d5456d'
-var foundryAgentConsumerRoleId = 'eed3b665-ab3a-47b6-8f48-c9382fb1dad6'
-var foundryProjectRuntimeUserRoleId = '142bfaed-a13f-4c2d-bed2-6db62c4a1009'
-var cognitiveServicesDataReaderRoleId = 'b59867f0-fa02-499b-be73-45a86b5b3e1c'
+var foundryAgentInvokerRoleId = '44dfdabf-22ec-45f5-923b-b42e44bdad76'
 
 resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' existing = {
   name: foundryAccountName
@@ -126,123 +124,43 @@ resource prodProjectIdentityFoundryUser 'Microsoft.Authorization/roleAssignments
   }
 }
 
-resource devRuntimeAgentConsumer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource devRuntimeAgentInvoker 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: devProject
-  name: guid(devProject.id, devRuntimePrincipalId, foundryAgentConsumerRoleId)
+  name: guid(devProject.id, devRuntimePrincipalId, foundryAgentInvokerRoleId)
   properties: {
     principalId: devRuntimePrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryAgentConsumerRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryAgentInvokerRoleId)
   }
 }
 
-resource devRuntimeProjectRuntimeUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource devOpsAgentInvoker 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: devProject
-  name: guid(devProject.id, devRuntimePrincipalId, foundryProjectRuntimeUserRoleId)
-  properties: {
-    principalId: devRuntimePrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryProjectRuntimeUserRoleId)
-  }
-}
-
-resource devRuntimeDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: devProject
-  name: guid(devProject.id, devRuntimePrincipalId, cognitiveServicesDataReaderRoleId)
-  properties: {
-    principalId: devRuntimePrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesDataReaderRoleId)
-  }
-}
-
-resource devOpsAgentConsumer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: devProject
-  name: guid(devProject.id, devOpsPrincipalId, foundryAgentConsumerRoleId)
+  name: guid(devProject.id, devOpsPrincipalId, foundryAgentInvokerRoleId)
   properties: {
     principalId: devOpsPrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryAgentConsumerRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryAgentInvokerRoleId)
   }
 }
 
-resource devOpsProjectRuntimeUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: devProject
-  name: guid(devProject.id, devOpsPrincipalId, foundryProjectRuntimeUserRoleId)
-  properties: {
-    principalId: devOpsPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryProjectRuntimeUserRoleId)
-  }
-}
-
-resource devOpsDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: devProject
-  name: guid(devProject.id, devOpsPrincipalId, cognitiveServicesDataReaderRoleId)
-  properties: {
-    principalId: devOpsPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesDataReaderRoleId)
-  }
-}
-
-resource prodRuntimeAgentConsumer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource prodRuntimeAgentInvoker 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: prodProject
-  name: guid(prodProject.id, prodRuntimePrincipalId, foundryAgentConsumerRoleId)
+  name: guid(prodProject.id, prodRuntimePrincipalId, foundryAgentInvokerRoleId)
   properties: {
     principalId: prodRuntimePrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryAgentConsumerRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryAgentInvokerRoleId)
   }
 }
 
-resource prodRuntimeProjectRuntimeUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource prodOpsAgentInvoker 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: prodProject
-  name: guid(prodProject.id, prodRuntimePrincipalId, foundryProjectRuntimeUserRoleId)
-  properties: {
-    principalId: prodRuntimePrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryProjectRuntimeUserRoleId)
-  }
-}
-
-resource prodRuntimeDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: prodProject
-  name: guid(prodProject.id, prodRuntimePrincipalId, cognitiveServicesDataReaderRoleId)
-  properties: {
-    principalId: prodRuntimePrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesDataReaderRoleId)
-  }
-}
-
-resource prodOpsAgentConsumer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: prodProject
-  name: guid(prodProject.id, prodOpsPrincipalId, foundryAgentConsumerRoleId)
+  name: guid(prodProject.id, prodOpsPrincipalId, foundryAgentInvokerRoleId)
   properties: {
     principalId: prodOpsPrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryAgentConsumerRoleId)
-  }
-}
-
-resource prodOpsProjectRuntimeUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: prodProject
-  name: guid(prodProject.id, prodOpsPrincipalId, foundryProjectRuntimeUserRoleId)
-  properties: {
-    principalId: prodOpsPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryProjectRuntimeUserRoleId)
-  }
-}
-
-resource prodOpsDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: prodProject
-  name: guid(prodProject.id, prodOpsPrincipalId, cognitiveServicesDataReaderRoleId)
-  properties: {
-    principalId: prodOpsPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesDataReaderRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', foundryAgentInvokerRoleId)
   }
 }
 

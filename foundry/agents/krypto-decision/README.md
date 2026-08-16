@@ -50,8 +50,7 @@ npm run foundry:agent -- deploy --environment prod \
 6. After target smoke proves the deployed app uses the exact agent version and
    leaves trade state unchanged, remove that environment's legacy account-wide
    `Cognitive Services OpenAI User` assignments. Retain only the project-scoped
-   narrow runtime set: `Foundry Agent Consumer`, `Foundry Project Runtime User`,
-   and `Cognitive Services Data Reader`.
+   custom `Project Krypto Foundry Agent Invoker` assignment.
 
 Do not remove the legacy role before the application image is migrated: the
 currently deployed pre-agent image still calls the model endpoint directly.
