@@ -185,6 +185,13 @@ describe("resolveAzureOpenAIConfig", () => {
 
   it.each([
     [
+      "a malformed URL",
+      {
+        AZURE_OPENAI_BASE_URL: "not-a-url",
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-dev-luna",
+      },
+    ],
+    [
       "a missing deployment",
       {
         AZURE_OPENAI_BASE_URL:
@@ -279,6 +286,27 @@ describe("validateEnv", () => {
       },
       () => {
         expect(() => validateEnv()).not.toThrow();
+      },
+    );
+  });
+
+  it("rejects a malformed Foundry project URL", () => {
+    expect(
+      resolveAzureFoundryAgentConfig({
+        AZURE_FOUNDRY_PROJECT_ENDPOINT: "not-a-url",
+        AZURE_FOUNDRY_AGENT_NAME: "krypto-dev-decision",
+        AZURE_FOUNDRY_AGENT_VERSION: "1",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("requires a complete immutable Foundry agent binding", () => {
+    withEnv(
+      {
+        AZURE_FOUNDRY_AGENT_VERSION: undefined,
+      },
+      () => {
+        expect(() => validateEnv()).toThrow("Invalid environment variables");
       },
     );
   });
