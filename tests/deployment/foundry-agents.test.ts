@@ -17,16 +17,46 @@ describe("Foundry Agent infrastructure", () => {
     expect(template).toContain("krypto-prod-agents");
   });
 
-  it("scopes runtime consumers to their matching project", () => {
+  it("scopes the narrow runtime role set to each matching project", () => {
     expect(template).toContain(
       "foundryAgentConsumerRoleId = 'eed3b665-ab3a-47b6-8f48-c9382fb1dad6'",
     );
-    expect(template).toMatch(
-      /resource devRuntimeAgentConsumer[\s\S]*?scope: devProject/,
+    expect(template).toContain(
+      "foundryProjectRuntimeUserRoleId = '142bfaed-a13f-4c2d-bed2-6db62c4a1009'",
     );
-    expect(template).toMatch(
-      /resource prodRuntimeAgentConsumer[\s\S]*?scope: prodProject/,
+    expect(template).toContain(
+      "cognitiveServicesDataReaderRoleId = 'b59867f0-fa02-499b-be73-45a86b5b3e1c'",
     );
+
+    for (const [principal, project] of [
+      ["devRuntime", "devProject"],
+      ["devOps", "devProject"],
+      ["prodRuntime", "prodProject"],
+      ["prodOps", "prodProject"],
+    ]) {
+      for (const [role, roleVariable] of [
+        ["AgentConsumer", "foundryAgentConsumerRoleId"],
+        ["ProjectRuntimeUser", "foundryProjectRuntimeUserRoleId"],
+        ["DataReader", "cognitiveServicesDataReaderRoleId"],
+      ]) {
+        expect(template).toMatch(
+          new RegExp(
+            `resource ${principal}${role}[\\s\\S]*?scope: ${project}[\\s\\S]*?roleDefinitionId: subscriptionResourceId\\('Microsoft.Authorization/roleDefinitions', ${roleVariable}\\)`,
+          ),
+        );
+      }
+    }
+
+    expect(
+      template.match(
+        /resource (?:dev|prod)(?:Runtime|Ops)(?:AgentConsumer|ProjectRuntimeUser|DataReader) /g,
+      ),
+    ).toHaveLength(12);
+    expect(
+      template.match(
+        /roleDefinitionId: subscriptionResourceId\('Microsoft\.Authorization\/roleDefinitions', foundryUserRoleId\)/g,
+      ),
+    ).toHaveLength(4);
   });
 
   it("does not create models or grant an agent application permissions", () => {
