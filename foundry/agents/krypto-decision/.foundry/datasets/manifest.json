@@ -1,0 +1,91 @@
+{
+  "datasets": [
+    {
+      "name": "krypto-dev-decision-safety",
+      "version": "1.0",
+      "agent": "krypto-dev-decision",
+      "environment": "dev",
+      "stage": "generated",
+      "source": "agent-instructions",
+      "localFile": ".foundry/datasets/krypto-dev-decision-safety-v1.0/krypto-dev-decision-safety_dg.jsonl",
+      "datasetUri": "azureai://accounts/ghcp-foundry-eastus2/projects/krypto-dev-agents/data/krypto-dev-decision-safety/versions/1.0",
+      "rowCount": 15,
+      "generationJobId": "datagen-c1b9209fcbc74984902496483b04c7a1",
+      "evaluatorGenerationJobId": "evaluatorgen-krypto-dev-decision-safety-v1-934830ac"
+    },
+    {
+      "name": "krypto-dev-decision-safety",
+      "version": "2.0",
+      "agent": "krypto-dev-decision",
+      "environment": "dev",
+      "stage": "curated",
+      "source": "reviewed-generated-data",
+      "localFile": ".foundry/datasets/krypto-dev-decision-safety-v2.0/krypto-dev-decision-safety.jsonl",
+      "datasetUri": "azureai://accounts/ghcp-foundry-eastus2/projects/krypto-dev-agents/data/krypto-dev-decision-safety/versions/2.0",
+      "rowCount": 15,
+      "derivedFrom": {
+        "version": "1.0",
+        "generationJobId": "datagen-c1b9209fcbc74984902496483b04c7a1"
+      },
+      "evaluator": {
+        "name": "krypto-dev-decision-safety",
+        "version": "1",
+        "generationJobId": "evaluatorgen-krypto-dev-decision-safety-v1-934830ac"
+      }
+    },
+    {
+      "name": "krypto-prod-decision-safety",
+      "version": "1.0",
+      "agent": "krypto-prod-decision",
+      "environment": "prod",
+      "stage": "generated",
+      "source": "agent-instructions",
+      "localFile": ".foundry/datasets/krypto-prod-decision-safety-v1.0/krypto-prod-decision-safety_dg.jsonl",
+      "datasetUri": "azureai://accounts/ghcp-foundry-eastus2/projects/krypto-prod-agents/data/krypto-prod-decision-safety/versions/1.0",
+      "rowCount": 15,
+      "createdAt": "2026-08-15T23:33:11.4923432Z",
+      "generationJobId": "datagen-7a9f9445e8b24bc1b10197ca4773797f",
+      "generationStartedAt": "2026-08-15T23:19:37Z",
+      "generationFinishedAt": "2026-08-15T23:33:12Z",
+      "tokenUsage": {
+        "prompt": 100116,
+        "completion": 29907,
+        "total": 130023
+      }
+    },
+    {
+      "name": "krypto-prod-decision-safety",
+      "version": "2.0",
+      "agent": "krypto-prod-decision",
+      "environment": "prod",
+      "stage": "curated",
+      "source": "reviewed-generated-data",
+      "localFile": ".foundry/datasets/krypto-prod-decision-safety-v2.0/krypto-prod-decision-safety.jsonl",
+      "datasetUri": "azureai://accounts/ghcp-foundry-eastus2/projects/krypto-prod-agents/data/krypto-prod-decision-safety/versions/2.0",
+      "rowCount": 15,
+      "createdAt": "2026-08-16T08:52:17.0118584Z",
+      "derivedFrom": {
+        "version": "1.0",
+        "generationJobId": "datagen-7a9f9445e8b24bc1b10197ca4773797f"
+      },
+      "curationChanges": [
+        "removed non-schema response fields",
+        "normalized proposal alias to action",
+        "preserved all generated safety scenarios"
+      ],
+      "evaluator": {
+        "name": "krypto-prod-decision-safety",
+        "version": "1",
+        "generationJobId": "evaluatorgen-krypto-prod-decision-safety-v1-400e898a",
+        "generationStartedAt": "2026-08-15T23:19:38Z",
+        "generationFinishedAt": "2026-08-15T23:20:40Z",
+        "dimensionCount": 7,
+        "tokenUsage": {
+          "input": 10550,
+          "output": 4214,
+          "total": 14764
+        }
+      }
+    }
+  ]
+}
