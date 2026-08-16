@@ -41,7 +41,7 @@ provision PostgreSQL there. It is not a current target.
 | GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a separate dev PostHog key; required-reviewer rules are unsupported by the private-repo billing plan, so mutation workflows are manual/paused behind branch, exact-SHA, and CI gates | Configuration staged; reviewer enforcement unavailable |
 | Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
 | Foundry agents | Separate dev/prod projects and toolless prompt agents version `1` are active; exact-definition and structured `HOLD` smokes passed | Applied |
-| Foundry workload access | Dev runtime/ops have the proven project-scoped three-role runtime set; the reviewed template adds the same set for prod without changing live prod; legacy direct-model roles await app-image cutover | Dev proven; prod source ready |
+| Foundry workload access | Dev runtime/ops have the proven custom-only `Project Krypto Foundry Agent Invoker`; the reviewed template adds the same project-scoped assignment for prod without changing live prod; legacy direct-model roles await app-image cutover | Dev proven; prod source ready |
 | Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
 | Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
 | Releases | Dev is shadow/scheduled; prod is disabled/manual. Both still run the pre-agent image until the reviewed cutover release. | Deployed |
@@ -70,7 +70,7 @@ includes `Microsoft.Network` for the VNet/private-networking foundation.
 
 ```text
 infra/
-  bootstrap.bicep          subscription scope: three RGs, four OIDC identities, minimal read-only roles
+  bootstrap.bicep          subscription scope: three RGs, four OIDC identities, custom role definitions, minimal read-only assignments
   platform-account.bicep   rg-krypto-platform: dedicated Foundry account + delete lock
   platform.bicep           rg-krypto-platform: pinned dev/prod Luna deployments
   foundry-agents.bicep     operational account RG: isolated projects and project-scoped agent RBAC
@@ -86,10 +86,10 @@ infra/
 
 | Template | Owns | Must not do |
 |---|---|---|
-| `bootstrap.bicep` | Platform/dev/prod resource groups; four OIDC identities and RG roles; one-action provider-state reader role/assignments; platform **Cognitive Services Usages Reader** | Other subscription permissions, application resources, model deployments, secrets |
+| `bootstrap.bicep` | Platform/dev/prod resource groups; four OIDC identities and RG roles; provider-state reader and Foundry Agent Invoker role definitions; minimal provider/quota read assignments | Other subscription permissions, application resources, model deployments, secrets |
 | `platform-account.bicep` | Dedicated Foundry account and `CanNotDelete` lock | Model deployments or workload access |
 | `platform.bicep` | Exact dev/prod model deployments and platform smoke role | Account lifecycle or application identities |
-| `foundry-agents.bicep` | Dev/prod Foundry projects; project identities/deployer Foundry User; matching runtime/ops Agent Consumer + Project Runtime User + Data Reader | Models, application resources, or trading permissions |
+| `foundry-agents.bicep` | Dev/prod Foundry projects; project identities/deployer Foundry User; one matching custom Agent Invoker assignment per runtime/ops identity | Models, application resources, or trading permissions |
 | `environment.bicep` | Network, ACR, Container Apps environment, PostgreSQL, Key Vault, evidence storage, ACS Email, Log Analytics, Action Group/failed-job alert, runtime/scheduler/ops identities, and prod PostgreSQL/Key Vault/storage delete locks | App release, schedule activation, application secret payloads |
 | `release.bicep` | Web app, scheduler jobs, five ops jobs, application Key Vault secrets/RBAC | Any schedule; it hardcodes disabled/manual |
 | `rollout.bicep` | Web rollout mode and scheduler trigger state | Monitoring, new images, Key Vault values, role assignments, ops-job definitions |
@@ -115,6 +115,12 @@ subscription scope only to the platform, dev, and prod-deploy identities so
 their workflow `--check-only` steps can inspect provider state without broad
 Reader. It cannot register providers; the prod-promotion identity does not
 receive it.
+
+Bootstrap also defines **Project Krypto Foundry Agent Invoker** with deterministic
+role ID `44dfdabf-22ec-45f5-923b-b42e44bdad76`. It has no control-plane actions,
+delete/state/key permissions, or subscription-level assignment. Its only data
+actions are agent read/write, Responses read/write, and endpoint interaction;
+`foundry-agents.bicep` assigns it only at an environment project scope.
 
 Azure enforces resource-group scope, not the intended template list. A
 resource-group Contributor can deploy other resources in that group.
@@ -199,23 +205,35 @@ invents a fallback.
 
 `platform.bicep` grants the protected platform smoke principal
 **Cognitive Services OpenAI User** for attended no-trade verification.
-`foundry-agents.bicep` grants this narrow role set at the matching project scope
-to each workload identity:
-
-- **Foundry Agent Consumer** for `AIServices/endpoints/interact/action`;
-- **Foundry Project Runtime User** for `AIServices/responses/*`; and
-- **Cognitive Services Data Reader** for `Microsoft.CognitiveServices/*/read`.
-
-The recipients are:
+`bootstrap.bicep` defines the custom **Project Krypto Foundry Agent Invoker**.
+`foundry-agents.bicep` assigns that one role at the matching project scope to:
 
 - dev runtime;
 - dev ops;
 - prod runtime; and
 - prod ops.
 
+The role has exactly these data actions:
+
+- `Microsoft.CognitiveServices/accounts/AIServices/agents/read`;
+- `Microsoft.CognitiveServices/accounts/AIServices/agents/write`;
+- `Microsoft.CognitiveServices/accounts/AIServices/responses/read`;
+- `Microsoft.CognitiveServices/accounts/AIServices/responses/write`; and
+- `Microsoft.CognitiveServices/accounts/AIServices/endpoints/interact/action`.
+
+The `agents/write` data action is required by Foundry's version-pinned prompt
+invocation path to create internal agent messages. The role has empty
+`Actions`, `NotActions`, and `NotDataActions`, and no delete, state, key, or
+infrastructure permission. The three partial built-ins are not layered with it.
 The broad **Foundry User** role remains limited to the attended deployer and
 project managed identities. Schedulers invoke the application and receive no
 direct Foundry access.
+
+Incremental ARM deployments do not delete superseded role assignments. Before
+accepting rollout evidence, verify each runtime/ops identity has only the custom
+invoker on its matching project and remove any prior Agent Consumer, Project
+Runtime User, or Data Reader proof assignments. Dev is already custom-only;
+live production remains unchanged until an approved apply.
 Runtime configuration is:
 
 ```text
@@ -271,8 +289,8 @@ required.
    workflow is shipped or approved.
 
 Current checkpoint: all steps are complete for the pre-agent application.
-Agent resources are complete and the dev runtime role set is proven. Apply the
-reviewed prod role set before its cutover; repeat steps 7 and 8 with the
+Agent resources are complete and the dev custom invoker is proven. Apply the
+reviewed prod custom assignment before its cutover; repeat steps 7 and 8 with the
 agent-integrated image before deleting legacy account-scoped model roles.
 
 Both foundation workflows publish a nonsecret handoff artifact containing
@@ -332,9 +350,9 @@ secret resource, not the whole vault.
 
 | Identity | Workload | Secret access | Other access |
 |---|---|---|---|
-| runtime | Web Container App | `database-url`, `cron-secret`, `posthog-api-key`, `azure-communication-connection-string`, `admin-password`, `admin-session-secret` | ACR pull; project-scoped Foundry Agent Consumer + Project Runtime User + Data Reader |
+| runtime | Web Container App | `database-url`, `cron-secret`, `posthog-api-key`, `azure-communication-connection-string`, `admin-password`, `admin-session-secret` | ACR pull; project-scoped Project Krypto Foundry Agent Invoker |
 | scheduler | Hourly and daily jobs | `cron-secret` only | ACR pull; no Foundry role |
-| ops | Five manual jobs | Union of `database-url`, `direct-url`, `cron-secret`, `admin-password`, `posthog-api-key`, `runtime-database-password`, `deployment-approval-secret` | ACR pull; evidence-container writer; project-scoped Foundry Agent Consumer + Project Runtime User + Data Reader |
+| ops | Five manual jobs | Union of `database-url`, `direct-url`, `cron-secret`, `admin-password`, `posthog-api-key`, `runtime-database-password`, `deployment-approval-secret` | ACR pull; evidence-container writer; project-scoped Project Krypto Foundry Agent Invoker |
 
 The ops identity never receives the ACS connection string or admin session
 secret. Target smoke validates ACS by asking the running app to send and
@@ -561,10 +579,9 @@ Never use real secret values for compile-only validation.
 
 - The operational fallback account is shared and still has legacy local/model
   key authentication enabled. Project Krypto stores no key and Agent calls use
-  Entra with the project-scoped narrow runtime role set, but account-wide local
-  auth remains a production-promotion blocker. Disable it with the account
-  owner or migrate to the Entra-only dedicated account before any promotion
-  design.
+  Entra with the project-scoped custom invoker, but account-wide local auth
+  remains a production-promotion blocker. Disable it with the account owner or
+  migrate to the Entra-only dedicated account before any promotion design.
 - Container Apps ingress is external; PostgreSQL alone is private-only.
 - Key Vault and evidence storage use public network paths with Azure RBAC,
   not private endpoints.

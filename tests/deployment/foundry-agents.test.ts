@@ -4,6 +4,10 @@ import path from "node:path";
 const root = path.resolve(__dirname, "../..");
 
 describe("Foundry Agent infrastructure", () => {
+  const bootstrap = fs.readFileSync(
+    path.join(root, "infra/bootstrap.bicep"),
+    "utf8",
+  );
   const template = fs.readFileSync(
     path.join(root, "infra/foundry-agents.bicep"),
     "utf8",
@@ -17,15 +21,44 @@ describe("Foundry Agent infrastructure", () => {
     expect(template).toContain("krypto-prod-agents");
   });
 
-  it("scopes the narrow runtime role set to each matching project", () => {
-    expect(template).toContain(
-      "foundryAgentConsumerRoleId = 'eed3b665-ab3a-47b6-8f48-c9382fb1dad6'",
+  it("declares the exact custom invocation role in subscription bootstrap", () => {
+    expect(bootstrap).toContain(
+      "foundryAgentInvokerRoleId = '44dfdabf-22ec-45f5-923b-b42e44bdad76'",
     );
-    expect(template).toContain(
-      "foundryProjectRuntimeUserRoleId = '142bfaed-a13f-4c2d-bed2-6db62c4a1009'",
+    expect(bootstrap).toContain(
+      "roleName: 'Project Krypto Foundry Agent Invoker'",
     );
+
+    const expectedDataActions = [
+      "Microsoft.CognitiveServices/accounts/AIServices/agents/read",
+      "Microsoft.CognitiveServices/accounts/AIServices/agents/write",
+      "Microsoft.CognitiveServices/accounts/AIServices/responses/read",
+      "Microsoft.CognitiveServices/accounts/AIServices/responses/write",
+      "Microsoft.CognitiveServices/accounts/AIServices/endpoints/interact/action",
+    ];
+    const roleBlock = bootstrap.match(
+      /resource foundryAgentInvokerRole[\s\S]*?\n}\n\n\/\/ RG-scoped/,
+    )?.[0];
+    expect(roleBlock).toBeDefined();
+    expect(roleBlock).toContain(
+      "description: 'Invoke a versioned Project Krypto Foundry prompt agent without agent deletion, state mutation, key access, or infrastructure permissions.'",
+    );
+    expect(roleBlock).toContain("type: 'CustomRole'");
+    expect(roleBlock).toMatch(/\n\s+actions: \[\]/);
+    expect(roleBlock).toMatch(/\n\s+notActions: \[\]/);
+    expect(roleBlock).toMatch(/\n\s+notDataActions: \[\]/);
+    expect(roleBlock).toMatch(/assignableScopes:[\s\S]*?subscription\(\)\.id/);
+    for (const dataAction of expectedDataActions) {
+      expect(roleBlock).toContain(`'${dataAction}'`);
+    }
+    expect(
+      roleBlock?.match(/'Microsoft\.CognitiveServices\/[^']+'/g),
+    ).toHaveLength(expectedDataActions.length);
+  });
+
+  it("assigns only the custom invoker role to matching workloads", () => {
     expect(template).toContain(
-      "cognitiveServicesDataReaderRoleId = 'b59867f0-fa02-499b-be73-45a86b5b3e1c'",
+      "foundryAgentInvokerRoleId = '44dfdabf-22ec-45f5-923b-b42e44bdad76'",
     );
 
     for (const [principal, project] of [
@@ -34,29 +67,31 @@ describe("Foundry Agent infrastructure", () => {
       ["prodRuntime", "prodProject"],
       ["prodOps", "prodProject"],
     ]) {
-      for (const [role, roleVariable] of [
-        ["AgentConsumer", "foundryAgentConsumerRoleId"],
-        ["ProjectRuntimeUser", "foundryProjectRuntimeUserRoleId"],
-        ["DataReader", "cognitiveServicesDataReaderRoleId"],
-      ]) {
-        expect(template).toMatch(
-          new RegExp(
-            `resource ${principal}${role}[\\s\\S]*?scope: ${project}[\\s\\S]*?roleDefinitionId: subscriptionResourceId\\('Microsoft.Authorization/roleDefinitions', ${roleVariable}\\)`,
-          ),
-        );
-      }
+      expect(template).toMatch(
+        new RegExp(
+          `resource ${principal}AgentInvoker[\\s\\S]*?scope: ${project}[\\s\\S]*?roleDefinitionId: subscriptionResourceId\\('Microsoft.Authorization/roleDefinitions', foundryAgentInvokerRoleId\\)`,
+        ),
+      );
     }
 
     expect(
-      template.match(
-        /resource (?:dev|prod)(?:Runtime|Ops)(?:AgentConsumer|ProjectRuntimeUser|DataReader) /g,
-      ),
-    ).toHaveLength(12);
+      template.match(/resource (?:dev|prod)(?:Runtime|Ops)AgentInvoker /g),
+    ).toHaveLength(4);
     expect(
       template.match(
         /roleDefinitionId: subscriptionResourceId\('Microsoft\.Authorization\/roleDefinitions', foundryUserRoleId\)/g,
       ),
     ).toHaveLength(4);
+    expect(template).not.toContain("foundryAgentConsumerRoleId");
+    expect(template).not.toContain("foundryProjectRuntimeUserRoleId");
+    expect(template).not.toContain("cognitiveServicesDataReaderRoleId");
+    for (const supersededRoleId of [
+      "eed3b665-ab3a-47b6-8f48-c9382fb1dad6",
+      "142bfaed-a13f-4c2d-bed2-6db62c4a1009",
+      "b59867f0-fa02-499b-be73-45a86b5b3e1c",
+    ]) {
+      expect(template).not.toContain(supersededRoleId);
+    }
   });
 
   it("does not create models or grant an agent application permissions", () => {

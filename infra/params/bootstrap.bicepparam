@@ -1,7 +1,7 @@
 // One-time subscription-scoped bootstrap parameters. Provisions the
-// dedicated platform, dev, and prod resource groups plus four GitHub OIDC
+// dedicated platform, dev, and prod resource groups; four GitHub OIDC
 // identities (development, production-deploy, production-promotion,
-// platform) in westus3.
+// platform); and the reviewed subscription custom-role definitions.
 using '../bootstrap.bicep'
 
 param location = 'westus3'
