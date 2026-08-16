@@ -34,10 +34,12 @@ trade. The application pins every invocation to an immutable agent version,
 verifies the response binding, parses the full domain schema locally, and then
 runs the unchanged deterministic authorization and paper-execution path.
 
-Runtime and ops identities receive project-scoped **Foundry Agent Consumer**.
-The project managed identities and attended deployer receive **Foundry User**
-only at the matching project scope. Direct-model diagnostics remain a
-platform-operator concern, not an application runtime capability.
+Runtime and ops identities receive the project-scoped narrow runtime set:
+**Foundry Agent Consumer**, **Foundry Project Runtime User**, and
+**Cognitive Services Data Reader**. The project managed identities and attended
+deployer receive **Foundry User** only at the matching project scope.
+Direct-model diagnostics remain a platform-operator concern, not an application
+runtime capability.
 
 The compatibility cutover is ordered: deploy and smoke agents, release the
 agent-integrated application, pass post-invocation no-trade database checks,

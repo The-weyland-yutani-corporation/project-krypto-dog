@@ -37,7 +37,7 @@ not satisfy a live Azure gate.
 | Model | OpenAI `gpt-5.6-luna` version `2026-07-09` |
 | Deployment SKU/capacity | `GlobalStandard`; desired dev 10 + prod 10, with deployment-pair-aware incremental validation against the exact quota dimension |
 | Deployment names | `krypto-dev-luna`, `krypto-prod-luna` |
-| Foundry auth | Project Krypto mounts no model or agent API key; runtime and ops UAMIs receive project-scoped **Foundry Agent Consumer** |
+| Foundry auth | Project Krypto mounts no model or agent API key; runtime and ops UAMIs receive project-scoped **Foundry Agent Consumer**, **Foundry Project Runtime User**, and **Cognitive Services Data Reader** |
 | Operational account local auth | Shared fallback still permits legacy local/model key auth; disable with the account owner or migrate before any production promotion |
 | Deployment mutation scope | All mutation roles are resource-group-scoped; prod-deploy and platform Locks Contributor remain in their respective resource groups |
 | Deployment subscription reads | One-action Project Krypto Provider Registration Reader on platform/dev/prod-deploy; Cognitive Services Usages Reader additionally on platform; no broad Reader |
@@ -118,7 +118,8 @@ credential downgrade.
 - [x] Deploy the dev foundation.
 - [x] Deploy the prod foundation.
 - [x] Retain both foundation handoffs and deploy isolated Foundry dev/prod
-  projects with project-scoped runtime/ops Agent Consumer assignments.
+  projects; prove the project-scoped three-role runtime set for dev and preserve
+  the reviewed equivalent for prod without mutating live prod.
 - [x] Deploy and exactly attest toolless dev/prod prompt-agent version `1`;
   pass remote no-trade `HOLD` smoke for each.
 - [x] Remove the four unused workload roles from the model-empty dedicated
