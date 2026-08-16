@@ -46,7 +46,7 @@ permissions: {}
 
 jobs:
   route:
-    runs-on: ubuntu-slim
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-slim' }}
     timeout-minutes: 15
     permissions:
       actions: write

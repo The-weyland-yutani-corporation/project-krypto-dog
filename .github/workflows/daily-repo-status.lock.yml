@@ -53,7 +53,7 @@
 name: "Daily Repo Status (MonitorOps)"
 on:
   schedule:
-  - cron: "53 20 * * *"
+  - cron: "37 5 * * *"
     # Friendly format: daily (scattered)
   workflow_dispatch:
     inputs:

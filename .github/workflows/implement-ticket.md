@@ -21,6 +21,7 @@ permissions:
   checks: read
   actions: read
   copilot-requests: write
+runs-on-slim: "${{ vars.CI_RUNNER_LABEL || 'ubuntu-slim' }}"
 imports:
   - .github/agents/project-krypto-dev.md
 env:

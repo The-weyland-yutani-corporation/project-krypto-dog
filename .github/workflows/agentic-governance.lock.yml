@@ -53,7 +53,7 @@
 name: "Agentic Governance (MonitorOps)"
 on:
   schedule:
-  - cron: "36 15 * * 1"
+  - cron: "11 15 * * 1"
     # Friendly format: weekly on monday (scattered)
   workflow_dispatch:
     inputs:

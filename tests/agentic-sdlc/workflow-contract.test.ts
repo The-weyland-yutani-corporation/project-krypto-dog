@@ -11,13 +11,73 @@ describe("agentic SDLC workflow contracts", () => {
   const reconciler = read(
     ".github/workflows/agentic-pr-reconciler.yml",
   );
+  const ci = read(".github/workflows/ci.yml");
+  const azureInfraValidate = read(
+    ".github/workflows/azure-infra-validate.yml",
+  );
+  const commands = read(".github/workflows/agentic_commands.yml");
   const e2e = read(".github/workflows/agentic-sdlc-e2e.yml");
   const codeReview = read(".github/workflows/code-review.md");
+  const codeReviewLock = read(".github/workflows/code-review.lock.yml");
   const securityReview = read(".github/workflows/security-review.md");
+  const securityReviewLock = read(
+    ".github/workflows/security-review.lock.yml",
+  );
   const selfHeal = read(".github/workflows/pr-self-heal.md");
   const tradingSafetyReview = read(
     ".github/workflows/trading-safety-review.md",
   );
+  const tradingSafetyReviewLock = read(
+    ".github/workflows/trading-safety-review.lock.yml",
+  );
+  const productionWorkflows = [
+    read(".github/workflows/azure-deploy-prod.yml"),
+    read(".github/workflows/azure-platform.yml"),
+    read(".github/workflows/azure-rotate-secrets.yml"),
+  ];
+
+  it("routes required PR checks through the configured CI runner", () => {
+    const hostedFallback =
+      "${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}";
+    const slimFallback =
+      "${{ vars.CI_RUNNER_LABEL || 'ubuntu-slim' }}";
+
+    expect(ci.match(/runs-on: \$\{\{ vars\.CI_RUNNER_LABEL/g)).toHaveLength(
+      3,
+    );
+    expect(
+      azureInfraValidate.match(
+        /runs-on: \$\{\{ vars\.CI_RUNNER_LABEL/g,
+      ),
+    ).toHaveLength(3);
+    expect(reconciler).toContain(`runs-on: ${hostedFallback}`);
+    expect(commands).toContain(`runs-on: ${slimFallback}`);
+
+    for (const source of [
+      codeReview,
+      securityReview,
+      tradingSafetyReview,
+    ]) {
+      expect(source).toContain(`runs-on: "${hostedFallback}"`);
+      expect(source).toContain(`runs-on-slim: "${slimFallback}"`);
+    }
+    for (const lock of [
+      codeReviewLock,
+      securityReviewLock,
+      tradingSafetyReviewLock,
+    ]) {
+      expect(lock).toContain(`runs-on: ${hostedFallback}`);
+      expect(lock).toContain(`runs-on: ${slimFallback}`);
+      expect(lock).not.toContain("runs-on: ubuntu-latest");
+      expect(lock).not.toContain("runs-on: ubuntu-slim");
+    }
+  });
+
+  it("keeps production deployment workflows off the PR CI runner", () => {
+    for (const workflow of productionWorkflows) {
+      expect(workflow).not.toContain("CI_RUNNER_LABEL");
+    }
+  });
 
   it("loads the tested reconciler implementation only from the trusted base", () => {
     expect(reconciler).toContain(
