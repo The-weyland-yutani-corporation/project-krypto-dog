@@ -22,6 +22,7 @@ permissions:
   checks: read
   deployments: read
   copilot-requests: write
+runs-on-slim: "${{ vars.CI_RUNNER_LABEL || 'ubuntu-slim' }}"
 imports:
   - .github/agents/release-manager.md
 tools:

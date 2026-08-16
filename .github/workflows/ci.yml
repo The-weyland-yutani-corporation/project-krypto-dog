@@ -24,7 +24,7 @@ permissions:
 jobs:
   quality:
     name: Quality and evidence gates
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
 
     steps:
@@ -117,7 +117,7 @@ jobs:
 
   postgres:
     name: PostgreSQL migrations and execution
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
     services:
       postgres:
@@ -175,7 +175,7 @@ jobs:
 
   docker-validate:
     name: Docker image target validation
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:

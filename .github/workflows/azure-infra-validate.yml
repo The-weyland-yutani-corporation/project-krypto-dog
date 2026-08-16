@@ -56,7 +56,7 @@ env:
 jobs:
   bicep-build:
     name: Build every Bicep entry point and module
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 10
 
     steps:
@@ -88,7 +88,7 @@ jobs:
 
   bicepparam-build:
     name: Build every .bicepparam file
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 10
 
     steps:
@@ -106,7 +106,7 @@ jobs:
 
   helper-script-self-tests:
     name: Run .github/scripts/azure helper script self-tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 10
     # No Azure login, no OIDC, no real credentials -- every assertion here
     # is either a pure-bash/pure-Node fixture check or a fail-closed

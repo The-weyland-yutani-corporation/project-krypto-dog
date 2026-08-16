@@ -19,6 +19,7 @@ permissions:
   issues: read
   pull-requests: read
   copilot-requests: write
+runs-on-slim: "${{ vars.CI_RUNNER_LABEL || 'ubuntu-slim' }}"
 imports:
   - .github/agents/researcher.md
 tools:
