@@ -116,6 +116,23 @@ describe("generateTradeDecision", () => {
     );
   });
 
+  it("rejects conflicting direct-model and Foundry-agent overrides", async () => {
+    const agentInvoker = jest.fn();
+
+    await expect(
+      generateTradeDecision(input, { model, agentInvoker }),
+    ).rejects.toThrow(/either a model or a Foundry agent invoker/);
+    expect(agentInvoker).not.toHaveBeenCalled();
+  });
+
+  it("rejects a direct model without structured output support", async () => {
+    const unstructuredModel = {} as BaseChatModel;
+
+    await expect(
+      generateTradeDecision(input, { model: unstructuredModel }),
+    ).rejects.toThrow(/does not support structured output/);
+  });
+
   it("applies full domain constraints locally after Azure-compatible parsing", async () => {
     const invalidModel = {
       withStructuredOutput: jest.fn(() =>
