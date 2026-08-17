@@ -27,6 +27,7 @@ and must not be used for a new release.
 | Region | `westus3` |
 | Platform resource group | `rg-krypto-platform` |
 | Dev/prod resource groups | `rg-krypto-dev` / `rg-krypto-prod` |
+| Application runtime | Node.js 22.13.0, pinned by `.nvmrc`, package engines, and both Docker targets |
 | Operational Foundry account | Established `ghcp-foundry-eastus2` (temporary shared model host) |
 | Dedicated future account | `ai-krypto-westus3` (live, local auth disabled, model-empty after `715-123420`) |
 | Model | OpenAI `gpt-5.6-luna`, version `2026-07-09` |

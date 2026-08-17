@@ -31,7 +31,7 @@
 
 | Layer | Technology |
 |---|---|
-| Application | Next.js 16 (App Router), TypeScript, Node.js |
+| Application | Next.js 16 (App Router), TypeScript, Node.js 22.13.0 |
 | AI orchestration | One structured `HOLD` / `BUY` / `SELL` output through `@langchain/openai`; no ReAct loop and no mutating model tool |
 | LLM engine | Dedicated Microsoft Foundry account `ai-krypto-westus3`; OpenAI `gpt-5.6-luna` `2026-07-09` via Azure OpenAI v1 and Microsoft Entra identity |
 | Execution venue | Deterministic transactional paper executor using validated Coinbase market data. A future v3 live venue must implement the gated `ExecutionAdapter` contract. |
