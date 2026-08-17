@@ -199,6 +199,10 @@ function sanitizedOrigin(value: string): string {
 async function loadLatestApproval(
   sql: postgres.Sql,
 ): Promise<LatestApprovalRow | undefined> {
+  // `createdAt` is currently a UTC-normalized timestamp(3) without time zone.
+  // Pin this one formatting query as well so a future timestamptz migration or
+  // database session setting cannot relabel local wall time with a literal Z.
+  await sql`SET LOCAL TIME ZONE 'UTC'`;
   const [row] = await sql<LatestApprovalRow[]>`
     SELECT
       id,
@@ -223,6 +227,7 @@ async function loadLatestApproval(
     ORDER BY "createdAt" DESC, id DESC
     LIMIT 1
   `;
+  await sql`SET LOCAL TIME ZONE DEFAULT`;
   return row;
 }
 
