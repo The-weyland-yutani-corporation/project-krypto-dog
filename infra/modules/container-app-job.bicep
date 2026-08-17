@@ -1,8 +1,10 @@
 // Reusable module for a Container Apps Job (scheduler jobs and the
 // manual ops job). Used by release.bicep (initial/redeploy; scheduler
-// jobs always land as triggerType 'Manual') and by rollout.bicep (the
-// only template allowed to switch a scheduler job's triggerType to
-// 'Schedule'). Takes a digest-pinned image reference only.
+// trading scheduler jobs always land as triggerType 'Manual') and by
+// rollout.bicep (the only template allowed to switch a trading scheduler
+// job's triggerType to 'Schedule'). The issue #125 non-trading safety relay is
+// independently scheduled by release.bicep and has no trade route or secret.
+// Takes a digest-pinned image reference only.
 targetScope = 'resourceGroup'
 
 @description('Container Apps Job name.')
@@ -27,7 +29,7 @@ param imageDigestRef string
 @description('Resource ID of the user-assigned identity this job runs as. Must be scoped to only the secrets/roles this job needs.')
 param jobIdentityId string
 
-@description('Trigger type. "Manual" for operator-invoked jobs and the pre-promotion default for scheduler jobs; "Schedule" only after rollout.bicep promotes a scheduler job.')
+@description('Trigger type. Trading jobs remain Manual until rollout.bicep; independently reviewed non-trading monitor jobs may be Schedule.')
 @allowed([
   'Manual'
   'Schedule'

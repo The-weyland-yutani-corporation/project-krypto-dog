@@ -54,5 +54,6 @@ What did we choose, in one or two paragraphs?
 | [0008](./0008-azure-native-deployment-architecture.md) | Azure-native deployment architecture (Container Apps, Flexible Server, Key Vault, Bicep) | Accepted |
 | [0009](./0009-foundry-prompt-agent-boundary.md) | Foundry prompt agents as a read-only decision boundary | Accepted |
 | [0010](./0010-deployment-approval-provenance.md) | Deployment approval provenance and expiry | Accepted |
-| [0011](./0011-postgresql-trust-boundary-roles.md) | PostgreSQL trust-boundary roles: owner, schema owner, migrator, scheduler, runtime | Accepted |
+| [0011](./0011-postgresql-trust-boundary-roles.md) | PostgreSQL trust-boundary roles: owner, schema owner, migrator, scheduler, runtime | Accepted; append-only incident grant amended by [0013](./0013-durable-safety-incidents-and-independent-alerts.md) |
 | [0012](./0012-bounded-synchronous-execution.md) | Bounded synchronous execution | Accepted |
+| [0013](./0013-durable-safety-incidents-and-independent-alerts.md) | Durable safety incidents and independent external alerts | Accepted |

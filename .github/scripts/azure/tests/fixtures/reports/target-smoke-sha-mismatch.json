@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.5.0",
+  "schemaVersion": "1.6.0",
   "generatedAt": "2026-08-14T00:00:00.000Z",
   "target": "https://krypto.example.com/",
   "evidenceIds": {
@@ -13,6 +13,17 @@
   "releaseSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "rolloutMode": "disabled",
+  "checks": [
+    {
+      "id": "safety-incident-test-fire-dry-run",
+      "status": "pass",
+      "evidence": {
+        "persisted": false,
+        "rosterComplete": true,
+        "authenticatorsConfigured": true
+      }
+    }
+  ],
   "binding": {
     "approvalId": "deployment-smoke-approved-123e4567-e89b-42d3-a456-426614174001",
     "bindingId": "deployment-smoke-binding-123e4567-e89b-42d3-a456-426614174000",

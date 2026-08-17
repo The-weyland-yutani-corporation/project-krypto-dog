@@ -27,6 +27,7 @@ template and identity detail lives in
 | Azure evidence | Exact-SHA migration, preflight/smoke, activation, scheduled-run, and backup reports are retained. Production retention is 90 days and remains `Unlocked` pending irreversible approval. | **Release evidence retained** |
 | Historical host | An older Vercel build and a fresh Supabase PostgreSQL replacement were observed previously. Neither is the Azure release candidate. | Historical baseline only |
 | Scheduling | Dev hourly/daily jobs are `Schedule`; production and all ops jobs remain `Manual`. | **Dev shadow only** |
+| OPS-01 incident control plane | [ADR 0013](./decisions/0013-durable-safety-incidents-and-independent-alerts.md) accepts append-only database incident/outbox evidence plus a separate relay and external Azure alerts. | **Accepted contract; source/CI and target proof remain separately gated** |
 
 GitHub Environments, branch restrictions, and protected values are configured.
 Enterprise-hosted Actions are active ([proof run
@@ -182,11 +183,53 @@ Inside the 180-second application window, providers receive 125 seconds, databas
 
 The web app has at most three replicas, `DATABASE_POOL_MAX=1` and one admitted run per replica, while the private PostgreSQL 17 `krypto_app` login has `CONNECTION LIMIT 20`. Runtime connections use connect/statement/lock/idle-in-transaction timeouts of 5/10/2/15 seconds.
 
-Liveness is dependency-free. Readiness is a four-second, non-mutating, provider-free query using only runtime `DATABASE_URL`. It proves release SHA/image digest, bounded runtime configuration, PostgreSQL 17 and current login/membership/denials/connection limit, the `0009_bounded_execution_v1` schema fingerprint, singleton reconciliation, lease sanity, rollout mode, and local admission. It returns only `ready`/`not_ready` plus opaque reason codes.
+Liveness is dependency-free. Readiness is a four-second, non-mutating, provider-free query using only runtime `DATABASE_URL`. It proves release SHA/image digest, bounded runtime configuration, PostgreSQL 17 and current login/membership/denials/connection limit, current schema fingerprint `0010_safety_incidents_v1`/contract `2`, singleton reconciliation, unresolved-critical incident state, lease sanity, rollout mode, roster, and local admission. It returns only `ready`/`not_ready` plus opaque reason codes.
 
 Daily operator safety ceilings are Coinbase 1,000, version-pinned Foundry 200, PostHog 2,000, and ACS 100 requests per UTC day. Engineering owns the application/runtime contract; release/operator owns provider-plan, quota, and cost reconciliation before rollout; operator owns alert response. The ceilings must be reconciled against contracted provider quotas and costs and lowered when required.
 
 **Evidence status:** this contract is implemented in the issue #132 source change but has not been released to Azure. The verified live platform facts above remain valid; they do not constitute timing, readiness, capacity, quota, or deadline evidence for #132. Source/CI and future exact-release target evidence must be separately indexed in issue #76. Nothing in this contract authorizes live-money execution.
+
+### Durable incident and independent-alert contract
+
+[ADR 0013](./decisions/0013-durable-safety-incidents-and-independent-alerts.md)
+adds a required control plane without changing accounting authority:
+
+```text
+safety state transaction ──> append-only incident/event + outbox
+paper execution transaction ──> immutable ledger + post-commit obligations
+                                      |
+                                      v
+                        separate least-privilege relay
+                                      |
+                                      v
+external Azure Monitor <── Log Analytics/platform + redacted DB evidence
+```
+
+The immutable paper ledger remains truth. A journal, analytics, telemetry, or
+notification failure appends incident/delivery evidence and never rewrites or
+re-executes a trade. Lifecycle, delivery attempts, acknowledgment, escalation,
+containment, recovery, and explicit resolution are appended; a retry does not
+auto-resolve the original incident.
+
+Azure rules must observe platform/absence signals and redacted durable
+incident/outbox exports independently of the web process. Liveness alone cannot
+prove schedule, route, incident persistence, delivery, or acknowledgment
+health. Structured evidence allowlists applicable request, run, release,
+immutable deployment, provider operation, database transaction, and incident
+IDs while excluding credentials and protected target values.
+
+The source contract uses a digest-pinned, non-trading Container Apps Job on a
+five-minute schedule for that relay. It performs a read-only latest-event scan,
+emits a redacted export and scan heartbeat, and has no cron secret or import of
+run-flow, model/provider, policy, or executor code. Its schedule is independent
+monitoring infrastructure; it does not schedule either trading job.
+
+**Evidence status:** this is an accepted contract, not target evidence. No live
+incident schema/outbox, relay, expanded Azure alert catalog, Action Group
+delivery, responder roster, drill, game day, or issue #125 target evidence is
+claimed. Those future exact-release records must be indexed in issue #76 before
+issue #75 / PR-G2. Production remains disabled/manual; no Azure mutation or
+live-money capability is authorized.
 
 ## Resource map and live state
 
@@ -305,5 +348,9 @@ deployment outputs.
   monitoring detail.
 - [`readiness.md`](./readiness.md) — evidence and release gates.
 - [`monitoring.md`](./monitoring.md) — signals and alert behavior.
+- [`incident-response.md`](./incident-response.md) — roles, incident lifecycle,
+  scenarios, drills, and evidence.
 - [`decisions/0008-azure-native-deployment-architecture.md`](./decisions/0008-azure-native-deployment-architecture.md)
   — accepted Azure architecture decision.
+- [`decisions/0013-durable-safety-incidents-and-independent-alerts.md`](./decisions/0013-durable-safety-incidents-and-independent-alerts.md)
+  — accepted incident/outbox and independent-alert decision.

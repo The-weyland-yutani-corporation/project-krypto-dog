@@ -17,6 +17,24 @@ const releaseEnv = {
   ACS_DAILY_REQUEST_BUDGET: "100",
   AZURE_FOUNDRY_AGENT_NAME: "krypto-decision",
   AZURE_FOUNDRY_AGENT_VERSION: "1",
+  SAFETY_PRIMARY_ON_CALL: "primary-person",
+  SAFETY_BACKUP_ON_CALL: "backup-person",
+  SAFETY_RELEASE_OWNER: "release-person",
+  SAFETY_APPROVER: "safety-person",
+  SAFETY_EVIDENCE_CUSTODIAN: "evidence-person",
+  SAFETY_ROLLBACK_OWNER: "rollback-person",
+  SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY:
+    "MCowBQYDK2VwAyEAMYr+QdbCWfcOMw+PdmzscsQ8kz0Lj2971UsepJUKBHQ=",
+  SAFETY_BACKUP_ON_CALL_PUBLIC_KEY:
+    "MCowBQYDK2VwAyEAV6RES8Ay1mqt3tnuy4X2Hk7nLyFPOifxrTBPQdTezTc=",
+  SAFETY_RELEASE_OWNER_PUBLIC_KEY:
+    "MCowBQYDK2VwAyEAHk9XQx5sgdMfpZSQzVqXmi9rrGIEKti/mAmH1wOSz4A=",
+  SAFETY_APPROVER_PUBLIC_KEY:
+    "MCowBQYDK2VwAyEA+OUIMyWinxklx+I4rcL87f5ERhSbOXEiP5yXAIWsJSQ=",
+  SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY:
+    "MCowBQYDK2VwAyEA2y49i6qRTwYBc3MPPe4xysRRebKazJvitWZ5YjNFbsM=",
+  SAFETY_ROLLBACK_OWNER_PUBLIC_KEY:
+    "MCowBQYDK2VwAyEAdCuTCawJgJ0UibJWyN7eRnyy9mf8Fxv7D4d2MX+R+5I=",
 };
 
 describe("readiness contract", () => {
@@ -34,11 +52,12 @@ describe("readiness contract", () => {
       postgres17: true,
       ledgerDenied: true,
       runtimeContractReadable: true,
-      schemaFingerprint: "0009_bounded_execution_v1",
-      contractVersion: 1,
+      schemaFingerprint: "0010_safety_incidents_v1",
+      contractVersion: 2,
       singletonCount: 1,
       reconciledCount: 1,
       leaseSaneCount: 1,
+      unresolvedCriticalIncidentCount: 0,
     });
     const result = await evaluateReadiness({
       query,
@@ -72,6 +91,65 @@ describe("readiness contract", () => {
     expect(JSON.stringify(result)).not.toContain("DATABASE_POOL_MAX");
   });
 
+  it("blocks shadow or paper readiness for an incomplete roster", async () => {
+      const result = await evaluateReadiness({
+        query: jest.fn().mockResolvedValue({
+          runtimeMember: true,
+          runtimeGroupNoLogin: true,
+          separateRuntimeLogin: true,
+          elevatedMember: false,
+          safeRole: true,
+          loginRole: true,
+          inheritedRole: true,
+          stableIdentity: true,
+          boundedConnectionLimit: true,
+          postgres17: true,
+          ledgerDenied: true,
+          runtimeContractReadable: true,
+          schemaFingerprint: "0010_safety_incidents_v1",
+          contractVersion: 2,
+          singletonCount: 1,
+          reconciledCount: 1,
+          leaseSaneCount: 1,
+          unresolvedCriticalIncidentCount: 0,
+        }),
+        env: { ...releaseEnv, SAFETY_BACKUP_ON_CALL: undefined },
+        admission: () => ({ active: 0, capacity: 1, available: 1 }),
+      });
+      expect(result.ready).toBe(false);
+      expect(result.reasons).toContain("safety-roster");
+  });
+
+  it("blocks readiness while durable critical evidence is unresolved", async () => {
+      const query = jest.fn().mockResolvedValue({
+        runtimeMember: true,
+        runtimeGroupNoLogin: true,
+        separateRuntimeLogin: true,
+        elevatedMember: false,
+        safeRole: true,
+        loginRole: true,
+        inheritedRole: true,
+        stableIdentity: true,
+        boundedConnectionLimit: true,
+        postgres17: true,
+        ledgerDenied: true,
+        runtimeContractReadable: true,
+        schemaFingerprint: "0010_safety_incidents_v1",
+        contractVersion: 2,
+        singletonCount: 1,
+        reconciledCount: 1,
+        leaseSaneCount: 1,
+        unresolvedCriticalIncidentCount: 1,
+      });
+      const result = await evaluateReadiness({
+        query,
+        env: releaseEnv,
+        admission: () => ({ active: 0, capacity: 1, available: 1 }),
+      });
+      expect(result.ready).toBe(false);
+      expect(result.reasons).toContain("safety-incidents");
+  });
+
   it("rejects an oversized provider ceiling and direct group-role login", async () => {
     const result = await evaluateReadiness({
       query: jest.fn().mockResolvedValue({
@@ -87,8 +165,8 @@ describe("readiness contract", () => {
         postgres17: true,
         ledgerDenied: true,
         runtimeContractReadable: true,
-        schemaFingerprint: "0009_bounded_execution_v1",
-        contractVersion: 1,
+        schemaFingerprint: "0010_safety_incidents_v1",
+        contractVersion: 2,
         singletonCount: 1,
         reconciledCount: 1,
         leaseSaneCount: 1,

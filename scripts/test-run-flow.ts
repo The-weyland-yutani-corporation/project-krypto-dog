@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { executeAgentRun } from "../src/agent/run-flow";
 import { closeDatabase, db } from "../src/db";
 import {
   agentJournal,
   agentRun,
   agentState,
+  safetyIncidentOutbox,
   tradeExecution,
 } from "../src/db/schema";
 import {
@@ -21,9 +22,16 @@ import { DEFAULT_STRATEGY_CONFIG } from "../src/trading/strategy-config";
 const ACCOUNT_ID = "singleton";
 
 async function resetAccount(): Promise<void> {
-  await db.delete(agentJournal);
-  await db.delete(tradeExecution);
-  await db.delete(agentRun);
+  // This harness runs only against the disposable PostgreSQL scratch database
+  // created by test-migrations.sh. Production/runtime roles have no TRUNCATE
+  // privilege and the product exposes no evidence-reset operation.
+  await db.execute(sql`
+    TRUNCATE TABLE
+      "krypto"."SafetyIncidentOutbox",
+      "krypto"."AgentJournal",
+      "krypto"."TradeExecution",
+      "krypto"."AgentRun"
+  `);
   await db
     .update(agentState)
     .set({
@@ -96,6 +104,9 @@ async function createOpenPosition(now: Date): Promise<void> {
   await db.insert(agentRun).values({
     id: "setup-buy-run",
     idempotencyKey: "setup-buy-idempotency",
+    requestId: "setup-buy-request",
+    releaseId: "database-test-release",
+    deploymentId: "database-test-deployment",
     triggerSource: "database-test",
     tradingMode: "PAPER",
     strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
@@ -229,6 +240,26 @@ async function main(): Promise<void> {
 
   await resetAccount();
   await createOpenPosition(new Date(Date.now() - 3 * 60 * 60 * 1000));
+  const incompleteReplay = await executeAgentRun({
+    triggerSource: "admin",
+    idempotencyKey: "setup-buy-idempotency",
+  });
+  assert.equal(incompleteReplay.kind, "upstream_error");
+  assert.notEqual(
+    (await loadState()).currentPositionETHDecimal,
+    "0.000000000000000000",
+    "replay must preserve the committed paper position",
+  );
+  assert.equal(
+    (
+      await db
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(eq(safetyIncidentOutbox.incidentType, "POST_COMMIT_FAILURE"))
+    ).length,
+    1,
+    "restart replay must escalate an unconfirmed obligation to critical",
+  );
   const restoreStopProvider = setMarketDataProvider(
     createFixtureMarketDataProvider(Array(100).fill(1500)),
   );
@@ -244,6 +275,103 @@ async function main(): Promise<void> {
   assert.equal((await loadState()).currentPositionETHDecimal, "0.000000000000000000");
   assert.equal((await loadState()).dcaCount, 0);
   assert.equal((await db.select().from(tradeExecution)).length, 2);
+  const [stopJournal] = await db
+    .select()
+    .from(agentJournal)
+    .where(eq(agentJournal.agentRunId, stopLoss.result.runId!))
+    .limit(1);
+  assert(stopJournal);
+  const stopJournalCorrelation = stopJournal.marketConditions as Record<
+    string,
+    unknown
+  >;
+  assert.equal(stopJournalCorrelation.requestId, stopLoss.result.requestId);
+  assert.equal(stopJournalCorrelation.runId, stopLoss.result.runId);
+  assert.equal(
+    stopJournalCorrelation.providerAttemptId,
+    stopLoss.result.providerAttemptId,
+  );
+  assert.equal(
+    stopJournalCorrelation.transactionId,
+    stopLoss.result.transactionId,
+  );
+  assert.equal(stopJournalCorrelation.incidentId, stopLoss.result.incidentId);
+
+  await resetAccount();
+  await createOpenPosition(new Date(Date.now() - 3 * 60 * 60 * 1000));
+  const restoreJournalFailureProvider = setMarketDataProvider(
+    createFixtureMarketDataProvider(Array(100).fill(1500)),
+  );
+  const journalFailure = await executeAgentRun({
+    triggerSource: "cron",
+    idempotencyKey: "run-flow-post-commit-journal-failure",
+    hooks: {
+      afterPaperCommitBeforeJournal: () => {
+        throw new Error("injected journal persistence failure");
+      },
+    },
+  });
+  restoreJournalFailureProvider();
+  assert.equal(journalFailure.kind, "upstream_error");
+  assert.equal(
+    (await loadRun("run-flow-post-commit-journal-failure")).errorType,
+    "post-commit-persistence",
+  );
+  assert.equal(
+    (await loadState()).currentPositionETHDecimal,
+    "0.000000000000000000",
+    "journal failure must not roll back or alter the committed paper state",
+  );
+  assert.equal(
+    (
+      await db
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(eq(safetyIncidentOutbox.incidentType, "POST_COMMIT_FAILURE"))
+    ).length,
+    1,
+    "journal failure must leave a durable critical incident",
+  );
+
+  await resetAccount();
+  await createOpenPosition(new Date(Date.now() - 3 * 60 * 60 * 1000));
+  const restoreTelemetryFailureProvider = setMarketDataProvider(
+    createFixtureMarketDataProvider(Array(100).fill(1500)),
+  );
+  const telemetryFailure = await executeAgentRun({
+    triggerSource: "cron",
+    idempotencyKey: "run-flow-post-commit-telemetry-failure",
+    hooks: {
+      beforeTelemetryFlush: () => {
+        throw new Error("injected telemetry delivery failure");
+      },
+    },
+  });
+  restoreTelemetryFailureProvider();
+  assert.equal(telemetryFailure.kind, "upstream_error");
+  if (telemetryFailure.kind !== "upstream_error") {
+    throw new Error("telemetry failure did not surface terminal evidence");
+  }
+  assert.equal(
+    telemetryFailure.result.journalWritten,
+    true,
+    "telemetry failure must not falsify the already-persisted journal",
+  );
+  assert.equal(
+    (await loadState()).currentPositionETHDecimal,
+    "0.000000000000000000",
+    "telemetry failure must not roll back or alter the committed paper state",
+  );
+  assert.equal(
+    (
+      await db
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(eq(safetyIncidentOutbox.incidentType, "TELEMETRY_FAILURE"))
+    ).length,
+    1,
+    "telemetry failure must leave durable critical post-commit evidence",
+  );
 
   await resetAccount();
   await createOpenPosition(new Date(Date.now() - 3 * 60 * 60 * 1000));
@@ -326,6 +454,9 @@ async function main(): Promise<void> {
   await db.insert(agentRun).values({
     id: "live-owner-run",
     idempotencyKey: "run-flow-live-owner",
+    requestId: "run-flow-live-owner-request",
+    releaseId: "database-test-release",
+    deploymentId: "database-test-deployment",
     triggerSource: "cron",
     tradingMode: "DISABLED",
     outcome: "RUNNING",
@@ -355,6 +486,9 @@ async function main(): Promise<void> {
   await db.insert(agentRun).values({
     id: "stale-running-run",
     idempotencyKey: "run-flow-stale-running",
+    requestId: "run-flow-stale-running-request",
+    releaseId: "database-test-release",
+    deploymentId: "database-test-deployment",
     triggerSource: "cron",
     tradingMode: "DISABLED",
     outcome: "RUNNING",
@@ -377,6 +511,51 @@ async function main(): Promise<void> {
   assert.equal(staleRunningRetry.kind, "ok");
   assert.equal((await loadRun("run-flow-stale-running")).outcome, "DISABLED");
   assert.equal((await loadState()).leaseOwner, null);
+
+  await resetAccount();
+  const expiredStartedAt = new Date(Date.now() - 181_000);
+  await db.insert(agentRun).values({
+    id: "expired-running-run",
+    idempotencyKey: "run-flow-expired-running",
+    requestId: "run-flow-expired-running-request",
+    releaseId: "database-test-release",
+    deploymentId: "database-test-deployment",
+    triggerSource: "cron",
+    tradingMode: "DISABLED",
+    outcome: "RUNNING",
+    strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+    startedAt: expiredStartedAt,
+    deadlineAt: new Date(expiredStartedAt.getTime() + 180_000),
+  });
+  await db
+    .update(agentState)
+    .set({
+      leaseOwner: "expired-running-run",
+      leaseExpiresAt: new Date(Date.now() - 1_000),
+      isRunning: true,
+    })
+    .where(eq(agentState.id, ACCOUNT_ID));
+  const expiredRunningRetry = await executeAgentRun({
+    triggerSource: "cron",
+    idempotencyKey: "run-flow-expired-running",
+  });
+  assert.equal(expiredRunningRetry.kind, "upstream_error");
+  assert.equal((await loadState()).leaseOwner, null);
+  assert.equal(
+    (
+      await db
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(
+          eq(
+            safetyIncidentOutbox.incidentType,
+            "DEADLINE_BUDGET_EXHAUSTION",
+          ),
+        )
+    ).length,
+    1,
+    "expired run recovery must atomically preserve a durable incident",
+  );
 
   await resetAccount();
   process.env.ROLLOUT_MODE = "live";
@@ -427,11 +606,57 @@ async function main(): Promise<void> {
     throw new Error("market failure was not surfaced");
   }
   assert.equal(marketFailure.httpStatus, 502);
-  assert.equal((await loadRun("run-flow-market-failure")).outcome, "UPSTREAM_ERROR");
+  const marketFailureRun = await loadRun("run-flow-market-failure");
+  assert.equal(marketFailureRun.outcome, "UPSTREAM_ERROR");
+  assert.match(
+    marketFailureRun.providerAttemptId ?? "",
+    /^attempt-coinbase-1-/,
+  );
+  const [marketFailureIncident] = await db
+    .select()
+    .from(safetyIncidentOutbox)
+    .where(eq(safetyIncidentOutbox.agentRunId, marketFailureRun.id))
+    .limit(1);
+  assert.equal(
+    marketFailureIncident?.providerAttemptId,
+    marketFailureRun.providerAttemptId,
+  );
   assert.equal((await loadState()).leaseOwner, null);
 
+  await resetAccount();
+  process.env.ROLLOUT_MODE = "paper";
+  await db
+    .update(agentState)
+    .set({ currentPositionUSDCDecimal: null })
+    .where(eq(agentState.id, ACCOUNT_ID));
+  const restoreAccountingProvider = setMarketDataProvider(
+    createFixtureMarketDataProvider(Array(100).fill(2000)),
+  );
+  const accountingFailure = await executeAgentRun({
+    triggerSource: "cron",
+    idempotencyKey: "run-flow-accounting-quarantine",
+  });
+  restoreAccountingProvider();
+  assert.equal(accountingFailure.kind, "upstream_error");
+  assert.equal((await loadState()).accountingStatus, "QUARANTINED");
+  assert.equal(
+    (
+      await db
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(
+          eq(
+            safetyIncidentOutbox.incidentType,
+            "RECONCILIATION_QUARANTINE",
+          ),
+        )
+    ).length,
+    1,
+    "typed accounting failures must atomically quarantine and persist evidence",
+  );
+
   console.log(
-    "Run-flow tests passed for disabled mode, terminal/stale/conflict idempotent replay, cold start, mandatory stop-loss, shadow mode, lease recovery, stable configuration errors, and market failures.",
+    "Run-flow tests passed for disabled mode, terminal/stale/conflict idempotent replay, cold start, mandatory stop-loss, shadow mode, post-commit journal/telemetry durability, correlation, lease recovery, stable configuration errors, market failures, and accounting quarantine.",
   );
 }
 

@@ -134,6 +134,54 @@ param posthogEnvironment string = environmentName
 @description('Alert email recipient. Must match the value release.bicep deployed.')
 param alertEmailTo string
 
+@description('Named primary production-paper on-call assignment. Must match release.bicep.')
+@minLength(2)
+param safetyPrimaryOnCall string
+
+@description('Named backup production-paper on-call assignment. Must match release.bicep.')
+@minLength(2)
+param safetyBackupOnCall string
+
+@description('Named release owner assignment. Must match release.bicep.')
+@minLength(2)
+param safetyReleaseOwner string
+
+@description('Named trading-safety approver assignment. Must match release.bicep.')
+@minLength(2)
+param safetyApprover string
+
+@description('Named immutable-evidence custodian assignment. Must match release.bicep.')
+@minLength(2)
+param safetyEvidenceCustodian string
+
+@description('Named rollback owner assignment. Must match release.bicep.')
+@minLength(2)
+param safetyRollbackOwner string
+
+@description('Base64 Ed25519 SPKI public key for the primary on-call. Must match release.bicep.')
+@minLength(8)
+param safetyPrimaryOnCallPublicKey string
+
+@description('Base64 Ed25519 SPKI public key for the backup on-call. Must match release.bicep.')
+@minLength(8)
+param safetyBackupOnCallPublicKey string
+
+@description('Base64 Ed25519 SPKI public key for the release owner. Must match release.bicep.')
+@minLength(8)
+param safetyReleaseOwnerPublicKey string
+
+@description('Base64 Ed25519 SPKI public key for the safety approver. Must match release.bicep.')
+@minLength(8)
+param safetyApproverPublicKey string
+
+@description('Base64 Ed25519 SPKI public key for the evidence custodian. Must match release.bicep.')
+@minLength(8)
+param safetyEvidenceCustodianPublicKey string
+
+@description('Base64 Ed25519 SPKI public key for the rollback owner. Must match release.bicep.')
+@minLength(8)
+param safetyRollbackOwnerPublicKey string
+
 @description('Azure-managed ACS Email sender. Must match the value release.bicep deployed.')
 param communicationEmailSender string
 
@@ -248,6 +296,19 @@ module webApp 'modules/container-app-web.bicep' = {
       { name: 'POSTHOG_HOST', value: posthogHost }
       { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
       { name: 'ALERT_EMAIL_TO', value: alertEmailTo }
+      { name: 'SAFETY_PRIMARY_ON_CALL', value: safetyPrimaryOnCall }
+      { name: 'SAFETY_BACKUP_ON_CALL', value: safetyBackupOnCall }
+      { name: 'SAFETY_RELEASE_OWNER', value: safetyReleaseOwner }
+      { name: 'SAFETY_APPROVER', value: safetyApprover }
+      { name: 'SAFETY_EVIDENCE_CUSTODIAN', value: safetyEvidenceCustodian }
+      { name: 'SAFETY_ROLLBACK_OWNER', value: safetyRollbackOwner }
+      { name: 'SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY', value: safetyPrimaryOnCallPublicKey }
+      { name: 'SAFETY_BACKUP_ON_CALL_PUBLIC_KEY', value: safetyBackupOnCallPublicKey }
+      { name: 'SAFETY_RELEASE_OWNER_PUBLIC_KEY', value: safetyReleaseOwnerPublicKey }
+      { name: 'SAFETY_APPROVER_PUBLIC_KEY', value: safetyApproverPublicKey }
+      { name: 'SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY', value: safetyEvidenceCustodianPublicKey }
+      { name: 'SAFETY_ROLLBACK_OWNER_PUBLIC_KEY', value: safetyRollbackOwnerPublicKey }
+      { name: 'SAFETY_INCIDENT_DRILL_ENABLED', value: 'false' }
       { name: 'AZURE_COMMUNICATION_EMAIL_SENDER', value: communicationEmailSender }
       { name: 'RELEASE_SHA', value: releaseSha }
       { name: 'IMAGE_DIGEST', value: imageDigest }

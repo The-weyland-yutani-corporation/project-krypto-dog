@@ -59,12 +59,29 @@ const trustBoundaryMigrationRow = {
     .digest("hex"),
   createdAt: "1786579434481",
 };
+const boundedExecutionMigrationRow = {
+  hash: createHash("sha256")
+    .update(readFileSync("drizzle/0009_bounded_execution.sql", "utf8"))
+    .digest("hex"),
+  createdAt: "1786967376730",
+};
+const safetyIncidentMigrationRow = {
+  hash: createHash("sha256")
+    .update(readFileSync("drizzle/0010_safety_incidents.sql", "utf8"))
+    .digest("hex"),
+  createdAt: "1786993492359",
+};
 // drizzleMigrationCount reaches TRUST_BOUNDARY_MIGRATION_COUNT (9) only
 // once migration 0008 (drizzle/0008_postgresql_trust_boundaries.sql) has
 // been applied.
 const trustBoundaryCompleteMigrationRows = [
   ...canonicalMigrationRows,
   trustBoundaryMigrationRow,
+];
+const safetyIncidentCompleteMigrationRows = [
+  ...trustBoundaryCompleteMigrationRows,
+  boundedExecutionMigrationRow,
+  safetyIncidentMigrationRow,
 ];
 
 function installedFunctionSource(
@@ -132,11 +149,15 @@ function createSqlMock(
     | "trust-boundary-runtime-login-elevated"
     | "trust-boundary-operator-elevated"
     | "trust-boundary-migrator-create"
-    | "trust-boundary-search-path-unsafe" = "safe",
+    | "trust-boundary-search-path-unsafe"
+    | "safety-incidents-current"
+    | "safety-incidents-unresolved-critical" = "safe",
   systemIdentifier = "7123456789012345678",
 ) {
   const RUNTIME_LOGIN_CURRENT_USER = "azure_app_identity";
-  const isTrustBoundaryScenario = scenario.startsWith("trust-boundary");
+  const isTrustBoundaryScenario =
+    scenario.startsWith("trust-boundary") ||
+    scenario.startsWith("safety-incidents");
   const trustBoundaryRoleRows = !isTrustBoundaryScenario
     ? []
     : [
@@ -271,11 +292,46 @@ function createSqlMock(
       hasTrigger: false,
       hasReferences: false,
     },
+    ProviderDailyUsage: {
+      hasSelect: true,
+      hasInsert: true,
+      hasUpdate: true,
+      hasDelete: false,
+      hasTruncate: false,
+      hasTrigger: false,
+      hasReferences: false,
+    },
+    RuntimeContract: {
+      hasSelect: true,
+      hasInsert: false,
+      hasUpdate: false,
+      hasDelete: false,
+      hasTruncate: false,
+      hasTrigger: false,
+      hasReferences: false,
+    },
+    SafetyIncidentOutbox: {
+      hasSelect: true,
+      hasInsert: true,
+      hasUpdate: false,
+      hasDelete: false,
+      hasTruncate: false,
+      hasTrigger: false,
+      hasReferences: false,
+    },
   };
   function tablePrivilegeRows(roleName: unknown) {
-    const rows = Object.entries(CORRECT_TABLE_PRIVILEGE_ROWS).map(
-      ([name, privileges]) => ({ name, ...privileges }),
-    );
+    const rows = Object.entries(CORRECT_TABLE_PRIVILEGE_ROWS)
+      .filter(
+        ([name]) =>
+          scenario.startsWith("safety-incidents") ||
+          ![
+            "ProviderDailyUsage",
+            "RuntimeContract",
+            "SafetyIncidentOutbox",
+          ].includes(name),
+      )
+      .map(([name, privileges]) => ({ name, ...privileges }));
     if (scenario === "azure-role-incomplete" && roleName === "krypto_runtime") {
       // TradeExecution is missing its required INSERT privilege.
       return rows.map((row) =>
@@ -407,7 +463,8 @@ function createSqlMock(
           scenario === "azure-role-excess-future-relation" ||
           scenario === "azure-login-not-member" ||
           scenario === "azure-login-excess" ||
-          scenario === "same-connection-role";
+          scenario === "same-connection-role" ||
+          scenario.startsWith("safety-incidents");
         return [
           {
             present,
@@ -435,6 +492,14 @@ function createSqlMock(
           { schemaName: "krypto", tableName: "AgentState" },
           { schemaName: "krypto", tableName: "TradeExecution" },
         ];
+        if (scenario.startsWith("safety-incidents")) {
+          return [
+            ...tables,
+            { schemaName: "krypto", tableName: "ProviderDailyUsage" },
+            { schemaName: "krypto", tableName: "RuntimeContract" },
+            { schemaName: "krypto", tableName: "SafetyIncidentOutbox" },
+          ];
+        }
         if (scenario === "incomplete") {
           return tables.filter((table) => table.tableName !== "AgentRun");
         }
@@ -468,6 +533,14 @@ function createSqlMock(
           { schema: "krypto", name: "AgentState", kind: "r" },
           { schema: "krypto", name: "TradeExecution", kind: "r" },
         ];
+        if (scenario.startsWith("safety-incidents")) {
+          return [
+            ...relations,
+            { schema: "krypto", name: "ProviderDailyUsage", kind: "r" },
+            { schema: "krypto", name: "RuntimeContract", kind: "r" },
+            { schema: "krypto", name: "SafetyIncidentOutbox", kind: "r" },
+          ];
+        }
         if (scenario === "legacy" || scenario === "public-incomplete") {
           return [];
         }
@@ -532,9 +605,11 @@ function createSqlMock(
                     scenario === "azure-functions-present" ||
                     scenario === "azure-role-incomplete"
                   ? canonicalMigrationRows
-                  : scenario.startsWith("trust-boundary")
-                    ? trustBoundaryCompleteMigrationRows
-                    : canonicalMigrationRows.slice(0, 7);
+                  : scenario.startsWith("safety-incidents")
+                    ? safetyIncidentCompleteMigrationRows
+                    : scenario.startsWith("trust-boundary")
+                      ? trustBoundaryCompleteMigrationRows
+                      : canonicalMigrationRows.slice(0, 7);
         return scenario === "migration-drift"
           ? [
               {
@@ -581,7 +656,8 @@ function createSqlMock(
         if (
           scenario === "missing-functions" ||
           scenario === "azure-current" ||
-          scenario === "azure-role-incomplete"
+          scenario === "azure-role-incomplete" ||
+          scenario.startsWith("safety-incidents")
         ) {
           return [];
         }
@@ -799,7 +875,9 @@ function createSqlMock(
         return [
           {
             relation:
-              scenario === "blocked" || scenario === "azure-current"
+              scenario === "blocked" ||
+              scenario === "azure-current" ||
+              scenario.startsWith("safety-incidents")
                 ? null
                 : "vault.secrets",
           },
@@ -810,6 +888,18 @@ function createSqlMock(
           { name: "krypto_cron_secret" },
           { name: "krypto_rollout_mode" },
           { name: "krypto_vercel_url" },
+        ];
+      }
+      if (
+        query.includes("unresolved critical safety incident count only")
+      ) {
+        return [
+          {
+            count:
+              scenario === "safety-incidents-unresolved-critical"
+                ? "1"
+                : "0",
+          },
         ];
       }
       if (query.includes("SELECT count(*)::text AS count")) {
@@ -832,6 +922,43 @@ function createSqlMock(
 describe("deployment preflight helpers", () => {
   beforeEach(() => {
     mockedPostgres.mockReset();
+    process.env.SAFETY_PRIMARY_ON_CALL = "primary-person";
+    process.env.SAFETY_BACKUP_ON_CALL = "backup-person";
+    process.env.SAFETY_RELEASE_OWNER = "release-person";
+    process.env.SAFETY_APPROVER = "safety-person";
+    process.env.SAFETY_EVIDENCE_CUSTODIAN = "evidence-person";
+    process.env.SAFETY_ROLLBACK_OWNER = "rollback-person";
+    process.env.SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY =
+      "MCowBQYDK2VwAyEAMYr+QdbCWfcOMw+PdmzscsQ8kz0Lj2971UsepJUKBHQ=";
+    process.env.SAFETY_BACKUP_ON_CALL_PUBLIC_KEY =
+      "MCowBQYDK2VwAyEAV6RES8Ay1mqt3tnuy4X2Hk7nLyFPOifxrTBPQdTezTc=";
+    process.env.SAFETY_RELEASE_OWNER_PUBLIC_KEY =
+      "MCowBQYDK2VwAyEAHk9XQx5sgdMfpZSQzVqXmi9rrGIEKti/mAmH1wOSz4A=";
+    process.env.SAFETY_APPROVER_PUBLIC_KEY =
+      "MCowBQYDK2VwAyEA+OUIMyWinxklx+I4rcL87f5ERhSbOXEiP5yXAIWsJSQ=";
+    process.env.SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY =
+      "MCowBQYDK2VwAyEA2y49i6qRTwYBc3MPPe4xysRRebKazJvitWZ5YjNFbsM=";
+    process.env.SAFETY_ROLLBACK_OWNER_PUBLIC_KEY =
+      "MCowBQYDK2VwAyEAdCuTCawJgJ0UibJWyN7eRnyy9mf8Fxv7D4d2MX+R+5I=";
+  });
+
+  afterAll(() => {
+    for (const key of [
+      "SAFETY_PRIMARY_ON_CALL",
+      "SAFETY_BACKUP_ON_CALL",
+      "SAFETY_RELEASE_OWNER",
+      "SAFETY_APPROVER",
+      "SAFETY_EVIDENCE_CUSTODIAN",
+      "SAFETY_ROLLBACK_OWNER",
+      "SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY",
+      "SAFETY_BACKUP_ON_CALL_PUBLIC_KEY",
+      "SAFETY_RELEASE_OWNER_PUBLIC_KEY",
+      "SAFETY_APPROVER_PUBLIC_KEY",
+      "SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY",
+      "SAFETY_ROLLBACK_OWNER_PUBLIC_KEY",
+    ]) {
+      delete process.env[key];
+    }
   });
 
   it("redacts credentials and query parameters from database URLs", () => {
@@ -1262,6 +1389,72 @@ describe("deployment preflight helpers", () => {
         summary: expect.stringMatching(/not part of the azure target/i),
       }),
     );
+  });
+
+  it("passes the current safety incident schema with an empty critical blocker count", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(createSqlMock("safety-incidents-current") as never)
+      .mockReturnValueOnce(createSqlMock("safety-incidents-current") as never)
+      .mockReturnValueOnce(createSqlMock("safety-incidents-current") as never);
+
+    const report = await runDeploymentPreflight({
+      directUrl: "postgresql://postgres@db.example.com:5432/postgres",
+      runtimeUrl:
+        "postgresql://azure_app_identity@pooler.example.com:6543/postgres",
+      migrationUrl:
+        "postgresql://krypto_migrator@migrator.example.com:5432/postgres",
+      provider: "azure",
+    });
+
+    expect(report.schemaVersion).toBe("1.6.0");
+    expect(report.inventory.drizzleMigrationCount).toBe(11);
+    expect(report.inventory.unresolvedCriticalSafetyIncidentCount).toBe(0);
+    expect(
+      report.checks.find(
+        (check) => check.id === "unresolved-critical-safety-incidents",
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        status: "pass",
+        evidence: { count: 0 },
+      }),
+    );
+    expect(report.inventory.runtimeRole?.missingTablePrivileges).toEqual([]);
+    expect(report.inventory.runtimeRole?.excessTablePrivileges).toEqual([]);
+    expect(report.blockers).toEqual([]);
+  });
+
+  it("blocks on unresolved critical incidents without exposing incident context", async () => {
+    mockedPostgres
+      .mockReturnValueOnce(
+        createSqlMock("safety-incidents-unresolved-critical") as never,
+      )
+      .mockReturnValueOnce(
+        createSqlMock("safety-incidents-unresolved-critical") as never,
+      )
+      .mockReturnValueOnce(
+        createSqlMock("safety-incidents-unresolved-critical") as never,
+      );
+
+    const report = await runDeploymentPreflight({
+      directUrl: "postgresql://postgres@db.example.com:5432/postgres",
+      runtimeUrl:
+        "postgresql://azure_app_identity@pooler.example.com:6543/postgres",
+      migrationUrl:
+        "postgresql://krypto_migrator@migrator.example.com:5432/postgres",
+      provider: "azure",
+    });
+
+    expect(report.blockers).toContain(
+      "unresolved-critical-safety-incidents",
+    );
+    expect(report.inventory.unresolvedCriticalSafetyIncidentCount).toBe(1);
+    expect(
+      report.checks.find(
+        (check) => check.id === "unresolved-critical-safety-incidents",
+      )?.evidence,
+    ).toEqual({ count: 1 });
+    expect(JSON.stringify(report)).not.toContain("redactedContext");
   });
 
   it("treats the same absent-vault data as a warning off of Azure", async () => {

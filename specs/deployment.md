@@ -4,7 +4,9 @@
 > `shadow` with monitored hourly/daily schedules. Production is `disabled`
 > with all jobs `Manual`. Migration, provider/email/admin target smoke,
 > restore-verified production backup, alert delivery, and exact-digest checks
-> passed. No production promotion is shipped or authorized.
+> passed. Those historical alert records are not OPS-01 outbox, catalog, roster,
+> drill, or exact-release evidence. No production promotion is shipped or
+> authorized.
 >
 > **Paper/live safety is unchanged.** `ROLLOUT_MODE` supports only
 > `disabled`, `shadow`, and `paper`. Nothing in this runbook authorizes
@@ -532,6 +534,14 @@ behavior is never acceptable as Azure target evidence.
 
 ## 10. Monitoring activation
 
+The issue #125 exact release creates the non-trading
+`caj-<env>-safety-relay` on a five-minute schedule even while rollout is
+disabled and both trading scheduler jobs are Manual. The relay only reads the
+append-only incident table and emits a redacted latest-state export/heartbeat.
+Its absence/failure is independently alerted. Do not disable it through the
+trading-schedule rollback path; "no schedule" below refers to the hourly and
+daily trading scheduler jobs, not this monitor.
+
 `environment.bicep` creates an always-enabled scheduled-query alert for
 terminal hourly/daily job failures.
 
@@ -543,8 +553,9 @@ Its dev/prod `.bicepparam` files default to disabled at boundary `0`:
   enabled state and exact boundary;
 - the rule validates the live Log Analytics schema before schedule resources
   change; missing schema blocks activation;
-- after a two-hour grace period measured from that exact activation timestamp,
-  no successful hourly execution raises a severity-1 alert; and
+- missing scheduled completion is evaluated from that exact activation
+  timestamp against the authoritative SLO in
+  `production-readiness-prd.v1.md` §8.1; and
 - only after monitoring validation succeeds may `rollout.bicep` change either
   job to `Schedule`.
 
@@ -683,6 +694,56 @@ For the first exact release containing ADR 0012:
 
 Provider or capacity exhaustion is a persisted no-trade failure and operator alert, never a trade fallback. This procedure is PAPER-only and creates no production promotion or live-money authorization.
 
+## 15. OPS-01 incident/outbox and alert-evidence procedure
+
+**Current status: no issue #125 live Azure evidence exists; source/CI status
+must be classified separately from future target proof.** Follow
+[ADR 0013](./decisions/0013-durable-safety-incidents-and-independent-alerts.md)
+and [`incident-response.md`](./incident-response.md). Numeric targets come only
+from `production-readiness-prd.v1.md` §8.1.
+
+For the first exact release implementing OPS-01:
+
+1. Keep the target disabled/manual with no queued work. Preserve the current
+   release, backup, rollback, and PR #224 / PR #228 branch, exact-SHA, CI,
+   protected-environment, and reviewer controls; this procedure grants no Azure
+   mutation or promotion authority.
+2. Index the source ref, merge SHA, protected-main checks, ADR/runbook/SLI-SLO
+   versions, migration hashes, append-only/atomicity tests, relay/dedup/retry
+   tests, and correlation/redaction tests in issue #76 as **source/CI evidence**.
+3. Through a separately approved exact-release path, prove incident origins,
+   lifecycle events, outbox obligations, and delivery attempts are append-only;
+   prove a safety state change and its incident/outbox commit atomically; and
+   prove every PAPER execution commits its post-commit obligation with ledger
+   truth.
+4. Prove the least-privilege relay is operationally separate from the web
+   process. Configure external Azure rules over Log Analytics/platform signals
+   and redacted durable database incident/outbox exports. A liveness response
+   must not satisfy these rules.
+5. Export the exact monitor definitions and target bindings. Test deduplication,
+   provider failure, pending outbox age, `journalWritten=false`, persisted
+   post-commit failure, and loss of telemetry without changing paper state or
+   returning a success-shaped fallback.
+6. Populate and verify the fail-closed roster in issue #76. Any missing,
+   placeholder, unavailable, untested, contradictory, or stale primary on-call,
+   backup on-call, release owner, trading-safety approver, evidence custodian,
+   or rollback owner blocks issue #75 / PR-G2.
+7. Test-fire non-trading warning and critical incidents through persistence,
+   relay, independent observation, delivery, acknowledgment, escalation,
+   containment, recovery, and explicit resolution. Prove a retry never
+   auto-resolves the original incident.
+8. Run the production-equivalent non-trading game day required by
+   `incident-response.md`, preserving ledger truth and proving zero unexpected
+   trade delta.
+9. Index redacted monitor exports, outbox/delivery evidence, provider receipts,
+   drill/game-day timelines, acknowledgments, escalations, roster,
+   correlation/redaction review, preserved-ledger/reconciliation evidence, and
+   follow-ups in issue #76 as **future exact-release target evidence**.
+
+This documentation/source change does not claim that the incident schema,
+relay, Azure rules, Action Group delivery, roster, drills, or game day are live.
+Production remains disabled/manual, and no live-money procedure exists.
+
 ## Further reading
 
 - [`../infra/README.md`](../infra/README.md) — template, identity, secret,
@@ -691,7 +752,11 @@ Provider or capacity exhaustion is a persisted no-trade failure and operator ale
   endpoint register.
 - [`readiness.md`](./readiness.md) — current evidence and promotion gates.
 - [`monitoring.md`](./monitoring.md) — operational alerts and reviews.
+- [`incident-response.md`](./incident-response.md) — incident roles, response,
+  drills, and evidence.
 - [`decisions/0008-azure-native-deployment-architecture.md`](./decisions/0008-azure-native-deployment-architecture.md)
   — accepted Azure architecture.
 - [`decisions/0011-postgresql-trust-boundary-roles.md`](./decisions/0011-postgresql-trust-boundary-roles.md)
   — PostgreSQL owner/schema-owner/migrator/scheduler/runtime trust boundary.
+- [`decisions/0013-durable-safety-incidents-and-independent-alerts.md`](./decisions/0013-durable-safety-incidents-and-independent-alerts.md)
+  — append-only incidents/outbox and independent external alerts.

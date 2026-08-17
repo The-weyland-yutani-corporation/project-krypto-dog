@@ -28,6 +28,7 @@ import {
   consumeProviderRequestBudget,
   type ProviderBudgetStore,
 } from "@/lib/provider-budgets";
+import { deriveProviderAttemptId } from "@/lib/correlation";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
@@ -52,6 +53,7 @@ interface GenerateDecisionOptions {
   providerDeadlineAt?: Date;
   budgetStore?: ProviderBudgetStore;
   delayImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  requestId?: string;
 }
 
 type MessageWithUsage = BaseMessage & {
@@ -232,6 +234,7 @@ export async function generateTradeDecision(
   let response: ProviderDecisionResponse | undefined;
   let finalError: unknown;
   let attemptCount = 0;
+  let providerAttemptId: string | undefined;
   const providerDeadlineAt =
     options.providerDeadlineAt ??
     new Date(
@@ -240,6 +243,13 @@ export async function generateTradeDecision(
     );
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attemptCount = attempt;
+    providerAttemptId = options.requestId
+      ? deriveProviderAttemptId({
+          requestId: options.requestId,
+          provider: "foundry",
+          attempt,
+        })
+      : undefined;
     try {
       options.deadline?.assertActive("Foundry invocation");
       const providerRemainingMs =
@@ -268,12 +278,14 @@ export async function generateTradeDecision(
         error instanceof ExecutionDeadlineError ||
         error instanceof ProviderBudgetError
       ) {
+        error.providerAttemptId = providerAttemptId;
         throw error;
       }
       options.deadline?.assertActive("Foundry retry");
       const classified = classifyLlmError(error);
       classified.attemptCount = attempt;
       classified.latencyMs = Date.now() - startedAt;
+      classified.providerAttemptId = providerAttemptId;
       finalError = classified;
       if (!classified.retryable || attempt === maxAttempts) {
         throw classified;
@@ -303,6 +315,7 @@ export async function generateTradeDecision(
   const usage = response.usage;
   return {
     decision: tradeDecisionSchema.parse(response.parsed),
+    providerAttemptId,
     tokenUsage: {
       promptTokens: usage?.promptTokens ?? 0,
       completionTokens: usage?.completionTokens ?? 0,

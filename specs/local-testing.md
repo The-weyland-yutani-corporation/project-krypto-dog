@@ -305,7 +305,8 @@ Use this only after no-LLM smoke passes, `az login` is authenticated to an
 identity allowed to invoke `krypto-dev-luna`, and the real Azure OpenAI v1
 base URL is present in `.env`.
 
-Reset to a clean paper account if needed:
+Before any safety incident/outbox evidence exists, a disposable local database
+may be reset:
 
 ```bash
 npm run db:reset
@@ -347,13 +348,20 @@ docker exec -i krypto-postgres psql -U krypto -d krypto -c \
   'SELECT id, left("entryText", 160), "tradeExecutionId", "createdAt" FROM "krypto"."AgentJournal" ORDER BY "createdAt" DESC LIMIT 5;'
 ```
 
-## 8. Reset between experiments
+## 8. Disposable local reset boundary
 
 ```bash
 npm run db:reset
 ```
 
-This clears trades and journals, resets the singleton to:
+This works only before the database contains safety incident/outbox evidence and
+never against a hosted/production-shaped URL. After incident evidence exists,
+the command refuses without an override; create a new disposable local database
+for another experiment. This preserves the append-only incident and linked
+trade/run truth instead of deleting evidence to make a window look clean.
+
+On an eligible fresh disposable database it clears trades and journals and
+resets the singleton to:
 
 ```text
 0 ETH / 200 USDC / portfolio value 200 / unlocked / unpaused / not running
@@ -375,7 +383,7 @@ npm run db:init
 | `400 Required rollout mode is missing` | Scheduler request omitted its deployment binding | Send `x-required-rollout-mode` with the exact current mode |
 | Rollout configuration error | Invalid `ROLLOUT_MODE` | Use `disabled`, `shadow`, or `paper` |
 | LLM auth/model error | Stub endpoint, missing Azure CLI login/role, wrong Luna deployment, or wrong v1 base URL | Pause for no-LLM smoke, or authenticate and use the approved `krypto-dev-luna` deployment |
-| `Execution cooldown is active` | A trade happened within 2 hours | Wait, reset DB, or test a non-trade route |
+| `Execution cooldown is active` | A trade happened within 2 hours | Wait, or use a new disposable local database; never erase incident-linked evidence |
 | `Account safety lock is active` or `Maximum drawdown reached (...)` | Drawdown safety threshold was reached | Inspect trades/journals, then use the audited **Clear Safety Lock** admin action with a reason |
 | Coinbase API error | Network/Coinbase transient or invalid/stale candles | Retry later and inspect the typed market-data error |
 

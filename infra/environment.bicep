@@ -96,6 +96,7 @@ var schedulerIdentityName = 'id-${namePrefix}-scheduler'
 var opsIdentityName = 'id-${namePrefix}-ops'
 var hourlyJobName = 'caj-${environmentName}-agent-run'
 var dailyJobName = 'caj-${environmentName}-daily-summary'
+var safetyIncidentRelayJobName = 'caj-${environmentName}-safety-relay'
 
 module network 'modules/network.bicep' = {
   name: 'network'
@@ -134,12 +135,14 @@ module monitoring 'modules/monitoring.bicep' = {
   name: 'monitoring'
   params: {
     location: location
+    environmentName: environmentName
     actionGroupName: actionGroupName
     actionGroupShortName: 'krypto${environmentName}'
     alertEmails: alertEmails
     logAnalyticsWorkspaceId: logAnalyticsWorkspace.id
     hourlyJobName: hourlyJobName
     dailyJobName: dailyJobName
+    safetyIncidentRelayJobName: safetyIncidentRelayJobName
     tags: envTags
   }
 }
@@ -250,6 +253,8 @@ output logAnalyticsWorkspaceId string = logAnalyticsWorkspace.id
 output actionGroupId string = monitoring.outputs.actionGroupId
 output failedJobExecutionAlertId string = monitoring.outputs.failedJobExecutionAlertId
 output failedJobExecutionAlertName string = monitoring.outputs.failedJobExecutionAlertName
+output safetyAlertIds array = monitoring.outputs.safetyAlertIds
+output safetyAlertNames array = monitoring.outputs.safetyAlertNames
 output vnetId string = network.outputs.vnetId
 output containerAppsSubnetId string = network.outputs.containerAppsSubnetId
 output runtimeIdentityId string = identities.outputs.runtimeIdentityId

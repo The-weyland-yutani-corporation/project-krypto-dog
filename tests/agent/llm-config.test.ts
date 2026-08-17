@@ -67,6 +67,19 @@ const ALL_ENV_KEYS = [
   "AZURE_COMMUNICATION_CONNECTION_STRING",
   "AZURE_COMMUNICATION_EMAIL_SENDER",
   "ALERT_EMAIL_TO",
+  "ROLLOUT_MODE",
+  "SAFETY_PRIMARY_ON_CALL",
+  "SAFETY_BACKUP_ON_CALL",
+  "SAFETY_RELEASE_OWNER",
+  "SAFETY_APPROVER",
+  "SAFETY_EVIDENCE_CUSTODIAN",
+  "SAFETY_ROLLBACK_OWNER",
+  "SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY",
+  "SAFETY_BACKUP_ON_CALL_PUBLIC_KEY",
+  "SAFETY_RELEASE_OWNER_PUBLIC_KEY",
+  "SAFETY_APPROVER_PUBLIC_KEY",
+  "SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY",
+  "SAFETY_ROLLBACK_OWNER_PUBLIC_KEY",
   "NODE_ENV",
 ] as const;
 
@@ -330,6 +343,20 @@ describe("validateEnv", () => {
       },
       () => {
         expect(() => validateEnv()).not.toThrow();
+      },
+    );
+  });
+
+  it("fails closed when production shadow lacks an authenticated responder roster", () => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+        ROLLOUT_MODE: "shadow",
+      },
+      () => {
+        expect(() => validateEnv()).toThrow("Invalid environment variables");
+        expect(consoleError).toHaveBeenCalled();
       },
     );
   });

@@ -3,7 +3,8 @@
 > **State snapshot: 2026-08-15 — AZURE RELEASES DEPLOYED.** Dev is
 > shadow/scheduled and production is disabled/manual. Exact-SHA migration,
 > target smoke, activation, scheduled-run, alert-delivery, and restore-verified
-> backup evidence passed.
+> backup evidence passed. The alert evidence covers the earlier limited rules,
+> not the OPS-01 catalog, durable outbox, roster, drills, or exact-release proof.
 >
 > **Paper/live boundary:** the implemented rollout modes are `disabled`,
 > `shadow`, and `paper`. No current workflow, readiness decision, or deployment
@@ -20,7 +21,7 @@ observations remain historical only; its archived procedure is
 | Azure platform | **Operational agents ready** | Dev/prod toolless prompt agents version `1` passed exact structured `HOLD` smokes; the dedicated account remains model-empty |
 | Azure dev | **Deployment-ready in shadow** | First scheduled run passed with zero trades; paper promotion still requires its separate evidence window |
 | Azure prod | **Deployment-ready, disabled/manual** | Backup and target smoke passed; no promotion workflow is shipped |
-| v2.2 paper rollout | **Not ready** | No 30-day qualifying paper evidence window, separate PostHog projects, or approved production promotion design |
+| v2.2 paper rollout | **Not ready** | OPS-01 implementation/target proof and roster are missing; no 30-day qualifying paper evidence window, separate PostHog projects, or approved production promotion design |
 | v3 live execution | **Not authorized** | Live execution is outside the current implementation and requires its own approval gates |
 
 Source implementation, local tests, or a historical provider observation do
@@ -53,6 +54,7 @@ Azure timing, capacity, readiness, quota, deadline-fence, or lease evidence yet.
 | Readiness | Four-second, non-mutating and provider-free over runtime `DATABASE_URL` only; opaque reason codes |
 | Daily provider ceilings | Coinbase `1,000`; version-pinned Foundry `200`; PostHog `2,000`; ACS `100` requests/UTC day; reconcile against contracted quotas and costs before rollout |
 | RUN-01 ownership | Engineering: application/runtime; release/operator: plan/quota/cost reconciliation; operator: alert response |
+| OPS-01 incident evidence | [ADR 0013](./decisions/0013-durable-safety-incidents-and-independent-alerts.md): append-only incident/outbox plus external Azure alerts; source/CI completion and future target proof must be evidenced separately |
 
 `eastus2` was rejected because the selected subscription is restricted from
 PostgreSQL provisioning there. It is a historical constraint, not a valid
@@ -311,7 +313,7 @@ No provider is ready until retained live evidence proves all applicable rows:
 | Admin/auth | Target-smoke proof without disclosing credentials | **Passed in dev and prod** |
 | Scheduler | Unique manual-shadow proof, post-run activation report, digest/generation-namespaced scheduled success, and cross-mode replay rejection | **Passed in dev; production intentionally Manual** |
 | RUN-01 bounded execution | Source tests for deadline/provider/readiness/capacity behavior; future exact-release target proof remains required | **Source implemented; no live issue #132 evidence** |
-| Monitoring | Terminal job-failure alerts and activation-bound missing-hourly-success alert | **Passed; both Action Group tests dispatched successfully** |
+| Monitoring | Historical terminal job-failure and activation-bound missing-hourly-success alerts | **Limited baseline passed; not OPS-01 proof.** Earlier Action Group tests dispatched successfully, but the catalog/outbox/roster/drills remain pending |
 | Rollback | Verified restoration to disabled/manual, followed by monitoring disablement, after an induced or actual failed dev activation | Pending |
 
 Evidence must be bound to the exact release SHA and immutable web/ops image
@@ -351,6 +353,40 @@ The source contract is [ADR 0012](./decisions/0012-bounded-synchronous-execution
 
 **Future exact-release target evidence to index in #76:** immutable deployment identity, release SHA/image digest/config digest; `westus3` ACA and private PostgreSQL 17 identity; live max-replica/job-retry/job-timeout settings; runtime `krypto_app` role/membership/denial/`CONNECTION LIMIT 20` and database timeouts; bounded readiness success and reason-code failure probes; pool/outage/failover/lock-contention/admission behavior; provider plan/rate-limit/quota/cost reconciliation and daily-ceiling exhaustion; one terminal persisted no-trade run; owned lease release or safe expiry; no PAPER commit at/after deadline; alerts and operator response. None of this future #132 target evidence is claimed to exist.
 
+### OPS-01 evidence contract (issue #125 / ADR 0013)
+
+The design contract is
+[ADR 0013](./decisions/0013-durable-safety-incidents-and-independent-alerts.md);
+the response/drill procedure is
+[`incident-response.md`](./incident-response.md); and the only numeric targets
+are in `production-readiness-prd.v1.md` §8.1.
+
+**Source/CI evidence to index in #76:** frozen source ref and merge SHA;
+protected-main checks and policy version; ADR/runbook/SLI-SLO versions;
+incident/outbox migration inventory and hashes; append-only denial and retention
+tests; same-transaction state-change/incident/outbox and committed
+post-commit-obligation tests; relay deduplication, retry, provider-failure, and
+no-auto-resolution tests; structured correlation allowlist and redaction tests;
+and deterministic fixtures labeled engineering-only.
+
+**Future exact-release target evidence to index in #76:** immutable
+release/deployment/target/configuration identity; redacted Azure Monitor exports
+covering external Log Analytics/platform signals and durable database
+incident/outbox exports; exact-target Action Group/channel receipts; pending
+outbox age and delivery attempts; a current named/tested roster; warning and
+critical drill timelines with detections, acknowledgments, escalations,
+containment, recovery, and explicit resolution; game-day follow-ups;
+correlation-completeness/redaction review; preserved-ledger, zero-unexpected-
+trade, reconciliation/quarantine, and recovery proof; and evidence-custodian
+attestation.
+
+This documentation/source change claims no live incident schema/relay, Azure
+catalog, Action Group delivery, completed on-call roster, drills, game day, or
+OPS-01 target evidence. A missing, placeholder, unavailable, untested,
+contradictory, or stale primary on-call, backup on-call, release owner,
+trading-safety approver, evidence custodian, or rollback owner blocks issue #75
+/ PR-G2.
+
 #### Exact canonical issue #76 requirements
 
 The following release-evidence matrix remains mandatory:
@@ -383,13 +419,24 @@ P0: no target mutation or rollout approval may rely on narrative, screenshots, m
 
 ## 9. Monitoring readiness
 
-- [x] Azure Monitor terminal-failure alerts exist for scheduler jobs.
+- [x] Historical Azure Monitor terminal-failure alerts exist for scheduler jobs;
+  this is limited baseline evidence, not OPS-01 completion.
 - [x] Schedule activation records the current UTC epoch and enables the
   fail-closed missing-hourly-success alert through
   `schedule-monitoring.bicep` before `rollout.bicep` switches to `Schedule`.
 - [x] A successful hourly execution must be newer than that activation
   boundary; old executions cannot satisfy the alert.
-- [x] Alert Action Group delivery is verified.
+- [x] Historical limited-rule Action Group test dispatch is verified.
+- [ ] Exact-release OPS-01 catalog rules and redacted monitor exports cover
+  external Log Analytics/platform signals plus durable database incident/outbox
+  evidence; process liveness alone does not qualify.
+- [ ] Durable incident/outbox persistence, separate relay, pending-age/delivery
+  monitoring, deduplication, and explicit no-auto-resolution behavior are
+  implemented and proven on the exact target.
+- [ ] The named/tested fail-closed roster is current and indexed in issue #76.
+- [ ] Warning and critical non-trading drills plus the required game day are
+  delivered, acknowledged, escalated, contained, explicitly resolved, and
+  indexed in issue #76.
 - [ ] PostHog events appear in the correct environment-specific project.
 - [x] ACS guardrail/daily delivery evidence is persisted and queryable.
 - [x] No schedule is considered healthy until an unmarked scheduled execution
@@ -397,7 +444,9 @@ P0: no target mutation or rollout approval may rely on narrative, screenshots, m
 - [ ] Disable, rollback, and rotation paths first verify both jobs are Manual
   with no schedule, then disable monitoring and reset its boundary to `0`.
 
-See [`monitoring.md`](./monitoring.md) for signals and thresholds.
+See [`monitoring.md`](./monitoring.md) for signals/catalog and
+[`incident-response.md`](./incident-response.md) for response/drills. Numeric
+thresholds are authoritative only in `production-readiness-prd.v1.md` §8.1.
 
 ## 10. v2.2 paper-trading evidence gate
 
@@ -405,6 +454,8 @@ Azure deployment readiness proves infrastructure, not strategy readiness.
 Paper promotion additionally requires:
 
 - [ ] disabled and shadow evidence with no order mutation in either mode;
+- [ ] OPS-01 source and future exact-release target evidence, including the
+  current fail-closed roster, is complete in issue #76;
 - [ ] an explicitly approved paper-mode transition;
 - [ ] at least 30 consecutive days of complete scheduled paper evidence;
 - [ ] zero guardrail breaches and zero duplicate overlapping runs;

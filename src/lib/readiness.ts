@@ -1,8 +1,12 @@
 import { databaseClient } from "@/db";
 import { admissionSnapshot } from "@/lib/run-admission";
 import { resolveTradingMode } from "@/trading/strategy-config";
+import {
+  readSafetyRoster,
+  safetyActorPublicKeysConfigured,
+} from "@/lib/safety-roster";
 
-export const EXPECTED_SCHEMA_FINGERPRINT = "0009_bounded_execution_v1";
+export const EXPECTED_SCHEMA_FINGERPRINT = "0010_safety_incidents_v1";
 export const EXECUTION_CONTRACT_VERSION = "bounded-sync-v1";
 export const READINESS_TIMEOUT_MS = 4_000;
 
@@ -25,6 +29,7 @@ interface ReadinessDatabaseRow {
   singletonCount: number;
   reconciledCount: number;
   leaseSaneCount: number;
+  unresolvedCriticalIncidentCount: number;
 }
 
 export type ReadinessReasonCode =
@@ -38,6 +43,8 @@ export type ReadinessReasonCode =
   | "state-singleton"
   | "accounting-reconciliation"
   | "lease-sanity"
+  | "safety-incidents"
+  | "safety-roster"
   | "rollout-mode"
   | "admission-capacity";
 
@@ -96,7 +103,9 @@ const READINESS_QUERY = `
     contract."contractVersion" AS "contractVersion",
     state_counts."singletonCount"::integer AS "singletonCount",
     state_counts."reconciledCount"::integer AS "reconciledCount",
-    state_counts."leaseSaneCount"::integer AS "leaseSaneCount"
+    state_counts."leaseSaneCount"::integer AS "leaseSaneCount",
+    incident_counts."unresolvedCriticalIncidentCount"::integer
+      AS "unresolvedCriticalIncidentCount"
   FROM pg_roles AS role
   CROSS JOIN (
     SELECT
@@ -125,6 +134,20 @@ const READINESS_QUERY = `
       ) AS "leaseSaneCount"
     FROM "krypto"."AgentState" AS state
   ) AS state_counts
+  CROSS JOIN (
+    SELECT count(*) AS "unresolvedCriticalIncidentCount"
+    FROM (
+      SELECT DISTINCT ON (incident."incidentId")
+        incident."severity",
+        incident."status"
+      FROM "krypto"."SafetyIncidentOutbox" AS incident
+      ORDER BY
+        incident."incidentId",
+        incident."eventSequence" DESC
+    ) AS latest_incident
+    WHERE latest_incident."severity" = 'CRITICAL'
+      AND latest_incident."status" <> 'RESOLVED'
+  ) AS incident_counts
   LEFT JOIN "krypto"."RuntimeContract" AS contract
     ON contract."id" = 'singleton'
   WHERE role.rolname = current_user
@@ -211,8 +234,9 @@ export async function evaluateReadiness(
   }
 
   let rolloutMode = false;
+  let resolvedMode: ReturnType<typeof resolveTradingMode> | null = null;
   try {
-    resolveTradingMode(env);
+    resolvedMode = resolveTradingMode(env);
     rolloutMode = true;
   } catch {
     rolloutMode = false;
@@ -224,6 +248,19 @@ export async function evaluateReadiness(
       (dependencies.admission ?? admissionSnapshot)().available > 0;
   } catch {
     admissionAvailable = false;
+  }
+
+  let safetyRosterValid = false;
+  try {
+    if (resolvedMode !== "disabled") {
+      readSafetyRoster(env);
+      if (!safetyActorPublicKeysConfigured(env)) {
+        throw new Error("Safety actor public keys are incomplete");
+      }
+    }
+    safetyRosterValid = true;
+  } catch {
+    safetyRosterValid = false;
   }
 
   const checks: Array<[ReadinessReasonCode, boolean]> = [
@@ -252,12 +289,17 @@ export async function evaluateReadiness(
       Boolean(
         row?.runtimeContractReadable &&
           row.schemaFingerprint === EXPECTED_SCHEMA_FINGERPRINT &&
-          row.contractVersion === 1,
+          row.contractVersion === 2,
       ),
     ],
     ["state-singleton", row?.singletonCount === 1],
     ["accounting-reconciliation", row?.reconciledCount === 1],
     ["lease-sanity", row?.leaseSaneCount === 1],
+    [
+      "safety-incidents",
+      row?.unresolvedCriticalIncidentCount === 0,
+    ],
+    ["safety-roster", safetyRosterValid],
     ["rollout-mode", rolloutMode],
     ["admission-capacity", admissionAvailable],
   ];

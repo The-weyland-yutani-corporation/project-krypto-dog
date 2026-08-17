@@ -14,9 +14,11 @@ import {
   agentJournal,
   agentRun,
   agentState,
+  safetyIncidentOutbox,
   tradeExecution,
   type AgentRun,
   type AgentState,
+  type SafetyIncidentOutbox,
 } from "@/db/schema";
 import { generateTradeDecision } from "@/agent/decision";
 import {
@@ -45,11 +47,13 @@ import {
   trackLLMTokenUsage,
   trackTradeExecuted,
   type AgentTriggerSource,
+  type TelemetryCaptureResult,
 } from "@/lib/analytics";
 import { executePaperTrade } from "@/trading/paper-executor";
 import {
   AgentBindingMismatchError,
   AgentUpstreamError,
+  AccountingError,
   RequiredRolloutModeError,
   TradeConflictError,
   TradingConfigurationError,
@@ -80,17 +84,34 @@ import {
   createExecutionDeadline,
   type ExecutionDeadline,
 } from "@/lib/execution-envelope";
-import { reservePostHogBudget } from "@/lib/posthog";
+import { flushPostHog, reservePostHogBudget } from "@/lib/posthog";
+import {
+  deriveProviderAttemptId,
+  resolveReleaseDeploymentCorrelation,
+  resolveRequestId,
+} from "@/lib/correlation";
+import {
+  emitSafetyIncidentLog,
+  insertCreatedSafetyIncident,
+  safetyIncidentRepository,
+  type CreateSafetyIncidentInput,
+  type SafetyIncidentType,
+} from "@/lib/safety-incidents";
 
 const ACCOUNT_ID = "singleton";
 const LEASE_DURATION_MS = RUN_LEASE_DURATION_MS;
 
 export interface ExecuteAgentRunOptions {
   triggerSource: AgentTriggerSource;
+  requestId?: string;
   idempotencyKey?: string;
   requiredMode?: TradingMode;
   signal?: AbortSignal;
   deadline?: ExecutionDeadline;
+  hooks?: {
+    afterPaperCommitBeforeJournal?: () => void | Promise<void>;
+    beforeTelemetryFlush?: () => void | Promise<void>;
+  };
 }
 
 export type ExecuteAgentRunOutcome =
@@ -106,9 +127,25 @@ type InvocationAcquisition =
       mode: TradingMode;
       startedAt: Date;
       deadlineAt: Date;
+      requestId: string;
+      releaseId: string;
+      deploymentId: string;
+      providerAttemptId: string | null;
     }
-  | { kind: "existing"; run: AgentRun }
-  | { kind: "conflict"; runId: string; message: string };
+  | {
+      kind: "existing";
+      run: AgentRun;
+      recoveryIncident?: SafetyIncidentOutbox;
+    }
+  | {
+      kind: "conflict";
+      runId: string;
+      message: string;
+      requestId: string;
+      releaseId: string;
+      deploymentId: string;
+      providerAttemptId: string | null;
+    };
 
 export function configuredModelVersion(
   env: Record<string, string | undefined> = process.env,
@@ -144,11 +181,11 @@ function defaultIdempotencyKey(
 
 function decimalNumber(value: string | null, field: string): number {
   if (value === null) {
-    throw new Error(`${field} is not initialized`);
+    throw new AccountingError(`${field} is not initialized`);
   }
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
-    throw new Error(`${field} is not finite`);
+    throw new AccountingError(`${field} is not finite`);
   }
   return parsed;
 }
@@ -218,12 +255,24 @@ async function acquireInvocation(
       .from(agentRun)
       .where(eq(agentRun.idempotencyKey, idempotencyKey))
       .limit(1);
+    const requestId =
+      existing?.requestId ?? resolveRequestId(options.requestId);
+    const releaseDeployment = existing
+      ? {
+          releaseId: existing.releaseId,
+          deploymentId: existing.deploymentId,
+        }
+      : resolveReleaseDeploymentCorrelation();
     if (existing && !idempotencyReplayMatchesMode(existing.tradingMode, mode)) {
       return {
         kind: "conflict",
         runId: existing.id,
         message:
           "Idempotency key belongs to an AgentRun from a different rollout mode.",
+        requestId,
+        releaseId: releaseDeployment.releaseId,
+        deploymentId: releaseDeployment.deploymentId,
+        providerAttemptId: existing.providerAttemptId,
       };
     }
     if (
@@ -257,6 +306,10 @@ async function acquireInvocation(
           kind: "conflict",
           runId: existing.id,
           message: "The original invocation still owns an unexpired run lease",
+          requestId,
+          releaseId: releaseDeployment.releaseId,
+          deploymentId: releaseDeployment.deploymentId,
+          providerAttemptId: existing.providerAttemptId,
         };
       }
       const [terminal] = await tx
@@ -298,7 +351,44 @@ async function acquireInvocation(
             ),
           ),
         );
-      if (terminal) return { kind: "existing", run: terminal };
+      if (terminal) {
+        const recoveryIncident = await insertCreatedSafetyIncident(
+          tx,
+          {
+            incidentType: "DEADLINE_BUDGET_EXHAUSTION",
+            severity: "CRITICAL",
+            dedupKey: `expired-run-recovery:${existing.id}`,
+            requestId,
+            agentRunId: existing.id,
+            releaseId: releaseDeployment.releaseId,
+            deploymentId: releaseDeployment.deploymentId,
+            providerAttemptId: existing.providerAttemptId,
+            redactedContext: {
+              component: "run-flow",
+              operation: "expired-run-recovery",
+              failureCode: "execution-deadline-exhausted",
+              outcome: "error",
+              leaseAgeSeconds: Math.max(
+                0,
+                Math.floor(
+                  (now.getTime() - existing.startedAt.getTime()) / 1_000,
+                ),
+              ),
+            },
+            occurredAt: now,
+            ownerRole: "PRIMARY_ON_CALL",
+            backupRole: "BACKUP_ON_CALL",
+            runbook:
+              "specs/incident-response.md#scenario-actions",
+          },
+          { now: () => now },
+        );
+        return {
+          kind: "existing",
+          run: terminal,
+          recoveryIncident: recoveryIncident.event,
+        };
+      }
       const [current] = await tx
         .select()
         .from(agentRun)
@@ -313,6 +403,9 @@ async function acquireInvocation(
       await tx.insert(agentRun).values({
         id: runId,
         idempotencyKey,
+        requestId,
+        releaseId: releaseDeployment.releaseId,
+        deploymentId: releaseDeployment.deploymentId,
         triggerSource: options.triggerSource,
         tradingMode: databaseMode(mode),
         strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
@@ -358,6 +451,10 @@ async function acquireInvocation(
         kind: "conflict",
         runId,
         message: "Agent is already running",
+        requestId,
+        releaseId: releaseDeployment.releaseId,
+        deploymentId: releaseDeployment.deploymentId,
+        providerAttemptId: existing?.providerAttemptId ?? null,
       };
     }
 
@@ -391,6 +488,10 @@ async function acquireInvocation(
       mode,
       startedAt: existing?.startedAt ?? now,
       deadlineAt: existing?.deadlineAt ?? deadlineAt,
+      requestId,
+      releaseId: releaseDeployment.releaseId,
+      deploymentId: releaseDeployment.deploymentId,
+      providerAttemptId: existing?.providerAttemptId ?? null,
     };
   });
 }
@@ -432,6 +533,7 @@ async function completeRun(
     latencyMs: number;
     errorType: string;
     errorMessage: string;
+    providerAttemptId: string | null;
   }> = {},
 ): Promise<void> {
   await db
@@ -452,6 +554,47 @@ async function completeRun(
     );
 }
 
+async function completeRunWithIncident(
+  runId: string,
+  outcome: AgentRun["outcome"],
+  now: Date,
+  values: Parameters<typeof completeRun>[3],
+  incident: CreateSafetyIncidentInput,
+) {
+  return db.transaction(async (tx) => {
+    if (incident.incidentType === "RECONCILIATION_QUARANTINE") {
+      const quarantined = await tx
+        .update(agentState)
+        .set({
+          accountingStatus: "QUARANTINED",
+          accountingIssue:
+            "Typed accounting invariant failure; inspect the linked safety incident.",
+        })
+        .where(
+          and(
+            eq(agentState.id, ACCOUNT_ID),
+            eq(agentState.leaseOwner, runId),
+          ),
+        )
+        .returning({ id: agentState.id });
+      if (quarantined.length !== 1) {
+        throw new TradeConflictError(
+          "Accounting quarantine requires the owned run lease",
+        );
+      }
+    }
+    await tx
+      .update(agentRun)
+      .set({
+        outcome,
+        completedAt: now,
+        ...values,
+      })
+      .where(eq(agentRun.id, runId));
+    return insertCreatedSafetyIncident(tx, incident);
+  });
+}
+
 async function reconstructExistingRun(
   run: AgentRun,
 ): Promise<ExecuteAgentRunOutcome> {
@@ -464,6 +607,32 @@ async function reconstructExistingRun(
     .from(tradeExecution)
     .where(eq(tradeExecution.agentRunId, run.id))
     .limit(1);
+  const incidentEvents = trade
+    ? await db
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(eq(safetyIncidentOutbox.transactionId, trade.id))
+        .orderBy(desc(safetyIncidentOutbox.eventSequence))
+    : [];
+  const [persistedJournal] = await db
+    .select({
+      id: agentJournal.id,
+      tradeExecutionId: agentJournal.tradeExecutionId,
+    })
+    .from(agentJournal)
+    .where(eq(agentJournal.agentRunId, run.id))
+    .orderBy(desc(agentJournal.createdAt))
+    .limit(1);
+  const journalWritten = Boolean(
+    persistedJournal &&
+      (!trade || persistedJournal.tradeExecutionId === trade.id),
+  );
+  const createdIncident = incidentEvents.find(
+    (event) => event.eventKind === "CREATED",
+  );
+  const postCommitDeliveryConfirmed = incidentEvents.some(
+    (event) => event.eventKind === "DELIVERY_CONFIRMED",
+  );
   const status: AgentRunResult["status"] =
     run.outcome === "EXECUTED"
       ? "executed"
@@ -475,6 +644,12 @@ async function reconstructExistingRun(
           : "skipped";
   const result: AgentRunResult = {
     runId: run.id,
+    requestId: run.requestId,
+    releaseId: run.releaseId,
+    deploymentId: run.deploymentId,
+    providerAttemptId: run.providerAttemptId,
+    transactionId: trade?.id,
+    incidentId: createdIncident?.incidentId,
     status,
     action: trade
       ? "trade"
@@ -500,9 +675,46 @@ async function reconstructExistingRun(
         }
       : undefined,
     durationMs: run.latencyMs ?? 0,
+    journalWritten,
   };
 
   if (run.errorType === "post-commit-persistence") {
+    return {
+      kind: "upstream_error",
+      result,
+      httpStatus: 500,
+    };
+  }
+  if (trade && (!createdIncident || !postCommitDeliveryConfirmed)) {
+    if (createdIncident) emitSafetyIncidentLog(createdIncident);
+    const criticalIncident = await safetyIncidentRepository.createOrGet({
+      incidentType: "POST_COMMIT_FAILURE",
+      severity: "CRITICAL",
+      dedupKey: `post-commit-replay:${run.id}`,
+      requestId: run.requestId,
+      agentRunId: run.id,
+      releaseId: run.releaseId,
+      deploymentId: run.deploymentId,
+      providerAttemptId: run.providerAttemptId,
+      transactionId: trade.id,
+      redactedContext: {
+        component: "run-flow",
+        operation: "idempotent-replay",
+        failureCode: createdIncident
+          ? "post-commit-delivery-unconfirmed"
+          : "post-commit-obligation-missing",
+        journalWritten,
+        outcome: "executed-with-post-commit-failure",
+      },
+      ownerRole: "PRIMARY_ON_CALL",
+      backupRole: "EVIDENCE_CUSTODIAN",
+      runbook:
+        "specs/incident-response.md#post-commit-journal-or-telemetry-failure",
+    });
+    result.incidentId = criticalIncident.event.incidentId;
+    result.error =
+      "Committed paper trade has an unresolved durable post-commit obligation";
+    result.journalWritten = journalWritten;
     return {
       kind: "upstream_error",
       result,
@@ -546,7 +758,11 @@ function persistedErrorHttpStatus(errorType: string | null): number {
   }
 }
 
-async function loadTradingContext(deadline: ExecutionDeadline) {
+async function loadTradingContext(
+  runId: string,
+  requestId: string,
+  deadline: ExecutionDeadline,
+) {
   deadline.assertActive("trading context database read");
   const [state] = await db
     .select()
@@ -569,6 +785,15 @@ async function loadTradingContext(deadline: ExecutionDeadline) {
     .limit(JOURNAL_CONTEXT_COUNT);
 
   const provider = getMarketDataProvider();
+  const providerAttemptId = deriveProviderAttemptId({
+    requestId,
+    provider: "coinbase",
+    attempt: 1,
+  });
+  await db
+    .update(agentRun)
+    .set({ providerAttemptId })
+    .where(and(eq(agentRun.id, runId), eq(agentRun.outcome, "RUNNING")));
   deadline.assertActive("Coinbase market data");
   const providerDeadlineAt = new Date(
     deadline.now().getTime() + 20_000,
@@ -593,15 +818,20 @@ async function loadTradingContext(deadline: ExecutionDeadline) {
     state,
     account: accountSnapshot(state, lastTrade?.createdAt ?? null),
     market,
+    providerAttemptId,
     recentJournalEntries: recentJournals.map((entry) => entry.entryText),
   };
 }
 
 async function markAccountToMarket(
   context: Awaited<ReturnType<typeof loadTradingContext>>,
+  run: Pick<
+    Extract<InvocationAcquisition, { kind: "acquired" }>,
+    "runId" | "requestId" | "releaseId" | "deploymentId"
+  >,
   leaseOwner: string,
   deadline: ExecutionDeadline,
-): Promise<void> {
+): Promise<string | null> {
   deadline.assertActive("mark account to market");
   const portfolioValueUSD =
     context.account.usdcBalance +
@@ -628,35 +858,61 @@ async function markAccountToMarket(
     ? `Maximum drawdown reached (${drawdownPct.toFixed(2)}%)`
     : context.state.lockReason;
 
-  const [updated] = await db
-    .update(agentState)
-    .set({
-      portfolioValueUSD,
-      portfolioValueUSDDecimal: portfolioValueUSD.toFixed(8),
-      peakPortfolioValueUSD: peakPortfolioValueUSD.toFixed(8),
-      drawdownPct: drawdownPct.toFixed(8),
-      isLocked: shouldLock,
-      lockReason,
-      lockedAt: newlyLocked ? new Date() : context.state.lockedAt,
-      strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
-      strategySnapshot: DEFAULT_STRATEGY_CONFIG,
-    })
-    .where(
-      and(
-        eq(agentState.id, ACCOUNT_ID),
-        eq(agentState.leaseOwner, leaseOwner),
-      ),
-    )
-    .returning({ id: agentState.id });
+  const transition = await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(agentState)
+      .set({
+        portfolioValueUSD,
+        portfolioValueUSDDecimal: portfolioValueUSD.toFixed(8),
+        peakPortfolioValueUSD: peakPortfolioValueUSD.toFixed(8),
+        drawdownPct: drawdownPct.toFixed(8),
+        isLocked: shouldLock,
+        lockReason,
+        lockedAt: newlyLocked ? new Date() : context.state.lockedAt,
+        strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+        strategySnapshot: DEFAULT_STRATEGY_CONFIG,
+      })
+      .where(
+        and(
+          eq(agentState.id, ACCOUNT_ID),
+          eq(agentState.leaseOwner, leaseOwner),
+        ),
+      )
+      .returning({ id: agentState.id });
 
-  if (!updated) {
-    throw new TradeConflictError(
-      "Run lease ownership changed while marking the account to market",
-    );
-  }
+    if (!updated) {
+      throw new TradeConflictError(
+        "Run lease ownership changed while marking the account to market",
+      );
+    }
+
+    if (!newlyLocked) return { incident: null };
+    const incident = await insertCreatedSafetyIncident(tx, {
+      incidentType: "DRAWDOWN_LOCK",
+      severity: "CRITICAL",
+      dedupKey: `drawdown-lock:${run.runId}`,
+      requestId: run.requestId,
+      agentRunId: run.runId,
+      releaseId: run.releaseId,
+      deploymentId: run.deploymentId,
+      providerAttemptId: context.providerAttemptId,
+      redactedContext: {
+        component: "run-flow",
+        operation: "drawdown-lock",
+        locked: true,
+        reasonCode: "maximum-drawdown",
+      },
+      ownerRole: "PRIMARY_ON_CALL",
+      backupRole: "BACKUP_ON_CALL",
+      runbook: "specs/incident-response.md#drawdown-lock",
+    });
+    return { incident: incident.event };
+  });
 
   context.account.peakPortfolioValueUSD = peakPortfolioValueUSD;
   context.account.isLocked = shouldLock;
+  if (transition.incident) emitSafetyIncidentLog(transition.incident);
+  return transition.incident?.incidentId ?? null;
 }
 
 function marketRecord(
@@ -682,8 +938,16 @@ async function persistJournal(
   market: TradingMarketSnapshot,
   decision: TradeDecision | null,
   authorization: AuthorizationResult | null,
+  correlation: {
+    requestId: string;
+    releaseId: string;
+    deploymentId: string;
+    providerAttemptId: string | null;
+    incidentId?: string;
+    transactionId?: string;
+  },
   tradeId?: string,
-): Promise<void> {
+): Promise<string> {
   const lines = [
     decision
       ? `Model decision: ${decision.action}${decision.notionalUSD === null ? "" : ` $${decision.notionalUSD.toFixed(2)}`}.`
@@ -696,18 +960,38 @@ async function persistJournal(
       : undefined,
   ].filter((line): line is string => Boolean(line));
 
-  await db.insert(agentJournal).values({
-    agentRunId: runId,
-    tradeExecutionId: tradeId,
-    entryText: lines.join("\n"),
-    marketConditions: marketRecord(market),
-  });
+  const [entry] = await db
+    .insert(agentJournal)
+    .values({
+      agentRunId: runId,
+      tradeExecutionId: tradeId,
+      entryText: lines.join("\n"),
+      marketConditions: {
+        ...marketRecord(market),
+        requestId: correlation.requestId,
+        runId,
+        releaseId: correlation.releaseId,
+        deploymentId: correlation.deploymentId,
+        providerAttemptId: correlation.providerAttemptId,
+        transactionId: correlation.transactionId ?? null,
+        incidentId: correlation.incidentId ?? null,
+      },
+    })
+    .returning({ id: agentJournal.id });
+  if (!entry) throw new Error("Journal insert returned no durable evidence ID");
+  return entry.id;
 }
 
 async function persistBindingMismatchJournal(
   runId: string,
   market: TradingMarketSnapshot,
   error: AgentBindingMismatchError,
+  correlation: {
+    requestId: string;
+    releaseId: string;
+    deploymentId: string;
+    providerAttemptId: string | null;
+  },
 ): Promise<void> {
   await db.insert(agentJournal).values({
     agentRunId: runId,
@@ -722,17 +1006,42 @@ async function persistBindingMismatchJournal(
       guardrail: "foundry-agent-binding",
       expectedBinding: error.expectedBinding,
       actualBinding: error.actualBinding,
+      requestId: correlation.requestId,
+      runId,
+      releaseId: correlation.releaseId,
+      deploymentId: correlation.deploymentId,
+      providerAttemptId: correlation.providerAttemptId,
     },
   });
 }
 
-function finalizeAnalytics(
+class TelemetryEvidenceError extends Error {
+  readonly failureCode = "posthog-telemetry-failed";
+
+  constructor(readonly failedEvents: string[]) {
+    super("PostHog telemetry was not durably delivered");
+    this.name = "TelemetryEvidenceError";
+  }
+}
+
+async function finalizeAnalytics(
   result: AgentRunResult,
   triggerSource: AgentTriggerSource,
-): void {
-  trackAgentRunCompleted(result, triggerSource);
+  deadline: ExecutionDeadline,
+  hooks?: ExecuteAgentRunOptions["hooks"],
+): Promise<void> {
+  const captures: TelemetryCaptureResult[] = [
+    trackAgentRunCompleted(result, triggerSource),
+  ];
   if (result.tokenUsage) {
-    trackLLMTokenUsage(result.tokenUsage);
+    captures.push(
+      trackLLMTokenUsage({
+        ...result.tokenUsage,
+        requestId: result.requestId,
+        runId: result.runId,
+        providerAttemptId: result.providerAttemptId,
+      }),
+    );
   }
   if (
     result.trade?.success &&
@@ -742,14 +1051,33 @@ function finalizeAnalytics(
     result.trade.executionPrice !== undefined &&
     result.trade.feesUSD !== undefined
   ) {
-    trackTradeExecuted({
+    captures.push(trackTradeExecuted({
       direction: result.trade.direction,
       asset: result.trade.asset,
       amountUSD: result.trade.amountUSD,
       executionPrice: result.trade.executionPrice,
       feesUSD: result.trade.feesUSD,
       pnlUSD: result.trade.pnlUSD ?? undefined,
-    });
+      requestId: result.requestId,
+      runId: result.runId,
+      releaseId: result.releaseId,
+      deploymentId: result.deploymentId,
+      providerAttemptId: result.providerAttemptId,
+      transactionId: result.transactionId,
+      incidentId: result.incidentId,
+    }));
+  }
+  const failedEvents = captures
+    .filter((capture) => !capture.accepted)
+    .map((capture) => capture.event);
+  if (failedEvents.length > 0) {
+    throw new TelemetryEvidenceError(failedEvents);
+  }
+  try {
+    await hooks?.beforeTelemetryFlush?.();
+    await flushPostHog({ deadline });
+  } catch {
+    throw new TelemetryEvidenceError(["posthog_flush"]);
   }
 }
 
@@ -761,6 +1089,12 @@ function resultFromExecution(
   tokenUsage: AgentRunResult["tokenUsage"],
   isLocked: boolean,
   durationMs: number,
+  correlation: {
+    requestId: string;
+    releaseId: string;
+    deploymentId: string;
+    providerAttemptId: string | null;
+  },
 ): AgentRunResult {
   const trade: TradeResult = {
     success: true,
@@ -788,6 +1122,9 @@ function resultFromExecution(
   };
   return {
     runId,
+    ...correlation,
+    transactionId: execution.tradeId,
+    incidentId: execution.incidentId,
     status: "executed",
     action: "trade",
     reasoning,
@@ -799,6 +1136,7 @@ function resultFromExecution(
 }
 
 function errorHttpStatus(error: unknown): number {
+  if (error instanceof TelemetryEvidenceError) return 500;
   if (error instanceof ExecutionDeadlineError) return 504;
   if (error instanceof ProviderBudgetError) return 503;
   if (error instanceof AdmissionCapacityError) return 503;
@@ -819,6 +1157,42 @@ function errorHttpStatus(error: unknown): number {
     return 422;
   }
   return 502;
+}
+
+function incidentTypeForRunError(error: unknown): SafetyIncidentType {
+  if (error instanceof TelemetryEvidenceError) return "TELEMETRY_FAILURE";
+  if (error instanceof AgentBindingMismatchError) {
+    return "AUTH_PROVENANCE_MISMATCH";
+  }
+  if (
+    error instanceof ExecutionDeadlineError ||
+    error instanceof ProviderBudgetError ||
+    error instanceof AdmissionCapacityError
+  ) {
+    return "DEADLINE_BUDGET_EXHAUSTION";
+  }
+  if (error instanceof AgentUpstreamError || error instanceof MarketDataError) {
+    return "PROVIDER_FAILURE";
+  }
+  if (
+    error instanceof TradingDomainError &&
+    error.code === "accounting-error"
+  ) {
+    return "RECONCILIATION_QUARANTINE";
+  }
+  return "ROUTE_RUN_FAILURE";
+}
+
+function failureCodeForRunError(error: unknown): string {
+  if (error instanceof TelemetryEvidenceError) return error.failureCode;
+  if (error instanceof ExecutionDeadlineError) return error.code;
+  if (error instanceof ProviderBudgetError) {
+    return `${error.code}:${error.provider}:${error.kind}`;
+  }
+  if (error instanceof AgentUpstreamError) return error.errorType;
+  if (error instanceof MarketDataError) return `market-data-${error.code}`;
+  if (error instanceof TradingDomainError) return error.code;
+  return "unexpected-error";
 }
 
 export function normalizeAgentRunError(
@@ -884,13 +1258,19 @@ export async function executeAgentRun(
   }
 
   if (acquisition.kind === "existing") {
+    if (acquisition.recoveryIncident) {
+      emitSafetyIncidentLog(acquisition.recoveryIncident);
+    }
     if (ownsRequestDeadline) requestDeadline.dispose();
     return reconstructExistingRun(acquisition.run);
   }
-  trackAgentRunStarted(options.triggerSource);
   if (acquisition.kind === "conflict") {
     const result: AgentRunResult = {
       runId: acquisition.runId,
+      requestId: acquisition.requestId,
+      releaseId: acquisition.releaseId,
+      deploymentId: acquisition.deploymentId,
+      providerAttemptId: acquisition.providerAttemptId,
       status: "skipped",
       action: "conflict",
       error: acquisition.message,
@@ -901,7 +1281,45 @@ export async function executeAgentRun(
       { reason: acquisition.message },
       options.triggerSource,
     );
-    finalizeAnalytics(result, options.triggerSource);
+    const conflictCapture = trackAgentRunCompleted(
+      result,
+      options.triggerSource,
+    );
+    let conflictTelemetryFailed = !conflictCapture.accepted;
+    if (!conflictTelemetryFailed) {
+      if (requestDeadline.remainingMs() <= 0) {
+        conflictTelemetryFailed = true;
+      } else {
+        try {
+          await flushPostHog({ deadline: requestDeadline });
+        } catch {
+          conflictTelemetryFailed = true;
+        }
+      }
+    }
+    if (conflictTelemetryFailed) {
+      const incident = await safetyIncidentRepository.createOrGet({
+        incidentType: "TELEMETRY_FAILURE",
+        severity: "CRITICAL",
+        dedupKey: `mutex-telemetry-failure:${acquisition.runId}`,
+        requestId: acquisition.requestId,
+        agentRunId: acquisition.runId,
+        releaseId: acquisition.releaseId,
+        deploymentId: acquisition.deploymentId,
+        providerAttemptId: acquisition.providerAttemptId,
+        redactedContext: {
+          component: "run-flow",
+          operation: "mutex-terminal-telemetry",
+          failureCode: "posthog-telemetry-failed",
+          outcome: "conflict",
+        },
+        ownerRole: "PRIMARY_ON_CALL",
+        backupRole: "EVIDENCE_CUSTODIAN",
+        runbook:
+          "specs/incident-response.md#telemetry-or-alert-provider-failure",
+      });
+      result.incidentId = incident.event.incidentId;
+    }
     if (ownsRequestDeadline) requestDeadline.dispose();
     return {
       kind: "mutex",
@@ -910,7 +1328,26 @@ export async function executeAgentRun(
     };
   }
 
-  const { runId, leaseOwner } = acquisition;
+  const {
+    runId,
+    leaseOwner,
+    requestId,
+    releaseId,
+    deploymentId,
+  } = acquisition;
+  let providerAttemptId = acquisition.providerAttemptId;
+  const resultCorrelation = () => ({
+    requestId,
+    releaseId,
+    deploymentId,
+    providerAttemptId,
+  });
+  const startedTelemetry = trackAgentRunStarted(options.triggerSource, {
+    requestId,
+    runId,
+    releaseId,
+    deploymentId,
+  });
   const persistedDeadlineAt = acquisition.deadlineAt;
   const effectiveDeadlineAt = new Date(
     Math.min(
@@ -935,11 +1372,15 @@ export async function executeAgentRun(
     null;
 
   try {
+    if (!startedTelemetry.accepted) {
+      throw new TelemetryEvidenceError([startedTelemetry.event]);
+    }
     if (modeError) throw modeError;
     if (mode === "disabled") {
       const completedAt = new Date();
       const result: AgentRunResult = {
         runId,
+        ...resultCorrelation(),
         status: "skipped",
         action: "disabled",
         reasoning: "Rollout mode is disabled",
@@ -948,14 +1389,24 @@ export async function executeAgentRun(
       await completeRun(runId, "DISABLED", completedAt, {
         latencyMs: result.durationMs,
       });
-      finalizeAnalytics(result, options.triggerSource);
+      await finalizeAnalytics(result, options.triggerSource, deadline, options.hooks);
       return { kind: "ok", result };
     }
 
     deadline.assertActive("run execution");
     await reservePostHogBudget({ deadline });
-    const context = (tradingContext = await loadTradingContext(deadline));
-    await markAccountToMarket(context, leaseOwner, deadline);
+    const context = (tradingContext = await loadTradingContext(
+      runId,
+      requestId,
+      deadline,
+    ));
+    providerAttemptId = context.providerAttemptId;
+    await markAccountToMarket(
+      context,
+      { runId, requestId, releaseId, deploymentId },
+      leaseOwner,
+      deadline,
+    );
     deadline.assertActive("deterministic policy evaluation");
     const policy = evaluateTradePolicy(
       context.account,
@@ -982,6 +1433,7 @@ export async function executeAgentRun(
       const completedAt = new Date();
       const result: AgentRunResult = {
         runId,
+        ...resultCorrelation(),
         status: "skipped",
         action: "hold",
         reasoning: policy.holdReason,
@@ -993,9 +1445,15 @@ export async function executeAgentRun(
         latencyMs: result.durationMs,
       });
       deadline.assertActive("journal persistence");
-      await persistJournal(runId, context.market, null, null);
+      await persistJournal(
+        runId,
+        context.market,
+        null,
+        null,
+        resultCorrelation(),
+      );
       result.journalWritten = true;
-      finalizeAnalytics(result, options.triggerSource);
+      await finalizeAnalytics(result, options.triggerSource, deadline, options.hooks);
       return { kind: "ok", result };
     }
 
@@ -1017,6 +1475,7 @@ export async function executeAgentRun(
       }, {
         deadline,
         signal: deadline.signal,
+        requestId,
         providerDeadlineAt: new Date(
           Math.min(
             deadline.operationalDeadlineAt.getTime(),
@@ -1026,6 +1485,12 @@ export async function executeAgentRun(
       });
       decision = generated.decision;
       tokenUsage = generated.tokenUsage;
+      providerAttemptId =
+        generated.providerAttemptId ?? context.providerAttemptId;
+      await db
+        .update(agentRun)
+        .set({ providerAttemptId })
+        .where(and(eq(agentRun.id, runId), eq(agentRun.outcome, "RUNNING")));
     } else {
       const completedAt = new Date();
       const locked =
@@ -1034,6 +1499,7 @@ export async function executeAgentRun(
           DEFAULT_STRATEGY_CONFIG.maximumDrawdownPct;
       const result: AgentRunResult = {
         runId,
+        ...resultCorrelation(),
         status: locked ? "locked" : "skipped",
         action: "hold",
         reasoning: policy.holdReason,
@@ -1051,14 +1517,28 @@ export async function executeAgentRun(
         },
       );
       deadline.assertActive("journal persistence");
-      await persistJournal(runId, context.market, null, null);
+      await persistJournal(
+        runId,
+        context.market,
+        null,
+        null,
+        resultCorrelation(),
+      );
       result.journalWritten = true;
-      trackGuardrailTriggered(
+      const guardrailTelemetry = trackGuardrailTriggered(
         "deterministic-policy",
         { reason: policy.holdReason },
         options.triggerSource,
       );
-      finalizeAnalytics(result, options.triggerSource);
+      if (!guardrailTelemetry.accepted) {
+        throw new TelemetryEvidenceError([guardrailTelemetry.event]);
+      }
+      await finalizeAnalytics(
+        result,
+        options.triggerSource,
+        deadline,
+        options.hooks,
+      );
       return { kind: "ok", result };
     }
 
@@ -1079,6 +1559,7 @@ export async function executeAgentRun(
             : "REJECTED";
       const result: AgentRunResult = {
         runId,
+        ...resultCorrelation(),
         status: "skipped",
         action: mode === "shadow" ? "shadow" : decision.action.toLowerCase(),
         reasoning: decision.reasoning,
@@ -1105,9 +1586,10 @@ export async function executeAgentRun(
         context.market,
         decision,
         authorization,
+        resultCorrelation(),
       );
       result.journalWritten = true;
-      finalizeAnalytics(result, options.triggerSource);
+      await finalizeAnalytics(result, options.triggerSource, deadline, options.hooks);
       return { kind: "ok", result };
     }
 
@@ -1131,6 +1613,7 @@ export async function executeAgentRun(
       tokenUsage,
       context.account.isLocked,
       completedAt.getTime() - startedMs,
+      resultCorrelation(),
     );
     committedResult = result;
     result.authorization = {
@@ -1146,16 +1629,33 @@ export async function executeAgentRun(
       tokenUsage,
       latencyMs: result.durationMs,
     });
+    await options.hooks?.afterPaperCommitBeforeJournal?.();
     deadline.assertActive("journal persistence");
-    await persistJournal(
+    const journalId = await persistJournal(
       runId,
       context.market,
       decision,
       authorization,
+      {
+        ...resultCorrelation(),
+        incidentId: execution.incidentId,
+        transactionId: execution.tradeId,
+      },
       execution.tradeId,
     );
     result.journalWritten = true;
-    finalizeAnalytics(result, options.triggerSource);
+    emitSafetyIncidentLog(execution.incidentEvent);
+    await finalizeAnalytics(result, options.triggerSource, deadline, options.hooks);
+    await safetyIncidentRepository.appendDeliveryLifecycle({
+      incidentId: execution.incidentId,
+      eventKind: "DELIVERY_CONFIRMED",
+      attemptId: `journal-telemetry:${journalId}`,
+      evidence: {
+        artifactRef: `agent-journal:${journalId}`,
+        verification: "journal-and-telemetry-persisted",
+        deliveryChannel: "database-and-posthog",
+      },
+    });
     return { kind: "ok", result };
   } catch (caughtError) {
     const error = normalizeAgentRunError(
@@ -1166,6 +1666,27 @@ export async function executeAgentRun(
     const message =
       error instanceof Error ? error.message : String(error);
     const httpStatus = errorHttpStatus(error);
+    if (error instanceof AgentUpstreamError && error.providerAttemptId) {
+      providerAttemptId = error.providerAttemptId;
+    } else if (
+      (error instanceof ProviderBudgetError ||
+        error instanceof ExecutionDeadlineError) &&
+      error.providerAttemptId
+    ) {
+      providerAttemptId = error.providerAttemptId;
+    } else if (error instanceof MarketDataError) {
+      providerAttemptId = deriveProviderAttemptId({
+        requestId,
+        provider: "coinbase",
+        attempt: 1,
+      });
+    } else if (error instanceof ProviderBudgetError) {
+      providerAttemptId = deriveProviderAttemptId({
+        requestId,
+        provider: error.provider,
+        attempt: 1,
+      });
+    }
     if (error instanceof ProviderBudgetError) {
       trackGuardrailTriggered(
         "provider-budget",
@@ -1187,14 +1708,169 @@ export async function executeAgentRun(
     }
     if (committedResult) {
       committedResult.error = message;
-      committedResult.journalWritten = false;
+      committedResult.journalWritten =
+        committedResult.journalWritten ?? false;
       committedResult.durationMs = completedAt.getTime() - startedMs;
-      await completeRun(runId, "EXECUTED", completedAt, {
-        latencyMs: committedResult.durationMs,
-        errorType: "post-commit-persistence",
-        errorMessage: message,
-      });
-      finalizeAnalytics(committedResult, options.triggerSource);
+      if (committedResult.incidentId) {
+        await safetyIncidentRepository.appendDeliveryLifecycle({
+          incidentId: committedResult.incidentId,
+          eventKind: "DELIVERY_FAILED",
+          attemptId: `post-commit-failure:${runId}:${failureCodeForRunError(error)}`,
+          evidence: {
+            deliveryFailureCode: failureCodeForRunError(error),
+            deliveryChannel: "database-and-posthog",
+            retryOutcome: "not-resolved",
+          },
+        });
+      }
+      const postCommitIncident = await completeRunWithIncident(
+        runId,
+        "EXECUTED",
+        completedAt,
+        {
+          latencyMs: committedResult.durationMs,
+          errorType: "post-commit-persistence",
+          errorMessage: message,
+          providerAttemptId,
+        },
+        {
+          incidentType: "POST_COMMIT_FAILURE",
+          severity: "CRITICAL",
+          dedupKey: `post-commit-failure:${runId}`,
+          requestId,
+          agentRunId: runId,
+          releaseId,
+          deploymentId,
+          providerAttemptId,
+          transactionId: committedResult.transactionId,
+          redactedContext: {
+            component: "run-flow",
+            operation: "post-commit-evidence",
+            failureCode: failureCodeForRunError(error),
+            journalWritten: committedResult.journalWritten,
+            outcome: "executed-with-post-commit-failure",
+          },
+          ownerRole: "PRIMARY_ON_CALL",
+          backupRole: "BACKUP_ON_CALL",
+          runbook:
+            "specs/incident-response.md#post-commit-journal-or-telemetry-failure",
+        },
+      );
+      emitSafetyIncidentLog(postCommitIncident.event);
+      committedResult.incidentId = postCommitIncident.event.incidentId;
+      if (error instanceof TelemetryEvidenceError) {
+        const telemetryIncident =
+          await safetyIncidentRepository.createOrGet({
+            incidentType: "TELEMETRY_FAILURE",
+            severity: "CRITICAL",
+            dedupKey: `telemetry-failure:${runId}`,
+            requestId,
+            agentRunId: runId,
+            releaseId,
+            deploymentId,
+            providerAttemptId,
+            transactionId: committedResult.transactionId,
+            redactedContext: {
+              component: "run-flow",
+              operation: "telemetry-delivery",
+              failureCode: error.failureCode,
+              outcome: "executed-with-telemetry-failure",
+            },
+            ownerRole: "PRIMARY_ON_CALL",
+            backupRole: "EVIDENCE_CUSTODIAN",
+            runbook:
+              "specs/incident-response.md#post-commit-journal-or-telemetry-failure",
+          });
+        committedResult.incidentId = telemetryIncident.event.incidentId;
+      }
+      const postCommitCapture = trackAgentRunCompleted(
+        committedResult,
+        options.triggerSource,
+      );
+      if (
+        !(error instanceof TelemetryEvidenceError) &&
+        !postCommitCapture.accepted
+      ) {
+        await safetyIncidentRepository.createOrGet({
+          incidentType: "TELEMETRY_FAILURE",
+          severity: "CRITICAL",
+          dedupKey: `telemetry-failure:${runId}`,
+          requestId,
+          agentRunId: runId,
+          releaseId,
+          deploymentId,
+          providerAttemptId,
+          transactionId: committedResult.transactionId,
+          redactedContext: {
+            component: "run-flow",
+            operation: "terminal-telemetry",
+            failureCode: "posthog-telemetry-failed",
+            outcome: "executed-with-telemetry-failure",
+          },
+          ownerRole: "PRIMARY_ON_CALL",
+          backupRole: "EVIDENCE_CUSTODIAN",
+          runbook:
+            "specs/incident-response.md#post-commit-journal-or-telemetry-failure",
+        });
+      }
+      if (
+        !(error instanceof TelemetryEvidenceError) &&
+        postCommitCapture.accepted &&
+        deadline.remainingMs() <= 0
+      ) {
+        await safetyIncidentRepository.createOrGet({
+          incidentType: "TELEMETRY_FAILURE",
+          severity: "CRITICAL",
+          dedupKey: `telemetry-failure:${runId}`,
+          requestId,
+          agentRunId: runId,
+          releaseId,
+          deploymentId,
+          providerAttemptId,
+          transactionId: committedResult.transactionId,
+          redactedContext: {
+            component: "run-flow",
+            operation: "terminal-telemetry",
+            failureCode: "terminal-budget-exhausted",
+            outcome: "executed-with-telemetry-failure",
+          },
+          ownerRole: "PRIMARY_ON_CALL",
+          backupRole: "EVIDENCE_CUSTODIAN",
+          runbook:
+            "specs/incident-response.md#post-commit-journal-or-telemetry-failure",
+        });
+      }
+      if (
+        !(error instanceof TelemetryEvidenceError) &&
+        postCommitCapture.accepted &&
+        deadline.remainingMs() > 0
+      ) {
+        try {
+          await flushPostHog({ deadline });
+        } catch {
+          await safetyIncidentRepository.createOrGet({
+            incidentType: "TELEMETRY_FAILURE",
+            severity: "CRITICAL",
+            dedupKey: `telemetry-failure:${runId}`,
+            requestId,
+            agentRunId: runId,
+            releaseId,
+            deploymentId,
+            providerAttemptId,
+            transactionId: committedResult.transactionId,
+            redactedContext: {
+              component: "run-flow",
+              operation: "terminal-telemetry",
+              failureCode: "posthog-telemetry-failed",
+              outcome: "executed-with-telemetry-failure",
+            },
+            ownerRole: "PRIMARY_ON_CALL",
+            backupRole: "EVIDENCE_CUSTODIAN",
+            runbook:
+              "specs/incident-response.md#post-commit-journal-or-telemetry-failure",
+          });
+        }
+      }
       return {
         kind: "upstream_error",
         result: committedResult,
@@ -1202,6 +1878,7 @@ export async function executeAgentRun(
       };
     }
     let bindingMismatchJournalWritten = false;
+    let bindingAlertFailed = false;
     if (
       error instanceof AgentBindingMismatchError &&
       deadline.remainingMs() > 0
@@ -1222,38 +1899,42 @@ export async function executeAgentRun(
             runId,
             tradingContext.market,
             error,
+            resultCorrelation(),
           );
           bindingMismatchJournalWritten = true;
-        } catch (journalError) {
+        } catch {
           console.error(
-            "[agent] Failed to persist Foundry binding guardrail journal:",
-            journalError,
-          );
-          trackGuardrailTriggered(
-            "foundry-agent-binding-journal",
-            {
-              ...details,
-              persistenceError:
-                journalError instanceof Error
-                  ? journalError.message
-                  : String(journalError),
-            },
-            options.triggerSource,
+            JSON.stringify({
+              eventType: "journal_persistence_failed",
+              requestId,
+              runId,
+              failureCode: "foundry-binding-journal",
+            }),
           );
         }
       }
-      await sendGuardrailAlert("Foundry agent binding", {
-        error: message,
-      }, { deadline }).catch((alertError) => {
-        console.error(
-          "[agent] Failed to send Foundry binding guardrail alert:",
-          alertError,
+      try {
+        await sendGuardrailAlert(
+          "Foundry agent binding",
+          { error: "Foundry agent binding mismatch" },
+          { deadline },
         );
-      });
+      } catch {
+        bindingAlertFailed = true;
+        console.error(
+          JSON.stringify({
+            eventType: "email_delivery_failed",
+            requestId,
+            runId,
+            failureCode: "foundry-binding-alert",
+          }),
+        );
+      }
     }
 
     const result: AgentRunResult = {
       runId,
+      ...resultCorrelation(),
       status: "error",
       action: "error",
       error: message,
@@ -1272,7 +1953,8 @@ export async function executeAgentRun(
       durationMs: completedAt.getTime() - startedMs,
       journalWritten: bindingMismatchJournalWritten || undefined,
     };
-    await completeRun(
+    const errorType = failureCodeForRunError(error);
+    const terminalIncident = await completeRunWithIncident(
       runId,
       error instanceof MarketDataError ||
         error instanceof AgentUpstreamError ||
@@ -1284,22 +1966,105 @@ export async function executeAgentRun(
       {
         latencyMs: result.durationMs,
         tokenUsage: result.tokenUsage,
-        errorType:
-          error instanceof ExecutionDeadlineError
-            ? error.code
-            : error instanceof ProviderBudgetError
-              ? `${error.code}:${error.provider}:${error.kind}`
-          : error instanceof AgentUpstreamError
-            ? error.errorType
-            : error instanceof TradingDomainError
-            ? error.code
-            : error instanceof MarketDataError
-              ? `market-data-${error.code}`
-              : "unexpected-error",
+        errorType,
         errorMessage: message,
+        providerAttemptId,
+      },
+      {
+        incidentType: incidentTypeForRunError(error),
+        severity: "CRITICAL",
+        dedupKey: `run-failure:${runId}:${errorType}`,
+        requestId,
+        agentRunId: runId,
+        releaseId,
+        deploymentId,
+        providerAttemptId,
+        redactedContext: {
+          component: "run-flow",
+          operation: "terminal-failure",
+          failureCode: errorType,
+          outcome: "error",
+          provider:
+            error instanceof ProviderBudgetError
+              ? error.provider
+              : error instanceof AgentUpstreamError
+                ? "foundry"
+                : error instanceof MarketDataError
+                  ? "coinbase"
+                  : null,
+          journalWritten: bindingMismatchJournalWritten,
+        },
+        ownerRole: "PRIMARY_ON_CALL",
+        backupRole: "BACKUP_ON_CALL",
+        runbook: "specs/incident-response.md#response-procedures",
       },
     );
-    finalizeAnalytics(result, options.triggerSource);
+    emitSafetyIncidentLog(terminalIncident.event);
+    result.incidentId = terminalIncident.event.incidentId;
+
+    if (bindingAlertFailed) {
+      const emailIncident = await safetyIncidentRepository.createOrGet({
+        incidentType: "EMAIL_DELIVERY_FAILURE",
+        severity: "CRITICAL",
+        dedupKey: `email-failure:${runId}:foundry-binding`,
+        requestId,
+        agentRunId: runId,
+        releaseId,
+        deploymentId,
+        providerAttemptId,
+        redactedContext: {
+          component: "run-flow",
+          operation: "guardrail-alert",
+          failureCode: "foundry-binding-alert",
+          deliveryChannel: "acs-email",
+        },
+        ownerRole: "PRIMARY_ON_CALL",
+        backupRole: "BACKUP_ON_CALL",
+        runbook: "specs/incident-response.md#provider-or-credential-concern",
+      });
+      result.incidentId = emailIncident.event.incidentId;
+    }
+    const terminalCapture = trackAgentRunCompleted(
+      result,
+      options.triggerSource,
+    );
+    let terminalTelemetryFailed = !terminalCapture.accepted;
+    if (!terminalTelemetryFailed) {
+      if (deadline.remainingMs() <= 0) {
+        terminalTelemetryFailed = true;
+      } else {
+        try {
+          await flushPostHog({ deadline });
+        } catch {
+          terminalTelemetryFailed = true;
+        }
+      }
+    }
+    if (
+      terminalTelemetryFailed &&
+      !(error instanceof TelemetryEvidenceError)
+    ) {
+      await safetyIncidentRepository.createOrGet({
+        incidentType: "TELEMETRY_FAILURE",
+        severity: "CRITICAL",
+        dedupKey: `terminal-telemetry-failure:${runId}`,
+        requestId,
+        agentRunId: runId,
+        releaseId,
+        deploymentId,
+        providerAttemptId,
+        redactedContext: {
+          component: "run-flow",
+          operation: "terminal-telemetry",
+          failureCode: "posthog-telemetry-failed",
+          outcome: "error",
+        },
+        ownerRole: "PRIMARY_ON_CALL",
+        backupRole: "EVIDENCE_CUSTODIAN",
+        runbook:
+          "specs/incident-response.md#telemetry-or-alert-provider-failure",
+      });
+    }
     return { kind: "upstream_error", result, httpStatus };
   } finally {
     try {
@@ -1307,27 +2072,73 @@ export async function executeAgentRun(
       const released = await releaseLease(leaseOwner, deadline.now());
       if (!released) {
         console.error(
-          `[agent] Lease ${leaseOwner} was not released because ownership changed`,
+          JSON.stringify({
+            eventType: "lease_release_failed",
+            requestId,
+            runId,
+            failureCode: "ownership-changed",
+          }),
         );
         trackGuardrailTriggered(
           "lease-release",
-          { reason: "lease ownership changed", leaseOwner },
+          { reason: "lease ownership changed", requestId, runId },
           options.triggerSource,
         );
+        await safetyIncidentRepository.createOrGet({
+          incidentType: "STALE_OR_OVERLAPPING_LEASE",
+          severity: "CRITICAL",
+          dedupKey: `lease-release-failure:${runId}`,
+          requestId,
+          agentRunId: runId,
+          releaseId,
+          deploymentId,
+          providerAttemptId,
+          redactedContext: {
+            component: "run-flow",
+            operation: "lease-release",
+            failureCode: "release-not-confirmed",
+          },
+          ownerRole: "PRIMARY_ON_CALL",
+          backupRole: "BACKUP_ON_CALL",
+          runbook: "specs/incident-response.md#stale-or-overlapping-lease",
+        });
       }
-    } catch (releaseError) {
-      console.error("[agent] Failed to release run lease:", releaseError);
+    } catch {
+      console.error(
+        JSON.stringify({
+          eventType: "lease_release_failed",
+          requestId,
+          runId,
+          failureCode: "database-or-deadline",
+        }),
+      );
       trackGuardrailTriggered(
         "lease-release",
         {
-          reason:
-            releaseError instanceof Error
-              ? releaseError.message
-              : String(releaseError),
-          leaseOwner,
+          reason: "database or deadline failure",
+          requestId,
+          runId,
         },
         options.triggerSource,
       );
+      await safetyIncidentRepository.createOrGet({
+        incidentType: "STALE_OR_OVERLAPPING_LEASE",
+        severity: "CRITICAL",
+        dedupKey: `lease-release-failure:${runId}`,
+        requestId,
+        agentRunId: runId,
+        releaseId,
+        deploymentId,
+        providerAttemptId,
+        redactedContext: {
+          component: "run-flow",
+          operation: "lease-release",
+          failureCode: "release-not-confirmed",
+        },
+        ownerRole: "PRIMARY_ON_CALL",
+        backupRole: "BACKUP_ON_CALL",
+        runbook: "specs/incident-response.md#stale-or-overlapping-lease",
+      });
     }
     if (!usesRequestDeadline) deadline.dispose();
     if (ownsRequestDeadline) requestDeadline.dispose();

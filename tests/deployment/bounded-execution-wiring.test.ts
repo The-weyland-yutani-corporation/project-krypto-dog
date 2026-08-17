@@ -39,6 +39,19 @@ describe("bounded execution deployment wiring", () => {
         "{ name: 'EXECUTION_CONTRACT_VERSION', value: 'bounded-sync-v1' }",
         "{ name: 'DATABASE_POOL_MAX', value: '1' }",
         "{ name: 'AGENT_RUN_ADMISSION_CAPACITY', value: '1' }",
+        "{ name: 'SAFETY_PRIMARY_ON_CALL', value: safetyPrimaryOnCall }",
+        "{ name: 'SAFETY_BACKUP_ON_CALL', value: safetyBackupOnCall }",
+        "{ name: 'SAFETY_RELEASE_OWNER', value: safetyReleaseOwner }",
+        "{ name: 'SAFETY_APPROVER', value: safetyApprover }",
+        "{ name: 'SAFETY_EVIDENCE_CUSTODIAN', value: safetyEvidenceCustodian }",
+        "{ name: 'SAFETY_ROLLBACK_OWNER', value: safetyRollbackOwner }",
+        "{ name: 'SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY', value: safetyPrimaryOnCallPublicKey }",
+        "{ name: 'SAFETY_BACKUP_ON_CALL_PUBLIC_KEY', value: safetyBackupOnCallPublicKey }",
+        "{ name: 'SAFETY_RELEASE_OWNER_PUBLIC_KEY', value: safetyReleaseOwnerPublicKey }",
+        "{ name: 'SAFETY_APPROVER_PUBLIC_KEY', value: safetyApproverPublicKey }",
+        "{ name: 'SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY', value: safetyEvidenceCustodianPublicKey }",
+        "{ name: 'SAFETY_ROLLBACK_OWNER_PUBLIC_KEY', value: safetyRollbackOwnerPublicKey }",
+        "{ name: 'SAFETY_INCIDENT_DRILL_ENABLED', value: 'false' }",
       ]) {
         expect(template).toContain(entry);
       }
@@ -52,6 +65,61 @@ describe("bounded execution deployment wiring", () => {
     expect(
       moduleBlock(release, "verifiedBackupJob", "targetSmokeJob"),
     ).toContain("replicaTimeoutSeconds: 3600");
+  });
+
+  it("runs the independent incident relay as a non-trading read-only schedule", () => {
+    const relay = moduleBlock(
+      release,
+      "safetyIncidentRelayJob",
+      "migrateInitJob",
+    );
+    expect(relay).toContain("triggerType: 'Schedule'");
+    expect(relay).toContain("cronExpression: '*/5 * * * *'");
+    expect(relay).toContain("replicaRetryLimit: 0");
+    expect(relay).toContain("replicaTimeoutSeconds: 120");
+    expect(relay).toContain("'scripts/safety-incident-relay.mjs'");
+    expect(relay).toContain("{ name: 'DATABASE_URL'");
+    expect(relay).not.toContain("CRON_SECRET");
+    expect(relay).not.toContain("ROLLOUT_MODE");
+    expect(rollout).not.toContain("safetyIncidentRelayJob");
+    const dockerfile = read("Dockerfile");
+    expect(dockerfile).toContain("scripts/safety-incident-relay.mjs");
+    expect(dockerfile).toContain(
+      "src/deployment/safety-incident-relay.ts",
+    );
+  });
+
+  it("requires protected roster variables in release, rollout, and workflow wiring", () => {
+    for (const environment of ["dev", "prod"] as const) {
+      const suffix = environment.toUpperCase();
+      for (const role of [
+        "PRIMARY_ON_CALL",
+        "BACKUP_ON_CALL",
+        "RELEASE_OWNER",
+        "APPROVER",
+        "EVIDENCE_CUSTODIAN",
+        "ROLLBACK_OWNER",
+      ]) {
+        expect(
+          read(`infra/params/release.${environment}.bicepparam`),
+        ).toContain(`SAFETY_${role}_${suffix}`);
+        expect(
+          read(`infra/params/rollout.${environment}.bicepparam`),
+        ).toContain(`SAFETY_${role}_${suffix}`);
+        expect(
+          read(`infra/params/release.${environment}.bicepparam`),
+        ).toContain(`SAFETY_${role}_PUBLIC_KEY_${suffix}`);
+        expect(
+          read(`infra/params/rollout.${environment}.bicepparam`),
+        ).toContain(`SAFETY_${role}_PUBLIC_KEY_${suffix}`);
+      }
+    }
+    expect(read(".github/workflows/azure-deploy-dev.yml")).toContain(
+      "KRYPTO_SAFETY_PRIMARY_ON_CALL",
+    );
+    expect(read(".github/workflows/azure-deploy-prod.yml")).toContain(
+      "KRYPTO_SAFETY_PRIMARY_ON_CALL",
+    );
   });
 
   it("pins bounded probes, HTTP concurrency, and three web replicas", () => {

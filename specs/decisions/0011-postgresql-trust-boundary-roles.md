@@ -43,6 +43,10 @@ pre-trust-boundary database role configuration (see
 attended upgrade procedure in this ADR's Consequences section against each
 live environment and retains its evidence.
 
+[ADR 0013](./0013-durable-safety-incidents-and-independent-alerts.md)
+narrowly amends the runtime table matrix for append-only incident evidence; it
+does not change the role hierarchy or credential custody in this ADR.
+
 ## Decision
 
 ### Role hierarchy
@@ -53,7 +57,7 @@ live environment and retains its evidence.
 | `krypto_schema_owner` | NOLOGIN | `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS` | `0` | Owns the `krypto` schema and every table, sequence, type, and function inside it. Never granted `LOGIN`; never granted to the runtime. |
 | `krypto_migrator` | LOGIN, `NOINHERIT` | same non-superuser/createdb/createrole/replication/bypassrls set | `5` | The only role that authenticates over the dedicated `MIGRATION_URL` (a direct, non-pooled connection distinct from both `DIRECT_URL` and `DATABASE_URL`). Owns the `drizzle` migration ledger. Holds database `CREATE` because `drizzle-kit migrate` executes `CREATE SCHEMA IF NOT EXISTS` for its ledger on every run, but has no `CREATE` on `public`. Holds `SET`-only (not `INHERIT`, not `ADMIN`) membership in `krypto_schema_owner`, so it must explicitly `SET ROLE "krypto_schema_owner"` to create or alter schema-owned objects or to run the one-time singleton init in `scripts/seed.ts` — it never automatically has the schema owner's privileges. |
 | `krypto_scheduler` | NOLOGIN | same non-superuser/createdb/createrole/replication/bypassrls set | `0` | Reserved for future `SECURITY DEFINER` function ownership (the fixed `invoke_agent_run`/`invoke_daily_summary` helpers from ADR 0006). Azure scheduling is external — Container Apps Jobs cron defined in Bicep (ADR 0008 item 10) — so nothing in this repository ever authenticates as, inherits, or assumes `krypto_scheduler`; the runtime specifically cannot. |
-| `krypto_runtime` | NOLOGIN | same non-superuser/createdb/createrole/replication/bypassrls set | `0` | Exact least-privilege table/sequence grant matrix (unchanged from migration 0007, reasserted by migration 0008 as `krypto_schema_owner`): `USAGE` on schema `krypto`; `SELECT, UPDATE` on `AgentState`; `SELECT, INSERT, UPDATE` on `AgentRun`; `SELECT, INSERT` on `TradeExecution`; `SELECT, INSERT` on `AgentJournal`. No `CREATE`/DDL, no role-membership authority, no migration-ledger access, no Vault/`pg_cron`/`pg_net` access, and no `public`-schema usage. |
+| `krypto_runtime` | NOLOGIN | same non-superuser/createdb/createrole/replication/bypassrls set | `0` | Exact least-privilege matrix: `USAGE` on schema `krypto`; `SELECT, UPDATE` on `AgentState`; `SELECT, INSERT, UPDATE` on `AgentRun`; `SELECT, INSERT` on `TradeExecution` and `AgentJournal`; `SELECT, INSERT, UPDATE` on `ProviderDailyUsage`; `SELECT` on `RuntimeContract`; and `SELECT, INSERT` on append-only `SafetyIncidentOutbox`. Migration `0010` denies runtime `UPDATE`, `DELETE`, `TRIGGER`, and `REFERENCES` on the incident table and installs a trigger that rejects updates/deletes. No `CREATE`/DDL, role-membership authority, migration-ledger access, Vault/`pg_cron`/`pg_net` access, or `public`-schema usage. |
 | `krypto_app` (environment-specific login name; `krypto_app` is the committed default in `infra/release.bicep`) | LOGIN | non-superuser/createdb/createrole/replication/bypassrls; `INHERIT` | `20` | The only role the running application authenticates as, over `DATABASE_URL`. Its **only** membership is `krypto_runtime` — `bootstrap-runtime-role.ts` grants that membership and defensively revokes any membership in `krypto_schema_owner`, `krypto_migrator`, or `krypto_scheduler` every time it runs, even against an environment where those roles do not exist yet. |
 
 ### Default privileges fail closed
@@ -109,7 +113,7 @@ pooler (hostname/port/`pgbouncer=true`), that is identical to `DIRECT_URL` or
 
 `scripts/azure/operations/migrate-init.ts` runs, in this exact order, and
 never deletes or resets `TradeExecution`/`AgentState`/`AgentRun`/`AgentJournal`
-rows at any step:
+or `SafetyIncidentOutbox` rows at any step:
 
 1. **Admin bootstrap** (`bootstrap-azure-runtime-role.ts --mode database-roles`
    over `DIRECT_URL`, as `krypto_owner` only) — idempotently creates or

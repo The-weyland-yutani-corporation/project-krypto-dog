@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
 import postgres from "postgres";
 import { classifyMigrationUrlSafety } from "./migration-url-safety";
+import {
+  readSafetyRoster,
+  summarizeSafetyRoster,
+} from "@/lib/safety-roster";
+import { readSafetyActorPublicKeys } from "@/lib/safety-actor-auth";
 
-export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "1.5.0";
+export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "1.6.0";
 
 export type PreflightStatus = "pass" | "warn" | "block";
 
@@ -91,6 +96,7 @@ export interface DeploymentInventory {
   }>;
   protectedPublicViews: string[];
   rowCounts: Record<string, number>;
+  unresolvedCriticalSafetyIncidentCount: number | null;
   agentState: AgentStateInventory | null;
   openPaperPosition: boolean | null;
   drizzleMigrationCount: number | null;
@@ -248,9 +254,20 @@ export interface DeploymentPreflightInput {
    * connection strings themselves.
    */
   provider?: DeploymentProvider;
+  /** Injected only for deterministic source tests; real operations use process.env. */
+  env?: Record<string, string | undefined>;
 }
 
 const APPLICATION_TABLES = [
+  "AgentState",
+  "AgentRun",
+  "TradeExecution",
+  "AgentJournal",
+  "ProviderDailyUsage",
+  "RuntimeContract",
+  "SafetyIncidentOutbox",
+] as const;
+const BOUNDED_APPLICATION_TABLES = [
   "AgentState",
   "AgentRun",
   "TradeExecution",
@@ -310,6 +327,10 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
     createdAt: "1786967376730",
     hash: "289f3a32bdc4c47cd3c9d8c2c354226962fadc4ff5be80e9864574f8eebd42a5",
   },
+  {
+    createdAt: "1786993492359",
+    hash: "e81e8e38bcf2e32855a4d98dd3c76950c26d0e9aeecba536adb0f12278920095",
+  },
 ] as const;
 /**
  * Migration count at which 0006 (the last migration that still installs
@@ -356,8 +377,8 @@ const LEGACY_UNRELATED_SCHEMAS = ["vault", "cron", "net", "pg_net"] as const;
  * table, view, materialized view, or foreign table, or a future sequence —
  * is reported as an excess/blocking privilege rather than silently
  * accepted; future migrations must grant new relations' privileges
- * explicitly rather than relying on a default. Only the four named base
- * tables below are ever allowed any privilege at all; every other current
+ * explicitly rather than relying on a default. Only the named base tables
+ * below are ever allowed any privilege at all; every other current
  * or future relation kind the scan inspects (see
  * {@link RUNTIME_SCANNED_TABLE_RELKINDS}) has an implicit empty allow-list,
  * so any grant on it — of any kind — is excess.
@@ -369,6 +390,7 @@ const RUNTIME_TABLE_PRIVILEGE_MATRIX: Readonly<Record<string, readonly string[]>
   AgentJournal: ["SELECT", "INSERT"],
   ProviderDailyUsage: ["SELECT", "INSERT", "UPDATE"],
   RuntimeContract: ["SELECT"],
+  SafetyIncidentOutbox: ["SELECT", "INSERT"],
 };
 /**
  * Sequences currently have no entries in the matrix because the krypto
@@ -671,6 +693,7 @@ function baseInventory(): DeploymentInventory {
     protectedRelations: [],
     protectedPublicViews: [],
     rowCounts: {},
+    unresolvedCriticalSafetyIncidentCount: null,
     agentState: null,
     openPaperPosition: null,
     drizzleMigrationCount: null,
@@ -1038,6 +1061,9 @@ export async function runDeploymentPreflight(
         );
         const hasPublicState = tableKeys.has("public.AgentState");
         const hasKryptoState = tableKeys.has("krypto.AgentState");
+        const hasKryptoSafetyIncidentOutbox = tableKeys.has(
+          "krypto.SafetyIncidentOutbox",
+        );
         const schemasByTable = new Map<string, Set<string>>();
         for (const table of inventory.applicationTables) {
           const schemas =
@@ -1084,6 +1110,20 @@ export async function runDeploymentPreflight(
                 relation.name as (typeof APPLICATION_TABLES)[number],
               ),
           );
+        const exactBoundedPrivateLayout =
+          publicTables.size === 0 &&
+          kryptoTables.size === BOUNDED_APPLICATION_TABLES.length &&
+          kryptoRelations.length === BOUNDED_APPLICATION_TABLES.length &&
+          BOUNDED_APPLICATION_TABLES.every((table) =>
+            kryptoTables.has(table),
+          ) &&
+          kryptoRelations.every(
+            (relation) =>
+              relation.kind === "r" &&
+              BOUNDED_APPLICATION_TABLES.includes(
+                relation.name as (typeof BOUNDED_APPLICATION_TABLES)[number],
+              ),
+          );
         const exactPreBoundedPrivateLayout =
           publicTables.size === 0 &&
           kryptoTables.size === PRE_BOUNDED_APPLICATION_TABLES.length &&
@@ -1100,7 +1140,9 @@ export async function runDeploymentPreflight(
               ),
           );
         const exactPrivateLayout =
-          exactCurrentPrivateLayout || exactPreBoundedPrivateLayout;
+          exactCurrentPrivateLayout ||
+          exactBoundedPrivateLayout ||
+          exactPreBoundedPrivateLayout;
         const emptyLayout =
           inventory.applicationTables.length === 0 &&
           kryptoRelations.length === 0;
@@ -1155,6 +1197,46 @@ export async function runDeploymentPreflight(
           inventory.rowCounts[`${table.schema}.${table.table}`] = Number(
             row?.count ?? 0,
           );
+        }
+
+        if (hasKryptoSafetyIncidentOutbox) {
+          const [row] = await sql<Array<{ count: string }>>`
+            -- unresolved critical safety incident count only; no context leaves the database
+            SELECT count(*)::text AS count
+            FROM (
+              SELECT DISTINCT ON ("incidentId")
+                "severity",
+                "status"
+              FROM "krypto"."SafetyIncidentOutbox"
+              ORDER BY "incidentId", "eventSequence" DESC
+            ) AS latest_incident
+            WHERE latest_incident."severity" = 'CRITICAL'
+              AND latest_incident."status" <> 'RESOLVED'
+          `;
+          inventory.unresolvedCriticalSafetyIncidentCount = Number(
+            row?.count ?? 0,
+          );
+          checks.push({
+            id: "unresolved-critical-safety-incidents",
+            status:
+              inventory.unresolvedCriticalSafetyIncidentCount === 0
+                ? "pass"
+                : "block",
+            summary:
+              inventory.unresolvedCriticalSafetyIncidentCount === 0
+                ? "No unresolved critical safety incident is recorded."
+                : "One or more unresolved critical safety incidents block deployment.",
+            evidence: {
+              count: inventory.unresolvedCriticalSafetyIncidentCount,
+            },
+          });
+        } else {
+          checks.push({
+            id: "unresolved-critical-safety-incidents",
+            status: "warn",
+            summary:
+              "Safety incident blocking inventory is unavailable until migration 0010 is applied.",
+          });
         }
 
         const stateSchema = hasKryptoState
@@ -1316,10 +1398,13 @@ export async function runDeploymentPreflight(
             (exactCurrentPrivateLayout &&
               inventory.drizzleMigrationCount ===
                 EXPECTED_DRIZZLE_MIGRATIONS.length) ||
+            (exactBoundedPrivateLayout &&
+              inventory.drizzleMigrationCount ===
+                EXPECTED_DRIZZLE_MIGRATIONS.length - 1) ||
             (exactPreBoundedPrivateLayout &&
               inventory.drizzleMigrationCount >= 4 &&
               inventory.drizzleMigrationCount <
-                EXPECTED_DRIZZLE_MIGRATIONS.length) ||
+                EXPECTED_DRIZZLE_MIGRATIONS.length - 1) ||
             (exactLegacyLayout &&
               inventory.drizzleMigrationCount <= 2) ||
             (emptyLayout && inventory.drizzleMigrationCount === 0);
@@ -1336,6 +1421,7 @@ export async function runDeploymentPreflight(
             evidence: {
               migrationCount: inventory.drizzleMigrationCount,
               exactPrivateLayout,
+              exactBoundedPrivateLayout,
               exactLegacyLayout,
               emptyLayout,
             },
@@ -2990,6 +3076,28 @@ export async function runDeploymentPreflight(
     });
   }
 
+  if (provider === "azure") {
+    try {
+      const roster = readSafetyRoster(input.env ?? process.env);
+      readSafetyActorPublicKeys(input.env ?? process.env);
+      checks.push({
+        id: "safety-responder-roster",
+        status: "pass",
+        summary:
+          "Primary/backup on-call, release, safety, evidence, and rollback roles are assigned.",
+        evidence: { ...summarizeSafetyRoster(roster, true) },
+      });
+    } catch {
+      checks.push({
+        id: "safety-responder-roster",
+        status: "block",
+        summary:
+          "The production-paper safety responder roster is missing, invalid, placeholder-based, or violates role independence.",
+        evidence: { complete: false },
+      });
+    }
+  }
+
   const blockers = checks
     .filter((check) => check.status === "block")
     .map((check) => check.id);
@@ -3011,6 +3119,7 @@ export async function runDeploymentPreflight(
       "Create and verify a point-in-time backup.",
       "Record operator approval for the observed state.",
       "Keep rollout mode disabled until target smoke checks pass.",
+      "Retain live warning/critical delivery, acknowledgment, escalation, and game-day evidence in issue #76 before #75.",
     ],
   };
 }

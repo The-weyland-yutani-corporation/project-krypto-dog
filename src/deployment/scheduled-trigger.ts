@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 // Azure Container Apps Jobs scheduled HTTP trigger for Project Krypto.
 //
 // This module is intentionally dependency-free (Node built-ins and the
@@ -262,6 +263,22 @@ export function buildIdempotencyKey(
   return namespace ? `cron:${namespace}:${hour}` : `cron:${hour}`;
 }
 
+export function buildScheduledRequestId(
+  route: ScheduledRouteName,
+  now: Date,
+  idempotencyKey?: string,
+): string {
+  const logicalSlot =
+    route === "/api/agent/run"
+      ? now.toISOString().slice(0, 13)
+      : now.toISOString().slice(0, 10);
+  const digest = createHash("sha256")
+    .update(`${route}\n${idempotencyKey ?? logicalSlot}`, "utf8")
+    .digest("hex")
+    .slice(0, 32);
+  return `scheduled-${digest}`;
+}
+
 export interface ScheduledTriggerOutcome {
   route: ScheduledRouteName;
   requestUrl: string;
@@ -302,6 +319,11 @@ export async function runScheduledTrigger(
   const headers: Record<string, string> = {
     "x-cron-secret": config.cronSecret,
     "x-required-rollout-mode": config.rolloutMode,
+    "x-request-id": buildScheduledRequestId(
+      config.route,
+      now,
+      idempotencyKey,
+    ),
   };
   if (idempotencyKey) {
     headers["x-idempotency-key"] = idempotencyKey;
