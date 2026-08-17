@@ -7,6 +7,7 @@ import {
   agentRun,
   tradeExecution,
   agentJournal,
+  safetyIncidentOutbox,
 } from "../src/db/schema";
 import { INITIAL_CAPITAL_USD } from "../src/lib/config";
 
@@ -20,15 +21,24 @@ async function main() {
     /supabase\.co/i.test(url) ||
     /amazonaws\.com/i.test(url) ||
     /azure\.com/i.test(url);
-  if (looksLikeProd && process.env.ALLOW_DESTRUCTIVE_RESET !== "yes") {
+  if (looksLikeProd) {
     throw new Error(
-      "Refusing to run destructive reset against what looks like a production DATABASE_URL. " +
-        "Set ALLOW_DESTRUCTIVE_RESET=yes to override.",
+      "Refusing to run destructive reset against a hosted/production-shaped DATABASE_URL. There is no evidence-reset override.",
     );
   }
 
   const client = postgres(url);
   const db = drizzle(client);
+  const [incident] = await db
+    .select({ eventId: safetyIncidentOutbox.eventId })
+    .from(safetyIncidentOutbox)
+    .limit(1);
+  if (incident) {
+    await client.end();
+    throw new Error(
+      "Refusing to reset state after safety incident/outbox evidence exists. Create a new disposable local database instead.",
+    );
+  }
 
   console.log("🧹 Resetting agent state to fresh defaults…");
 

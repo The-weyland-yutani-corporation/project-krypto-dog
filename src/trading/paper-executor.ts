@@ -3,8 +3,10 @@ import { db } from "@/db";
 import {
   agentRun,
   agentState,
+  safetyIncidentOutbox,
   tradeExecution,
   type AgentState,
+  type SafetyIncidentOutbox,
   type TradeExecution,
 } from "@/db/schema";
 import {
@@ -31,6 +33,7 @@ import {
   ExecutionDeadlineError,
   type ExecutionDeadline,
 } from "@/lib/execution-envelope";
+import { insertCreatedSafetyIncident } from "@/lib/safety-incidents";
 
 const ACCOUNT_ID = "singleton";
 
@@ -64,6 +67,8 @@ export interface ExecutePaperTradeRequest {
 export interface PaperExecutionResult {
   status: "executed" | "idempotent";
   tradeId: string;
+  incidentId: string;
+  incidentEvent: SafetyIncidentOutbox;
   direction: "BUY" | "SELL";
   requestedNotionalUSD: string;
   grossNotionalUSD: string;
@@ -162,10 +167,13 @@ function resultFromRows(
   status: PaperExecutionResult["status"],
   trade: TradeExecution,
   state: AgentState,
+  incident: SafetyIncidentOutbox,
 ): PaperExecutionResult {
   return {
     status,
     tradeId: trade.id,
+    incidentId: incident.incidentId,
+    incidentEvent: incident,
     direction: trade.direction,
     requestedNotionalUSD: requiredDecimal(
       trade.requestedNotionalUSD,
@@ -269,7 +277,27 @@ export function createPaperExecutor(database: typeof db) {
       if (!currentState) {
         throw new AccountingError("AgentState singleton not found");
       }
-      return resultFromRows("idempotent", existingBeforeLock, currentState);
+      const [incident] = await tx
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(
+          and(
+            eq(safetyIncidentOutbox.transactionId, existingBeforeLock.id),
+            eq(safetyIncidentOutbox.eventKind, "CREATED"),
+          ),
+        )
+        .limit(1);
+      if (!incident) {
+        throw new TradeConflictError(
+          "Committed paper trade is missing its durable post-commit obligation",
+        );
+      }
+      return resultFromRows(
+        "idempotent",
+        existingBeforeLock,
+        currentState,
+        incident,
+      );
     }
 
     const [run] = await tx
@@ -308,7 +336,22 @@ export function createPaperExecutor(database: typeof db) {
       .where(eq(tradeExecution.agentRunId, request.agentRunId))
       .limit(1);
     if (existingAfterLock) {
-      return resultFromRows("idempotent", existingAfterLock, state);
+      const [incident] = await tx
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(
+          and(
+            eq(safetyIncidentOutbox.transactionId, existingAfterLock.id),
+            eq(safetyIncidentOutbox.eventKind, "CREATED"),
+          ),
+        )
+        .limit(1);
+      if (!incident) {
+        throw new TradeConflictError(
+          "Committed paper trade is missing its durable post-commit obligation",
+        );
+      }
+      return resultFromRows("idempotent", existingAfterLock, state, incident);
     }
 
     if (
@@ -567,7 +610,40 @@ export function createPaperExecutor(database: typeof db) {
       );
     }
 
-      return resultFromRows("executed", insertedTrade, updatedState);
+      const incident = await insertCreatedSafetyIncident(
+        tx,
+        {
+          incidentType: "PAPER_TRADE_POST_COMMIT",
+          severity: "WARNING",
+          dedupKey: `paper-trade-post-commit:${request.agentRunId}`,
+          requestId: run.requestId,
+          agentRunId: run.id,
+          releaseId: run.releaseId,
+          deploymentId: run.deploymentId,
+          providerAttemptId: run.providerAttemptId,
+          transactionId: insertedTrade.id,
+          redactedContext: {
+            component: "paper-executor",
+            operation: "post-commit-evidence",
+            outcome: "executed",
+            triggerSource: run.triggerSource,
+            rolloutMode: "paper",
+          },
+          occurredAt: now,
+          ownerRole: "PRIMARY_ON_CALL",
+          backupRole: "BACKUP_ON_CALL",
+          runbook:
+            "specs/incident-response.md#post-commit-journal-or-telemetry-failure",
+        },
+        { now: () => now },
+      );
+
+      return resultFromRows(
+        "executed",
+        insertedTrade,
+        updatedState,
+        incident.event,
+      );
     });
   };
 }

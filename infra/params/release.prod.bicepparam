@@ -77,6 +77,18 @@ param azureFoundryAgentVersion = '1'
 param posthogHost = 'https://us.i.posthog.com'
 param posthogEnvironment = 'prod'
 param alertEmailTo = 'varun.sharma.exe@gmail.com'
+param safetyPrimaryOnCall = readEnvironmentVariable('SAFETY_PRIMARY_ON_CALL_PROD')
+param safetyBackupOnCall = readEnvironmentVariable('SAFETY_BACKUP_ON_CALL_PROD')
+param safetyReleaseOwner = readEnvironmentVariable('SAFETY_RELEASE_OWNER_PROD')
+param safetyApprover = readEnvironmentVariable('SAFETY_APPROVER_PROD')
+param safetyEvidenceCustodian = readEnvironmentVariable('SAFETY_EVIDENCE_CUSTODIAN_PROD')
+param safetyRollbackOwner = readEnvironmentVariable('SAFETY_ROLLBACK_OWNER_PROD')
+param safetyPrimaryOnCallPublicKey = readEnvironmentVariable('SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY_PROD')
+param safetyBackupOnCallPublicKey = readEnvironmentVariable('SAFETY_BACKUP_ON_CALL_PUBLIC_KEY_PROD')
+param safetyReleaseOwnerPublicKey = readEnvironmentVariable('SAFETY_RELEASE_OWNER_PUBLIC_KEY_PROD')
+param safetyApproverPublicKey = readEnvironmentVariable('SAFETY_APPROVER_PUBLIC_KEY_PROD')
+param safetyEvidenceCustodianPublicKey = readEnvironmentVariable('SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY_PROD')
+param safetyRollbackOwnerPublicKey = readEnvironmentVariable('SAFETY_ROLLBACK_OWNER_PUBLIC_KEY_PROD')
 
 // Fresh-deployment Azure PostgreSQL runtime login role name. Nonsecret —
 // a role name, not a credential. Default matches the database

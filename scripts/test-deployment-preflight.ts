@@ -13,7 +13,7 @@ const report = await runDeploymentPreflight({
   now: new Date("2026-07-14T22:30:00.000Z"),
 });
 
-assert.equal(report.schemaVersion, "1.5.0");
+assert.equal(report.schemaVersion, "1.6.0");
 assert.equal(
   report.databasePreflightPassed,
   true,

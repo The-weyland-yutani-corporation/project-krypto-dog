@@ -4,16 +4,37 @@ import {
   EmailDeliveryError,
   sendDailySummary,
 } from "@/lib/email";
+import { flushPostHog } from "@/lib/posthog";
 
 jest.mock("@/lib/email", () => ({
   EmailDeliveryError: class EmailDeliveryError extends Error {},
   sendDailySummary: jest.fn(),
+}));
+jest.mock("@/lib/safety-incidents", () => ({
+  safetyIncidentRepository: {
+    createOrGet: jest.fn(async () => ({
+      created: true,
+      event: {
+        incidentId: "incident-daily",
+      },
+    })),
+    appendDeliveryLifecycle: jest.fn(async () => ({
+      incidentId: "incident-daily",
+    })),
+  },
+}));
+jest.mock("@/lib/posthog", () => ({
+  reservePostHogBudget: jest.fn(async () => true),
+  flushPostHog: jest.fn(async () => undefined),
 }));
 
 import { POST } from "@/app/api/agent/daily-summary/route";
 
 const mockedSendDailySummary = sendDailySummary as jest.MockedFunction<
   typeof sendDailySummary
+>;
+const mockedFlushPostHog = flushPostHog as jest.MockedFunction<
+  typeof flushPostHog
 >;
 const originalRolloutMode = process.env.ROLLOUT_MODE;
 
@@ -50,6 +71,7 @@ beforeEach(() => {
     },
   ]);
   mockDb._insertChain.values.mockReturnValue(mockDb._insertChain);
+  mockDb._insertChain.returning.mockResolvedValue([{ id: "journal-daily" }]);
 });
 
 afterAll(() => {
@@ -117,7 +139,8 @@ describe("POST /api/agent/daily-summary", () => {
       status: "sent",
       id: "email-123",
     });
-    mockDb._insertChain.values.mockRejectedValueOnce(
+
+    mockDb._insertChain.returning.mockRejectedValueOnce(
       new Error("journal insert failed"),
     );
 
@@ -126,11 +149,30 @@ describe("POST /api/agent/daily-summary", () => {
 
     expect(response.status).toBe(500);
     expect(body).toMatchObject({
-      generated: true,
-      delivery: { status: "sent", id: "email-123" },
       alertAuditRecorded: false,
       error: "journal insert failed",
+      incidentId: "incident-daily",
     });
+  });
+
+  it("returns terminal incident evidence when telemetry fails after email delivery", async () => {
+    mockedSendDailySummary.mockResolvedValue({
+      status: "sent",
+      id: "email-telemetry",
+    });
+    mockedFlushPostHog.mockRejectedValueOnce(
+      new Error("injected telemetry failure"),
+    );
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toMatchObject({
+      alertAuditRecorded: false,
+      incidentId: "incident-daily",
+    });
+    expect(mockDb.update).not.toHaveBeenCalled();
   });
 
   it("rejects an invalid cron secret before querying the database", async () => {

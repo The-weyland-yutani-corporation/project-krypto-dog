@@ -108,6 +108,12 @@ param hourlyJobName string = 'caj-${environmentName}-agent-run'
 @description('Daily summary job name.')
 param dailyJobName string = 'caj-${environmentName}-daily-summary'
 
+@description('Non-trading durable safety incident relay job name.')
+param safetyIncidentRelayJobName string = 'caj-${environmentName}-safety-relay'
+
+@description('Canonical UTC activation boundary for the release-owned safety relay absence alert.')
+param safetyRelayEnabledAt string = utcNow('u')
+
 @description('Migration/one-time-init operations job name.')
 param migrateInitJobName string = 'caj-${environmentName}-migrate-init'
 
@@ -183,6 +189,54 @@ param posthogEnvironment string = environmentName
 
 @description('Alert email recipient.')
 param alertEmailTo string
+
+@description('Named primary production-paper on-call assignment. Missing or placeholder values block target smoke and shadow readiness.')
+@minLength(2)
+param safetyPrimaryOnCall string
+
+@description('Named backup production-paper on-call assignment.')
+@minLength(2)
+param safetyBackupOnCall string
+
+@description('Named release owner assignment.')
+@minLength(2)
+param safetyReleaseOwner string
+
+@description('Named trading-safety approver assignment, distinct from the release owner.')
+@minLength(2)
+param safetyApprover string
+
+@description('Named immutable-evidence custodian assignment.')
+@minLength(2)
+param safetyEvidenceCustodian string
+
+@description('Named rollback owner assignment.')
+@minLength(2)
+param safetyRollbackOwner string
+
+@description('Base64 Ed25519 SPKI public key authenticating primary-on-call incident actions.')
+@minLength(8)
+param safetyPrimaryOnCallPublicKey string
+
+@description('Base64 Ed25519 SPKI public key authenticating backup-on-call incident actions.')
+@minLength(8)
+param safetyBackupOnCallPublicKey string
+
+@description('Base64 Ed25519 SPKI public key authenticating release-owner incident actions.')
+@minLength(8)
+param safetyReleaseOwnerPublicKey string
+
+@description('Base64 Ed25519 SPKI public key authenticating trading-safety incident actions.')
+@minLength(8)
+param safetyApproverPublicKey string
+
+@description('Base64 Ed25519 SPKI public key authenticating evidence-custodian actions.')
+@minLength(8)
+param safetyEvidenceCustodianPublicKey string
+
+@description('Base64 Ed25519 SPKI public key authenticating rollback-owner actions.')
+@minLength(8)
+param safetyRollbackOwnerPublicKey string
 
 @description('Fresh-deployment Azure PostgreSQL runtime login role name (see src/deployment/bootstrap-runtime-role.ts / AZURE_RUNTIME_LOGIN_ROLE). Nonsecret — it is a role name, not a credential. Passed only to the migrate-init operations job, which is the one operation that may need to create/rotate this login role\'s credential and grant it krypto_runtime membership on a fresh environment.')
 param runtimeDatabaseLoginRole string = 'krypto_app'
@@ -552,6 +606,19 @@ module webApp 'modules/container-app-web.bicep' = {
       { name: 'POSTHOG_HOST', value: posthogHost }
       { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
       { name: 'ALERT_EMAIL_TO', value: alertEmailTo }
+      { name: 'SAFETY_PRIMARY_ON_CALL', value: safetyPrimaryOnCall }
+      { name: 'SAFETY_BACKUP_ON_CALL', value: safetyBackupOnCall }
+      { name: 'SAFETY_RELEASE_OWNER', value: safetyReleaseOwner }
+      { name: 'SAFETY_APPROVER', value: safetyApprover }
+      { name: 'SAFETY_EVIDENCE_CUSTODIAN', value: safetyEvidenceCustodian }
+      { name: 'SAFETY_ROLLBACK_OWNER', value: safetyRollbackOwner }
+      { name: 'SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY', value: safetyPrimaryOnCallPublicKey }
+      { name: 'SAFETY_BACKUP_ON_CALL_PUBLIC_KEY', value: safetyBackupOnCallPublicKey }
+      { name: 'SAFETY_RELEASE_OWNER_PUBLIC_KEY', value: safetyReleaseOwnerPublicKey }
+      { name: 'SAFETY_APPROVER_PUBLIC_KEY', value: safetyApproverPublicKey }
+      { name: 'SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY', value: safetyEvidenceCustodianPublicKey }
+      { name: 'SAFETY_ROLLBACK_OWNER_PUBLIC_KEY', value: safetyRollbackOwnerPublicKey }
+      { name: 'SAFETY_INCIDENT_DRILL_ENABLED', value: 'false' }
       { name: 'AZURE_COMMUNICATION_EMAIL_SENDER', value: communicationEmailSender }
       { name: 'RELEASE_SHA', value: releaseSha }
       { name: 'IMAGE_DIGEST', value: imageDigest }
@@ -658,6 +725,68 @@ module dailySummaryJob 'modules/container-app-job.bicep' = {
   ]
 }
 
+// Independent, non-trading durable-outbox export. This scheduled job reads
+// latest SafetyIncidentOutbox state and emits only allowlisted correlation and
+// lifecycle fields for external Azure Monitor queries. It never calls the
+// model, policy, run-flow, providers, or paper executor.
+module safetyIncidentRelayJob 'modules/container-app-job.bicep' = {
+  name: 'safety-incident-relay-job'
+  params: {
+    jobName: safetyIncidentRelayJobName
+    location: location
+    managedEnvironmentId: containerAppsEnvironmentId
+    registryLoginServer: registryLoginServer
+    imageDigestRef: webImageDigestRef
+    jobIdentityId: runtimeIdentityId
+    triggerType: 'Schedule'
+    cronExpression: '*/5 * * * *'
+    replicaRetryLimit: 0
+    replicaTimeoutSeconds: 120
+    command: [
+      'node'
+    ]
+    args: [
+      '--experimental-strip-types'
+      'scripts/safety-incident-relay.mjs'
+    ]
+    nonSecretEnv: [
+      { name: 'NODE_ENV', value: 'production' }
+      { name: 'RELEASE_SHA', value: releaseSha }
+      { name: 'IMAGE_DIGEST', value: imageDigest }
+      { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
+    ]
+    keyVaultSecretEnv: [
+      { name: 'DATABASE_URL', keyVaultUrl: databaseUrlSecret.properties.secretUri }
+    ]
+    tags: envTags
+  }
+  dependsOn: [
+    runtimeDatabaseUrlAccess
+  ]
+}
+
+module safetyRelayMissingAlert 'modules/safety-relay-missing-alert.bicep' = {
+  name: 'safety-relay-missing-alert'
+  params: {
+    location: location
+    environmentName: environmentName
+    logAnalyticsWorkspaceId: resourceId(
+      'Microsoft.OperationalInsights/workspaces',
+      'log-krypto-${environmentName}'
+    )
+    actionGroupId: resourceId(
+      'Microsoft.Insights/actionGroups',
+      'ag-krypto-${environmentName}'
+    )
+    safetyIncidentRelayJobName: safetyIncidentRelayJobName
+    relayEnabledAt: safetyRelayEnabledAt
+    tags: envTags
+  }
+  dependsOn: [
+    safetyIncidentRelayJob
+  ]
+}
+
 // Non-secret env common to every manual operations job (see
 // scripts/azure/ops-job.ts main()). JOB_EXECUTION_ID is deliberately NOT
 // listed here — it has no meaningful committed value and must be supplied
@@ -678,6 +807,18 @@ var opsCommonNonSecretEnv = [
   // enabled anywhere in this template).
   { name: 'AZCOPY_MSI_CLIENT_ID', value: opsIdentityClientId }
   { name: 'AZURE_CLIENT_ID', value: opsIdentityClientId }
+  { name: 'SAFETY_PRIMARY_ON_CALL', value: safetyPrimaryOnCall }
+  { name: 'SAFETY_BACKUP_ON_CALL', value: safetyBackupOnCall }
+  { name: 'SAFETY_RELEASE_OWNER', value: safetyReleaseOwner }
+  { name: 'SAFETY_APPROVER', value: safetyApprover }
+  { name: 'SAFETY_EVIDENCE_CUSTODIAN', value: safetyEvidenceCustodian }
+  { name: 'SAFETY_ROLLBACK_OWNER', value: safetyRollbackOwner }
+  { name: 'SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY', value: safetyPrimaryOnCallPublicKey }
+  { name: 'SAFETY_BACKUP_ON_CALL_PUBLIC_KEY', value: safetyBackupOnCallPublicKey }
+  { name: 'SAFETY_RELEASE_OWNER_PUBLIC_KEY', value: safetyReleaseOwnerPublicKey }
+  { name: 'SAFETY_APPROVER_PUBLIC_KEY', value: safetyApproverPublicKey }
+  { name: 'SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY', value: safetyEvidenceCustodianPublicKey }
+  { name: 'SAFETY_ROLLBACK_OWNER_PUBLIC_KEY', value: safetyRollbackOwnerPublicKey }
 ]
 
 module migrateInitJob 'modules/container-app-job.bicep' = {
@@ -895,6 +1036,8 @@ module activationCheckJob 'modules/container-app-job.bicep' = {
 output webAppFqdn string = webApp.outputs.fqdn
 output hourlyJobName string = hourlyAgentRunJob.outputs.jobName
 output dailyJobName string = dailySummaryJob.outputs.jobName
+output safetyIncidentRelayJobName string = safetyIncidentRelayJob.outputs.jobName
+output safetyRelayMissingAlertName string = safetyRelayMissingAlert.outputs.alertName
 output migrateInitJobName string = migrateInitJob.outputs.jobName
 output preflightJobName string = preflightJob.outputs.jobName
 output verifiedBackupJobName string = verifiedBackupJob.outputs.jobName

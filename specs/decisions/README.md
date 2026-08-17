@@ -59,5 +59,6 @@ What did we choose, in one or two paragraphs?
 | [0011](./0011-mock-first-worktree-harness.md) | Mock-first, per-worktree application harness | Accepted |
 | [0012](./0012-evidence-gated-automation-authority.md) | Evidence-gated automation authority | Accepted |
 | [0013](./0013-deployment-approval-provenance.md) | Deployment approval provenance and expiry | Accepted |
-| [0014](./0014-postgresql-trust-boundary-roles.md) | PostgreSQL trust-boundary roles: owner, schema owner, migrator, scheduler, runtime | Accepted |
+| [0014](./0014-postgresql-trust-boundary-roles.md) | PostgreSQL trust-boundary roles: owner, schema owner, migrator, scheduler, runtime | Accepted; append-only incident grant amended by [0016](./0016-durable-safety-incidents-and-independent-alerts.md) |
 | [0015](./0015-bounded-synchronous-execution.md) | Bounded synchronous execution | Accepted |
+| [0016](./0016-durable-safety-incidents-and-independent-alerts.md) | Durable safety incidents and independent external alerts | Accepted |

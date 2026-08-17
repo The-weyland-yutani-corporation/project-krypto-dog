@@ -212,13 +212,31 @@ switch (operation) {
     break;
   }
   case "target-smoke": {
-    requireMatch(report, "schemaVersion", "1.5.0", "target-smoke report");
+    requireMatch(report, "schemaVersion", "1.6.0", "target-smoke report");
     const generatedAt = canonicalTimestamp(
       report,
       "generatedAt",
       "target-smoke report",
     );
     requireTrue(report, "passed", "target-smoke report");
+    const checks = requireField(report, "checks", "array");
+    const safetyChecks = checks.filter(
+      (check) =>
+        check !== null &&
+        typeof check === "object" &&
+        check.id === "safety-incident-test-fire-dry-run",
+    );
+    if (
+      safetyChecks.length !== 1 ||
+      safetyChecks[0].status !== "pass" ||
+      safetyChecks[0].evidence?.persisted !== false ||
+      safetyChecks[0].evidence?.rosterComplete !== true ||
+      safetyChecks[0].evidence?.authenticatorsConfigured !== true
+    ) {
+      fail(
+        "Target-smoke report must contain exactly one passing, non-persisted safety-incident test-fire dry run with a complete authenticated roster.",
+      );
+    }
     requireMatch(report, "releaseSha", expectedReleaseSha, "target-smoke report");
     if (expectedImageDigest) {
       requireMatch(report, "imageDigest", expectedImageDigest, "target-smoke report");

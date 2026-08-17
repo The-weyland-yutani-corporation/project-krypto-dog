@@ -46,6 +46,18 @@ env:
   RUNTIME_DATABASE_PASSWORD_DEV: stub-inert-value
   MIGRATOR_DATABASE_PASSWORD_DEV: stub-inert-value
   DEPLOYMENT_APPROVAL_SECRET_DEV: stub-inert-value
+  SAFETY_PRIMARY_ON_CALL_DEV: stub-primary
+  SAFETY_BACKUP_ON_CALL_DEV: stub-backup
+  SAFETY_RELEASE_OWNER_DEV: stub-release-owner
+  SAFETY_APPROVER_DEV: stub-safety-approver
+  SAFETY_EVIDENCE_CUSTODIAN_DEV: stub-evidence-custodian
+  SAFETY_ROLLBACK_OWNER_DEV: stub-rollback-owner
+  SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY_DEV: stub-primary-key
+  SAFETY_BACKUP_ON_CALL_PUBLIC_KEY_DEV: stub-backup-key
+  SAFETY_RELEASE_OWNER_PUBLIC_KEY_DEV: stub-release-key
+  SAFETY_APPROVER_PUBLIC_KEY_DEV: stub-approver-key
+  SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY_DEV: stub-custodian-key
+  SAFETY_ROLLBACK_OWNER_PUBLIC_KEY_DEV: stub-rollback-key
   DATABASE_URL_PROD: stub-inert-value
   DIRECT_URL_PROD: stub-inert-value
   MIGRATION_URL_PROD: stub-inert-value
@@ -56,6 +68,18 @@ env:
   RUNTIME_DATABASE_PASSWORD_PROD: stub-inert-value
   MIGRATOR_DATABASE_PASSWORD_PROD: stub-inert-value
   DEPLOYMENT_APPROVAL_SECRET_PROD: stub-inert-value
+  SAFETY_PRIMARY_ON_CALL_PROD: stub-primary
+  SAFETY_BACKUP_ON_CALL_PROD: stub-backup
+  SAFETY_RELEASE_OWNER_PROD: stub-release-owner
+  SAFETY_APPROVER_PROD: stub-safety-approver
+  SAFETY_EVIDENCE_CUSTODIAN_PROD: stub-evidence-custodian
+  SAFETY_ROLLBACK_OWNER_PROD: stub-rollback-owner
+  SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY_PROD: stub-primary-key
+  SAFETY_BACKUP_ON_CALL_PUBLIC_KEY_PROD: stub-backup-key
+  SAFETY_RELEASE_OWNER_PUBLIC_KEY_PROD: stub-release-key
+  SAFETY_APPROVER_PUBLIC_KEY_PROD: stub-approver-key
+  SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY_PROD: stub-custodian-key
+  SAFETY_ROLLBACK_OWNER_PUBLIC_KEY_PROD: stub-rollback-key
 
 jobs:
   bicep-build:

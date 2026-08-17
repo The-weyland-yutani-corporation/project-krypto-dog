@@ -74,6 +74,19 @@ const successfulFetch: typeof fetch = async (input, init) => {
       ? Response.json({ action: "disabled" })
       : Response.json({ error: "Unauthorized" }, { status: 401 });
   }
+  if (url.pathname === "/api/admin/safety-incidents/test-fire") {
+    return headers.has("cookie")
+      ? Response.json({
+          dryRun: true,
+          persisted: false,
+          incidentType: "TEST_FIRE_WARNING",
+          roster: {
+            complete: true,
+            authenticatorsConfigured: true,
+          },
+        })
+      : Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   if (url.pathname === "/api/auth/logout") {
     return new Response(null, {
       status: 303,
@@ -101,6 +114,7 @@ describe("target deployment smoke", () => {
 
   beforeEach(() => {
     process.env.ROLLOUT_MODE = "disabled";
+    process.env.SAFETY_RELEASE_OWNER = "release-owner-test";
   });
 
   afterAll(() => {
@@ -109,6 +123,7 @@ describe("target deployment smoke", () => {
     } else {
       process.env.ROLLOUT_MODE = originalRolloutMode;
     }
+    delete process.env.SAFETY_RELEASE_OWNER;
   });
 
   it("validates target identity and transport", () => {
@@ -253,8 +268,8 @@ describe("target deployment smoke", () => {
     );
 
     expect(report.passed).toBe(true);
-    expect(report.schemaVersion).toBe("1.5.0");
-    expect(report.checks).toHaveLength(16);
+    expect(report.schemaVersion).toBe("1.6.0");
+    expect(report.checks).toHaveLength(17);
     expect(report.checks.every((check) => check.status === "pass")).toBe(
       true,
     );

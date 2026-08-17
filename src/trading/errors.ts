@@ -67,6 +67,7 @@ export class AgentUpstreamError extends Error {
   attemptCount?: number;
   latencyMs?: number;
   retryAfterMs?: number;
+  providerAttemptId?: string;
 
   constructor(
     readonly errorType: AgentErrorType,

@@ -98,6 +98,7 @@ export interface PolicyEvaluation {
 
 export interface DecisionResult {
   decision: TradeDecision;
+  providerAttemptId?: string;
   tokenUsage?: {
     promptTokens: number;
     completionTokens: number;

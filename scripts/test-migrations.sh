@@ -41,6 +41,12 @@ else
   url_prefix="postgresql://postgres@127.0.0.1:$PORT"
 fi
 
+postgres_version_num="$(psql "$admin_url" -Atc "SHOW server_version_num;")"
+if (( postgres_version_num < 170000 || postgres_version_num >= 180000 )); then
+  echo "Migration tests require PostgreSQL 17.x, found server_version_num=$postgres_version_num" >&2
+  exit 1
+fi
+
 fresh_url="$url_prefix/fresh"
 upgrade_url="$url_prefix/upgrade"
 quarantine_url="$url_prefix/quarantine"
@@ -52,6 +58,7 @@ rollout_upgrade_url="$url_prefix/rollout_upgrade"
 azure_target_url="$url_prefix/azure_target"
 azure_upgrade_url="$url_prefix/azure_upgrade"
 trust_boundary_denial_url="$url_prefix/trust_boundary_denial"
+safety_upgrade_url="$url_prefix/safety_upgrade"
 
 create_database() {
   psql "$admin_url" -v ON_ERROR_STOP=1 \
@@ -79,10 +86,10 @@ with_role_credentials() {
 # the full/default migration set authenticated as the resulting
 # krypto_migrator role via its own dedicated MIGRATION_URL -- never
 # DIRECT_URL and never a pooler/runtime URL. Any remaining arguments are
-# forwarded to `drizzle-kit migrate` (for example `--config <path>`, though
-# that bypasses this project's own drizzle.config.ts entirely and would
-# make the admin bootstrap pointless; in practice this helper is only used
-# for the default/full migration set). This mirrors exactly how a real
+# forwarded to `drizzle-kit migrate` (for example `--config <path>` for a
+# pinned historical migration set). Generated historical configs prefer
+# MIGRATION_URL when supplied, preserving the same dedicated migrator
+# boundary as the default project config. This mirrors exactly how a real
 # Azure release runs migrate-init: the admin bootstrap always precedes
 # drizzle-kit migrate.
 bootstrap_and_migrate() {
@@ -154,7 +161,7 @@ fs.writeFileSync(
   schema: ${JSON.stringify(path.join(root, "src", "db", "schema.ts"))},
   out: ${JSON.stringify(migrationDir)},
   dialect: "postgresql",
-  dbCredentials: { url: process.env.DIRECT_URL },
+  dbCredentials: { url: process.env.MIGRATION_URL ?? process.env.DIRECT_URL },
 };
 `,
 );
@@ -182,6 +189,7 @@ through_0006_config="$(build_through_config 6 0006)"
 # below instead, where "krypto"/"drizzle" already exist and ownership
 # transfer is exercised for real.
 through_0007_legacy_config="$(build_through_config 7 0007legacy)"
+through_0009_config="$(build_through_config 9 0009)"
 
 psql "$admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 DO $$
@@ -263,7 +271,7 @@ BEGIN
       'PAPER', 'migration-test'
     );
     RAISE EXCEPTION 'duplicate AgentRun idempotency key was accepted';
-  EXCEPTION WHEN unique_violation THEN
+  EXCEPTION WHEN unique_violation OR check_violation THEN
     NULL;
   END;
 
@@ -730,6 +738,7 @@ fi
 azure_0007_hash="fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71"
 azure_0008_hash="0f28fce3409b92986be1fe58a82b02a90dcbb48a0cab75a1bbfb6681e200638e"
 azure_0009_hash="289f3a32bdc4c47cd3c9d8c2c354226962fadc4ff5be80e9864574f8eebd42a5"
+azure_0010_hash="e81e8e38bcf2e32855a4d98dd3c76950c26d0e9aeecba536adb0f12278920095"
 
 create_database azure_target
 azure_migrator_password="krypto-migrator-test-pw-$(random_test_password)"
@@ -813,25 +822,264 @@ azure_fresh_result="$(psql "$azure_target_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."RuntimeContract"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."RuntimeContract"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           has_schema_privilege('\''krypto_runtime'\'', '\''drizzle'\'', '\''USAGE'\'')::text || '\''|'\'' ||
-          (SELECT ("schemaFingerprint" = '\''0009_bounded_execution_v1'\'')::text
+          (SELECT ("schemaFingerprint" = '\''0010_safety_incidents_v1'\'')::text
              FROM "krypto"."RuntimeContract" WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
           (SELECT (count(*) = 2)::text FROM pg_constraint
             WHERE conrelid = '\''krypto."AgentRun"'\''::regclass
               AND conname IN ('\''AgentRun_deadline_after_start_check'\'', '\''AgentRun_deadline_exact_check'\'')) || '\''|'\'' ||
           (SELECT (condeferrable AND condeferred)::text FROM pg_constraint
             WHERE conname = '\''TradeExecution_commit_deadline_fence'\'');')"
-if [[ "$azure_fresh_result" != "10|$azure_0009_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false|true|true|true|false|true|false|false|false|true|true|true" ]]; then
+if [[ "$azure_fresh_result" != "11|$azure_0010_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false|true|true|true|false|true|false|false|false|true|true|true" ]]; then
   echo "Fresh Azure migration did not retire obsolete cron functions or establish the exact krypto_runtime privilege matrix: $azure_fresh_result" >&2
+  exit 1
+fi
+
+safety_fresh_result="$(psql "$azure_target_url" -Atc \
+  'SELECT
+          (to_regclass('\''krypto."SafetyIncidentOutbox"'\'') IS NOT NULL)::text || '\''|'\'' ||
+          (SELECT relowner::regrole::text = '\''krypto_schema_owner'\''
+             FROM pg_class
+            WHERE oid = '\''krypto."SafetyIncidentOutbox"'\''::regclass)::text || '\''|'\'' ||
+          (NOT EXISTS (
+             SELECT 1
+             FROM information_schema.table_privileges
+             WHERE table_schema = '\''krypto'\''
+               AND table_name = '\''SafetyIncidentOutbox'\''
+               AND grantee = '\''PUBLIC'\''
+          ))::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''TRUNCATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''TRIGGER'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''REFERENCES'\'')::text || '\''|'\'' ||
+          (SELECT column_default IS NULL
+             FROM information_schema.columns
+            WHERE table_schema = '\''krypto'\''
+              AND table_name = '\''SafetyIncidentOutbox'\''
+              AND column_name = '\''eventId'\'')::text || '\''|'\'' ||
+          (NOT EXISTS (
+             SELECT 1
+             FROM information_schema.columns
+             WHERE table_schema = '\''krypto'\''
+               AND table_name = '\''AgentRun'\''
+               AND column_name IN ('\''requestId'\'', '\''releaseId'\'', '\''deploymentId'\'')
+               AND is_nullable <> '\''NO'\''
+          ))::text || '\''|'\'' ||
+          (SELECT is_nullable = '\''YES'\''
+             FROM information_schema.columns
+            WHERE table_schema = '\''krypto'\''
+              AND table_name = '\''AgentRun'\''
+              AND column_name = '\''providerAttemptId'\'')::text || '\''|'\'' ||
+          (SELECT ("schemaFingerprint" = '\''0010_safety_incidents_v1'\'' AND "contractVersion" = 2)::text
+             FROM "krypto"."RuntimeContract"
+            WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
+          (SELECT count(*) = 1
+             FROM pg_trigger
+            WHERE tgrelid = '\''krypto."SafetyIncidentOutbox"'\''::regclass
+              AND tgname = '\''SafetyIncidentOutbox_append_only'\''
+              AND tgenabled = '\''O'\''
+              AND NOT tgisinternal)::text || '\''|'\'' ||
+          (SELECT count(*) = 1
+             FROM pg_trigger
+            WHERE tgrelid = '\''krypto."SafetyIncidentOutbox"'\''::regclass
+              AND tgname = '\''SafetyIncidentOutbox_validate_insert'\''
+              AND tgenabled = '\''O'\''
+              AND NOT tgisinternal)::text || '\''|'\'' ||
+          (NOT EXISTS (
+             SELECT 1
+             FROM pg_class AS relation
+             JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+             WHERE namespace.nspname = '\''krypto'\'' AND relation.relkind = '\''S'\''
+          ))::text;')"
+if [[ "$safety_fresh_result" != "true|true|true|true|true|false|false|false|false|false|true|true|true|true|true|true|true" ]]; then
+  echo "Fresh 0010 migration did not establish the safety outbox, correlations, fingerprint, trigger, or exact privileges: $safety_fresh_result" >&2
+  exit 1
+fi
+
+psql "$azure_target_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+BEGIN;
+INSERT INTO "krypto"."AgentRun" (
+  "id", "idempotencyKey", "requestId", "releaseId", "deploymentId",
+  "triggerSource", "tradingMode", "strategyVersion", "startedAt", "deadlineAt"
+) VALUES (
+  'safety-fresh-run', 'safety-fresh-idempotency', 'safety-fresh-request',
+  'release-test', 'deployment-test', 'migration-test', 'PAPER', 'migration-test',
+  statement_timestamp(), statement_timestamp() + interval '180 seconds'
+);
+
+INSERT INTO "krypto"."TradeExecution" (
+  "id", "direction", "asset", "amountUSD", "amountAsset",
+  "executionPrice", "agentReasoning", "agentRunId"
+) VALUES (
+  'safety-fresh-trade', 'BUY', 'ETH', 1, 0.001, 1000,
+  'safety incident migration proof', 'safety-fresh-run'
+);
+
+INSERT INTO "krypto"."SafetyIncidentOutbox" (
+  "eventId", "incidentId", "eventSequence", "eventKind", "incidentType",
+  "severity", "status", "dedupKey", "requestId", "agentRunId",
+  "releaseId", "deploymentId", "transactionId", "redactedContext",
+  "occurredAt", "persistedAt", "ownerRole", "backupRole", "runbook"
+) VALUES (
+  'safety-event-created', 'safety-incident-1', 1, 'CREATED',
+  'PAPER_TRADE_POST_COMMIT', 'CRITICAL', 'OPEN', 'safety-dedup-1',
+  'safety-fresh-request', 'safety-fresh-run', 'release-test',
+  'deployment-test', 'safety-fresh-trade', '{"component":"migration-test"}',
+  transaction_timestamp(), statement_timestamp(), 'incident-commander', 'operations',
+  'runbooks/safety-incidents'
+);
+
+-- The CREATED-only predicate makes retries idempotent without preventing
+-- delivery outcome events from carrying the same stable deduplication key.
+INSERT INTO "krypto"."SafetyIncidentOutbox" (
+  "eventId", "incidentId", "eventSequence", "eventKind", "incidentType",
+  "severity", "status", "dedupKey", "requestId", "agentRunId",
+  "releaseId", "deploymentId", "transactionId", "redactedContext",
+  "occurredAt", "ownerRole", "backupRole", "runbook", "evidence"
+) VALUES (
+  'safety-event-delivery-failed', 'safety-incident-1', 2, 'DELIVERY_FAILED',
+  'PAPER_TRADE_POST_COMMIT', 'CRITICAL', 'OPEN', 'safety-dedup-1',
+  'safety-fresh-request', 'safety-fresh-run', 'release-test',
+  'deployment-test', 'safety-fresh-trade', '{"component":"migration-test"}',
+  transaction_timestamp(), 'incident-commander', 'operations',
+  'runbooks/safety-incidents', '{"deliveryChannel":"email"}'
+);
+
+-- The latest immutable event defines whether an incident remains unresolved.
+-- Historical OPEN rows remain present and must not block after RESOLVED.
+INSERT INTO "krypto"."SafetyIncidentOutbox" (
+  "eventId", "incidentId", "eventSequence", "eventKind", "incidentType",
+  "severity", "status", "dedupKey", "requestId", "agentRunId",
+  "releaseId", "deploymentId", "transactionId", "redactedContext",
+  "occurredAt", "persistedAt", "acknowledgedAt", "ownerRole", "backupRole",
+  "runbook", "actorId", "actorRole", "evidence"
+) VALUES (
+  'safety-event-acknowledged', 'safety-incident-1', 3, 'ACKNOWLEDGED',
+  'PAPER_TRADE_POST_COMMIT', 'CRITICAL', 'ACKNOWLEDGED', 'safety-dedup-1',
+  'safety-fresh-request', 'safety-fresh-run', 'release-test',
+  'deployment-test', 'safety-fresh-trade', '{"component":"migration-test"}',
+  transaction_timestamp(), statement_timestamp(), statement_timestamp(),
+  'incident-commander', 'operations', 'runbooks/safety-incidents',
+  'migration-release-owner', 'RELEASE_OWNER',
+  '{"containmentDecision":"rollout-disabled"}'
+);
+
+INSERT INTO "krypto"."SafetyIncidentOutbox" (
+  "eventId", "incidentId", "eventSequence", "eventKind", "incidentType",
+  "severity", "status", "dedupKey", "requestId", "agentRunId",
+  "releaseId", "deploymentId", "transactionId", "redactedContext",
+  "occurredAt", "persistedAt", "acknowledgedAt", "resolvedAt", "ownerRole", "backupRole",
+  "runbook", "actorId", "actorRole", "evidence"
+) VALUES (
+  'safety-event-resolved', 'safety-incident-1', 4, 'RESOLVED',
+  'PAPER_TRADE_POST_COMMIT', 'CRITICAL', 'RESOLVED', 'safety-dedup-1',
+  'safety-fresh-request', 'safety-fresh-run', 'release-test',
+  'deployment-test', 'safety-fresh-trade', '{"component":"migration-test"}',
+  transaction_timestamp(), statement_timestamp(), statement_timestamp(), statement_timestamp(),
+  'incident-commander', 'operations', 'runbooks/safety-incidents',
+  'migration-safety-approver', 'SAFETY_APPROVER',
+  '{"affectedInterval":"2026-08-17T18:00:00Z/2026-08-17T19:00:00Z","cause":"test-failure","containmentDecision":"rollout-disabled","remediation":"projection-repaired","verification":"ledger-reconciled","followUpRef":"issue-test","residualRisk":"none-known","reentryDecision":"new-window-required"}'
+);
+
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO "krypto"."SafetyIncidentOutbox" (
+      "eventId", "incidentId", "eventSequence", "eventKind", "incidentType",
+      "severity", "status", "dedupKey", "requestId", "releaseId",
+      "deploymentId", "redactedContext", "occurredAt", "ownerRole",
+      "backupRole", "runbook"
+    ) VALUES (
+      'duplicate-created', 'safety-incident-retry', 1, 'CREATED',
+      'PAPER_TRADE_POST_COMMIT', 'CRITICAL', 'OPEN', 'safety-dedup-1',
+      'safety-fresh-request', 'release-test', 'deployment-test', '{}'::jsonb,
+      statement_timestamp(), 'incident-commander', 'operations',
+      'runbooks/safety-incidents'
+    );
+    RAISE EXCEPTION 'duplicate CREATED deduplication key was accepted';
+  EXCEPTION WHEN unique_violation OR check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    INSERT INTO "krypto"."SafetyIncidentOutbox" (
+      "eventId", "incidentId", "eventSequence", "eventKind", "incidentType",
+      "severity", "status", "dedupKey", "requestId", "releaseId",
+      "deploymentId", "redactedContext", "occurredAt", "ownerRole",
+      "backupRole", "runbook"
+    ) VALUES (
+      'duplicate-sequence', 'safety-incident-1', 2, 'DELIVERY_CONFIRMED',
+      'PAPER_TRADE_POST_COMMIT', 'CRITICAL', 'OPEN', 'different-dedup',
+      'safety-fresh-request', 'release-test', 'deployment-test', '{}'::jsonb,
+      statement_timestamp(), 'incident-commander', 'operations',
+      'runbooks/safety-incidents'
+    );
+    RAISE EXCEPTION 'duplicate incident event sequence was accepted';
+  EXCEPTION WHEN unique_violation OR check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    UPDATE "krypto"."SafetyIncidentOutbox"
+    SET "status" = 'RESOLVED'
+    WHERE "eventId" = 'safety-event-created';
+    RAISE EXCEPTION 'SafetyIncidentOutbox UPDATE was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    DELETE FROM "krypto"."SafetyIncidentOutbox"
+    WHERE "eventId" = 'safety-event-created';
+    RAISE EXCEPTION 'SafetyIncidentOutbox DELETE was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    INSERT INTO "krypto"."SafetyIncidentOutbox" (
+      "eventId", "incidentId", "eventSequence", "eventKind", "incidentType",
+      "severity", "status", "dedupKey", "requestId", "releaseId",
+      "deploymentId", "redactedContext", "occurredAt", "ownerRole",
+      "backupRole", "runbook"
+    ) VALUES (
+      'invalid-context', 'invalid-context', 0, 'CREATED',
+      'TEST_FIRE_WARNING', 'WARNING', 'OPEN', 'invalid-context',
+      'safety-fresh-request', 'release-test', 'deployment-test', '[]'::jsonb,
+      statement_timestamp(), 'incident-commander', 'operations',
+      'runbooks/safety-incidents'
+    );
+    RAISE EXCEPTION 'invalid safety incident context or sequence was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+END
+$$;
+COMMIT;
+SQL
+
+safety_append_only_result="$(psql "$azure_target_url" -Atc \
+  'SELECT count(*)::text || '\''|'\'' ||
+          count(*) FILTER (WHERE "eventKind" = '\''CREATED'\'')::text || '\''|'\'' ||
+          count(*) FILTER (WHERE "eventKind" = '\''DELIVERY_FAILED'\'')::text || '\''|'\'' ||
+          count(*) FILTER (WHERE "eventKind" = '\''ACKNOWLEDGED'\'')::text || '\''|'\'' ||
+          count(*) FILTER (WHERE "eventKind" = '\''RESOLVED'\'')::text
+     FROM "krypto"."SafetyIncidentOutbox"
+    WHERE "incidentId" = '\''safety-incident-1'\'';')"
+if [[ "$safety_append_only_result" != "4|1|1|1|1" ]]; then
+  echo "Safety incident append-only or deduplication invariants failed: $safety_append_only_result" >&2
   exit 1
 fi
 
 
 # Historical migrations are never re-applied after a later ledger entry.
 # In particular, 0007's then-complete runtime grant matrix predates the
-# RuntimeContract and ProviderDailyUsage tables added by 0009; manually
-# replaying 0007 out of ledger order would intentionally fail closed by
-# revoking access to those future tables. Upgrade coverage below exercises the
-# supported 0007 -> 0008 -> 0009 ordering instead.
+# RuntimeContract and ProviderDailyUsage tables added by 0009, and the
+# SafetyIncidentOutbox added by 0010; manually replaying 0007 out of ledger
+# order would intentionally fail closed by revoking access to those future
+# tables. Upgrade coverage below exercises the supported ordered history.
 
 # --- Azure PostgreSQL safety transition: 0006-to-0007 upgrade, row preservation ---
 
@@ -908,12 +1156,105 @@ azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           (SELECT count(*)::text FROM "krypto"."RuntimeContract"
-            WHERE "id" = '\''singleton'\'' AND "schemaFingerprint" = '\''0009_bounded_execution_v1'\'') || '\''|'\'' ||
+            WHERE "id" = '\''singleton'\'' AND "schemaFingerprint" = '\''0010_safety_incidents_v1'\''
+              AND "contractVersion" = 2) || '\''|'\'' ||
           (SELECT count(*)::text FROM "krypto"."ProviderDailyUsage") || '\''|'\'' ||
           (SELECT count(*)::text FROM "krypto"."AgentRun"
             WHERE "deadlineAt" = "startedAt" + interval '\''180 seconds'\'');')"
-if [[ "$azure_upgrade_result" != "10|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true|1|0|1" ]]; then
+if [[ "$azure_upgrade_result" != "11|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true|1|0|1" ]]; then
   echo "0006-to-0007 upgrade did not preserve rows, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
+  exit 1
+fi
+
+azure_upgrade_correlation_result="$(psql "$azure_upgrade_url" -Atc \
+  'SELECT "requestId" || '\''|'\'' || "releaseId" || '\''|'\'' ||
+          "deploymentId" || '\''|'\'' || ("providerAttemptId" IS NULL)::text || '\''|'\'' ||
+          (SELECT count(*)::text FROM "krypto"."SafetyIncidentOutbox")
+     FROM "krypto"."AgentRun"
+    WHERE "id" = '\''azure-upgrade-run'\'';')"
+if [[ "$azure_upgrade_correlation_result" != "legacy-agent-run:azure-upgrade-run|legacy-pre-0010|legacy-pre-0010|true|0" ]]; then
+  echo "0010 did not safely backfill legacy AgentRun correlations or preserve an empty incident ledger: $azure_upgrade_correlation_result" >&2
+  exit 1
+fi
+
+# --- Safety incident transition: exact 0009-to-0010 upgrade and row preservation ---
+
+create_database safety_upgrade
+DIRECT_URL="$safety_upgrade_url" \
+  npx drizzle-kit migrate --config "$through_0007_azure_config" >/dev/null
+safety_upgrade_migrator_password="$azure_migrator_password"
+bootstrap_and_migrate \
+  "$safety_upgrade_url" \
+  "$safety_upgrade_migrator_password" \
+  --config "$through_0009_config"
+
+psql "$safety_upgrade_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+INSERT INTO "krypto"."AgentRun" (
+  "id", "idempotencyKey", "triggerSource", "tradingMode",
+  "outcome", "strategyVersion", "startedAt", "deadlineAt"
+) VALUES (
+  'safety-upgrade-run', 'safety-upgrade-idempotency', 'migration-test',
+  'PAPER', 'EXECUTED', 'migration-test', statement_timestamp(),
+  statement_timestamp() + interval '180 seconds'
+);
+
+INSERT INTO "krypto"."TradeExecution" (
+  "id", "direction", "asset", "amountUSD", "amountAsset",
+  "executionPrice", "feesUSD", "slippage", "agentReasoning", "agentRunId"
+) VALUES (
+  'safety-upgrade-trade', 'BUY', 'ETH', 10, 0.005, 2000, 0.03, 0,
+  '0010 row preservation sentinel', 'safety-upgrade-run'
+);
+
+INSERT INTO "krypto"."AgentJournal" (
+  "id", "entryText", "marketConditions", "tradeExecutionId", "agentRunId"
+) VALUES (
+  'safety-upgrade-journal', '0010 row preservation sentinel', '{}'::jsonb,
+  'safety-upgrade-trade', 'safety-upgrade-run'
+);
+SQL
+
+safety_pre_upgrade_result="$(psql "$safety_upgrade_url" -Atc \
+  'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
+          (SELECT "schemaFingerprint" FROM "krypto"."RuntimeContract"
+            WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentRun") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."TradeExecution") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentJournal") || '\''|'\'' ||
+          (to_regclass('\''krypto."SafetyIncidentOutbox"'\'') IS NULL)::text;')"
+if [[ "$safety_pre_upgrade_result" != "10|0009_bounded_execution_v1|1|1|1|true" ]]; then
+  echo "Pinned 0009 safety upgrade fixture was not established correctly: $safety_pre_upgrade_result" >&2
+  exit 1
+fi
+
+bootstrap_and_migrate \
+  "$safety_upgrade_url" \
+  "$safety_upgrade_migrator_password"
+
+safety_upgrade_result="$(psql "$safety_upgrade_url" -Atc \
+  'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
+          (SELECT hash FROM drizzle.__drizzle_migrations
+            ORDER BY created_at DESC, id DESC LIMIT 1) || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentRun") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."TradeExecution") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentJournal") || '\''|'\'' ||
+          (SELECT "requestId" FROM "krypto"."AgentRun"
+            WHERE "id" = '\''safety-upgrade-run'\'') || '\''|'\'' ||
+          (SELECT "releaseId" FROM "krypto"."AgentRun"
+            WHERE "id" = '\''safety-upgrade-run'\'') || '\''|'\'' ||
+          (SELECT "deploymentId" FROM "krypto"."AgentRun"
+            WHERE "id" = '\''safety-upgrade-run'\'') || '\''|'\'' ||
+          (SELECT ("providerAttemptId" IS NULL)::text FROM "krypto"."AgentRun"
+            WHERE "id" = '\''safety-upgrade-run'\'') || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."SafetyIncidentOutbox") || '\''|'\'' ||
+          (SELECT "schemaFingerprint" || '\'':'\'' || "contractVersion"::text
+             FROM "krypto"."RuntimeContract" WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''DELETE'\'')::text;')"
+if [[ "$safety_upgrade_result" != "11|$azure_0010_hash|1|1|1|legacy-agent-run:safety-upgrade-run|legacy-pre-0010|legacy-pre-0010|true|0|0010_safety_incidents_v1:2|true|true|false|false" ]]; then
+  echo "0009-to-0010 upgrade did not preserve rows, backfill safe correlations, or establish the exact safety outbox contract: $safety_upgrade_result" >&2
   exit 1
 fi
 
@@ -1076,11 +1417,13 @@ UPDATE "krypto"."AgentState"
    SET "updatedAt" = "updatedAt"
  WHERE "id" = 'singleton';
 INSERT INTO "krypto"."AgentRun" (
-  "id", "idempotencyKey", "triggerSource", "tradingMode", "strategyVersion",
-  "startedAt", "deadlineAt"
+  "id", "idempotencyKey", "requestId", "releaseId", "deploymentId",
+  "triggerSource", "tradingMode", "strategyVersion", "startedAt", "deadlineAt"
 ) VALUES (
-  'runtime-permission-proof', 'runtime-permission-proof', 'test', 'DISABLED',
-  'test', statement_timestamp(), statement_timestamp() + interval '180 seconds'
+  'runtime-permission-proof', 'runtime-permission-proof',
+  'runtime-permission-request', 'runtime-permission-release',
+  'runtime-permission-deployment', 'test', 'DISABLED', 'test',
+  statement_timestamp(), statement_timestamp() + interval '180 seconds'
 );
 UPDATE "krypto"."AgentRun"
    SET "outcome" = 'DISABLED'
@@ -1098,6 +1441,22 @@ INSERT INTO "krypto"."AgentJournal" (
   'runtime-permission-journal', 'permission proof only', '{}'::jsonb,
   'runtime-permission-trade', 'runtime-permission-proof'
 );
+INSERT INTO "krypto"."SafetyIncidentOutbox" (
+  "eventId", "incidentId", "eventSequence", "eventKind", "incidentType",
+  "severity", "status", "dedupKey", "requestId", "agentRunId",
+  "releaseId", "deploymentId", "transactionId", "redactedContext",
+  "occurredAt", "persistedAt", "ownerRole", "backupRole", "runbook"
+) VALUES (
+  'runtime-permission-event', 'runtime-permission-incident', 1, 'CREATED',
+  'TEST_FIRE_WARNING', 'WARNING', 'OPEN', 'runtime-permission-dedup',
+  'runtime-permission-request', 'runtime-permission-proof',
+  'runtime-permission-release', 'runtime-permission-deployment',
+  'runtime-permission-trade', '{}'::jsonb, statement_timestamp(),
+  statement_timestamp(),
+  'operations', 'incident-commander', 'runbooks/safety-incidents'
+);
+SELECT "eventId" FROM "krypto"."SafetyIncidentOutbox"
+ WHERE "eventId" = 'runtime-permission-event';
 SELECT "schemaFingerprint" FROM "krypto"."RuntimeContract"
  WHERE "id" = 'singleton';
 INSERT INTO "krypto"."ProviderDailyUsage" (
@@ -1110,6 +1469,54 @@ UPDATE "krypto"."ProviderDailyUsage"
  WHERE "usageDate" = current_date AND "provider" = 'coinbase';
 ROLLBACK;
 SQL
+if psql "$azure_runtime_url_current" \
+  -Atc 'UPDATE "krypto"."SafetyIncidentOutbox" SET "status" = '\''RESOLVED'\'' WHERE "eventId" = '\''safety-event-created'\'';' \
+  >/dev/null 2>"$TEMP_DIR/runtime-safety-update.log"; then
+  echo "Runtime login role updated append-only safety incident evidence" >&2
+  exit 1
+fi
+if ! grep -qi "permission denied" "$TEMP_DIR/runtime-safety-update.log"; then
+  echo "Runtime safety incident UPDATE failed for an unexpected reason: $(cat "$TEMP_DIR/runtime-safety-update.log")" >&2
+  exit 1
+fi
+if psql "$azure_runtime_url_current" -Atc '
+  INSERT INTO "krypto"."SafetyIncidentOutbox" (
+    "eventId", "incidentId", "eventSequence", "eventKind", "incidentType",
+    "severity", "status", "dedupKey", "requestId", "agentRunId",
+    "releaseId", "deploymentId", "providerAttemptId", "transactionId",
+    "redactedContext", "occurredAt", "persistedAt", "resolvedAt",
+    "ownerRole", "backupRole", "runbook", "actorId", "actorRole", "evidence"
+  )
+  SELECT
+    '\''runtime-forged-resolution'\'', origin."incidentId", 5, '\''RESOLVED'\'',
+    origin."incidentType", origin."severity", '\''RESOLVED'\'',
+    origin."dedupKey", origin."requestId", origin."agentRunId",
+    origin."releaseId", origin."deploymentId", origin."providerAttemptId",
+    origin."transactionId", origin."redactedContext", origin."occurredAt",
+    statement_timestamp(), statement_timestamp(), origin."ownerRole",
+    origin."backupRole", origin."runbook", '\''forged-runtime'\'',
+    '\''SAFETY_APPROVER'\'',
+    '\''{"affectedInterval":"test","cause":"test","containmentDecision":"test","remediation":"test","verification":"test","followUpRef":"test","residualRisk":"test","reentryDecision":"test"}'\''::jsonb
+  FROM "krypto"."SafetyIncidentOutbox" AS origin
+  WHERE origin."eventId" = '\''safety-event-created'\'';
+' >/dev/null 2>"$TEMP_DIR/runtime-safety-resolve.log"; then
+  echo "Runtime login role forged a RESOLVED safety incident event" >&2
+  exit 1
+fi
+if ! grep -qi "cannot append human incident lifecycle events" "$TEMP_DIR/runtime-safety-resolve.log"; then
+  echo "Runtime forged resolution failed for an unexpected reason: $(cat "$TEMP_DIR/runtime-safety-resolve.log")" >&2
+  exit 1
+fi
+if psql "$azure_runtime_url_current" \
+  -Atc 'DELETE FROM "krypto"."SafetyIncidentOutbox" WHERE "eventId" = '\''safety-event-created'\'';' \
+  >/dev/null 2>"$TEMP_DIR/runtime-safety-delete.log"; then
+  echo "Runtime login role deleted append-only safety incident evidence" >&2
+  exit 1
+fi
+if ! grep -qi "permission denied" "$TEMP_DIR/runtime-safety-delete.log"; then
+  echo "Runtime safety incident DELETE failed for an unexpected reason: $(cat "$TEMP_DIR/runtime-safety-delete.log")" >&2
+  exit 1
+fi
 if psql "$azure_runtime_url_current" \
   -Atc 'CREATE TABLE "krypto"."runtime_ddl_must_fail" (id integer);' \
   >/dev/null 2>"$TEMP_DIR/runtime-ddl-attempt.log"; then
@@ -1504,7 +1911,14 @@ create_database operations
 DIRECT_URL="$operations_url" \
   npx drizzle-kit migrate --config "$through_0006_config" >/dev/null
 DIRECT_URL="$operations_url" npx tsx scripts/seed.ts >/dev/null
-DATABASE_URL="$operations_url" npx tsx scripts/test-operations-routes.ts
+
+# Current application routes require the durable 0010 safety outbox. Keep the
+# legacy 0006 database above only for retired Supabase function/preflight
+# compatibility checks; never add a runtime fallback for a missing outbox.
+create_database current_routes
+bootstrap_and_migrate "$current_routes_url" "krypto-migrator-test-pw-$(random_test_password)"
+DIRECT_URL="$current_routes_url" npx tsx scripts/seed.ts >/dev/null
+DATABASE_URL="$current_routes_url" npx tsx scripts/test-operations-routes.ts
 DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
   npx tsx scripts/test-target-smoke-evidence.ts
 DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
@@ -1718,4 +2132,4 @@ if (
 }
 NODE
 
-echo "Migration tests passed for fresh install, upgrades, schema security, transactional paper execution, run orchestration, operations, preflight, backup restoration, the PostgreSQL trust boundary through 0008, and bounded execution 0009 (exact 180-second immutable run deadlines, deferred PAPER commit fence, runtime schema fingerprint, provider-usage grants, row preservation, and no excess runtime privilege)."
+echo "Migration tests passed for PostgreSQL 17 fresh install and upgrades, schema security, transactional paper execution, run orchestration, operations, preflight, backup restoration, the PostgreSQL trust boundary, bounded execution 0009, and append-only safety incidents 0010 (0009 row preservation, safe AgentRun correlation backfills, CREATED deduplication, immutable evidence triggers, contract v2 fingerprint, and exact runtime grants/denials)."
