@@ -86,11 +86,13 @@ param runtimeDatabaseLoginRole = 'krypto_app'
 
 param databaseUrl = readEnvironmentVariable('DATABASE_URL_PROD')
 param directUrl = readEnvironmentVariable('DIRECT_URL_PROD')
+param migrationUrl = readEnvironmentVariable('MIGRATION_URL_PROD')
 param cronSecret = readEnvironmentVariable('CRON_SECRET_PROD')
 param posthogApiKey = readEnvironmentVariable('POSTHOG_API_KEY_PROD')
 param adminPassword = readEnvironmentVariable('ADMIN_PASSWORD_PROD')
 param adminSessionSecret = readEnvironmentVariable('ADMIN_SESSION_SECRET_PROD')
 param runtimeDatabasePassword = readEnvironmentVariable('RUNTIME_DATABASE_PASSWORD_PROD')
+param migratorDatabasePassword = readEnvironmentVariable('MIGRATOR_DATABASE_PASSWORD_PROD')
 // Mounted only on target-smoke and activation-check (see release.bicep).
 // The prod workflows map the protected GitHub Environment secret named
 // DEPLOYMENT_APPROVAL_SECRET to this internal _PROD variable.

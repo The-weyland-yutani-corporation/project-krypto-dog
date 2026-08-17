@@ -49,8 +49,9 @@ What did we choose, in one or two paragraphs?
 | [0003](./0003-pg-cron-over-vercel-cron.md) | Supabase pg_cron over Vercel Cron | Superseded by [0008](./0008-azure-native-deployment-architecture.md) |
 | [0004](./0004-hybrid-spec-strategy.md) | Hybrid spec strategy (master + ADRs + RFCs + tags) | Accepted |
 | [0005](./0005-structured-llm-intent-authorization.md) | Structured LLM intent + hard deterministic authorization | Proposed |
-| [0006](./0006-migration-history-supabase-schema.md) | Single Drizzle migration history and private Supabase schema | Proposed |
+| [0006](./0006-migration-history-supabase-schema.md) | Single Drizzle migration history and private Supabase schema | Proposed; migration-credential language amended by [0011](./0011-postgresql-trust-boundary-roles.md) |
 | [0007](./0007-evidence-based-goals.md) | Evidence-based goals and removal of guaranteed-profit language | Accepted |
 | [0008](./0008-azure-native-deployment-architecture.md) | Azure-native deployment architecture (Container Apps, Flexible Server, Key Vault, Bicep) — implemented, provisioning pending | Accepted |
 | [0009](./0009-foundry-prompt-agent-boundary.md) | Foundry prompt agents as a read-only decision boundary | Accepted |
 | [0010](./0010-deployment-approval-provenance.md) | Deployment approval provenance and expiry | Accepted |
+| [0011](./0011-postgresql-trust-boundary-roles.md) | PostgreSQL trust-boundary roles: owner, schema owner, migrator, scheduler, runtime | Accepted |

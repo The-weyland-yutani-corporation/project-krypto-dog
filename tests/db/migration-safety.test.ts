@@ -189,11 +189,25 @@ describe("production migration safety", () => {
     expect(ledger).not.toMatch(/\bDELETE\s+FROM\b/i);
   });
 
-  it("requires the direct database URL for migration commands", () => {
+  it("requires the direct database URL for non-migration database commands", () => {
     const config = read("drizzle.config.ts");
 
     expect(config).toContain("process.env.DIRECT_URL");
-    expect(config).not.toContain("process.env.DATABASE_URL");
+  });
+
+  it("requires a dedicated, distinct MIGRATION_URL for the migrate command", () => {
+    const config = read("drizzle.config.ts");
+
+    expect(config).toContain("process.env.MIGRATION_URL");
+    expect(config).toContain('migratorOnlyCommands.has(command ?? "")');
+    expect(config).toContain("MIGRATION_URL is required for the migrate command");
+    expect(config).toContain("classifyMigrationUrlSafety");
+    expect(config).toContain('expectedUsername: "krypto_migrator"');
+    // DATABASE_URL is read only to prove MIGRATION_URL is distinct from it;
+    // it must never be assigned as the connection Drizzle actually uses.
+    expect(config).not.toMatch(/url:\s*(directUrl|migrationUrl|runtimeUrl)\s*\?\?[^,]*runtimeUrl/);
+    expect(config).not.toContain("url: runtimeUrl");
+    expect(config).not.toContain("url: process.env.DATABASE_URL");
   });
 
   it("retires the obsolete Supabase HTTP cron functions and establishes a least-privilege runtime role", () => {
@@ -309,6 +323,111 @@ describe("production migration safety", () => {
     expect(retirement).toContain(
       "IF NOT EXISTS (\n\t\tSELECT 1 FROM pg_roles WHERE rolname = 'krypto_runtime'",
     );
+  });
+
+  it("establishes the trust-boundary role hierarchy without touching trading rows", () => {
+    const trustBoundaries = read(
+      "drizzle/0008_postgresql_trust_boundaries.sql",
+    );
+
+    // Fail-closed prerequisite verification runs before any structural change.
+    expect(trustBoundaries).toContain(
+      "IF current_user <> 'krypto_migrator' THEN",
+    );
+    expect(trustBoundaries).toContain(
+      "WHERE rolname = 'krypto_schema_owner'",
+    );
+    expect(trustBoundaries).toContain("WHERE rolname = 'krypto_scheduler'");
+    expect(trustBoundaries).toContain("WHERE rolname = 'krypto_runtime'");
+    expect(trustBoundaries).toContain(
+      "pg_has_role(current_user, 'krypto_schema_owner', 'SET')",
+    );
+
+    // Ownership transfer order: objects before the schema itself.
+    const grantSchemaOwnerCreateIndex = trustBoundaries.indexOf(
+      'GRANT CREATE, USAGE ON SCHEMA "krypto" TO "krypto_schema_owner"',
+    );
+    const alterSchemaOwnerIndex = trustBoundaries.indexOf(
+      'ALTER SCHEMA "krypto" OWNER TO "krypto_schema_owner"',
+    );
+    expect(grantSchemaOwnerCreateIndex).toBeGreaterThan(-1);
+    expect(alterSchemaOwnerIndex).toBeGreaterThan(grantSchemaOwnerCreateIndex);
+
+    // Auto-owned (SERIAL/IDENTITY) sequences are excluded from the explicit
+    // ownership-transfer loop; PostgreSQL cascades their ownership from the
+    // owning table automatically and errors if this is attempted directly.
+    expect(trustBoundaries).toContain("dependency.deptype IN ('a', 'i')");
+
+    // The exact krypto_runtime grant matrix is unchanged from migration 0007.
+    expect(trustBoundaries).toContain(
+      'GRANT SELECT, UPDATE ON TABLE "krypto"."AgentState" TO "krypto_runtime"',
+    );
+    expect(trustBoundaries).toContain(
+      'GRANT SELECT, INSERT, UPDATE ON TABLE "krypto"."AgentRun" TO "krypto_runtime"',
+    );
+    expect(trustBoundaries).toContain(
+      'GRANT SELECT, INSERT ON TABLE "krypto"."TradeExecution" TO "krypto_runtime"',
+    );
+    expect(trustBoundaries).toContain(
+      'GRANT SELECT, INSERT ON TABLE "krypto"."AgentJournal" TO "krypto_runtime"',
+    );
+    expect(trustBoundaries).not.toMatch(
+      /GRANT[^;]*UPDATE[^;]*ON TABLE "krypto"\."TradeExecution"/i,
+    );
+    expect(trustBoundaries).not.toMatch(
+      /GRANT[^;]*UPDATE[^;]*ON TABLE "krypto"\."AgentJournal"/i,
+    );
+
+    // Default privileges are locked down for both the schema owner and the
+    // migrator identity, for both krypto_runtime and PUBLIC, so a future
+    // migration that forgets `SET ROLE krypto_schema_owner` never leaks a
+    // wider-than-intended default grant.
+    for (const grantor of ["krypto_schema_owner", "krypto_migrator"]) {
+      for (const grantee of ['"krypto_runtime"', "PUBLIC"]) {
+        expect(trustBoundaries).toContain(
+          `ALTER DEFAULT PRIVILEGES FOR ROLE "${grantor}" IN SCHEMA "krypto"\n\tREVOKE ALL PRIVILEGES ON TABLES FROM ${grantee}`,
+        );
+        expect(trustBoundaries).toContain(
+          `ALTER DEFAULT PRIVILEGES FOR ROLE "${grantor}" IN SCHEMA "krypto"\n\tREVOKE ALL PRIVILEGES ON SEQUENCES FROM ${grantee}`,
+        );
+      }
+    }
+
+    // The drizzle migration ledger is revoked from krypto_runtime and
+    // PUBLIC, guarded so it safely no-ops if the schema is absent.
+    expect(trustBoundaries).toContain("IF to_regnamespace('drizzle') IS NULL THEN");
+    expect(trustBoundaries).toContain(
+      'REVOKE ALL ON SCHEMA "drizzle" FROM "krypto_runtime"',
+    );
+    expect(trustBoundaries).toContain(
+      'REVOKE ALL ON SCHEMA "drizzle" FROM PUBLIC',
+    );
+
+    // Final fail-closed self-verification: ownership and the "runtime is
+    // never a member of an elevated role" invariant are both enforced.
+    expect(trustBoundaries).toContain(
+      "relation.relowner::regrole::text <> 'krypto_schema_owner'",
+    );
+    expect(trustBoundaries).toContain(
+      "pg_has_role('krypto_runtime', 'krypto_schema_owner', 'MEMBER')",
+    );
+    expect(trustBoundaries).toContain(
+      "pg_has_role('krypto_runtime', 'krypto_migrator', 'MEMBER')",
+    );
+    expect(trustBoundaries).toContain(
+      "pg_has_role('krypto_runtime', 'krypto_scheduler', 'MEMBER')",
+    );
+
+    // Additive, reversible, never touches trading rows or history, and no
+    // role-membership grant/revoke (which requires ADMIN OPTION the
+    // migrator role never holds) is attempted from migration SQL.
+    expect(trustBoundaries).not.toMatch(/\bDROP\s+TABLE\b/i);
+    expect(trustBoundaries).not.toMatch(/\bDELETE\s+FROM\b/i);
+    expect(trustBoundaries).not.toMatch(/\bTRUNCATE\b/i);
+    expect(trustBoundaries).not.toMatch(/^\s*GRANT\s+"?krypto_/im);
+    expect(trustBoundaries).not.toMatch(/^\s*REVOKE\s+"?krypto_[a-z_]+"?\s+FROM/im);
+    expect(trustBoundaries).not.toMatch(/PASSWORD\s+'/i);
+    expect(trustBoundaries).not.toMatch(/\bWITH\s+PASSWORD\b/i);
   });
 
   it("keeps Supabase reset from loading application fixtures", () => {

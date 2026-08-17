@@ -2,6 +2,15 @@
 
 - **Status:** Proposed
 - **Date:** 2026-07-14
+- **Amended:** 2026-08-16 -- item 1's "`DIRECT_URL`" migration-connection
+  language is superseded by
+  [0011-postgresql-trust-boundary-roles.md](./0011-postgresql-trust-boundary-roles.md):
+  reviewed migrations run over the dedicated `MIGRATION_URL` as the
+  least-privilege `krypto_migrator` role, never over `DIRECT_URL` as the
+  admin/operator role. `DIRECT_URL` is narrowed to idempotent role/ownership
+  bootstrap and privileged inventory/backup. This amendment is a source and
+  design record only; see 0010's Consequences for the required attended
+  per-environment upgrade procedure and current live status.
 - **Deciders:** @VeVarunSharma
 
 ## Context
@@ -32,9 +41,11 @@ an arbitrary endpoint path.
 ## Decision
 
 1. **Drizzle migrations are the only production application-schema history.**
-   Production applies reviewed, committed migrations with `drizzle-kit migrate`
-   over `DIRECT_URL`. `drizzle-kit push` is limited to disposable local
-   development.
+   Production applies reviewed, committed migrations with `drizzle-kit migrate`.
+   `drizzle-kit push` is limited to disposable local development.
+   ([0011](./0011-postgresql-trust-boundary-roles.md) later defined the exact
+   connection this uses: the dedicated `MIGRATION_URL`/`krypto_migrator`
+   role, not `DIRECT_URL`; the original text here read "over `DIRECT_URL`.")
 
 2. **The Drizzle schema remains canonical.** Table, enum, index, constraint, and
    application-function changes begin in `src/db/schema.ts` or a reviewed custom

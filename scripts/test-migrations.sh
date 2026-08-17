@@ -51,6 +51,7 @@ migration_only_url="$url_prefix/migration_only"
 rollout_upgrade_url="$url_prefix/rollout_upgrade"
 azure_target_url="$url_prefix/azure_target"
 azure_upgrade_url="$url_prefix/azure_upgrade"
+trust_boundary_denial_url="$url_prefix/trust_boundary_denial"
 
 create_database() {
   psql "$admin_url" -v ON_ERROR_STOP=1 \
@@ -68,6 +69,41 @@ with_role_credentials() {
     u.password = process.argv[3];
     process.stdout.write(u.toString());
   ' "$1" "$2" "$3"
+}
+
+# Runs the protected, admin/DIRECT_URL-only database-role bootstrap (see
+# GitHub issue #133 and drizzle/0008_postgresql_trust_boundaries.sql --
+# creates/converges krypto_schema_owner, krypto_migrator, krypto_scheduler,
+# krypto_runtime, and transfers pre-existing krypto/drizzle ownership on an
+# upgrade) against $1 with krypto_migrator password $2, then migrates $1 to
+# the full/default migration set authenticated as the resulting
+# krypto_migrator role via its own dedicated MIGRATION_URL -- never
+# DIRECT_URL and never a pooler/runtime URL. Any remaining arguments are
+# forwarded to `drizzle-kit migrate` (for example `--config <path>`, though
+# that bypasses this project's own drizzle.config.ts entirely and would
+# make the admin bootstrap pointless; in practice this helper is only used
+# for the default/full migration set). This mirrors exactly how a real
+# Azure release runs migrate-init: the admin bootstrap always precedes
+# drizzle-kit migrate.
+bootstrap_and_migrate() {
+  local direct_url="$1"
+  local migrator_password="$2"
+  shift 2
+  DIRECT_URL="$direct_url" KRYPTO_MIGRATOR_LOGIN_PASSWORD="$migrator_password" \
+    npx tsx scripts/bootstrap-azure-runtime-role.ts --mode database-roles >/dev/null
+  local migration_url
+  migration_url="$(with_role_credentials "$direct_url" krypto_migrator "$migrator_password")"
+  DIRECT_URL="$direct_url" MIGRATION_URL="$migration_url" \
+    npx drizzle-kit migrate "$@" >/dev/null
+  # A second admin bootstrap is the protected post-migration finalizer: once
+  # the krypto/drizzle schemas exist it revokes the migrator's temporary
+  # public-schema CREATE grant and removes temporary operator memberships.
+  DIRECT_URL="$direct_url" KRYPTO_MIGRATOR_LOGIN_PASSWORD="$migrator_password" \
+    npx tsx scripts/bootstrap-azure-runtime-role.ts --mode database-roles >/dev/null
+}
+
+random_test_password() {
+  node -e 'console.log(Math.random().toString(36).slice(2))'
 }
 
 # Builds a Drizzle config whose `out` directory only contains migrations up
@@ -131,6 +167,21 @@ NODE
 # the now-retired pg_cron/pg_net HTTP-invocation functions; pinning keeps
 # that emulation valid regardless of what is newest in drizzle/.
 through_0006_config="$(build_through_config 6 0006)"
+
+# The legacy hand-rolled "public" schema fixtures below (tests/fixtures/
+# v2-schema.sql) predate the Drizzle migration system entirely, so their
+# tables are owned by the admin identity itself, not any krypto_*
+# role -- exactly like a real environment the very first time it ever
+# runs `drizzle-kit migrate`, before drizzle/0008's trust boundary can
+# apply (that migration only reassigns ownership of objects already
+# inside the "krypto"/"drizzle" schemas, which do not exist yet here).
+# These two scenarios intentionally stay pinned through 0007 and keep
+# running as the admin identity directly, matching how this project's own
+# history actually reached this point; the dedicated krypto_migrator
+# trust-boundary proof lives in the Azure fresh-install/upgrade sections
+# below instead, where "krypto"/"drizzle" already exist and ownership
+# transfer is exercised for real.
+through_0007_legacy_config="$(build_through_config 7 0007legacy)"
 
 psql "$admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 DO $$
@@ -618,7 +669,8 @@ if (
 }
 NODE
 
-DIRECT_URL="$upgrade_url" npx drizzle-kit migrate >/dev/null
+DIRECT_URL="$upgrade_url" \
+  npx drizzle-kit migrate --config "$through_0007_legacy_config" >/dev/null
 
 upgrade_result="$(psql "$upgrade_url" -Atc \
   'SELECT (SELECT count(*) FROM "krypto"."AgentState") || '\''|'\'' ||
@@ -676,9 +728,46 @@ fi
 # krypto_runtime, and the schema has no sequences to grant.
 
 azure_0007_hash="fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71"
+azure_0008_hash="0f28fce3409b92986be1fe58a82b02a90dcbb48a0cab75a1bbfb6681e200638e"
 
 create_database azure_target
-DIRECT_URL="$azure_target_url" npx drizzle-kit migrate >/dev/null
+azure_migrator_password="krypto-migrator-test-pw-$(random_test_password)"
+bootstrap_and_migrate "$azure_target_url" "$azure_migrator_password"
+azure_initial_migration_url="$(with_role_credentials "$azure_target_url" krypto_migrator "$azure_migrator_password")"
+DIRECT_URL="$azure_target_url" MIGRATION_URL="$azure_initial_migration_url" \
+  npx tsx scripts/seed.ts >/dev/null
+DIRECT_URL="$azure_target_url" MIGRATION_URL="$azure_initial_migration_url" \
+  npx tsx scripts/seed.ts >/dev/null
+fresh_init_result="$(psql "$azure_target_url" -Atc \
+  "SELECT count(*)::text || '|' ||
+          (SELECT relowner::regrole::text FROM pg_class
+            WHERE oid = 'krypto.\"AgentState\"'::regclass)
+     FROM \"krypto\".\"AgentState\"
+    WHERE \"id\" = 'singleton';")"
+if [[ "$fresh_init_result" != "1|krypto_schema_owner" ]]; then
+  echo "Migrator SET-ROLE singleton initialization was not idempotent or changed ownership: $fresh_init_result" >&2
+  exit 1
+fi
+if [[ -z "$TEST_POSTGRES_ADMIN_URL" ]]; then
+  # PostgreSQL roles are cluster-global. Authenticate every later database
+  # scenario through scram using the same environment credential so an
+  # accidental cross-database password rotation fails immediately instead of
+  # being hidden by initdb's temporary trust rule.
+  initial_migrator_hba="$TEMP_DIR/pg_hba.initial-migrator.conf"
+  cat >"$initial_migrator_hba" <<HBA
+host    all             krypto_migrator         127.0.0.1/32            scram-sha-256
+HBA
+  cat "$initial_migrator_hba" "$PGDATA/pg_hba.conf" >"$TEMP_DIR/pg_hba.conf.new"
+  mv "$TEMP_DIR/pg_hba.conf.new" "$PGDATA/pg_hba.conf"
+  pg_ctl -D "$PGDATA" reload >/dev/null
+  sleep 0.2
+  if ! PGPASSWORD="$azure_migrator_password" psql \
+    "postgresql://krypto_migrator@127.0.0.1:$PORT/azure_target" \
+    -Atc "SELECT current_user;" >/dev/null; then
+    echo "Initial krypto_migrator credential did not authenticate over scram-sha-256" >&2
+    exit 1
+  fi
+fi
 
 azure_fresh_result="$(psql "$azure_target_url" -Atc \
   'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
@@ -715,7 +804,7 @@ azure_fresh_result="$(psql "$azure_target_url" -Atc \
           has_schema_privilege('\''public'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
           has_schema_privilege('\''anon'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
           has_schema_privilege('\''authenticated'\'', '\''krypto'\'', '\''USAGE'\'')::text;')"
-if [[ "$azure_fresh_result" != "8|$azure_0007_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false" ]]; then
+if [[ "$azure_fresh_result" != "9|$azure_0008_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false" ]]; then
   echo "Fresh Azure migration did not retire obsolete cron functions or establish the exact krypto_runtime privilege matrix: $azure_fresh_result" >&2
   exit 1
 fi
@@ -771,7 +860,20 @@ INSERT INTO "krypto"."AgentJournal" (
 );
 SQL
 
-DIRECT_URL="$azure_upgrade_url" npx drizzle-kit migrate >/dev/null
+# A real upgrade to the trust boundary lands on a deployment that is
+# already current as of 0007 (the prior release), migrated the old way
+# (as the admin/superuser, owning everything directly) -- 0008 is the
+# first migration such a deployment ever applies as krypto_migrator.
+# Combining 0007+0008 into one krypto_migrator-authenticated run instead
+# would incorrectly require 0007's already-shipped, unmodified SQL (never
+# written to expect a non-owner runner) to also work under the new
+# non-inheriting migrator, which no real upgrade ever needs.
+through_0007_azure_config="$(build_through_config 7 0007azure)"
+DIRECT_URL="$azure_upgrade_url" \
+  npx drizzle-kit migrate --config "$through_0007_azure_config" >/dev/null
+
+azure_upgrade_migrator_password="$azure_migrator_password"
+bootstrap_and_migrate "$azure_upgrade_url" "$azure_upgrade_migrator_password"
 
 azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
   'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
@@ -789,7 +891,7 @@ azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text;')"
-if [[ "$azure_upgrade_result" != "8|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true" ]]; then
+if [[ "$azure_upgrade_result" != "9|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true" ]]; then
   echo "0006-to-0007 upgrade did not preserve rows, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
   exit 1
 fi
@@ -935,6 +1037,56 @@ HBA
     exit 1
   fi
 fi
+azure_runtime_url_current="$azure_runtime_url_v1"
+azure_runtime_password_current="$azure_login_password_v1"
+if [[ -z "$TEST_POSTGRES_ADMIN_URL" ]]; then
+  azure_runtime_url_current="$azure_runtime_url_v2"
+  azure_runtime_password_current="$azure_login_password_v2"
+fi
+
+# Prove the real runtime LOGIN (not only the NOLOGIN group's catalog ACLs)
+# can perform every required operation and cannot cross into DDL. Run inside
+# a transaction and roll it back so the permission proof never leaves fixture
+# rows behind.
+psql "$azure_runtime_url_current" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+BEGIN;
+SELECT "id" FROM "krypto"."AgentState" WHERE "id" = 'singleton';
+UPDATE "krypto"."AgentState"
+   SET "updatedAt" = "updatedAt"
+ WHERE "id" = 'singleton';
+INSERT INTO "krypto"."AgentRun" (
+  "id", "idempotencyKey", "triggerSource", "tradingMode", "strategyVersion"
+) VALUES (
+  'runtime-permission-proof', 'runtime-permission-proof', 'test', 'DISABLED', 'test'
+);
+UPDATE "krypto"."AgentRun"
+   SET "outcome" = 'DISABLED'
+ WHERE "id" = 'runtime-permission-proof';
+INSERT INTO "krypto"."TradeExecution" (
+  "id", "direction", "asset", "amountUSD", "amountAsset",
+  "executionPrice", "agentReasoning", "agentRunId"
+) VALUES (
+  'runtime-permission-trade', 'BUY', 'ETH', 1, 0.001,
+  1000, 'permission proof only', 'runtime-permission-proof'
+);
+INSERT INTO "krypto"."AgentJournal" (
+  "id", "entryText", "marketConditions", "tradeExecutionId", "agentRunId"
+) VALUES (
+  'runtime-permission-journal', 'permission proof only', '{}'::jsonb,
+  'runtime-permission-trade', 'runtime-permission-proof'
+);
+ROLLBACK;
+SQL
+if psql "$azure_runtime_url_current" \
+  -Atc 'CREATE TABLE "krypto"."runtime_ddl_must_fail" (id integer);' \
+  >/dev/null 2>"$TEMP_DIR/runtime-ddl-attempt.log"; then
+  echo "Runtime login role created an application object; DDL boundary is not enforced" >&2
+  exit 1
+fi
+if ! grep -qi "permission denied" "$TEMP_DIR/runtime-ddl-attempt.log"; then
+  echo "Runtime DDL attempt failed for an unexpected reason: $(cat "$TEMP_DIR/runtime-ddl-attempt.log")" >&2
+  exit 1
+fi
 
 # --- Azure PostgreSQL safety transition: idempotent, password-free membership bootstrap ---
 #
@@ -967,6 +1119,308 @@ if [[ "$bootstrap_membership_result_second" != "true" ]]; then
   exit 1
 fi
 
+# --- PostgreSQL trust boundary (drizzle/0008): ownership, membership,
+# migration-only isolation, denial matrix, and preflight proof ---
+#
+# azure_target is already fully migrated to 0008 above. This section proves
+# the exact object-ownership, role-attribute, membership/SET-ROLE-boundary,
+# and access-denial invariants required by GitHub issue #133, over and
+# above the per-table krypto_runtime privilege matrix already asserted in
+# azure_fresh_result/azure_upgrade_result.
+
+# 1. Object ownership: krypto_schema_owner (NOLOGIN) must own the krypto
+# schema and every app table/index within it; the drizzle migration ledger
+# may remain krypto_migrator-owned (it is the role that ran every
+# migration, fresh or upgraded).
+ownership_result="$(psql "$azure_target_url" -Atc \
+  "SELECT
+     (SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname = 'krypto') || '|' ||
+     (SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname = 'drizzle') || '|' ||
+     (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'krypto' AND c.relowner::regrole::text <> 'krypto_schema_owner')::text;")"
+if [[ "$ownership_result" != "krypto_schema_owner|krypto_migrator|0" ]]; then
+  echo "Trust boundary ownership is not as required (krypto -> schema owner, drizzle -> migrator, zero stray-owned krypto objects): $ownership_result" >&2
+  exit 1
+fi
+
+# 2. Role attributes: exact LOGIN/NOLOGIN, NOINHERIT, and connection-limit
+# matrix for all four roles. krypto_migrator alone may log in, must be
+# NOINHERIT, and gets a small bounded (not unlimited) connection limit; the
+# other three are NOLOGIN with a connection limit of zero (defense in
+# depth -- they can never be connected to directly regardless of LOGIN).
+role_attrs_result="$(psql "$azure_target_url" -Atc \
+  "SELECT string_agg(rolname || ':' || rolcanlogin::text || ':' || rolinherit::text || ':' || rolconnlimit::text, ',' ORDER BY rolname)
+     FROM pg_roles
+    WHERE rolname IN ('krypto_schema_owner', 'krypto_migrator', 'krypto_scheduler', 'krypto_runtime');")"
+if [[ "$role_attrs_result" != "krypto_migrator:true:false:5,krypto_runtime:false:true:0,krypto_scheduler:false:true:0,krypto_schema_owner:false:true:0" ]]; then
+  echo "Trust boundary role attributes/connection limits are not as required: $role_attrs_result" >&2
+  exit 1
+fi
+
+# 3. Membership and SET-ROLE-only boundary: krypto_migrator's only path to
+# krypto_schema_owner is an explicit SET ROLE, never automatic inheritance;
+# krypto_migrator is never a member of krypto_scheduler; krypto_runtime
+# (and the runtime login role that only inherits krypto_runtime) are never
+# members of any of the three elevated roles.
+membership_result="$(psql "$azure_target_url" -Atc \
+  "SELECT
+     pg_has_role('krypto_migrator', 'krypto_schema_owner', 'USAGE')::text || '|' ||
+     pg_has_role('krypto_migrator', 'krypto_schema_owner', 'SET')::text || '|' ||
+     pg_has_role('krypto_migrator', 'krypto_scheduler', 'MEMBER')::text || '|' ||
+     pg_has_role('krypto_runtime', 'krypto_schema_owner', 'MEMBER')::text || '|' ||
+     pg_has_role('krypto_runtime', 'krypto_migrator', 'MEMBER')::text || '|' ||
+     pg_has_role('krypto_runtime', 'krypto_scheduler', 'MEMBER')::text || '|' ||
+     pg_has_role('$azure_login_role', 'krypto_schema_owner', 'MEMBER')::text || '|' ||
+     pg_has_role('$azure_login_role', 'krypto_migrator', 'MEMBER')::text || '|' ||
+     pg_has_role('$azure_login_role', 'krypto_scheduler', 'MEMBER')::text || '|' ||
+     pg_has_role('$azure_login_role', 'krypto_runtime', 'MEMBER')::text;")"
+if [[ "$membership_result" != "false|true|false|false|false|false|false|false|false|true" ]]; then
+  echo "Trust boundary membership/SET-ROLE boundary is not as required (migrator: SET-only to owner, never a scheduler member; runtime and its login role: never members of owner/migrator/scheduler, runtime login inherits only krypto_runtime): $membership_result" >&2
+  exit 1
+fi
+
+# 4. Migration-only access: connecting directly as krypto_migrator (no SET
+# ROLE) must be unable to read or write any krypto-schema application
+# table, and must not even hold USAGE on the schema -- its only access is
+# via the SET-only path proven above, exercised transiently inside
+# migrations themselves.
+migrator_direct_url="$(with_role_credentials "$azure_target_url" krypto_migrator "$azure_migrator_password")"
+if PGPASSWORD="$azure_migrator_password" psql "$migrator_direct_url" \
+  -Atc 'SELECT 1 FROM "krypto"."AgentState";' >/dev/null 2>"$TEMP_DIR/migrator-direct-select.log"; then
+  echo "krypto_migrator was able to read krypto.AgentState without SET ROLE; the NOINHERIT migration-only boundary is not enforced" >&2
+  exit 1
+fi
+if ! grep -qi "permission denied" "$TEMP_DIR/migrator-direct-select.log"; then
+  echo "krypto_migrator's direct read attempt failed for an unexpected reason: $(cat "$TEMP_DIR/migrator-direct-select.log")" >&2
+  exit 1
+fi
+migrator_usage_result="$(psql "$azure_target_url" -Atc \
+  "SELECT has_schema_privilege('krypto_migrator', 'krypto', 'USAGE')::text;")"
+if [[ "$migrator_usage_result" != "false" ]]; then
+  echo "krypto_migrator unexpectedly holds direct USAGE on schema krypto: $migrator_usage_result" >&2
+  exit 1
+fi
+
+# 5. krypto_runtime must have no access whatsoever to the drizzle
+# migration ledger (schema, tables, or sequences) -- migration history is
+# strictly off-limits to the runtime identity.
+runtime_ledger_result="$(psql "$azure_target_url" -Atc \
+  "SELECT
+     has_schema_privilege('krypto_runtime', 'drizzle', 'USAGE')::text || '|' ||
+     has_table_privilege('krypto_runtime', 'drizzle.__drizzle_migrations', 'SELECT')::text;")"
+if [[ "$runtime_ledger_result" != "false|false" ]]; then
+  echo "krypto_runtime unexpectedly has access to the drizzle migration ledger: $runtime_ledger_result" >&2
+  exit 1
+fi
+
+# 6. Denial matrix for legacy/unrelated Supabase-style schemas: on a
+# separate scratch database, establish real pre-existing krypto_runtime
+# and PUBLIC grants on vault/cron/net/pg_net schemas *before* the admin
+# bootstrap runs, so the revoke-if-present logic has genuine grants to
+# revoke rather than a vacuous no-op over schemas that were never present.
+#
+# This must model a genuine upgrade, not a from-scratch install: a real
+# database that already carries legacy vault/cron/net/pg_net schemas is,
+# by definition, one with real migration history already applied as the
+# admin identity (mirroring how migration 0004 -- which predates issue
+# #133 and reaches into "vault" directly -- was actually deployed). Migrate
+# through 0007 as admin first, exactly like azure_upgrade above, then add
+# the legacy schemas/grants, then let the admin bootstrap + krypto_migrator
+# apply only the new trust-boundary migration (0008), which never touches
+# vault/cron/net/pg_net at all.
+create_database trust_boundary_denial
+DIRECT_URL="$trust_boundary_denial_url" \
+  npx drizzle-kit migrate --config "$through_0007_azure_config" >/dev/null
+# krypto_runtime is cluster-global (roles are not per-database) and was
+# already created by an earlier scenario's bootstrap in this same run;
+# reuse it rather than re-creating it.
+psql "$trust_boundary_denial_url" -v ON_ERROR_STOP=1 \
+  -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'krypto_runtime') THEN CREATE ROLE krypto_runtime NOLOGIN; END IF; END \$\$;" \
+  >/dev/null
+psql "$trust_boundary_denial_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+CREATE SCHEMA vault; CREATE TABLE vault.secrets (id serial PRIMARY KEY, secret text);
+CREATE SCHEMA cron; CREATE TABLE cron.job (jobid serial PRIMARY KEY, command text);
+CREATE SCHEMA net; CREATE TABLE net.http_request_queue (id serial PRIMARY KEY, url text);
+-- The "pg_" namespace prefix is normally reserved for system schemas; a
+-- superuser can still create one (mirroring how some legacy Supabase
+-- deployments installed pg_net directly into a schema literally named
+-- "pg_net") only with this escape hatch set for the session.
+SET allow_system_table_mods = on;
+CREATE SCHEMA pg_net; CREATE TABLE pg_net.http_response (id serial PRIMARY KEY, body text);
+CREATE TABLE public.unrelated_runtime_secret (secret text);
+GRANT USAGE ON SCHEMA vault, cron, net, pg_net TO krypto_runtime, PUBLIC;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA vault TO krypto_runtime, PUBLIC;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cron TO krypto_runtime, PUBLIC;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA net TO krypto_runtime, PUBLIC;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA pg_net TO krypto_runtime, PUBLIC;
+GRANT SELECT ON public.unrelated_runtime_secret TO PUBLIC;
+SQL
+
+denial_migrator_password="$azure_migrator_password"
+bootstrap_and_migrate "$trust_boundary_denial_url" "$denial_migrator_password"
+
+denial_result="$(psql "$trust_boundary_denial_url" -Atc \
+  "SELECT
+     has_schema_privilege('krypto_runtime', 'vault', 'USAGE')::text || '|' ||
+     has_schema_privilege('krypto_runtime', 'cron', 'USAGE')::text || '|' ||
+     has_schema_privilege('krypto_runtime', 'net', 'USAGE')::text || '|' ||
+     has_schema_privilege('krypto_runtime', 'pg_net', 'USAGE')::text || '|' ||
+     has_table_privilege('krypto_runtime', 'vault.secrets', 'SELECT')::text || '|' ||
+     has_table_privilege('krypto_runtime', 'cron.job', 'SELECT')::text || '|' ||
+     has_table_privilege('krypto_runtime', 'net.http_request_queue', 'SELECT')::text || '|' ||
+     has_table_privilege('krypto_runtime', 'pg_net.http_response', 'SELECT')::text;")"
+if [[ "$denial_result" != "false|false|false|false|false|false|false|false" ]]; then
+  echo "Pre-existing krypto_runtime access to legacy vault/cron/net/pg_net schemas was not fully revoked: $denial_result" >&2
+  exit 1
+fi
+
+denial_runtime_url="$(with_role_credentials "$trust_boundary_denial_url" "$azure_login_role" \
+  "$azure_runtime_password_current")"
+for denied_query in \
+  'SELECT * FROM vault.secrets' \
+  'SELECT * FROM cron.job' \
+  'SELECT * FROM net.http_request_queue' \
+  'SELECT * FROM pg_net.http_response' \
+  'SELECT * FROM public.unrelated_runtime_secret' \
+  'SELECT * FROM drizzle.__drizzle_migrations'; do
+  if psql "$denial_runtime_url" -Atc "$denied_query" >/dev/null \
+    2>"$TEMP_DIR/runtime-denial-attempt.log"; then
+    echo "Runtime login unexpectedly succeeded: $denied_query" >&2
+    exit 1
+  fi
+  if ! grep -qi "permission denied" "$TEMP_DIR/runtime-denial-attempt.log"; then
+    echo "Runtime denial failed for an unexpected reason ($denied_query): $(cat "$TEMP_DIR/runtime-denial-attempt.log")" >&2
+    exit 1
+  fi
+done
+
+# The admin bootstrap CLI's own JSON report must name every legacy schema
+# it found and revoked, so an operator/CI log has an explicit record.
+denial_bootstrap_report="$(DIRECT_URL="$trust_boundary_denial_url" \
+  KRYPTO_MIGRATOR_LOGIN_PASSWORD="$denial_migrator_password" \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts --mode database-roles)"
+node - "$denial_bootstrap_report" <<'NODE'
+const report = JSON.parse(process.argv[2]);
+const expected = ["vault", "cron", "net", "pg_net"];
+const revoked = report.legacySchemasRevoked ?? [];
+for (const schemaName of expected) {
+  if (!revoked.includes(schemaName)) {
+    throw new Error(
+      `Admin bootstrap did not report revoking legacy schema ${schemaName}: ${JSON.stringify(report)}`,
+    );
+  }
+}
+NODE
+
+# 7. krypto_migrator password rotation: the admin bootstrap must be able to
+# rotate the migrator's credential without ever leaking it, and the old
+# credential must stop working while the new one starts working.
+azure_migrator_password_v2="krypto-migrator-test-pw-$(random_test_password)"
+DIRECT_URL="$azure_target_url" KRYPTO_MIGRATOR_LOGIN_PASSWORD="$azure_migrator_password_v2" \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts --mode database-roles \
+  >"$TEMP_DIR/migrator-rotate.json"
+if grep -qF "$azure_migrator_password_v2" "$TEMP_DIR/migrator-rotate.json"; then
+  echo "krypto_migrator rotation leaked the new password into its own output" >&2
+  exit 1
+fi
+
+if [[ -z "$TEST_POSTGRES_ADMIN_URL" ]]; then
+  # This script controls the cluster, so it can require real
+  # scram-sha-256 password authentication over TCP and prove rotation
+  # actually invalidates the old credential, exactly as for the runtime
+  # login role above.
+  migrator_hba_override="$TEMP_DIR/pg_hba.migrator.conf"
+  cat >"$migrator_hba_override" <<HBA
+host    all             krypto_migrator        127.0.0.1/32            scram-sha-256
+HBA
+  cat "$migrator_hba_override" "$PGDATA/pg_hba.conf" >"$TEMP_DIR/pg_hba.conf.new"
+  mv "$TEMP_DIR/pg_hba.conf.new" "$PGDATA/pg_hba.conf"
+  pg_ctl -D "$PGDATA" reload >/dev/null
+  sleep 0.2
+
+  if PGPASSWORD="$azure_migrator_password" psql \
+    "postgresql://krypto_migrator@127.0.0.1:$PORT/azure_target" \
+    -Atc "SELECT 1;" >/dev/null 2>"$TEMP_DIR/migrator-auth-old-after-rotate.log"; then
+    echo "krypto_migrator's old password still authenticated after rotation" >&2
+    exit 1
+  fi
+  if ! PGPASSWORD="$azure_migrator_password_v2" psql \
+    "postgresql://krypto_migrator@127.0.0.1:$PORT/azure_target" \
+    -Atc "SELECT current_user;" >/dev/null 2>"$TEMP_DIR/migrator-auth-new.log"; then
+    echo "krypto_migrator's rotated password did not authenticate over TCP: $(cat "$TEMP_DIR/migrator-auth-new.log")" >&2
+    exit 1
+  fi
+fi
+azure_migrator_password="$azure_migrator_password_v2"
+
+# 8. deployment-preflight.ts end-to-end pass/fail proof against the fully
+# migrated, rotated azure_target: it must pass cleanly with a correct,
+# distinct MIGRATION_URL, and fail closed (block) the moment MIGRATION_URL
+# is absent or points at the wrong identity.
+azure_migration_url="$(with_role_credentials "$azure_target_url" krypto_migrator "$azure_migrator_password")"
+pass_report="$TEMP_DIR/trust-boundary-pass-preflight.json"
+set +e
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
+  MIGRATION_URL="$azure_migration_url" \
+  npx tsx scripts/deployment-preflight.ts --out "$pass_report" >/dev/null
+pass_preflight_status=$?
+set -e
+node - "$pass_report" <<'NODE'
+const fs = require("node:fs");
+const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (!report.databasePreflightPassed) {
+  throw new Error(`Preflight did not pass with a correct MIGRATION_URL: ${JSON.stringify(report.blockers)}`);
+}
+const trustBoundaryBlockers = report.blockers.filter(
+  (id) => id.startsWith("trust-boundary") || id.startsWith("migration-"),
+);
+if (trustBoundaryBlockers.length > 0) {
+  throw new Error(`Preflight reported unexpected trust-boundary blockers: ${JSON.stringify(trustBoundaryBlockers)}`);
+}
+NODE
+if [[ "$pass_preflight_status" -ne 0 ]]; then
+  echo "Deployment preflight with the correct trust boundary returned $pass_preflight_status, expected 0." >&2
+  exit 1
+fi
+
+missing_migration_report="$TEMP_DIR/trust-boundary-missing-migration-url.json"
+set +e
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
+  npx tsx scripts/deployment-preflight.ts --out "$missing_migration_report" >/dev/null
+missing_migration_status=$?
+set -e
+if [[ "$missing_migration_status" -ne 2 ]]; then
+  echo "Deployment preflight without MIGRATION_URL returned $missing_migration_status, expected 2 (fail closed)." >&2
+  exit 1
+fi
+node - "$missing_migration_report" <<'NODE'
+const fs = require("node:fs");
+const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (!report.blockers.includes("migration-connectivity")) {
+  throw new Error(`Preflight did not fail closed on a missing MIGRATION_URL: ${JSON.stringify(report.blockers)}`);
+}
+NODE
+
+wrong_identity_migration_url="$(with_role_credentials "$azure_target_url" postgres "")"
+wrong_identity_report="$TEMP_DIR/trust-boundary-wrong-identity.json"
+set +e
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
+  MIGRATION_URL="$wrong_identity_migration_url" \
+  npx tsx scripts/deployment-preflight.ts --out "$wrong_identity_report" >/dev/null
+wrong_identity_status=$?
+set -e
+if [[ "$wrong_identity_status" -ne 2 ]]; then
+  echo "Deployment preflight with a same-role (admin-as-migration) MIGRATION_URL returned $wrong_identity_status, expected 2 (fail closed)." >&2
+  exit 1
+fi
+node - "$wrong_identity_report" <<'NODE'
+const fs = require("node:fs");
+const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (!report.blockers.includes("migration-url-safety") && !report.blockers.includes("migration-identity")) {
+  throw new Error(`Preflight did not fail closed on an unsafe/wrong-identity MIGRATION_URL: ${JSON.stringify(report.blockers)}`);
+}
+NODE
+
 create_database quarantine
 psql "$quarantine_url" -v ON_ERROR_STOP=1 \
   -f tests/fixtures/v2-schema.sql >/dev/null
@@ -985,7 +1439,8 @@ INSERT INTO "public"."TradeExecution" (
 );
 SQL
 
-DIRECT_URL="$quarantine_url" npx drizzle-kit migrate >/dev/null
+DIRECT_URL="$quarantine_url" \
+  npx drizzle-kit migrate --config "$through_0007_legacy_config" >/dev/null
 
 quarantine_result="$(psql "$quarantine_url" -Atc \
   'SELECT "accountingStatus"::text || '\''|'\'' ||
@@ -998,12 +1453,12 @@ if [[ "$quarantine_result" != "QUARANTINED|true" ]]; then
 fi
 
 create_database executor
-DIRECT_URL="$executor_url" npx drizzle-kit migrate >/dev/null
+bootstrap_and_migrate "$executor_url" "krypto-migrator-test-pw-$(random_test_password)"
 DIRECT_URL="$executor_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$executor_url" npx tsx scripts/test-paper-executor.ts
 
 create_database orchestration
-DIRECT_URL="$orchestration_url" npx drizzle-kit migrate >/dev/null
+bootstrap_and_migrate "$orchestration_url" "krypto-migrator-test-pw-$(random_test_password)"
 DIRECT_URL="$orchestration_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$orchestration_url" npx tsx scripts/test-run-flow.ts
 
@@ -1229,4 +1684,4 @@ if (
 }
 NODE
 
-echo "Migration tests passed for fresh install, original-0005-to-0006 rollout upgrade, private-schema security, cron rollout-mode fail-closed validation, decimal round-trip, idempotency constraints, v2 reconciliation, quarantine, transactional execution, run orchestration, operations routes, target-smoke evidence, deployment preflight, verified backup restoration, and the Azure PostgreSQL safety transition (0007 fresh install and 0006-to-0007 upgrade with row preservation, retirement of the obsolete Supabase HTTP cron functions, the exact fail-closed per-table krypto_runtime privilege matrix with no excess grants, idempotent password-based runtime-login bootstrap with real scram-sha-256 authentication and rotation proof where the cluster is self-managed, username-mismatch and elevated-role rejection, and the idempotent password-free membership-only bootstrap path)."
+echo "Migration tests passed for fresh install, original-0005-to-0006 rollout upgrade, private-schema security, cron rollout-mode fail-closed validation, decimal round-trip, idempotency constraints, v2 reconciliation, quarantine, transactional execution, run orchestration, operations routes, target-smoke evidence, deployment preflight, verified backup restoration, and the Azure PostgreSQL safety transition (0007 fresh install and 0006-to-0007 upgrade with row preservation, retirement of the obsolete Supabase HTTP cron functions, the exact fail-closed per-table krypto_runtime privilege matrix with no excess grants, idempotent password-based runtime-login bootstrap with real scram-sha-256 authentication and rotation proof where the cluster is self-managed, username-mismatch and elevated-role rejection, and the idempotent password-free membership-only bootstrap path), and the PostgreSQL trust boundary of drizzle/0008 (exact schema/object ownership transfer to krypto_schema_owner with the migration ledger remaining krypto_migrator-owned, the full role-attribute, safe-search-path, and connection-limit matrix, the migrator's SET-ROLE-only path to the schema owner with no inheritance and no scheduler membership, idempotent singleton initialization through the migrator SET-ROLE boundary, real runtime-login SELECT/UPDATE/INSERT operations with rollback, runtime DDL denial, krypto_runtime's and its login role's freedom from elevated membership, krypto_migrator's inability to read or write application tables without SET ROLE, runtime denial of drizzle/vault/cron/net/pg_net/public-unrelated objects, cluster-global SCRAM credential continuity and independent password rotation, and deployment-preflight.ts passing end-to-end and failing closed on a missing or unsafe MIGRATION_URL)."

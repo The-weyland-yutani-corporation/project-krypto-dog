@@ -67,6 +67,7 @@ async function main(): Promise<void> {
   const report = await runDeploymentPreflight({
     directUrl: process.env.DIRECT_URL,
     runtimeUrl: process.env.DATABASE_URL,
+    migrationUrl: process.env.MIGRATION_URL,
     provider,
   });
   if (outPath) writeReport(outPath, report);
