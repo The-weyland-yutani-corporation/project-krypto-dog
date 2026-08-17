@@ -129,7 +129,7 @@ const {
   "../../.github/scripts/agentic-pr-reconciler.cjs",
 );
 
-const repository = "VeVarunSharma/project-krypto-dog";
+const repository = "The-weyland-yutani-corporation/project-krypto-dog";
 
 function pullRequest(
   overrides: Partial<PullRequest> = {},
@@ -139,7 +139,7 @@ function pullRequest(
     title: "[docs-sync] Refresh contributor guide",
     draft: false,
     html_url:
-      "https://github.com/VeVarunSharma/project-krypto-dog/pull/42",
+      "https://github.com/The-weyland-yutani-corporation/project-krypto-dog/pull/42",
     user: {
       login: "github-actions[bot]",
       type: "Bot",

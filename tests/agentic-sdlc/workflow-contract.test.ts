@@ -113,7 +113,7 @@ describe("agentic SDLC workflow contracts", () => {
 
   it("constrains the canary to the enrolled same-repository docs path", () => {
     expect(e2e).toContain(
-      "if: github.repository == 'VeVarunSharma/project-krypto-dog'",
+      "if: github.repository == 'The-weyland-yutani-corporation/project-krypto-dog'",
     );
     expect(e2e).toContain(
       "CANARY_PATH: docs/e2e/factory-heartbeat.md",

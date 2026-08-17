@@ -187,7 +187,7 @@ Requirements:
 ## 3. Provision the Foundry model platform
 
 **Current status: operational fallback live.** The
-[platform run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884)
+[platform run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884)
 created and verified `ai-krypto-westus3`, disabled local auth, verified the
 `CanNotDelete` lock, and passed exact catalog/quota validation. Azure rejected
 model deployment with error `715-123420` (“unusual activity”). The exact dev
@@ -229,9 +229,9 @@ capacity is allowed.
 ## 4. Deploy both environment foundations
 
 **Current status: complete.** The
-[dev foundation run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
+[dev foundation run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841581875)
 and
-[prod foundation run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
+[prod foundation run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841960745)
 passed. Both foundations now contain ACR, private PostgreSQL 17, Key Vault,
 evidence storage, a Container Apps environment, ACS Email with an Azure-managed
 domain, Log Analytics/alerts, and runtime/scheduler/ops identities. Neither run
