@@ -16,6 +16,8 @@ This tree implements the Azure-native target accepted by
 - Runtime-selected subscription: **Visual Studio Enterprise Subscription**.
   Its ID and internal identifiers must not be published.
 - Region: `westus3`.
+- Application and ops containers: Node.js 22.13.0; the ops image carries
+  PostgreSQL 17 client/server tools for migrations and restore verification.
 - Resource groups: `rg-krypto-platform`, `rg-krypto-dev`,
   `rg-krypto-prod`.
 - Dedicated future Foundry account: `ai-krypto-westus3`.

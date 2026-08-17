@@ -62,6 +62,33 @@ project/agent deployment currently uses the documented authenticated local path:
 | `azure-deploy-prod.yml` | Prod `foundation` or `full` release ending disabled/manual | Live equivalent operator path completed; prod disabled/manual |
 | `azure-rotate-secrets.yml` | Safe prod secret rotation with current-release disable/backup controls | Not run; production release exists and is currently disabled/manual |
 
+### Source and CI runtime matrix
+
+The release-candidate source contract is Node.js 22.13.0 and PostgreSQL 17:
+
+| Surface | Contract |
+|---|---|
+| Node source/local | `.nvmrc` pins `22.13.0`; `package.json` permits `>=22.13.0 <23` |
+| Container runtime | Both Docker targets use the exact Node.js 22.13.0 base |
+| PostgreSQL source/local | Docker Compose, the real migration suite, the ops image clients/server, and Azure Flexible Server use major 17 |
+| Pull-request CI | Quality and real-PostgreSQL jobs use `.nvmrc`; the database job runs `postgres:17` with PostgreSQL 17 client tools |
+| Retained evidence | The database job writes `runtime-matrix.json` with the exact outputs of `node --version`, `npm --version`, `SHOW server_version`, `psql --version`, and `pg_dump --version`, plus the exact 40-hex commit SHA |
+
+The generator rejects a Node patch mismatch, any PostgreSQL server/client major
+other than 17, mismatched `psql`/`pg_dump` client releases, malformed output,
+or a missing/malformed commit SHA. The immutable Actions artifact is named
+`runtime-matrix-<commit-sha>`, cannot silently overwrite its JSON file, and is
+uploaded with artifact replacement disabled for 90-day retention. A successful
+artifact and integration job are
+source/CI evidence only: they do not prove the target identity, extensions,
+privileges, backup entitlement, or restore behavior owned by #74.
+
+Issue #73 can close only after the matrix change merges, the exact merge SHA
+passes the post-merge `main` checks, and those links are indexed in #76. The
+future production-build browser harness in #153 must consume this same
+`.nvmrc`/PostgreSQL 17 contract; this matrix work does not claim that the
+separate harness already exists.
+
 Platform account/model mutation uses separate environment-scoped what-if and
 apply jobs. Agent project/access mutation used the equivalent local
 what-if/apply path. GitHub Environments, branch restrictions, and protected

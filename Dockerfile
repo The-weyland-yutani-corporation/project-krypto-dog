@@ -24,7 +24,7 @@
 #   docker build --target ops -t project-krypto-ops .
 
 # Pinned to satisfy `engines.node` (">=22.13.0 <23") in package.json.
-ARG NODE_VERSION=22.13-bookworm-slim
+ARG NODE_VERSION=22.13.0-bookworm-slim
 
 ################################################################################
 # Stage: base — shared Node.js base image.

@@ -46,6 +46,17 @@ deterministic backtest/scenario harness is described in
   npm install
   ```
 
+Confirm the local application and client toolchain before running the suites:
+
+```bash
+node --version
+npm --version
+psql --version
+pg_dump --version
+```
+
+Node must print `v22.13.0`; `psql` and `pg_dump` must report major 17.
+
 ## 0. Worktree-safe app harness
 
 The harness (`scripts/agent-harness.ts`) boots the full app in an isolated
@@ -127,7 +138,11 @@ Confirm it is reachable:
 
 ```bash
 docker compose exec -T db psql -U krypto -d krypto -c 'SELECT 1;'
+docker compose exec -T db psql -U krypto -d krypto -Atc 'SHOW server_version;'
 ```
+
+The server must also report major 17. CI enforces the same complete contract and
+retains the exact command outputs in `runtime-matrix-<commit-sha>`.
 
 ## 2. Create local environment
 
