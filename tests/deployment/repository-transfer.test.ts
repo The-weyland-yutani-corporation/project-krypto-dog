@@ -110,4 +110,47 @@ describe("transferred repository identity", () => {
       `https://github.com/${repository}/issues/131`,
     );
   });
+
+  it("documents active hosted execution and environment approval boundaries", () => {
+    const controlDocs = [
+      "README.md",
+      "infra/README.md",
+      "specs/architecture.md",
+      "specs/deployment.md",
+      "specs/readiness.md",
+      "specs/prd.md",
+    ];
+    const staleStatements =
+      /required[- ]reviewer.*(?:unavailable|unsupported)|reviewer enforcement (?:is )?unavailable|manual\/paused|GitHub-hosted (?:jobs|Actions).*(?:blocked|cannot start)|Actions billing/i;
+
+    for (const relativePath of controlDocs) {
+      const source = read(relativePath);
+      expect(source).toContain("Enterprise-hosted");
+      expect(source).toContain("CI_RUNNER_LABEL");
+      expect(source).toContain("prevent_self_review=false");
+      expect(source).toMatch(
+        /development[\s\S]{0,120}no\s+(?:required\s+)?reviewer/i,
+      );
+      expect(source).toMatch(/runner[\s\S]{0,100}retired/i);
+      expect(source).toMatch(/exact[\s\S]{0,24}SHA/i);
+      expect(source).not.toMatch(staleStatements);
+    }
+
+    expect(read("README.md")).toContain(
+      `https://github.com/${repository}/actions/runs/31981510383`,
+    );
+    const deployment = read("specs/deployment.md");
+    expect(deployment).toContain(
+      "| `platform` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` |",
+    );
+    expect(deployment).toContain(
+      "| `development` | No required reviewer (intentional); branch/exact-SHA/CI gates remain |",
+    );
+    expect(deployment).toContain(
+      "| `production-deploy` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` |",
+    );
+    expect(deployment).toContain(
+      "| `production-promotion` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false`; forced-disable boundary only |",
+    );
+  });
 });

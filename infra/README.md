@@ -38,7 +38,7 @@ provision PostgreSQL there. It is not a current target.
 | Surface | Live state | Evidence |
 |---|---|---|
 | Subscription/bootstrap | Required providers registered; three resource groups and four GitHub OIDC identities exist | Bootstrap complete |
-| GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a separate dev PostHog key; required-reviewer rules are unsupported by the private-repo billing plan, so mutation workflows are manual/paused behind branch, exact-SHA, and CI gates | Configuration staged; reviewer enforcement unavailable |
+| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset, and the temporary Azure runner registrations/resource group are retired. Platform and both production environments require `@VeVarunSharma` review with `prevent_self_review=false`; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
 | Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
 | Foundry agents | Separate dev/prod projects and toolless prompt agents version `1` are active; exact-definition and structured `HOLD` smokes passed | Applied |
 | Foundry workload access | Dev runtime/ops have the proven custom-only `Project Krypto Foundry Agent Invoker`; the reviewed template adds the same project-scoped assignment for prod without changing live prod; legacy direct-model roles await app-image cutover | Dev proven; prod source ready |
@@ -125,10 +125,11 @@ actions are agent read/write, Responses read/write, and endpoint interaction;
 Azure enforces resource-group scope, not the intended template list. A
 resource-group Contributor can deploy other resources in that group.
 Template separation therefore also depends on protected workflow files,
-GitHub Environment reviewers, branch rules, and CODEOWNERS. Required-reviewer
-rules are not available on the current private-repo billing plan, so the
-current workflows remain manual/paused with branch, exact-SHA, and CI gates;
-reviewer-backed automation must not be assumed.
+GitHub Environment reviewers, branch rules, and CODEOWNERS. The `platform`,
+`production-deploy`, and `production-promotion` environments require review by
+`@VeVarunSharma` with `prevent_self_review=false`. `development` intentionally
+has no required reviewer for routine dev delivery. Every path still requires
+its configured branch, exact source SHA, and successful CI.
 
 No executable production promotion workflow is shipped or approved. The
 `production-promotion` name denotes the separately reviewed forced-disable
@@ -143,8 +144,9 @@ their own resource-group scope. The platform identity has Locks Contributor in
 Locks Contributor in `rg-krypto-prod` because `environment.bicep` creates the
 prod PostgreSQL, Key Vault, and evidence-storage locks. Role Based Access
 Control Administrator is powerful within those resource groups; it is not a
-role-assignment allow-list. Keep mutation workflows manual/paused until an
-equivalent reviewer-enforced boundary is available.
+role-assignment allow-list. Platform and production environment approvals are
+therefore mandatory mutation controls in addition to source review and
+exact-SHA/CI gates.
 
 All mutation permissions remain resource-group-scoped. Subscription scope is
 read-only: the minimal provider-state role above, plus **Cognitive Services
@@ -283,7 +285,8 @@ required.
 4. `azure-deploy-dev.yml` with `deployment_stage=foundation`.
 5. `azure-deploy-prod.yml` with `deployment_stage=foundation`.
 6. Authenticated local `foundry-agents.bicep` apply plus exact dev/prod agent
-   deploy/attestation/HOLD smokes (GitHub-hosted Actions billing is blocked).
+   deploy/attestation/HOLD smokes (historical first deployment; Enterprise-hosted
+   Actions are now available).
 7. Full dev release and monitored shadow activation.
 8. Full prod release, ending disabled/manual. No production promotion
    workflow is shipped or approved.
@@ -301,9 +304,10 @@ Agent deployment consumes the retained principal IDs explicitly; it does not
 guess them.
 
 Manual workflows support `foundation` and `full`; the workflow definition maps
-`workflow_run` events to `full`. Automatic mutation is currently paused because
-required-reviewer enforcement is unavailable. Use manual dispatch with the
-configured branch, exact CI-passed SHA, and CI gate.
+`workflow_run` events to `full`. Routine development can run without an
+environment reviewer, but still requires the configured branch, exact CI-passed
+SHA, and CI gate. Platform and production mutations additionally require their
+live GitHub Environment approval.
 
 ## Release secrets and Azure-generated values
 

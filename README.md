@@ -208,13 +208,18 @@ Observed live runs:
 - [Prod foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841960745)
 
 GitHub Environments, branch restrictions, and protected values are configured.
-Required-reviewer rules are unavailable on the private repository's billing
-plan. GitHub-hosted jobs were also blocked at startup by the account's Actions
-billing state, so the first releases used the authenticated operator path with
-the same reviewed templates, exact source trees, immutable digests, and
-fail-closed evidence checks. Branch protection was restored after each reviewed
-merge. Shared-key PostHog telemetry is environment-tagged but cannot qualify as
-final project isolation for production promotion.
+Enterprise-hosted Actions are active ([proof run
+31981510383](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31981510383));
+`CI_RUNNER_LABEL` is unset; the temporary Azure self-hosted runner registrations
+and their runner resource group are retired. `platform`, `production-deploy`,
+and `production-promotion` require
+review by `@VeVarunSharma` with `prevent_self_review=false`; `development`
+intentionally has no required reviewer so routine dev releases can proceed.
+Every mutation still requires the configured branch, an exact CI-passed source
+SHA, and the workflow's fail-closed checks. The first releases used the
+authenticated operator path before Enterprise-hosted Actions became available.
+Shared-key PostHog telemetry is environment-tagged but cannot qualify as final
+project isolation for production promotion.
 
 Dev completed the staged
 disabled/manual → shadow/manual → unique manual shadow run → post-run

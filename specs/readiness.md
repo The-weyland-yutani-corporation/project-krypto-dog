@@ -65,13 +65,14 @@ project/agent deployment currently uses the documented authenticated local path:
 Platform account/model mutation uses separate environment-scoped what-if and
 apply jobs. Agent project/access mutation used the equivalent local
 what-if/apply path. GitHub Environments, branch restrictions, and protected
-values are configured. Required-reviewer rules are unsupported by the private-repo
-billing plan, so mutation workflows are manual/paused behind configured branch,
-exact-SHA, and CI gates. GitHub-hosted jobs were blocked by the account Actions
-billing state during the first release, so the authenticated operator path used
-the same reviewed templates and evidence validators. Production deploy remains
-disabled manually; the proven dev automatic trigger is configured but cannot
-start while the billing block remains.
+values are configured. Enterprise-hosted Actions are active, `CI_RUNNER_LABEL`
+is unset, and the temporary Azure runner registrations/resource group are
+retired. `platform`,
+`production-deploy`, and `production-promotion` require `@VeVarunSharma` review
+with `prevent_self_review=false`; `development` intentionally has no reviewer.
+Configured branch, exact-SHA, and CI gates remain mandatory. The authenticated
+operator path used for the first release remains historical evidence, not the
+current execution constraint.
 
 No executable production promotion workflow is shipped or approved.
 `production-promotion` remains only as the environment-scoped forced-disable
@@ -102,8 +103,9 @@ credential downgrade.
   evidence-storage locks.
 - [x] Configure `platform`, `development`, `production-deploy`, and the
   forced-disable-only `production-promotion` GitHub Environments, including
-  branch restrictions and the currently available protected values. Required
-  reviewers are unavailable on the current plan; keep mutation manual/paused.
+  branch restrictions and protected values. Require `@VeVarunSharma` review
+  with `prevent_self_review=false` on platform and both production boundaries;
+  intentionally omit a development reviewer for routine dev delivery.
 - [x] Stage a dev telemetry fallback with mandatory
       `deployment_environment=dev`; do not count it as final project isolation.
 - [x] Run the Foundry account what-if/apply; verify local auth disabled and the
@@ -126,7 +128,8 @@ credential downgrade.
   account; retain its platform smoke role and verified `CanNotDelete` lock.
 - [ ] Release the agent-integrated app image, pass final post-provider no-trade
   database checks, then remove the four temporary account-scoped direct-model
-  roles. GitHub Actions billing currently blocks that reviewed release path.
+  roles. Enterprise-hosted Actions are available; this remains gated on reviewed
+  source, exact-SHA CI, and the environment-specific approval policy.
 - [ ] Disable local/model key authentication on the shared operational account
   with its owner, or migrate the agents/models to the Entra-only dedicated
   account, before any production promotion design.
@@ -135,10 +138,11 @@ Both foundations are mandatory before agent access binding because the four
 principal IDs are created by those foundations. A full release before access
 binding is not an approved shortcut.
 
-Any full dev run must remain a manual dispatch at the exact CI-passed 40-hex
-SHA while required-reviewer enforcement is unavailable. GitHub evaluates
-`workflow_run` with the workflow version on the default branch, but automatic
-mutation must remain paused regardless of that trigger behavior.
+Any full dev run must use the exact CI-passed 40-hex SHA. GitHub evaluates
+`workflow_run` with the workflow version on the default branch, so that
+default-branch source must contain the reviewed trigger and gates. Development
+has no reviewer by design; platform and production mutations require their
+live environment approval.
 
 ## 5. Configuration readiness
 
