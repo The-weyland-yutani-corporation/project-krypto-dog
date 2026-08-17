@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1.1.0",
+  "generatedAt": "2026-08-14T01:00:00.000Z",
+  "releaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "approved": true,
+  "approval": {
+    "id": "deployment-smoke-approved-123e4567-e89b-42d3-a456-426614174001",
+    "bindingId": "deployment-smoke-binding-123e4567-e89b-42d3-a456-426614174000",
+    "modeMismatchEvidenceId": "deployment-smoke-mode-mismatch-123e4567-e89b-42d3-a456-426614174002",
+    "cronEvidenceId": "deployment-smoke-cron-123e4567-e89b-42d3-a456-426614174003",
+    "adminEvidenceId": "deployment-smoke-admin-123e4567-e89b-42d3-a456-426614174004",
+    "approvedAt": "2026-08-14T00:00:00.000Z",
+    "expiresAt": "2026-08-15T00:00:00.000Z"
+  },
+  "checks": [
+    { "id": "approval-order-unambiguous", "status": "pass" },
+    { "id": "approval-identifiers-valid", "status": "pass" },
+    { "id": "binding-row-present", "status": "pass" },
+    { "id": "binding-id-match", "status": "pass" },
+    { "id": "target-origin-match", "status": "pass" },
+    { "id": "cron-secret-binding-match", "status": "pass" },
+    { "id": "approval-binding-complete", "status": "pass" },
+    { "id": "approval-signature-valid", "status": "pass" },
+    { "id": "approval-timestamp-valid", "status": "pass" },
+    { "id": "approval-not-in-future", "status": "pass" },
+    { "id": "approval-within-24-hours", "status": "pass" },
+    { "id": "release-sha-match", "status": "pass" },
+    { "id": "image-digest-match", "status": "pass" },
+    { "id": "smoke-rollout-mode-disabled", "status": "pass" },
+    { "id": "no-active-lease", "status": "pass" },
+    { "id": "accounting-reconciled", "status": "pass" },
+    { "id": "no-open-paper-position", "status": "pass" }
+  ]
+}

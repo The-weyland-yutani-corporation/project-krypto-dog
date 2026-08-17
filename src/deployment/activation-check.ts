@@ -9,6 +9,7 @@ import {
   validateApprovalSecret,
   validateImageDigest,
   validateReleaseSha,
+  validTargetSmokeEvidenceIds,
 } from "@/deployment/target-smoke";
 
 /**
@@ -39,7 +40,8 @@ import {
  * grandfathered in.
  */
 
-export const ACTIVATION_CHECK_SCHEMA_VERSION = "1.0.0";
+export const ACTIVATION_CHECK_SCHEMA_VERSION = "1.1.0";
+export const MAX_APPROVAL_AGE_MS = 24 * 60 * 60 * 1_000;
 
 export type ActivationCheckOptions = {
   databaseUrl: string;
@@ -65,7 +67,7 @@ export type ActivationCheckResult = {
 };
 
 export type ActivationCheckReport = {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.1.0";
   generatedAt: string;
   targetOrigin: string;
   releaseSha: string;
@@ -73,6 +75,15 @@ export type ActivationCheckReport = {
   checks: ActivationCheckResult[];
   approved: boolean;
   blockers: string[];
+  approval?: {
+    id: string;
+    bindingId: string;
+    modeMismatchEvidenceId: string;
+    cronEvidenceId: string;
+    adminEvidenceId: string;
+    approvedAt: string;
+    expiresAt: string;
+  };
   shadowRun?: {
     id: string;
     idempotencyKey: string;
@@ -83,16 +94,30 @@ export type ActivationCheckReport = {
   };
 };
 
+export type ActivationCheckDependencies = {
+  now?: () => Date;
+};
+
 type LatestApprovalRow = {
   id: string;
-  createdAt: Date;
+  createdAt: string;
+  sameTimestampCount: number;
   bindingId: string | null;
+  modeMismatchEvidenceId: string | null;
+  cronEvidenceId: string | null;
+  adminEvidenceId: string | null;
   targetOrigin: string | null;
   cronSecretBinding: string | null;
   releaseSha: string | null;
   imageDigest: string | null;
   rolloutMode: string | null;
+  approvedAt: string | null;
   approvalSignature: string | null;
+};
+
+type BindingRow = {
+  event: string | null;
+  bindingId: string | null;
 };
 
 type AgentStateRow = {
@@ -126,6 +151,26 @@ function errorCode(error: unknown): string {
   return error instanceof Error ? error.name : "UnknownError";
 }
 
+function checkedClock(now: () => Date): Date {
+  const value = now();
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw new Error("Activation-check clock returned an invalid Date.");
+  }
+  return value;
+}
+
+function parseCanonicalTimestamp(value: string | null | undefined): Date | null {
+  if (typeof value !== "string") return null;
+  const parsed = new Date(value);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString() !== value
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 function sanitizedOrigin(value: string): string {
@@ -157,13 +202,21 @@ async function loadLatestApproval(
   const [row] = await sql<LatestApprovalRow[]>`
     SELECT
       id,
-      "createdAt",
+      to_char(
+        "createdAt",
+        'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      ) AS "createdAt",
+      COUNT(*) OVER (PARTITION BY "createdAt")::int AS "sameTimestampCount",
       "marketConditions" ->> 'bindingId' AS "bindingId",
+      "marketConditions" ->> 'modeMismatchEvidenceId' AS "modeMismatchEvidenceId",
+      "marketConditions" ->> 'cronEvidenceId' AS "cronEvidenceId",
+      "marketConditions" ->> 'adminEvidenceId' AS "adminEvidenceId",
       "marketConditions" ->> 'targetOrigin' AS "targetOrigin",
       "marketConditions" ->> 'cronSecretBinding' AS "cronSecretBinding",
       "marketConditions" ->> 'releaseSha' AS "releaseSha",
       "marketConditions" ->> 'imageDigest' AS "imageDigest",
       "marketConditions" ->> 'rolloutMode' AS "rolloutMode",
+      "marketConditions" ->> 'approvedAt' AS "approvedAt",
       "marketConditions" ->> 'approvalSignature' AS "approvalSignature"
     FROM "krypto"."AgentJournal"
     WHERE "marketConditions" ->> 'event' = 'deployment-smoke-approved'
@@ -173,17 +226,19 @@ async function loadLatestApproval(
   return row;
 }
 
-async function bindingRowExists(
+async function loadBindingRow(
   sql: postgres.Sql,
   bindingId: string,
-): Promise<boolean> {
-  const [row] = await sql<Array<{ event: string | null }>>`
-    SELECT "marketConditions" ->> 'event' AS event
+): Promise<BindingRow | undefined> {
+  const [row] = await sql<BindingRow[]>`
+    SELECT
+      "marketConditions" ->> 'event' AS event,
+      "marketConditions" ->> 'bindingId' AS "bindingId"
     FROM "krypto"."AgentJournal"
     WHERE id = ${bindingId}
     LIMIT 1
   `;
-  return row?.event === "deployment-smoke-binding";
+  return row;
 }
 
 async function loadAgentState(
@@ -243,6 +298,7 @@ async function loadShadowRun(
  */
 export async function runActivationCheck(
   options: ActivationCheckOptions,
+  dependencies: ActivationCheckDependencies = {},
 ): Promise<ActivationCheckReport> {
   if (
     !options.databaseUrl ||
@@ -293,6 +349,7 @@ export async function runActivationCheck(
 
   const checks: ActivationCheckResult[] = [];
   const blockers: string[] = [];
+  const now = dependencies.now ?? (() => new Date());
 
   function record(id: string, ok: boolean, summary: string): void {
     checks.push({ id, status: ok ? "pass" : "block", summary });
@@ -302,7 +359,7 @@ export async function runActivationCheck(
   }
 
   let approval: LatestApprovalRow | undefined;
-  let bindingExists = false;
+  let bindingRow: BindingRow | undefined;
   let state: AgentStateRow | undefined;
   let shadowRun: ShadowRunRow | undefined;
 
@@ -310,7 +367,7 @@ export async function runActivationCheck(
     await readOnly(options.databaseUrl, async (sql) => {
       approval = await loadLatestApproval(sql);
       if (approval?.bindingId) {
-        bindingExists = await bindingRowExists(sql, approval.bindingId);
+        bindingRow = await loadBindingRow(sql, approval.bindingId);
       }
       state = await loadAgentState(sql);
       if (options.expectedShadowIdempotencyKey) {
@@ -329,7 +386,7 @@ export async function runActivationCheck(
 
     return {
       schemaVersion: ACTIVATION_CHECK_SCHEMA_VERSION,
-      generatedAt: new Date().toISOString(),
+      generatedAt: checkedClock(now).toISOString(),
       targetOrigin,
       releaseSha,
       imageDigest,
@@ -338,6 +395,8 @@ export async function runActivationCheck(
       blockers,
     };
   }
+
+  const checkedAt = checkedClock(now);
 
   if (expectsShadowProof) {
     record(
@@ -396,13 +455,52 @@ export async function runActivationCheck(
   );
 
   record(
+    "approval-order-unambiguous",
+    approval !== undefined && approval.sameTimestampCount === 1,
+    approval !== undefined && approval.sameTimestampCount === 1
+      ? "The latest approval has a unique persisted creation timestamp."
+      : "Concurrent approvals share the latest creation timestamp or approval ordering is unavailable.",
+  );
+
+  const bindingRowPresent =
+    bindingRow?.event === "deployment-smoke-binding";
+  record(
     "binding-row-present",
-    approval !== undefined && bindingExists,
+    approval !== undefined && bindingRowPresent,
     approval === undefined
       ? "Binding row could not be checked because no approval was found."
-      : bindingExists
+      : bindingRowPresent
         ? "The approval's referenced database-binding row exists."
         : "The approval's referenced database-binding row is missing.",
+  );
+
+  record(
+    "binding-id-match",
+    approval?.bindingId !== null &&
+      approval?.bindingId !== undefined &&
+      bindingRow?.bindingId === approval.bindingId,
+    approval?.bindingId !== null &&
+      approval?.bindingId !== undefined &&
+      bindingRow?.bindingId === approval.bindingId
+      ? "The evidence row's persisted binding ID matches the signed approval."
+      : "The evidence row's persisted binding ID is missing or does not match the signed approval.",
+  );
+
+  const approvalIdentifiersValid =
+    approval !== undefined &&
+    validTargetSmokeEvidenceIds({
+      approvalId: approval.id,
+      bindingId: approval.bindingId,
+      modeMismatchEvidenceId: approval.modeMismatchEvidenceId,
+      cronEvidenceId: approval.cronEvidenceId,
+      adminEvidenceId: approval.adminEvidenceId,
+    });
+  record(
+    "approval-identifiers-valid",
+    approvalIdentifiersValid,
+    approvalIdentifiersValid
+      ? "Every attributed approval and evidence ID is well formed."
+      : "One or more attributed approval or evidence IDs are missing or malformed.",
   );
 
   record(
@@ -423,22 +521,41 @@ export async function runActivationCheck(
 
   const approvalSignatureFieldsPresent =
     approval !== undefined &&
+    approval.id.length > 0 &&
     approval.bindingId !== null &&
+    approval.modeMismatchEvidenceId !== null &&
+    approval.cronEvidenceId !== null &&
+    approval.adminEvidenceId !== null &&
     approval.targetOrigin !== null &&
     approval.releaseSha !== null &&
     approval.imageDigest !== null &&
     approval.rolloutMode !== null &&
-    approval.cronSecretBinding !== null;
+    approval.cronSecretBinding !== null &&
+    approval.approvedAt !== null &&
+    approval.approvalSignature !== null;
+
+  record(
+    "approval-binding-complete",
+    approvalSignatureFieldsPresent,
+    approvalSignatureFieldsPresent
+      ? "Every attributed approval binding field is present."
+      : "One or more attributed approval binding fields are missing.",
+  );
 
   const expectedApprovalSignature = approvalSignatureFieldsPresent
     ? computeApprovalSignature(
         canonicalApprovalPayload({
+          approvalId: approval!.id,
           bindingId: approval!.bindingId!,
+          modeMismatchEvidenceId: approval!.modeMismatchEvidenceId!,
+          cronEvidenceId: approval!.cronEvidenceId!,
+          adminEvidenceId: approval!.adminEvidenceId!,
           targetOrigin: approval!.targetOrigin!,
           releaseSha: approval!.releaseSha!,
           imageDigest: approval!.imageDigest!,
           rolloutMode: approval!.rolloutMode!,
           cronSecretBinding: approval!.cronSecretBinding!,
+          approvedAt: approval!.approvedAt!,
         }),
         approvalSecret,
       )
@@ -453,6 +570,47 @@ export async function runActivationCheck(
     approvalSignatureValid
       ? "Persisted approval signature is valid."
       : "Persisted approval signature is missing, from a legacy unsigned row, or invalid.",
+  );
+
+  const parsedApprovedAt = parseCanonicalTimestamp(approval?.approvedAt);
+  const parsedCreatedAt = parseCanonicalTimestamp(approval?.createdAt);
+  const approvalTimestampValid =
+    parsedApprovedAt !== null &&
+    parsedCreatedAt !== null &&
+    approval!.createdAt === approval!.approvedAt;
+  record(
+    "approval-timestamp-valid",
+    approvalTimestampValid,
+    approvalTimestampValid
+      ? "The signed approval timestamp is canonical and matches the persisted journal timestamp."
+      : "The approval timestamp is missing, malformed, or does not match the persisted journal timestamp.",
+  );
+
+  const approvalAgeMs =
+    parsedApprovedAt === null
+      ? null
+      : checkedAt.getTime() - parsedApprovedAt.getTime();
+  const approvalNotFuture =
+    approvalTimestampValid && approvalAgeMs !== null && approvalAgeMs >= 0;
+  record(
+    "approval-not-in-future",
+    approvalNotFuture,
+    approvalNotFuture
+      ? "The approval timestamp is not in the future."
+      : "The approval timestamp is in the future or invalid.",
+  );
+
+  const approvalWithinLifetime =
+    approvalTimestampValid &&
+    approvalAgeMs !== null &&
+    approvalAgeMs >= 0 &&
+    approvalAgeMs <= MAX_APPROVAL_AGE_MS;
+  record(
+    "approval-within-24-hours",
+    approvalWithinLifetime,
+    approvalWithinLifetime
+      ? "The approval is within the maximum 24-hour lifetime."
+      : "The approval is expired, future-dated, or invalid.",
   );
 
   record(
@@ -521,13 +679,32 @@ export async function runActivationCheck(
 
   return {
     schemaVersion: ACTIVATION_CHECK_SCHEMA_VERSION,
-    generatedAt: new Date().toISOString(),
+    generatedAt: checkedAt.toISOString(),
     targetOrigin,
     releaseSha,
     imageDigest,
     checks,
     approved,
     blockers,
+    approval:
+      approval &&
+      approval.bindingId &&
+      approval.modeMismatchEvidenceId &&
+      approval.cronEvidenceId &&
+      approval.adminEvidenceId &&
+      parsedApprovedAt
+        ? {
+            id: approval.id,
+            bindingId: approval.bindingId,
+            modeMismatchEvidenceId: approval.modeMismatchEvidenceId,
+            cronEvidenceId: approval.cronEvidenceId,
+            adminEvidenceId: approval.adminEvidenceId,
+            approvedAt: parsedApprovedAt.toISOString(),
+            expiresAt: new Date(
+              parsedApprovedAt.getTime() + MAX_APPROVAL_AGE_MS,
+            ).toISOString(),
+          }
+        : undefined,
     shadowRun: shadowRun
       ? {
           id: shadowRun.id,

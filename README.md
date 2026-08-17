@@ -213,7 +213,8 @@ Enterprise-hosted Actions are active ([proof run
 `CI_RUNNER_LABEL` is unset; the temporary Azure self-hosted runner registrations
 and their runner resource group are retired. `platform`, `production-deploy`,
 and `production-promotion` require
-review by `@VeVarunSharma` with `prevent_self_review=false`; `development`
+review by `@VeVarunSharma` with `prevent_self_review=true` and administrator
+bypass disabled; `development`
 intentionally has no required reviewer so routine dev releases can proceed.
 Every mutation still requires the configured branch, an exact CI-passed source
 SHA, and the workflow's fail-closed checks. The first releases used the

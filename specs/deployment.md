@@ -54,7 +54,7 @@ those values without making them public documentation.
 | Stage | Live state | Evidence |
 |---|---|---|
 | Providers/bootstrap | Required providers are registered; platform/dev/prod resource groups and four GitHub OIDC identities exist | Complete |
-| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset and no self-hosted runner is registered. Platform and production environments require `@VeVarunSharma` review with `prevent_self_review=false`; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
+| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset and no self-hosted runner is registered. Platform and production environments require `@VeVarunSharma` review with `prevent_self_review=true`; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
 | Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments and isolated prompt agents on `ghcp-foundry-eastus2` succeeded. Both immutable agent version `1` deployments passed exact structured `HOLD` smokes. | Operational agents complete |
 | Workload access | Dev runtime/ops have the proven custom-only Project Krypto Foundry Agent Invoker. The reviewed source grants prod the same project-scoped role, but live prod remains untouched until an approved apply. Legacy account-scoped direct-model roles remain until each pre-agent image is replaced. | Dev proven; prod source ready; compatibility-role removal pending cutover |
 | Dev release | Live in shadow; manual activation and first scheduled execution passed with zero trades | Retained exact-SHA evidence |
@@ -144,10 +144,39 @@ reviewer so routine dev delivery can proceed through the remaining gates.
 
 | Environment | Approval policy | Workflows | Required variables | Required secrets |
 |---|---|---|---|---|
-| `platform` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
+| `platform` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true` | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
 | `development` | No required reviewer (intentional); branch/exact-SHA/CI gates remain | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
-| `production-deploy` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
-| `production-promotion` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false`; forced-disable boundary only | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
+| `production-deploy` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
+| `production-promotion` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true`; forced-disable boundary only | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
+
+### Approval and evidence procedure
+
+- CI runs `npm run deployment:verify-github-environments` against the live
+  GitHub API and immutable organization/repository IDs. Platform and production
+  mutation jobs fail unless the configured authority is a human
+  `@VeVarunSharma` reviewer with `prevent_self_review=true` and
+  `can_admins_bypass=false`; bots, applications, teams, unknown users,
+  administrator bypass, self-review-capable rules, and unexpected deployment
+  branches are denied. Every protected mutation job repeats this live check
+  immediately before Azure OIDC login so policy drift after CI cannot authorize
+  a mutation.
+- GitHub Environment deployment records are authoritative for the human
+  reviewer. Do not label `GITHUB_ACTOR` as the approver. The signed
+  `deployment-smoke-approved` journal row is a separate machine attestation.
+- That attestation binds approval ID; database-binding, mode-mismatch, cron-run,
+  and admin-run evidence IDs; target origin; release SHA; image digest;
+  disabled rollout mode; keyed cron-secret binding; and canonical approval
+  timestamp. It expires exactly 24 hours after
+  `approvedAt`; missing or malformed identifiers/fields, future timestamps,
+  row mismatches, changes, copies, or concurrently ambiguous evidence are
+  rejected. The dev shadow schedule path reruns activation-check in its mutation
+  job and validates current-time expiry immediately before monitoring and
+  rollout mutations, so a retained report cannot outlive its approval.
+- `@VeVarunSharma` owns rollback through the protected forced-disable path. If
+  that account requested the run, authorize a distinct audited human reviewer
+  before proceeding; never disable self-review prevention. GitHub deployment
+  records, retained workflow artifacts, immutable Azure evidence blobs, and the
+  #76 evidence index share custody of the redacted record.
 
 Bootstrap RBAC boundaries:
 

@@ -253,6 +253,7 @@ describe("target deployment smoke", () => {
     );
 
     expect(report.passed).toBe(true);
+    expect(report.schemaVersion).toBe("1.5.0");
     expect(report.checks).toHaveLength(16);
     expect(report.checks.every((check) => check.status === "pass")).toBe(
       true,
@@ -261,9 +262,13 @@ describe("target deployment smoke", () => {
       expect.objectContaining({
         targetOrigin: "https://krypto.example.com",
         cronSecret: "cron-secret",
+        modeMismatchEvidenceId: report.evidenceIds.modeMismatch,
+        cronEvidenceId: report.evidenceIds.cron,
+        adminEvidenceId: report.evidenceIds.admin,
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        approvedAt: new Date("2026-07-14T22:00:00.000Z"),
       }),
     );
     expect(report.releaseSha).toBe(TEST_RELEASE_SHA);
@@ -276,11 +281,15 @@ describe("target deployment smoke", () => {
     expect(report.binding).toEqual({
       approvalId: report.evidenceIds.approval,
       bindingId: report.evidenceIds.databaseBinding,
+      modeMismatchEvidenceId: report.evidenceIds.modeMismatch,
+      cronEvidenceId: report.evidenceIds.cron,
+      adminEvidenceId: report.evidenceIds.admin,
       targetOrigin: "https://krypto.example.com",
       releaseSha: TEST_RELEASE_SHA,
       imageDigest: TEST_IMAGE_DIGEST,
       rolloutMode: "disabled",
       cronSecretBinding: expectedCronSecretBinding,
+      approvedAt: "2026-07-14T22:00:00.000Z",
       approvalSignature: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     // The cron-secret binding cannot be reproduced from CRON_SECRET alone

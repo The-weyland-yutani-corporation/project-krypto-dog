@@ -26,6 +26,9 @@ jobs:
     name: Quality and evidence gates
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
 
     steps:
       - name: Checkout
@@ -48,6 +51,11 @@ jobs:
         # excluded from tsconfig.json). Run a separate pass over them via
         # tsconfig.scripts.json to catch type errors in seed scripts and tests.
         run: npm run typecheck:scripts
+
+      - name: Verify protected mutation approval policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run deployment:verify-github-environments
 
       - name: Typecheck (Next.js build)
         # `next build` runs the TypeScript compiler over the app code.

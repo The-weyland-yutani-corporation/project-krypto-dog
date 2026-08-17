@@ -16,10 +16,15 @@ export type TargetSmokeCheck = {
 export type TargetSmokeBinding = {
   approvalId: string;
   bindingId: string;
+  modeMismatchEvidenceId: string;
+  cronEvidenceId: string;
+  adminEvidenceId: string;
   targetOrigin: string;
   releaseSha: string;
   imageDigest: string;
   rolloutMode: "disabled";
+  /** Canonical UTC timestamp signed into the approval and persisted as the journal row's createdAt. */
+  approvedAt: string;
   /**
    * Keyed HMAC-SHA256 (full hex) binding the cron secret to the
    * DEPLOYMENT_APPROVAL_SECRET. Replaces the retired MD5(cronSecret)
@@ -31,16 +36,17 @@ export type TargetSmokeBinding = {
   cronSecretBinding: string;
   /**
    * Keyed HMAC-SHA256 (full hex) approval signature over the canonical,
-   * versioned serialization of bindingId/targetOrigin/releaseSha/
-   * imageDigest/rolloutMode/cronSecretBinding. Proves the whole row was
-   * produced by something holding DEPLOYMENT_APPROVAL_SECRET -- runtime
-   * inserting AgentJournal rows on its own cannot fabricate this.
+   * versioned serialization of approvalId and all target-smoke evidence IDs,
+   * targetOrigin/releaseSha/imageDigest/rolloutMode/cronSecretBinding/
+   * approvedAt. Proves the whole row was produced by something holding
+   * DEPLOYMENT_APPROVAL_SECRET -- runtime inserting AgentJournal rows on its
+   * own cannot fabricate this.
    */
   approvalSignature: string;
 };
 
 export type TargetSmokeReport = {
-  schemaVersion: "1.4.0";
+  schemaVersion: "1.5.0";
   generatedAt: string;
   target: string;
   releaseSha: string;
@@ -117,11 +123,15 @@ export type TargetSmokeDependencies = {
     databaseUrl: string;
     approvalId: string;
     bindingId: string;
+    modeMismatchEvidenceId: string;
+    cronEvidenceId: string;
+    adminEvidenceId: string;
     targetOrigin: string;
     cronSecret: string;
     releaseSha: string;
     imageDigest: string;
     approvalSecret: string;
+    approvedAt: Date;
   }) => Promise<void>;
   now?: () => Date;
   randomUuid?: () => string;
@@ -186,6 +196,23 @@ export function validateTargetBaseUrl(
 
 const RELEASE_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const UUID_PATTERN =
+  "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const APPROVAL_ID_PATTERN = new RegExp(
+  `^deployment-smoke-approved-${UUID_PATTERN}$`,
+);
+const BINDING_ID_PATTERN = new RegExp(
+  `^deployment-smoke-binding-${UUID_PATTERN}$`,
+);
+const MODE_MISMATCH_EVIDENCE_ID_PATTERN = new RegExp(
+  `^deployment-smoke-mode-mismatch-${UUID_PATTERN}$`,
+);
+const CRON_EVIDENCE_ID_PATTERN = new RegExp(
+  `^deployment-smoke-cron-${UUID_PATTERN}$`,
+);
+const ADMIN_EVIDENCE_ID_PATTERN = new RegExp(
+  `^deployment-smoke-admin-${UUID_PATTERN}$`,
+);
 
 /**
  * Validates an exact, lowercase 40-hex commit SHA. Never derives, defaults,
@@ -214,6 +241,27 @@ export function validateImageDigest(value: string): string {
   return value;
 }
 
+export function validTargetSmokeEvidenceIds(fields: {
+  approvalId: string | null | undefined;
+  bindingId: string | null | undefined;
+  modeMismatchEvidenceId: string | null | undefined;
+  cronEvidenceId: string | null | undefined;
+  adminEvidenceId: string | null | undefined;
+}): boolean {
+  return (
+    typeof fields.approvalId === "string" &&
+    APPROVAL_ID_PATTERN.test(fields.approvalId) &&
+    typeof fields.bindingId === "string" &&
+    BINDING_ID_PATTERN.test(fields.bindingId) &&
+    typeof fields.modeMismatchEvidenceId === "string" &&
+    MODE_MISMATCH_EVIDENCE_ID_PATTERN.test(fields.modeMismatchEvidenceId) &&
+    typeof fields.cronEvidenceId === "string" &&
+    CRON_EVIDENCE_ID_PATTERN.test(fields.cronEvidenceId) &&
+    typeof fields.adminEvidenceId === "string" &&
+    ADMIN_EVIDENCE_ID_PATTERN.test(fields.adminEvidenceId)
+  );
+}
+
 const APPROVAL_SECRET_MIN_LENGTH = 32;
 
 /**
@@ -233,7 +281,7 @@ export function validateApprovalSecret(value: string): string {
   return value;
 }
 
-const APPROVAL_PAYLOAD_VERSION = "1";
+const APPROVAL_PAYLOAD_VERSION = "2";
 
 function lengthPrefixed(value: string): string {
   return `${Buffer.byteLength(value, "utf8")}:${value}`;
@@ -246,7 +294,11 @@ function lengthPrefixed(value: string): string {
  * sets serialize identically.
  */
 export function canonicalApprovalPayload(fields: {
+  approvalId: string;
   bindingId: string;
+  modeMismatchEvidenceId: string;
+  cronEvidenceId: string;
+  adminEvidenceId: string;
   targetOrigin: string;
   releaseSha: string;
   imageDigest: string;
@@ -260,15 +312,21 @@ export function canonicalApprovalPayload(fields: {
    */
   rolloutMode: string;
   cronSecretBinding: string;
+  approvedAt: string;
 }): string {
   return [
     APPROVAL_PAYLOAD_VERSION,
+    lengthPrefixed(fields.approvalId),
     lengthPrefixed(fields.bindingId),
+    lengthPrefixed(fields.modeMismatchEvidenceId),
+    lengthPrefixed(fields.cronEvidenceId),
+    lengthPrefixed(fields.adminEvidenceId),
     lengthPrefixed(fields.targetOrigin),
     lengthPrefixed(fields.releaseSha),
     lengthPrefixed(fields.imageDigest),
     lengthPrefixed(fields.rolloutMode),
     lengthPrefixed(fields.cronSecretBinding),
+    lengthPrefixed(fields.approvedAt),
   ].join(".");
 }
 
@@ -348,7 +406,7 @@ export async function readOnly<T>(
     connect_timeout: 10,
   });
   try {
-    await sql`BEGIN READ ONLY`;
+    await sql`BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`;
     await sql`SET LOCAL statement_timeout = '15s'`;
     return await operation(sql);
   } finally {
@@ -550,27 +608,51 @@ export async function createTargetApproval(input: {
   databaseUrl: string;
   approvalId: string;
   bindingId: string;
+  modeMismatchEvidenceId: string;
+  cronEvidenceId: string;
+  adminEvidenceId: string;
   targetOrigin: string;
   cronSecret: string;
   releaseSha: string;
   imageDigest: string;
   approvalSecret: string;
+  approvedAt: Date;
 }): Promise<void> {
+  if (
+    !validTargetSmokeEvidenceIds({
+      approvalId: input.approvalId,
+      bindingId: input.bindingId,
+      modeMismatchEvidenceId: input.modeMismatchEvidenceId,
+      cronEvidenceId: input.cronEvidenceId,
+      adminEvidenceId: input.adminEvidenceId,
+    })
+  ) {
+    throw new Error("Target-smoke evidence IDs are malformed.");
+  }
+  if (Number.isNaN(input.approvedAt.getTime())) {
+    throw new Error("Approval timestamp must be a valid Date.");
+  }
   const sql = postgres(input.databaseUrl, {
     max: 1,
     prepare: false,
     connect_timeout: 10,
   });
   try {
+    const approvedAt = input.approvedAt.toISOString();
     const binding = cronSecretBinding(input.cronSecret, input.approvalSecret);
     const signature = computeApprovalSignature(
       canonicalApprovalPayload({
+        approvalId: input.approvalId,
         bindingId: input.bindingId,
+        modeMismatchEvidenceId: input.modeMismatchEvidenceId,
+        cronEvidenceId: input.cronEvidenceId,
+        adminEvidenceId: input.adminEvidenceId,
         targetOrigin: input.targetOrigin,
         releaseSha: input.releaseSha,
         imageDigest: input.imageDigest,
         rolloutMode: "disabled",
         cronSecretBinding: binding,
+        approvedAt,
       }),
       input.approvalSecret,
     );
@@ -578,21 +660,26 @@ export async function createTargetApproval(input: {
       INSERT INTO "krypto"."AgentJournal" (
         id,
         "entryText",
-        "marketConditions"
+        "marketConditions",
+        "createdAt"
       ) VALUES (
         ${input.approvalId},
         'Deployment smoke target and cron configuration approved.',
         ${sql.json({
           event: "deployment-smoke-approved",
           bindingId: input.bindingId,
+          modeMismatchEvidenceId: input.modeMismatchEvidenceId,
+          cronEvidenceId: input.cronEvidenceId,
+          adminEvidenceId: input.adminEvidenceId,
           targetOrigin: input.targetOrigin,
           cronSecretBinding: binding,
           releaseSha: input.releaseSha,
           imageDigest: input.imageDigest,
           rolloutMode: "disabled",
           approvalSignature: signature,
-          approvedAt: new Date().toISOString(),
-        })}
+          approvedAt,
+        })},
+        (${approvedAt}::timestamptz AT TIME ZONE 'UTC')
       )
     `;
   } finally {
@@ -672,6 +759,17 @@ export async function runTargetSmoke(
     cron: `deployment-smoke-cron-${randomUuid()}`,
     admin: `deployment-smoke-admin-${randomUuid()}`,
   };
+  if (
+    !validTargetSmokeEvidenceIds({
+      approvalId: evidenceIds.approval,
+      bindingId: evidenceIds.databaseBinding,
+      modeMismatchEvidenceId: evidenceIds.modeMismatch,
+      cronEvidenceId: evidenceIds.cron,
+      adminEvidenceId: evidenceIds.admin,
+    })
+  ) {
+    throw new Error("Generated target-smoke evidence IDs are malformed.");
+  }
   const checks: TargetSmokeCheck[] = [];
 
   async function check<T>(
@@ -702,7 +800,7 @@ export async function runTargetSmoke(
 
   function blockedReport(manualGate: string): TargetSmokeReport {
     return {
-      schemaVersion: "1.4.0",
+      schemaVersion: "1.5.0",
       generatedAt: now().toISOString(),
       target: sanitizedTarget(options.baseUrl),
       releaseSha,
@@ -1233,18 +1331,28 @@ export async function runTargetSmoke(
     "target-cron-approval",
     "Successful smoke binds the reviewed target origin, release, image digest, and keyed cron-secret binding",
     async () => {
+      const approvedAtDate = now();
+      if (Number.isNaN(approvedAtDate.getTime())) {
+        throw new Error("Approval clock returned an invalid Date.");
+      }
+      const approvedAt = approvedAtDate.toISOString();
       const cronBinding = cronSecretBinding(
         options.cronSecret,
         approvalSecret,
       );
       const signature = computeApprovalSignature(
         canonicalApprovalPayload({
+          approvalId: evidenceIds.approval,
           bindingId: evidenceIds.databaseBinding,
+          modeMismatchEvidenceId: evidenceIds.modeMismatch,
+          cronEvidenceId: evidenceIds.cron,
+          adminEvidenceId: evidenceIds.admin,
           targetOrigin: baseUrl.origin,
           releaseSha,
           imageDigest,
           rolloutMode: "disabled",
           cronSecretBinding: cronBinding,
+          approvedAt,
         }),
         approvalSecret,
       );
@@ -1252,20 +1360,28 @@ export async function runTargetSmoke(
         databaseUrl: options.databaseUrl,
         approvalId: evidenceIds.approval,
         bindingId: evidenceIds.databaseBinding,
+        modeMismatchEvidenceId: evidenceIds.modeMismatch,
+        cronEvidenceId: evidenceIds.cron,
+        adminEvidenceId: evidenceIds.admin,
         targetOrigin: baseUrl.origin,
         cronSecret: options.cronSecret,
         releaseSha,
         imageDigest,
         approvalSecret,
+        approvedAt: approvedAtDate,
       });
       const binding: TargetSmokeBinding = {
         approvalId: evidenceIds.approval,
         bindingId: evidenceIds.databaseBinding,
+        modeMismatchEvidenceId: evidenceIds.modeMismatch,
+        cronEvidenceId: evidenceIds.cron,
+        adminEvidenceId: evidenceIds.admin,
         targetOrigin: baseUrl.origin,
         releaseSha,
         imageDigest,
         rolloutMode: "disabled",
         cronSecretBinding: cronBinding,
+        approvedAt,
         approvalSignature: signature,
       };
       return binding;
@@ -1279,8 +1395,8 @@ export async function runTargetSmoke(
   }
 
   return {
-    schemaVersion: "1.4.0",
-    generatedAt: now().toISOString(),
+    schemaVersion: "1.5.0",
+    generatedAt: targetApproval.value.approvedAt,
     target: sanitizedTarget(options.baseUrl),
     releaseSha,
     imageDigest,
