@@ -187,6 +187,7 @@ function requirePassingCheck(reportObject, id) {
 switch (operation) {
   case "migrate-init": {
     requireTrue(report, "success", "migrate-init report");
+    requireTrue(report, "databaseRolesBootstrapped", "migrate-init report");
     requireTrue(report, "migrated", "migrate-init report");
     requireTrue(report, "runtimeLoginBootstrapped", "migrate-init report");
     requireTrue(report, "initialized", "migrate-init report");

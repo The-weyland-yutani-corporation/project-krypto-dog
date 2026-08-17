@@ -183,16 +183,22 @@ Dev and prod require independent values for:
 POSTGRES_ADMIN_PASSWORD
 DATABASE_URL
 DIRECT_URL
+MIGRATION_URL
 CRON_SECRET
 POSTHOG_API_KEY
 ADMIN_PASSWORD
 ADMIN_SESSION_SECRET
 RUNTIME_DATABASE_PASSWORD
+MIGRATOR_DATABASE_PASSWORD
 DEPLOYMENT_APPROVAL_SECRET
 ```
 
 Current state: runtime secret bindings passed both target smokes. The shared
 PostHog key remains environment-tagged deployment evidence only.
+`MIGRATION_URL` and `MIGRATOR_DATABASE_PASSWORD` are newly required by
+[ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md); source
+support is implemented but neither environment's live secrets have been set
+to these values, and no live role migration has run (see `deployment.md` §13).
 
 - Coinbase pagination, complete UTC four-hour candle construction, freshness,
   gap, timeout, retry, and flat-RSI behavior are covered by focused tests.
@@ -278,6 +284,11 @@ Readiness requirements:
 - [x] `DATABASE_URL` uses the least-privilege `krypto_app` role.
 - [x] `DIRECT_URL` uses `krypto_owner`; both database URLs target the same
   private PostgreSQL 17 database with `sslmode=require`.
+- [ ] `MIGRATION_URL` uses the dedicated least-privilege `krypto_migrator`
+  role over a direct connection distinct from `DIRECT_URL` and `DATABASE_URL`,
+  set as a live GitHub Environment secret in dev and prod, and used to run
+  the attended upgrade in `deployment.md` §13 — source implemented, not yet
+  run live.
 - [x] `DEPLOYMENT_APPROVAL_SECRET` differs from `CRON_SECRET`.
 - [x] Dev/prod events are query-isolated by mandatory deployment tags.
 - [ ] Move dev to a distinct PostHog project before production promotion.
@@ -365,7 +376,7 @@ No provider is ready until retained live evidence proves all applicable rows:
 | Coinbase | Authenticated provider smoke from the deployed target | **Passed in dev and prod target smoke** |
 | ACS Email | Environment-specific sender; actual `sent` result and persisted delivery audit | **Passed in dev and prod** |
 | PostHog | Mandatory environment tagging now; distinct projects before promotion | **Tagged ingestion passed; separate projects pending** |
-| Database | Migration/init report, private target validation, app/owner role separation | **Passed in dev and prod** |
+| Database | Migration/init report, private target validation, app/owner role separation | **Passed in dev and prod** for the deployed `krypto_app`/`krypto_owner` split. The extended `krypto_schema_owner`/`krypto_migrator`/`krypto_scheduler` trust boundary and dedicated `MIGRATION_URL` ([ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md), issue [#133](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/133)) are source-implemented; the attended per-environment upgrade (§13 of `deployment.md`) has not been run — **pending** |
 | Backup | Restore-verified backup bound to exact target SHA/digest | **Passed in dev proof and production baseline** |
 | Admin/auth | Target-smoke proof without disclosing credentials | **Passed in dev and prod** |
 | Scheduler | Unique manual-shadow proof, post-run activation report, digest/generation-namespaced scheduled success, and cross-mode replay rejection | **Passed in dev; production intentionally Manual** |
@@ -384,6 +395,22 @@ independent download validation remain mandatory.
 The execution helper must reject any template volume or container/init-container
 volume mount because Azure `JobExecutionTemplate` cannot preserve them through
 this override path. Current Project Krypto jobs use none.
+
+### DB-01 evidence contract (issue #133 / ADR 0014)
+
+Completing the Database gate's extended trust-boundary row requires indexing,
+per environment, in issue
+[#76](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/76):
+a redacted role matrix (`krypto_owner`/`krypto_schema_owner`/`krypto_migrator`/
+`krypto_scheduler`/`krypto_runtime`/`krypto_app` — attributes, connection
+limits, memberships, `SET`/`INHERIT` boundary, no secrets); a GitHub
+Environment secret inventory proving `MIGRATION_URL`/
+`MIGRATOR_DATABASE_PASSWORD` are absent from the web/scheduler runtime and
+from `verified-backup`/`target-smoke`/`activation-check`; the `migrate-init`
+migration attestation for that environment's own upgrade run; the
+`trust-boundary-runtime-denial-matrix` denial transcript; and the
+`scripts/test-migrations.sh` fresh-install and upgrade test transcript. None
+of this evidence exists yet for a live environment — see `deployment.md` §13.
 
 ## 9. Monitoring readiness
 

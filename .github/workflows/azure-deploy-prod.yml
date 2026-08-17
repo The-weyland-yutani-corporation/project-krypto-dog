@@ -999,11 +999,13 @@ jobs:
         env:
           DATABASE_URL_PROD: ${{ secrets.DATABASE_URL }}
           DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
+          MIGRATION_URL_PROD: ${{ secrets.MIGRATION_URL }}
           CRON_SECRET_PROD: ${{ secrets.CRON_SECRET }}
           POSTHOG_API_KEY_PROD: ${{ secrets.POSTHOG_API_KEY }}
           ADMIN_PASSWORD_PROD: ${{ secrets.ADMIN_PASSWORD }}
           ADMIN_SESSION_SECRET_PROD: ${{ secrets.ADMIN_SESSION_SECRET }}
           RUNTIME_DATABASE_PASSWORD_PROD: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+          MIGRATOR_DATABASE_PASSWORD_PROD: ${{ secrets.MIGRATOR_DATABASE_PASSWORD }}
           DEPLOYMENT_APPROVAL_SECRET_PROD: ${{ secrets.DEPLOYMENT_APPROVAL_SECRET }}
         run: |
           set -euo pipefail
@@ -1022,11 +1024,13 @@ jobs:
         env:
           DATABASE_URL_PROD: ${{ secrets.DATABASE_URL }}
           DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
+          MIGRATION_URL_PROD: ${{ secrets.MIGRATION_URL }}
           CRON_SECRET_PROD: ${{ secrets.CRON_SECRET }}
           POSTHOG_API_KEY_PROD: ${{ secrets.POSTHOG_API_KEY }}
           ADMIN_PASSWORD_PROD: ${{ secrets.ADMIN_PASSWORD }}
           ADMIN_SESSION_SECRET_PROD: ${{ secrets.ADMIN_SESSION_SECRET }}
           RUNTIME_DATABASE_PASSWORD_PROD: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+          MIGRATOR_DATABASE_PASSWORD_PROD: ${{ secrets.MIGRATOR_DATABASE_PASSWORD }}
           DEPLOYMENT_APPROVAL_SECRET_PROD: ${{ secrets.DEPLOYMENT_APPROVAL_SECRET }}
         run: |
           set -euo pipefail

@@ -497,11 +497,13 @@ jobs:
         env:
           DATABASE_URL_DEV: ${{ secrets.DATABASE_URL }}
           DIRECT_URL_DEV: ${{ secrets.DIRECT_URL }}
+          MIGRATION_URL_DEV: ${{ secrets.MIGRATION_URL }}
           CRON_SECRET_DEV: ${{ secrets.CRON_SECRET }}
           POSTHOG_API_KEY_DEV: ${{ secrets.POSTHOG_API_KEY }}
           ADMIN_PASSWORD_DEV: ${{ secrets.ADMIN_PASSWORD }}
           ADMIN_SESSION_SECRET_DEV: ${{ secrets.ADMIN_SESSION_SECRET }}
           RUNTIME_DATABASE_PASSWORD_DEV: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+          MIGRATOR_DATABASE_PASSWORD_DEV: ${{ secrets.MIGRATOR_DATABASE_PASSWORD }}
           DEPLOYMENT_APPROVAL_SECRET_DEV: ${{ secrets.DEPLOYMENT_APPROVAL_SECRET }}
         run: |
           set -euo pipefail

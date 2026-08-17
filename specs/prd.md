@@ -298,7 +298,8 @@ also requires the workload identity client ID and complete ACS configuration.
 | `AZURE_OPENAI_BASE_URL` / `AZURE_OPENAI_DEPLOYMENT_NAME` | Optional attended platform-operator direct-model diagnostics | no |
 | `AZURE_CLIENT_ID` | Runtime/ops user-assigned identity client ID used for Entra authentication | production |
 | `DATABASE_URL` | Least-privilege `krypto_app` PostgreSQL URL | yes |
-| `DIRECT_URL` | Direct/session database URL for migration and initialization commands | deployment only |
+| `DIRECT_URL` | Admin/operator (`krypto_owner`) database URL for idempotent role bootstrap and privileged inventory/backup -- never migrations | deployment only |
+| `MIGRATION_URL` | Dedicated least-privilege `krypto_migrator` database URL for `drizzle-kit migrate` and singleton init ([ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md)); mounted only on `migrate-init` (read-only on `preflight`) | deployment only |
 | `POSTHOG_API_KEY` | PostHog ingest key; temporary dev fallback may share the key only with mandatory environment tagging | operational |
 | `POSTHOG_ENVIRONMENT` | `dev` or `prod`; attached to every event and required in production | yes |
 | `POSTHOG_HOST` | PostHog host | optional, default `https://us.i.posthog.com` |
@@ -355,7 +356,11 @@ Krypto Foundry Agent Invoker with Entra tokens.
   the next release replaces direct inference with the version-pinned Foundry
   Agent client.
 - **Database:** private Azure PostgreSQL Flexible Server 17. Reviewed Drizzle
-  migrations use `DIRECT_URL`; runtime uses least-privilege `DATABASE_URL`.
+  migrations use the dedicated least-privilege `krypto_migrator` role over
+  `MIGRATION_URL`; runtime uses least-privilege `DATABASE_URL`; `DIRECT_URL`
+  (`krypto_owner`) is narrowed to idempotent role bootstrap and privileged
+  inventory/backup ([ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md);
+  source implemented, live per-environment upgrade pending).
 - **Singleton initialization:** `npm run db:init` inserts the account only when
   absent and never deletes history.
 - **Scheduling:** Container Apps Jobs call the same routes at hourly and daily

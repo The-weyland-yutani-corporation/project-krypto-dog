@@ -6,7 +6,11 @@
   pinned Luna deployments, and keyless workload access; 2026-08-14 — no
   shipped production promotion workflow and independently ordered schedule
   monitoring; least-privilege provider-state reads, scoped lock management,
-  and idempotent quota validation
+  and idempotent quota validation; 2026-08-16 — item 2's
+  owner/migrator/scheduler/runtime separation is now concretely defined by
+  [0014-postgresql-trust-boundary-roles.md](./0014-postgresql-trust-boundary-roles.md)
+  (source implemented; attended per-environment upgrade not yet run against
+  live dev/prod)
 - **Deciders:** @VeVarunSharma
 
 ## Context
@@ -60,7 +64,12 @@ its Vercel/Supabase framing.
    replaces Supabase Postgres. The private/restricted-role separation already
    required by ADR 0006 and [`specs/readiness.md`](../readiness.md)
    (owner/migrator/scheduler/runtime separation) continues to apply on the
-   Azure-hosted server.
+   Azure-hosted server, and is now concretely defined by
+   [ADR 0014](./0014-postgresql-trust-boundary-roles.md): `krypto_owner`
+   (admin/operator, `DIRECT_URL`), `krypto_schema_owner` (`NOLOGIN` object
+   owner), `krypto_migrator` (`LOGIN NOINHERIT`, `MIGRATION_URL`),
+   `krypto_scheduler` (`NOLOGIN`, reserved), and `krypto_runtime`/`krypto_app`
+   (`NOLOGIN` grant matrix / `LOGIN`, `DATABASE_URL`).
 
 3. **Secrets: Azure Key Vault.** All application, scheduler, and rotation
    secrets move from Supabase Vault / Vercel environment variables to Key
