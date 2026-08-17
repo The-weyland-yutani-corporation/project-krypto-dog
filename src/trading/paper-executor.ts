@@ -27,8 +27,22 @@ import type {
   TradingAccountSnapshot,
   TradingMarketSnapshot,
 } from "./types";
+import {
+  ExecutionDeadlineError,
+  type ExecutionDeadline,
+} from "@/lib/execution-envelope";
 
 const ACCOUNT_ID = "singleton";
+
+export function assertPaperCommitBeforeDeadline(
+  now: Date,
+  deadlineAt: Date,
+  phase = "paper execution commit",
+): void {
+  if (now.getTime() >= deadlineAt.getTime()) {
+    throw new ExecutionDeadlineError(deadlineAt, phase);
+  }
+}
 
 export interface PaperExecutorHooks {
   afterTradeInsert?: () => void | Promise<void>;
@@ -41,6 +55,9 @@ export interface ExecutePaperTradeRequest {
   market: TradingMarketSnapshot;
   strategy: StrategyConfig;
   now?: Date;
+  nowFn?: () => Date;
+  deadlineAt?: Date;
+  deadline?: ExecutionDeadline;
   hooks?: PaperExecutorHooks;
 }
 
@@ -209,7 +226,25 @@ export function createPaperExecutor(database: typeof db) {
   return async function execute(
     request: ExecutePaperTradeRequest,
   ): Promise<PaperExecutionResult> {
-    const now = request.now ?? new Date();
+    const currentTime = () =>
+      request.nowFn?.() ?? request.deadline?.now() ?? new Date();
+    const now = request.now ?? currentTime();
+    let effectiveDeadlineAt = request.deadlineAt ?? request.deadline?.deadlineAt;
+    const assertTradeDeadline = (phase: string) => {
+      request.deadline?.assertActive(phase);
+      if (
+        effectiveDeadlineAt &&
+        currentTime().getTime() >= effectiveDeadlineAt.getTime()
+      ) {
+        const checkedAt = currentTime();
+        assertPaperCommitBeforeDeadline(
+          checkedAt,
+          effectiveDeadlineAt,
+          phase,
+        );
+      }
+    };
+    assertTradeDeadline("paper execution");
     if (
       request.strategy.paperSlippageBps >
       request.strategy.slippageCeilingBps
@@ -250,6 +285,13 @@ export function createPaperExecutor(database: typeof db) {
         `AgentRun mode ${run.tradingMode} cannot execute a paper trade`,
       );
     }
+    effectiveDeadlineAt = effectiveDeadlineAt ?? run.deadlineAt;
+    if (run.deadlineAt.getTime() !== effectiveDeadlineAt.getTime()) {
+      throw new TradeConflictError(
+        "Paper execution deadline does not match the persisted AgentRun fence",
+      );
+    }
+    assertTradeDeadline("paper execution lock");
 
     const [state] = await tx
       .select()
@@ -453,6 +495,7 @@ export function createPaperExecutor(database: typeof db) {
       .returning();
 
     await request.hooks?.afterTradeInsert?.();
+    assertTradeDeadline("paper execution state transition");
 
     const referencePriceAfter =
       authorization.intent.action === "SELL" &&
@@ -500,8 +543,9 @@ export function createPaperExecutor(database: typeof db) {
         "Run lease ownership changed during execution",
       );
     }
+    assertTradeDeadline("paper execution commit");
 
-    await tx
+    const [terminalRun] = await tx
       .update(agentRun)
       .set({
         outcome: "EXECUTED",
@@ -510,7 +554,18 @@ export function createPaperExecutor(database: typeof db) {
         accountSnapshotAfter: snapshotState(updatedState),
         completedAt: now,
       })
-      .where(eq(agentRun.id, request.agentRunId));
+      .where(
+        and(
+          eq(agentRun.id, request.agentRunId),
+          eq(agentRun.outcome, "RUNNING"),
+        ),
+      )
+      .returning({ id: agentRun.id });
+    if (!terminalRun) {
+      throw new TradeConflictError(
+        "AgentRun became terminal before paper execution commit",
+      );
+    }
 
       return resultFromRows("executed", insertedTrade, updatedState);
     });

@@ -41,6 +41,23 @@ and must not be used for a new release.
 | Email | Per-environment ACS Email with Azure-managed domain |
 | Analytics | Every event carries mandatory `deployment_environment`; a distinct dev project remains required before production promotion |
 
+### Bounded synchronous release contract
+
+A release containing [ADR 0015](./decisions/0015-bounded-synchronous-execution.md) must preserve this ordering:
+
+| Boundary | Value |
+|---|---:|
+| Provider aggregate | `125 s` (`20` Coinbase + `80` version-pinned Foundry + `20` ACS + `5` PostHog) |
+| Application absolute deadline | `180 s` |
+| Scheduler HTTP timeout | `210 s` |
+| ACA ingress platform bound | `240 s` |
+| Scheduler job replica timeout | `270 s` |
+| Owned lease expiry | `300 s` |
+
+The app window reserves `125 s` providers, `20 s` database policy/execution, `15 s` terminal persistence and owned-lease release, `10 s` cancellation/response, and `10 s` slack. Both scheduled jobs use `replicaRetryLimit=0`; the scheduler makes one HTTP attempt, with idempotency retained only as defense in depth. Manual ops jobs are not part of the trading lease/deadline chain and retain the job-specific long-running timeouts declared in `release.bicep`.
+
+Web capacity is maximum three replicas with one pooled runtime database connection and one admitted run per replica. The runtime login has `CONNECTION LIMIT 20`; connect, statement, lock, and idle-in-transaction timeouts are 5, 10, 2, and 15 seconds respectively.
+
 The rejected candidate region `eastus2` is a **historical constraint, not a
 target**: the selected subscription is restricted from PostgreSQL
 provisioning there. All current templates and commands use `westus3`.
@@ -590,11 +607,11 @@ This section is the operator procedure for adopting it against a live
 environment; completing it does not itself change `ROLLOUT_MODE`, schedule
 state, or any other release behavior described in §6/§7 above.
 
-1. **Pause/confirm.** Verify the target environment's schedule is currently
-   `Manual`/disabled (both dev and prod already satisfy this per the current
-   live checkpoint in §0). Do not begin against an environment with an active
-   `Schedule` trigger without first pausing it via the existing rollback path
-   (§12).
+1. **Pause/confirm.** Verify the target environment schedule is
+   `Manual`/disabled. Production currently satisfies this; dev is
+   shadow/scheduled and must first use the existing rollback path (§12) to
+   become disabled/manual. Do not begin while either target job has an active
+   `Schedule` trigger.
 2. **Verified backup.** Run `verified-backup` for the current release and
    retain its immutable evidence before any role or ownership change.
 3. **Set secrets.** Add `MIGRATION_URL` and `MIGRATOR_DATABASE_PASSWORD` to
@@ -648,6 +665,23 @@ from the runtime and scheduler and from `verified-backup`/`target-smoke`/
 transcript from step 6; and the `scripts/test-migrations.sh` fresh-install
 and upgrade test transcript. See ADR 0014's Consequences section for the full
 list.
+
+## 14. Bounded-runtime release and evidence procedure
+
+**Current status: source implemented; no issue #132 live Azure evidence exists.** Do not relabel the verified earlier foundation, release, provider-smoke, or scheduled-run records as proof of this later contract.
+
+For the first exact release containing ADR 0015:
+
+1. Keep the target disabled/manual and preserve the current-release backup and rollback ordering.
+2. Index the exact source ref, merge SHA, protected-main checks, runtime-matrix artifact, migration `0009` hash/inventory, and bounded deadline/provider/readiness fault-test results in issue #76 as **source/CI evidence**.
+3. Run `migrate-init` through the ADR 0011 owner/migrator boundary. Migration `0009_bounded_execution.sql` preserves history, adds `ProviderDailyUsage` and the runtime-readable `RuntimeContract` fingerprint, persists immutable `AgentRun.deadlineAt = startedAt + 180 seconds`, and adds a deferred PAPER-only commit fence that rejects a `TradeExecution` without a matching PAPER run or at/after its deadline.
+4. Release the exact SHA/digest with web maximum replicas `3`, pool/admission `1`, both scheduler jobs at `replicaRetryLimit=0` and `replicaTimeout=270`, and scheduler HTTP timeout `210 s`. Do not alter the longer manual ops-job timeouts.
+5. Require dependency-free `/api/health/live` and bounded `/api/health/ready`. Readiness must finish within four seconds, use runtime `DATABASE_URL` only, make no provider call or mutation, and prove release SHA/image digest, bounded config, PostgreSQL 17/current login and runtime membership/denials/connection limit, schema fingerprint, singleton reconciliation, lease sanity, rollout mode, and admission. Retain only its status and opaque reason codes; never copy protected values into evidence.
+6. Exercise delay, retry, `Retry-After`, timeout, pool exhaustion, outage, lock contention, cancellation, daily-budget exhaustion, terminal persistence, owned-lease release/expiry, and PAPER deadline-fence behavior on the exact target. Bind reports to the immutable deployment and target identity.
+7. Before activation, the release/operator must reconcile these application ceilings against each contracted provider plan, rate limit, quota, and cost: Coinbase `1,000`, version-pinned Foundry `200`, PostHog `2,000`, ACS `100` requests per UTC day. Lower the configured ceiling if the contract is smaller. Engineering owns application/runtime correctness; release/operator owns plan/quota/cost reconciliation; operator owns budget/deadline/capacity alert response.
+8. Index the future target timing, region, capacity, readiness, PostgreSQL runtime identity/timeouts, quota/cost reconciliation, budget-exhaustion, terminal-run, and lease evidence in issue #76 before any new shadow/PAPER decision.
+
+Provider or capacity exhaustion is a persisted no-trade failure and operator alert, never a trade fallback. This procedure is PAPER-only and creates no production promotion or live-money authorization.
 
 ## Further reading
 

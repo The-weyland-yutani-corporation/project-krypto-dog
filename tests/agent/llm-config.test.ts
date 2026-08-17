@@ -49,6 +49,15 @@ const ALL_ENV_KEYS = [
   "AZURE_FOUNDRY_AGENT_VERSION",
   "AZURE_CLIENT_ID",
   "DATABASE_URL",
+  "DATABASE_POOL_MAX",
+  "AGENT_RUN_ADMISSION_CAPACITY",
+  "COINBASE_DAILY_REQUEST_BUDGET",
+  "FOUNDRY_DAILY_REQUEST_BUDGET",
+  "POSTHOG_DAILY_REQUEST_BUDGET",
+  "ACS_DAILY_REQUEST_BUDGET",
+  "RELEASE_SHA",
+  "IMAGE_DIGEST",
+  "EXECUTION_CONTRACT_VERSION",
   "POSTHOG_API_KEY",
   "POSTHOG_ENVIRONMENT",
   "CRON_SECRET",
@@ -83,6 +92,15 @@ function withEnv(
     AZURE_FOUNDRY_AGENT_NAME: "krypto-test-decision",
     AZURE_FOUNDRY_AGENT_VERSION: "1",
     DATABASE_URL: "postgres://localhost:5432/test",
+    DATABASE_POOL_MAX: "1",
+    AGENT_RUN_ADMISSION_CAPACITY: "1",
+    COINBASE_DAILY_REQUEST_BUDGET: "1000",
+    FOUNDRY_DAILY_REQUEST_BUDGET: "200",
+    POSTHOG_DAILY_REQUEST_BUDGET: "2000",
+    ACS_DAILY_REQUEST_BUDGET: "100",
+    RELEASE_SHA: "a".repeat(40),
+    IMAGE_DIGEST: `sha256:${"b".repeat(64)}`,
+    EXECUTION_CONTRACT_VERSION: "bounded-sync-v1",
     POSTHOG_API_KEY: "phc_test",
     POSTHOG_ENVIRONMENT: "dev",
     CRON_SECRET: "test-secret",
@@ -320,6 +338,23 @@ describe("validateEnv", () => {
       },
       () => {
         expect(() => validateEnv()).not.toThrow();
+      },
+    );
+  });
+
+  it.each([
+    ["database pool", { DATABASE_POOL_MAX: "2" }],
+    ["run admission", { AGENT_RUN_ADMISSION_CAPACITY: "2" }],
+    ["bounded contract", { EXECUTION_CONTRACT_VERSION: undefined }],
+  ])("rejects unsafe production %s configuration", (_name, overrides) => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+        ...overrides,
+      },
+      () => {
+        expect(() => validateEnv()).toThrow("Invalid environment variables");
       },
     );
   });

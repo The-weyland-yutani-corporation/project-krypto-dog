@@ -54,11 +54,22 @@ const mockDrizzleDb = {
   update: jest.fn().mockReturnValue(_updateChain),
   delete: jest.fn().mockReturnValue(_deleteChain),
   transaction: jest.fn(),
+  execute: jest.fn().mockResolvedValue([{ requestCount: 1 }]),
   query: {},
   _selectChain,
   _insertChain,
   _updateChain,
   _deleteChain,
+};
+
+const mockDatabaseClient = {
+  unsafe: jest.fn(() => {
+    const pending = Promise.resolve([]) as unknown as Promise<unknown[]> & {
+      cancel: jest.Mock;
+    };
+    pending.cancel = jest.fn();
+    return pending;
+  }),
 };
 
 mockDrizzleDb.transaction.mockImplementation(
@@ -68,6 +79,8 @@ mockDrizzleDb.transaction.mockImplementation(
 
 jest.mock("@/db", () => ({
   db: mockDrizzleDb,
+  databaseClient: mockDatabaseClient,
 }));
 
 export const mockDb = mockDrizzleDb;
+export { mockDatabaseClient };

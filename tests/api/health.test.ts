@@ -25,11 +25,17 @@ describe("GET /api/health/live", () => {
 });
 
 describe("GET /api/health/ready", () => {
-  it("always returns 200 ok (process-only, no shutdown-signal interception)", async () => {
+  it("fails closed when the bounded database contract cannot be proven", async () => {
     const response = await readyGET();
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     const body = await response.json();
-    expect(body).toEqual({ status: "ok", uptimeSeconds: expect.any(Number) });
+    expect(body).toEqual({
+      status: "not_ready",
+      reasons: expect.arrayContaining([
+        "database-connectivity",
+        "schema-contract",
+      ]),
+    });
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 
@@ -38,9 +44,11 @@ describe("GET /api/health/ready", () => {
     expect(response.status).not.toBe(401);
   });
 
-  it("exposes no config/db/trading fields", async () => {
+  it("exposes only opaque reason codes, never config or secrets", async () => {
     const body = await (await readyGET()).json();
-    expect(Object.keys(body).sort()).toEqual(["status", "uptimeSeconds"]);
+    expect(Object.keys(body).sort()).toEqual(["reasons", "status"]);
+    expect(JSON.stringify(body)).not.toContain("DATABASE_URL");
+    expect(body.reasons.every((value: unknown) => typeof value === "string")).toBe(true);
   });
 
   it("does not install SIGTERM/SIGINT listeners that could suppress default termination", async () => {

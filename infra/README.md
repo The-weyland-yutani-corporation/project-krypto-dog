@@ -32,6 +32,22 @@ This tree implements the Azure-native target accepted by
 - Every event is tagged with `deployment_environment`; separate PostHog
   projects remain required before production promotion.
 
+### Bounded runtime settings
+
+The issue #132 source contract is [ADR 0015](../specs/decisions/0015-bounded-synchronous-execution.md):
+
+- Provider time budgets aggregate to `125 s`: Coinbase `20`, version-pinned Foundry `80`, ACS `20`, PostHog `5`.
+- The ordering is app `180 s` < scheduler HTTP `210 s` < ACA ingress platform bound `240 s` < scheduler job replica `270 s` < owned lease `300 s`.
+- The app partition is providers `125 s`, database policy/execution `20 s`, terminal persistence/owned-lease release `15 s`, cancellation/response `10 s`, and slack `10 s`.
+- The web module keeps `maxReplicas=3` and HTTP concurrency `1`; runtime config fixes database pool `1` and admitted runs `1` per replica. The private PostgreSQL 17 runtime login has `CONNECTION LIMIT 20`.
+- Runtime database timeouts are connect `5 s`, statement `10 s`, lock `2 s`, and idle in transaction `15 s`.
+- Dependency-free liveness and four-second, non-mutating, provider-free readiness are separate. Readiness uses runtime `DATABASE_URL` only and returns opaque reason codes.
+- Daily fail-closed safety ceilings are Coinbase `1,000`, version-pinned Foundry `200`, PostHog `2,000`, and ACS `100` requests per UTC day.
+
+Engineering owns the application/runtime contract. Release/operator owns reconciliation of each ceiling against the contracted plan, quota, rate limit, and cost before rollout. Operator owns budget/deadline/capacity alert response.
+
+**Deployment evidence status:** these settings exist in source but have not been applied and proven in the live Azure releases. Existing live foundation/release facts remain valid; they are not issue #132 evidence. The first exact release must publish separately classified source/CI and future target records to issue #76. No template adds live-money execution.
+
 `eastus2` was a rejected candidate because the selected subscription cannot
 provision PostgreSQL there. It is not a current target.
 
@@ -391,7 +407,7 @@ The web Container App receives:
 
 | Kind | Settings |
 |---|---|
-| Nonsecret | `NODE_ENV=production`, `AZURE_FOUNDRY_PROJECT_ENDPOINT`, `AZURE_FOUNDRY_AGENT_NAME`, immutable `AZURE_FOUNDRY_AGENT_VERSION`, `AZURE_CLIENT_ID`, `APP_ORIGIN`, `POSTHOG_HOST`, `ALERT_EMAIL_TO`, `AZURE_COMMUNICATION_EMAIL_SENDER`, `ROLLOUT_MODE` |
+| Nonsecret | `NODE_ENV=production`, Foundry project/name/version and `AZURE_CLIENT_ID`, `APP_ORIGIN`, PostHog/ACS/rollout values, `RELEASE_SHA`, `IMAGE_DIGEST`, `EXECUTION_CONTRACT_VERSION=bounded-sync-v1`, `DATABASE_POOL_MAX=1`, `AGENT_RUN_ADMISSION_CAPACITY=1`, and the four provider daily ceilings |
 | Key Vault-backed | `DATABASE_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `AZURE_COMMUNICATION_CONNECTION_STRING`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET` |
 
 `DIRECT_URL` never reaches the runtime.
@@ -412,7 +428,13 @@ idempotency key. An attended Manual shadow proof uses a unique
 the activation generation, and the UTC hour, so an older image/generation in
 the same hour cannot satisfy current observation. Run acquisition rejects an
 idempotency key already persisted under a different rollout mode. Release
-deploys both jobs as `Manual`; only `rollout.bicep` may set `Schedule`.
+deploys both jobs as `Manual`; only `rollout.bicep` may set `Schedule`. Both
+scheduled jobs use `replicaRetryLimit=0` and `replicaTimeout=270`; the
+standalone trigger makes one HTTP attempt bounded to 210 seconds.
+Idempotency remains defense in depth against redelivery and replay, not a
+platform retry policy. The manual ops jobs are outside the trading
+lease/deadline chain and keep their existing job-specific long-running
+timeouts.
 
 `release.bicep` creates five separate manual ops jobs:
 

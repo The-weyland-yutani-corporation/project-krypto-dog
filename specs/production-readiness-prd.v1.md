@@ -108,7 +108,7 @@ does not prove strategy value and must not be hidden, retuned, or reframed.
 - Deterministic `HOLD`, `BUY`, and `SELL` authorization.
 - Simulated fills and an internal immutable paper ledger.
 - Disabled, shadow, and PAPER rollout modes.
-- Vercel, Supabase, Foundry, PostHog, and Resend production-paper operation.
+- Azure Container Apps web/Jobs, private Azure Database for PostgreSQL Flexible Server 17, Key Vault, version-pinned Foundry prompt agents, PostHog, and ACS Email production-paper operation. Vercel, Supabase, `pg_cron`/`pg_net`, and Resend remain historical/archive references only.
 - Security, reliability, recovery, rollout, and evaluation evidence.
 
 ### Out of scope
@@ -201,8 +201,9 @@ production alias is not sufficient provenance.
 ### 7.3 Database
 
 Ownership, migration, scheduler/function ownership, runtime DML, and operator
-recovery are distinct roles. Runtime cannot own application objects, migrate,
-read Vault, manage cron, or assume privileged roles.
+recovery are distinct roles. Runtime cannot own application objects, migrate, read the migration ledger,
+manage Container Apps Jobs, or assume privileged roles. The application uses
+only runtime `DATABASE_URL`; owner and migrator connections remain ops-only.
 
 ### 7.4 Admin identity
 
@@ -212,7 +213,7 @@ and audited.
 
 ### 7.5 Scheduler identity
 
-Cron requests are signed, route-scoped, time-bound, nonce-bound,
+Container Apps Job requests are signed, route-scoped, time-bound, nonce-bound,
 release/target-bound, and replay-protected. A reusable static bearer secret is
 not sufficient.
 
@@ -257,6 +258,24 @@ DB-01's design and source implementation is
 Consequences section is the required attended per-environment upgrade
 procedure and #76 evidence contract. Source implementation alone does not
 satisfy DB-01 — the ADR performs no live role migration.
+
+### RUN-01 bounded synchronous execution
+
+Production PAPER runs target Azure Container Apps plus private PostgreSQL 17 and MUST satisfy [ADR 0015](./decisions/0015-bounded-synchronous-execution.md):
+
+- provider time budgets aggregate to `125 s`: Coinbase `20`, version-pinned Foundry `80`, ACS `20`, PostHog `5`;
+- app absolute deadline `180 s` < scheduler HTTP `210 s` < ACA ingress platform bound `240 s` < scheduler job replica `270 s` < owned lease `300 s`;
+- the app partition is provider `125 s`, DB policy/execution `20 s`, terminal persistence/owned-lease release `15 s`, cancellation/response `10 s`, and slack `10 s`;
+- both scheduled jobs have `replicaRetryLimit=0`; one-attempt scheduling is backed by idempotency defense in depth;
+- manual migration, preflight, backup, target-smoke, and activation-check jobs remain outside the trading deadline/lease chain and keep long-running operation-specific timeouts;
+- web maximum replicas are `3`, with database pool `1` and admitted run `1` per replica; the runtime login has `CONNECTION LIMIT 20`;
+- runtime database timeouts are connect `5 s`, statement `10 s`, lock `2 s`, and idle in transaction `15 s`;
+- liveness is dependency-free; readiness is four-second bounded, non-mutating, provider-free, uses runtime `DATABASE_URL` only, proves release/image/config, PostgreSQL 17 login/membership/denials/connection limit, schema fingerprint, singleton reconciliation, lease sanity, rollout mode, and admission, and returns only opaque reason codes; and
+- migration `0009` persists immutable `AgentRun.deadlineAt`, publishes a runtime-readable schema fingerprint while denying the migration ledger, and enforces a deferred PAPER-only no-commit-at/after-deadline fence.
+
+Daily application safety ceilings are Coinbase `1,000`, version-pinned Foundry `200`, PostHog `2,000`, and ACS `100` requests per UTC day. Engineering owns the application/runtime contract; release/operator owns provider-plan, quota, rate-limit, and cost reconciliation before rollout; operator owns deadline/budget/capacity alert response. Exhaustion MUST persist a no-trade condition and alert rather than execute or return a success-shaped trade fallback.
+
+Source implementation does not satisfy RUN-01 target proof. No issue #132 live Azure evidence is claimed. The exact future release MUST separately index source/CI and target timing, region, capacity, readiness, PostgreSQL runtime identity/timeouts, quota/cost, fault, terminal-run, PAPER deadline-fence, and lease evidence in issue #76. RUN-01 remains PAPER-only and adds no live execution capability.
 
 The existing release issues own the gate records:
 
@@ -343,7 +362,7 @@ PR-G0 does not authorize a target mutation.
 4. Verify RPO/RTO backup and clean-target restore evidence.
 5. Apply migration/init through the protected migrator lane with rollout
    disabled.
-6. Configure reviewed provider, admin, Vault, and telemetry values without
+6. Configure reviewed provider, admin, Key Vault, and telemetry values without
    scheduling cron.
 7. Run post-migration preflight and exact-deployment disabled smoke.
 8. Observe the disabled target for 30 minutes with independent monitoring.
@@ -514,6 +533,27 @@ Artifacts MUST be independently verifiable without exposing secrets.
 Engineering fixtures MUST remain labeled engineering-only. Provider,
 historical, target, and financial evidence MUST not be conflated.
 
+### Exact issue #76 evidence matrix
+
+Issue #76 requires the following exact evidence categories for the frozen release candidate:
+
+- Frozen source ref, merge SHA, protected-main checks, and source-governance policy version.
+- Explicit distinction between AI/check authorization, human source approval, target-mutation approval, shadow approval, and PAPER approval.
+- Node/npm/PostgreSQL server/client version proof.
+- Migration inventory, hashes, drift result, database role/ownership matrix, and runtime/migrator separation.
+- Target identity, immutable deployment ID, configuration digest, readiness result, and preflight.
+- Provider/application backup checksums, RPO/RTO restore proof, and retention policy.
+- Admin and cron authentication control evidence.
+- Exact-deployment disabled smoke and 30-minute observation.
+- Shadow completeness, zero-trade proof, expected daily summaries, alerts, classified gaps, and rollback rehearsal.
+- PAPER promotion approvals, first-run reconciliation, 24-hour attended coverage, and stop-drill evidence.
+- Predeclared 30-day continuity and exact-window evaluation report.
+- Clear classification of engineering fixtures versus historical, target, and financial evidence.
+
+For RUN-01, source/CI evidence includes the exact merge/checks, runtime matrix, migration `0009` hash/drift, constants/configuration, and deterministic deadline/retry/cancellation/pool/lock/budget/readiness tests. Future target evidence includes the immutable ACA deployment and private PostgreSQL 17 identity, live duration/capacity/timeouts/readiness, provider plan/quota/cost reconciliation, exhaustion alerts, terminal persistence, owned-lease cleanup/expiry, and PAPER deadline fence. The future package does not exist merely because this PRD or source implementation exists.
+
+One canonical issue/comment thread must index every gate and artifact. Every artifact must be immutable or checksum-addressed and bound to the exact artifact, deployment, target, migration, configuration, actor, and timestamp it proves. Missing, stale, expired, or contradictory evidence is blocking, and synthetic/engineering evidence must never be presented as production-performance evidence.
+
 ## 16. Absolute stop and rollback
 
 The product distinguishes optional-trade pause from absolute halt.
@@ -525,7 +565,7 @@ After stop acknowledgment:
 - no new run may acquire a lease;
 - no invocation authorized under an older stop fence may commit;
 - no delayed/replayed request may mutate state;
-- cron and queued work are disabled/drained;
+- Container Apps Job schedules and in-flight scheduler work are disabled/drained;
 - active ownership is safely resolved; and
 - all evidence is preserved.
 
@@ -566,7 +606,7 @@ Recovery includes:
 - application data and immutable paper evidence;
 - migrations and canonical functions;
 - database ownership, roles, grants, and extensions;
-- Vault/cron reconstruction definitions without exporting secret values;
+- Key Vault secret-reference and Container Apps Jobs reconstruction definitions without exporting secret values;
 - deployment/environment configuration;
 - frozen release provenance; and
 - disabled scheduling/readiness verification.

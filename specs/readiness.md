@@ -24,7 +24,8 @@ observations remain historical only; its archived procedure is
 | v3 live execution | **Not authorized** | Live execution is outside the current implementation and requires its own approval gates |
 
 Source implementation, local tests, or a historical provider observation do
-not satisfy a live Azure gate.
+not satisfy a live Azure gate. The issue #132 source implementation has no live
+Azure timing, capacity, readiness, quota, deadline-fence, or lease evidence yet.
 
 ## 2. Approved target contract
 
@@ -44,6 +45,14 @@ not satisfy a live Azure gate.
 | Runtime agent config | `AZURE_FOUNDRY_PROJECT_ENDPOINT`, `AZURE_FOUNDRY_AGENT_NAME`, immutable `AZURE_FOUNDRY_AGENT_VERSION`, `AZURE_CLIENT_ID` |
 | Email | Separate dev/prod Azure Communication Services Email resources with Azure-managed domains |
 | Analytics | Mandatory `deployment_environment` property now; distinct PostHog projects remain a production-promotion prerequisite |
+| Execution envelope | Provider aggregate `125 s` (Coinbase `20`, version-pinned Foundry `80`, ACS `20`, PostHog `5`) < app `180 s` < scheduler HTTP `210 s` < ACA ingress platform bound `240 s` < job replica `270 s` < owned lease `300 s` |
+| App deadline partition | Providers `125 s`; database policy/execution `20 s`; terminal persistence/owned-lease release `15 s`; cancellation/response `10 s`; slack `10 s` |
+| Scheduler retries | Both scheduled jobs `replicaRetryLimit=0`; idempotency is defense in depth |
+| Runtime capacity | Web max replicas `3`; pool max `1` and admitted runs `1` per replica; runtime login `CONNECTION LIMIT 20` |
+| Runtime DB timeouts | Connect `5 s`; statement `10 s`; lock `2 s`; idle in transaction `15 s` |
+| Readiness | Four-second, non-mutating and provider-free over runtime `DATABASE_URL` only; opaque reason codes |
+| Daily provider ceilings | Coinbase `1,000`; version-pinned Foundry `200`; PostHog `2,000`; ACS `100` requests/UTC day; reconcile against contracted quotas and costs before rollout |
+| RUN-01 ownership | Engineering: application/runtime; release/operator: plan/quota/cost reconciliation; operator: alert response |
 
 `eastus2` was rejected because the selected subscription is restricted from
 PostgreSQL provisioning there. It is a historical constraint, not a valid
@@ -380,6 +389,7 @@ No provider is ready until retained live evidence proves all applicable rows:
 | Backup | Restore-verified backup bound to exact target SHA/digest | **Passed in dev proof and production baseline** |
 | Admin/auth | Target-smoke proof without disclosing credentials | **Passed in dev and prod** |
 | Scheduler | Unique manual-shadow proof, post-run activation report, digest/generation-namespaced scheduled success, and cross-mode replay rejection | **Passed in dev; production intentionally Manual** |
+| RUN-01 bounded execution | Source tests for deadline/provider/readiness/capacity behavior; future exact-release target proof remains required | **Source implemented; no live issue #132 evidence** |
 | Monitoring | Terminal job-failure alerts and activation-bound missing-hourly-success alert | **Passed; both Action Group tests dispatched successfully** |
 | Rollback | Verified restoration to disabled/manual, followed by monitoring disablement, after an induced or actual failed dev activation | Pending |
 
@@ -411,6 +421,44 @@ migration attestation for that environment's own upgrade run; the
 `trust-boundary-runtime-denial-matrix` denial transcript; and the
 `scripts/test-migrations.sh` fresh-install and upgrade test transcript. None
 of this evidence exists yet for a live environment — see `deployment.md` §13.
+
+### RUN-01 evidence contract (issue #132 / ADR 0015)
+
+The source contract is [ADR 0015](./decisions/0015-bounded-synchronous-execution.md). Source/CI can prove constants, migration behavior, deterministic fault tests, Bicep values, and readiness response shape. It cannot prove ACA platform duration, deployed replica settings, private PostgreSQL capacity/identity, live provider plans, target latency, or target fault behavior.
+
+**Source/CI evidence to index in #76:** frozen source ref and merge SHA; protected-main checks and source-governance policy version; Node/npm/PostgreSQL 17 matrix; migration `0009` inventory/hash/drift result; deadline ordering and partition tests; scheduler one-attempt/zero-retry values; database timeout/pool/admission configuration; PAPER commit-fence, delay/retry/`Retry-After`/cancellation/terminal/lease/provider-budget fault tests; readiness/liveness tests; and clear engineering-only classification.
+
+**Future exact-release target evidence to index in #76:** immutable deployment identity, release SHA/image digest/config digest; `westus3` ACA and private PostgreSQL 17 identity; live max-replica/job-retry/job-timeout settings; runtime `krypto_app` role/membership/denial/`CONNECTION LIMIT 20` and database timeouts; bounded readiness success and reason-code failure probes; pool/outage/failover/lock-contention/admission behavior; provider plan/rate-limit/quota/cost reconciliation and daily-ceiling exhaustion; one terminal persisted no-trade run; owned lease release or safe expiry; no PAPER commit at/after deadline; alerts and operator response. None of this future #132 target evidence is claimed to exist.
+
+#### Exact canonical issue #76 requirements
+
+The following release-evidence matrix remains mandatory:
+
+- Frozen source ref, merge SHA, protected-main checks, and source-governance policy version.
+- Explicit distinction between AI/check authorization, human source approval, target-mutation approval, shadow approval, and PAPER approval.
+- Node/npm/PostgreSQL server/client version proof.
+- Migration inventory, hashes, drift result, database role/ownership matrix, and runtime/migrator separation.
+- Target identity, immutable deployment ID, configuration digest, readiness result, and preflight.
+- Provider/application backup checksums, RPO/RTO restore proof, and retention policy.
+- Admin and cron authentication control evidence.
+- Exact-deployment disabled smoke and 30-minute observation.
+- Shadow completeness, zero-trade proof, expected daily summaries, alerts, classified gaps, and rollback rehearsal.
+- PAPER promotion approvals, first-run reconciliation, 24-hour attended coverage, and stop-drill evidence.
+- Predeclared 30-day continuity and exact-window evaluation report.
+- Clear classification of engineering fixtures versus historical, target, and financial evidence.
+
+The canonical index must also satisfy these acceptance criteria:
+
+- One canonical issue/comment thread indexes every gate and artifact for the frozen release candidate.
+- Every artifact is immutable or checksum-addressed and bound to the exact artifact, deployment, target, migration, configuration, actor, and timestamp it proves.
+- Approval records include role, intended mutation, evidence digest, expiry, and rollback owner; bot/self/stale approvals are marked invalid.
+- Redaction rules exclude secrets while retaining independently verifiable metadata.
+- Missing, stale, expired, or contradictory evidence is explicitly blocking.
+- Synthetic/engineering evidence is never presented as production-performance evidence.
+- Gate checkpoints can be marked complete without closing this long-lived index.
+- Final closure occurs only after #127 (CTRL-11)'s attended PAPER and 30-day evidence gate completes and humans record the final go/no-go decision and unresolved risks.
+
+P0: no target mutation or rollout approval may rely on narrative, screenshots, mutable comments, or this issue's existence alone. Each protected action requires its own evidence-bound authorization.
 
 ## 9. Monitoring readiness
 

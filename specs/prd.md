@@ -11,7 +11,7 @@
 |---|---|---|
 | **v1** | Paper-trading scaffolding: agent loop, guardrails, schema, tools, admin dashboard | ✅ Shipped (tag `spec/v1`) |
 | **v2** | Hardening: admin auth, balance validation, full PostHog/email wiring, env validation, Drizzle consolidation | ⚠️ Code baseline shipped (tag `spec/v2`) -- NOT production-ready. See §14. |
-| **v2.1** | Safety and Correctness: atomic execution, deterministic authorization, non-destructive migrations, cost-basis PnL, owned expiring run leases, dependency remediation | ✅ Implemented -- live Azure target evidence remains before deployment |
+| **v2.1** | Safety and Correctness: atomic execution, deterministic authorization, non-destructive migrations, cost-basis PnL, owned expiring run leases, dependency remediation | ✅ Implemented; verified Azure releases exist, while later source changes still require their own cutover evidence |
 | **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Azure releases are live: dev is shadow/scheduled and prod disabled/manual. Foundry prompt agents are active; the agent-integrated app-image cutover and 30-day qualifying paper window remain. Production promotion is intentionally unimplemented pending a new evidence-bound review; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
 | **v3** | Live Coinbase AgentKit execution on Base L2, sentiment, advanced orders, scaling | 📋 RFC stub only -- see [`rfcs/0001-v3-live-trading.md`](./rfcs/0001-v3-live-trading.md) |
 
@@ -33,7 +33,7 @@
 |---|---|
 | Application | Next.js 16 (App Router), TypeScript, Node.js 22.13.0 |
 | AI orchestration | One structured `HOLD` / `BUY` / `SELL` output through `@langchain/openai`; no ReAct loop and no mutating model tool |
-| LLM engine | Dedicated Microsoft Foundry account `ai-krypto-westus3`; OpenAI `gpt-5.6-luna` `2026-07-09` via Azure OpenAI v1 and Microsoft Entra identity |
+| LLM engine | Operational `ghcp-foundry-eastus2` project with version-pinned toolless Foundry prompt agents backed by OpenAI `gpt-5.6-luna` `2026-07-09`; Entra/project-scoped invoker access. Dedicated `ai-krypto-westus3` remains the model-empty future host. |
 | Execution venue | Deterministic transactional paper executor using validated Coinbase market data. A future v3 live venue must implement the gated `ExecutionAdapter` contract. |
 | Database | Azure Database for PostgreSQL Flexible Server 17 (private VNet target) via **Drizzle ORM** |
 | Observability | Mandatory dev/prod PostHog event tags; separate projects before production promotion + Container Apps/Log Analytics + Azure Monitor alerts |
@@ -84,10 +84,18 @@ compatibility. New orchestration and execution use the numeric columns.
 | Column group | Notes |
 |---|---|
 | identity | unique run ID and unique idempotency key |
-| lifecycle | trigger, trading mode, outcome, start/end time, latency |
+| lifecycle | trigger, trading mode, outcome, start/end time, immutable `deadlineAt = startedAt + 180 seconds`, latency |
 | attribution | strategy version, model version, market/account snapshots |
 | decision | structured model proposal and deterministic authorization result |
 | observability | token counts, model attempt count/latency, typed error fields |
+
+### `ProviderDailyUsage`
+
+Atomic `(usageDate, provider)` counters enforce fail-closed UTC-day request ceilings for Coinbase, version-pinned Foundry, PostHog, and ACS. Exhaustion is a typed no-trade condition; the table stores counts only, never provider payloads, tokens, or cost data.
+
+### `RuntimeContract`
+
+A runtime-readable singleton publishes schema fingerprint `0009_bounded_execution_v1` and contract version `1` for readiness. The runtime remains denied access to the Drizzle migration ledger.
 
 ### `TradeExecution`
 
@@ -154,7 +162,7 @@ that would persist a paper trade.
 | 6 | **DCA and trigger rules** | policy + executor | lower-price DCA, cycle count, take-profit eligibility, dust prevention |
 | 7 | **Exposure/drawdown** | policy + executor | concentration and projected post-trade drawdown limits |
 | 8 | **Idempotency/atomicity** | executor + DB constraints | one run-to-trade mapping; ledger and state commit together |
-| Lease | **Concurrent-run prevention** | run flow + executor | owned 90-second lease, expiry recovery, owner-checked execution/release |
+| Lease/deadline | **Concurrent-run prevention and bounded commit** | run flow + executor + DB constraint | owned 300-second lease, 180-second persisted run deadline, expiry recovery, owner-checked release, no PAPER commit at/after deadline |
 
 ---
 
@@ -181,15 +189,18 @@ that would persist a paper trade.
   Target smoke proves this with an authenticated no-mutation mismatched-mode
   probe that cannot enter orchestration plus direct database evidence before
   sending disabled runs.
-- **Flow:** create/idempotently recover `AgentRun` → acquire owned lease → honor
-  disabled/shadow/paper mode → fetch and validate market data → mark account to
-  market → apply deterministic policy and mandatory exits → optionally request
-  one structured model decision with a 20-second timeout and one safe retry →
-  authorize → transactionally execute/reconcile → journal/complete/flush
-  telemetry → owner-checked lease release.
+- **Flow:** create/idempotently recover `AgentRun` with an immutable 180-second deadline → acquire the 300-second owned lease → honor disabled/shadow/paper mode → fetch and validate market data → mark account to market → apply deterministic policy and mandatory exits → optionally request one structured model decision → authorize → transactionally execute/reconcile → persist one terminal result and bounded telemetry → owner-checked lease release. Provider work shares a 125-second aggregate budget (Coinbase 20, version-pinned Foundry 80, ACS 20, PostHog 5); retries and `Retry-After` honor the remaining absolute deadline.
 - **Idempotency:** replay is accepted only when the existing `AgentRun` belongs
   to the current rollout mode; cross-mode reuse fails as a conflict.
 - **Response:** `AgentRunResult` JSON (`status`, `action`, `reasoning`, `trade`, `portfolioState`, `tokenUsage`, `durationMs`).
+
+### `GET /api/health/live`
+- Dependency-free liveness. Returns only process/event-loop responsiveness and makes no database or provider call.
+
+### `GET /api/health/ready`
+- Four-second bounded, non-mutating, provider-free readiness using runtime `DATABASE_URL` only.
+- Proves release SHA/image digest, bounded config, PostgreSQL 17 and current login/runtime membership/denials/`CONNECTION LIMIT 20`, runtime schema fingerprint, singleton reconciliation, lease sanity, rollout mode, and one free local admission slot.
+- Returns `200` or `503` with only `ready`/`not_ready` and opaque reason codes; no protected values or identities are exposed.
 
 ### `GET /api/agent/status`
 - Uses timing-safe `CRON_SECRET` auth and returns the effective rollout mode
@@ -214,7 +225,7 @@ that would persist a paper trade.
 ### `POST /api/admin/run-agent`
 - **Auth:** admin cookie verified by both `src/proxy.ts` and the route handler,
   plus same-origin check.
-- Manually invokes the same shared `executeAgentRun({ triggerSource: "admin" })` path used by cron.
+- Manually invokes the same shared `executeAgentRun({ triggerSource: "admin" })` path used by scheduled Container Apps Jobs.
 
 ### `POST /api/admin/pause`
 - **Auth:** admin cookie verified by proxy and handler, plus same-origin check.
@@ -257,7 +268,7 @@ that would persist a paper trade.
 
 ### Email delivery (Azure Communication Services)
 
-- `sendDailySummary(...)` — fired from the daily-summary cron route.
+- `sendDailySummary(...)` — fired from the scheduled daily-summary route.
 - `sendGuardrailAlert(...)` remains wired to the legacy `checkDrawdown` helper,
   but the current `executeAgentRun` path does not call that helper. The current
   path persists drawdown locks and emits guardrail telemetry, so drawdown
@@ -297,11 +308,19 @@ also requires the workload identity client ID and complete ACS configuration.
 | `AZURE_FOUNDRY_AGENT_VERSION` | Exact immutable version attested during deployment | yes |
 | `AZURE_OPENAI_BASE_URL` / `AZURE_OPENAI_DEPLOYMENT_NAME` | Optional attended platform-operator direct-model diagnostics | no |
 | `AZURE_CLIENT_ID` | Runtime/ops user-assigned identity client ID used for Entra authentication | production |
-| `DATABASE_URL` | Least-privilege `krypto_app` PostgreSQL URL | yes |
+| `DATABASE_URL` | Least-privilege `krypto_app` PostgreSQL URL; the only DB URL used by web runtime/readiness | yes |
+| `DATABASE_POOL_MAX` | Runtime pool size; exactly `1` in production | production |
+| `AGENT_RUN_ADMISSION_CAPACITY` | Per-replica run slots; exactly `1` in production | production |
+| `RELEASE_SHA` / `IMAGE_DIGEST` | Immutable release provenance checked by readiness | production |
+| `EXECUTION_CONTRACT_VERSION` | Must be `bounded-sync-v1` | production |
 | `DIRECT_URL` | Admin/operator (`krypto_owner`) database URL for idempotent role bootstrap and privileged inventory/backup -- never migrations | deployment only |
 | `MIGRATION_URL` | Dedicated least-privilege `krypto_migrator` database URL for `drizzle-kit migrate` and singleton init ([ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md)); mounted only on `migrate-init` (read-only on `preflight`) | deployment only |
 | `POSTHOG_API_KEY` | PostHog ingest key; temporary dev fallback may share the key only with mandatory environment tagging | operational |
 | `POSTHOG_ENVIRONMENT` | `dev` or `prod`; attached to every event and required in production | yes |
+| `COINBASE_DAILY_REQUEST_BUDGET` | Fail-closed daily ceiling; release default `1000` | production |
+| `FOUNDRY_DAILY_REQUEST_BUDGET` | Fail-closed daily ceiling; release default `200` | production |
+| `POSTHOG_DAILY_REQUEST_BUDGET` | Fail-closed daily ceiling; release default `2000` | production |
+| `ACS_DAILY_REQUEST_BUDGET` | Fail-closed daily ceiling; release default `100` | production |
 | `POSTHOG_HOST` | PostHog host | optional, default `https://us.i.posthog.com` |
 | `CRON_SECRET` | Auth header for scheduler-triggered routes | yes |
 | `ROLLOUT_MODE` | `disabled`, `shadow`, or `paper`; releases land `disabled` | production |
@@ -311,6 +330,8 @@ also requires the workload identity client ID and complete ACS configuration.
 | `APP_ORIGIN` | Exact HTTPS public origin for admin CSRF validation | yes in production |
 | `ADMIN_PASSWORD` | Admin dashboard password | yes |
 | `ADMIN_SESSION_SECRET` | HMAC key for expiring admin cookies | yes in production |
+
+The provider values are operator safety ceilings, not plan entitlement or cost approval. Release/operator must reconcile them against contracted quotas, rate limits, and costs before rollout and lower them when required. Engineering owns application/runtime correctness; release/operator owns plan/quota/cost reconciliation; operator owns deadline/budget/capacity alert response.
 
 Rollout mode is validated when a run begins. Agent configuration is validated
 at startup, while inference is skipped in disabled mode. Foundry accepts no
@@ -363,12 +384,17 @@ Krypto Foundry Agent Invoker with Entra tokens.
   source implemented, live per-environment upgrade pending).
 - **Singleton initialization:** `npm run db:init` inserts the account only when
   absent and never deletes history.
+- **Bounded runtime:** [ADR 0015](./decisions/0015-bounded-synchronous-execution.md) fixes provider aggregate `125 s` < app `180 s` < scheduler HTTP `210 s` < ACA ingress platform bound `240 s` < job replica `270 s` < owned lease `300 s`. The app partition is provider 125, DB policy/execution 20, terminal persistence/lease release 15, cancellation/response 10, slack 10 seconds. Web maximum replicas are 3; each replica has pool/admission 1. The runtime login limit is 20 and connect/statement/lock/idle-in-transaction timeouts are 5/10/2/15 seconds.
 - **Scheduling:** Container Apps Jobs call the same routes at hourly and daily
   UTC schedules. `release.bicep` always lands disabled/manual.
   `rollout.bicep` owns schedule/mode mutation;
   `schedule-monitoring.bicep` independently owns missing-success alert state.
   Monitoring is enabled and validated before Schedule; disable paths verify
-  Manual jobs before disabling monitoring.
+  Manual jobs before disabling monitoring. Both scheduler jobs use
+  `replicaRetryLimit=0`, a 270-second replica timeout, and one 210-second HTTP
+  attempt; idempotency remains defense in depth. Manual ops jobs stay outside
+  the trading deadline/lease chain and retain their longer job-specific
+  timeouts.
 - **Foundation/access dependency:** deploy environment foundations for dev and
   prod, then create isolated Foundry projects/agents and bind each runtime/ops
   pair to the project-scoped custom invoker before full releases.
@@ -406,11 +432,11 @@ current target.
 | Failure mode | Behaviour |
 |---|---|
 | Mid-trade crash | Database transaction rolls back; post-commit retries resolve by run idempotency instead of re-executing. |
-| Coinbase API unreachable | Abort run with HTTP 502; next cron tick retries naturally. |
-| Foundry Luna 429/timeout | At most 2 total attempts, 20 seconds per attempt, with attempt count and latency persisted/emitted. |
+| Coinbase API unreachable, delayed, or over daily ceiling | Persist a typed terminal no-trade failure within Coinbase 20-second/provider aggregate budget; alert; a later scheduled tick is a new idempotent run. |
+| Foundry 429/timeout/budget | Retry only when `Retry-After` and backoff fit the remaining 80-second Foundry and 180-second app deadline; otherwise persist terminal no-trade and alert. |
 | Drawdown breach | Lock + alert. Review immutable history, then use the audited admin unlock with an explicit reason; direct SQL unlock is not an operator path. |
-| Crashed run lease | A later invocation can recover an expired lease. The admin endpoint clears only expired/unowned leases and rejects active owners. |
-| Scheduled job/HTTP timeout | Container Apps Job fails; Azure Monitor and persisted run state expose the failure. Missing hourly success also alerts after the activation-bound two-hour window. |
+| Crashed run lease | Owner-checked cleanup runs inside the 15-second terminal reserve; otherwise the 300-second lease expires. A later invocation can recover only an expired lease. |
+| Deadline, cancellation, admission, or scheduler timeout | Persist one typed terminal no-trade result where possible; release only the owned lease; scheduler has one 210-second HTTP attempt, zero replica retries, and a 270-second replica timeout. |
 
 ---
 
@@ -420,7 +446,7 @@ current target.
   model retry/error classification, market data, route status mapping, admin
   controls, migrations, CSRF, and legacy guardrail behavior.
 - Real PostgreSQL: `npm run test:migrations` proves fresh install, existing-v2
-  upgrade, table/column/Krypto/Vault privileges, decimal round trips,
+  upgrade, table/column/Krypto/runtime-role privileges, decimal round trips,
   quarantine,
   transactional rollback, parallel idempotency, lease ownership/recovery,
   disabled/shadow/paper orchestration, required-mode fail-closed behavior,
@@ -433,8 +459,8 @@ current target.
   count.
 - CI runs lint, script/test typecheck, production build, critical coverage,
   aggregate backtests and engineering-only evidence artifacts, production
-  dependency audit, real-PostgreSQL migration/execution tests, and migration
-  drift detection.
+  dependency audit, real-PostgreSQL migration/execution tests, migration
+  drift detection, and bounded deadline/provider/readiness/capacity fault tests.
 
 ---
 
@@ -470,7 +496,7 @@ results are engineering evidence only and do not prove a live Azure target.
 Deterministic authorization, mandatory stop-loss, exact accounting,
 transactional/idempotent execution, owned expiring leases, structured model
 output, disabled/shadow/paper modes, reviewed non-destructive migrations, and
-the engineering-only evidence-pipeline foundation are implemented.
+the engineering-only evidence-pipeline foundation are implemented. The issue #132 source additionally implements ADR 0015, migration `0009`, provider daily usage, a 180-second deadline/PAPER commit fence, bounded database/runtime capacity, and split liveness/readiness. No live Azure evidence for that later contract is claimed; it requires a future exact-release proof indexed in issue #76.
 
 Production is still blocked by:
 

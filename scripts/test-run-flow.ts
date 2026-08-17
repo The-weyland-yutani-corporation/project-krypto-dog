@@ -80,6 +80,10 @@ async function loadState() {
 }
 
 async function createOpenPosition(now: Date): Promise<void> {
+  const databaseStartedAt = new Date();
+  const databaseDeadlineAt = new Date(
+    databaseStartedAt.getTime() + 180_000,
+  );
   await db
     .update(agentState)
     .set({
@@ -95,6 +99,8 @@ async function createOpenPosition(now: Date): Promise<void> {
     triggerSource: "database-test",
     tradingMode: "PAPER",
     strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+    startedAt: databaseStartedAt,
+    deadlineAt: databaseDeadlineAt,
   });
 
   await executePaperTrade({
@@ -114,6 +120,8 @@ async function createOpenPosition(now: Date): Promise<void> {
     },
     strategy: DEFAULT_STRATEGY_CONFIG,
     now,
+    nowFn: () => now,
+    deadlineAt: databaseDeadlineAt,
   });
 
   await db
@@ -184,6 +192,23 @@ async function main(): Promise<void> {
     ).length,
     1,
   );
+  await db
+    .update(agentRun)
+    .set({
+      outcome: "EXECUTED",
+      errorType: "post-commit-persistence",
+      errorMessage: "journal persistence failed after commit",
+    })
+    .where(eq(agentRun.idempotencyKey, "run-flow-disabled"));
+  const postCommitReplay = await executeAgentRun({
+    triggerSource: "admin",
+    idempotencyKey: "run-flow-disabled",
+  });
+  assert.equal(postCommitReplay.kind, "upstream_error");
+  if (postCommitReplay.kind !== "upstream_error") {
+    throw new Error("post-commit replay lost its failure status");
+  }
+  assert.equal(postCommitReplay.httpStatus, 500);
 
   await resetAccount();
   process.env.ROLLOUT_MODE = "paper";
@@ -297,6 +322,36 @@ async function main(): Promise<void> {
 
   await resetAccount();
   process.env.ROLLOUT_MODE = "disabled";
+  const liveOwnerStartedAt = new Date(Date.now() - 181_000);
+  await db.insert(agentRun).values({
+    id: "live-owner-run",
+    idempotencyKey: "run-flow-live-owner",
+    triggerSource: "cron",
+    tradingMode: "DISABLED",
+    outcome: "RUNNING",
+    strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+    startedAt: liveOwnerStartedAt,
+    deadlineAt: new Date(liveOwnerStartedAt.getTime() + 180_000),
+  });
+  await db
+    .update(agentState)
+    .set({
+      leaseOwner: "live-owner-run",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      isRunning: true,
+    })
+    .where(eq(agentState.id, ACCOUNT_ID));
+  const liveOwnerReplay = await executeAgentRun({
+    triggerSource: "cron",
+    idempotencyKey: "run-flow-live-owner",
+  });
+  assert.equal(liveOwnerReplay.kind, "mutex");
+  assert.equal((await loadRun("run-flow-live-owner")).outcome, "RUNNING");
+  assert.equal((await loadState()).leaseOwner, "live-owner-run");
+
+  await resetAccount();
+  process.env.ROLLOUT_MODE = "disabled";
+  const staleStartedAt = new Date();
   await db.insert(agentRun).values({
     id: "stale-running-run",
     idempotencyKey: "run-flow-stale-running",
@@ -304,6 +359,8 @@ async function main(): Promise<void> {
     tradingMode: "DISABLED",
     outcome: "RUNNING",
     strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+    startedAt: staleStartedAt,
+    deadlineAt: new Date(staleStartedAt.getTime() + 180_000),
   });
   await db
     .update(agentState)

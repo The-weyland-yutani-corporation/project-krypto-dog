@@ -10,7 +10,9 @@
   owner/migrator/scheduler/runtime separation is now concretely defined by
   [0014-postgresql-trust-boundary-roles.md](./0014-postgresql-trust-boundary-roles.md)
   (source implemented; attended per-environment upgrade not yet run against
-  live dev/prod)
+  live dev/prod); 2026-08-17 — bounded synchronous execution, readiness,
+  capacity, and provider budgets are defined by [0015-bounded-synchronous-execution.md](./0015-bounded-synchronous-execution.md)
+  (source implemented; no live issue #132 target evidence yet)
 - **Deciders:** @VeVarunSharma
 
 ## Context
@@ -26,23 +28,9 @@ application hosting, database, secrets, and scheduling all move onto Azure
 primitives, replacing Vercel and Supabase as the deployment target. This ADR
 records that platform decision and the operational model it implies.
 
-**Implementation status (updated 2026-08-14): implemented, not yet
-provisioned.** The Bicep templates (`infra/`), the GitHub Actions OIDC
-deployment/forced-disable/rotation workflows, and the application-side
-deployment/ops-job code (`src/deployment/`, `scripts/azure/`) described
-by this ADR all exist in this repository now — see
-[`infra/README.md`](../../infra/README.md) and
-[`specs/deployment.md`](../deployment.md) for the implemented runbook.
-The target selects **Visual Studio Enterprise Subscription** at runtime and
-uses `westus3`, but **no Project Krypto Azure resource group, dedicated
-Foundry account, model deployment, or environment has been provisioned from
-this code, and no workflow run has executed against the new target stack**.
-That remains gated by [`specs/readiness.md`](../readiness.md) and requires the
-subscription-owner provider-registration step, one-time bootstrap, and GitHub
-Environment setup in
-[`specs/deployment.md`](../deployment.md) §1–§2.
-See [`specs/architecture.md`](../architecture.md) for the diagrammed
-current-vs-target state and service map.
+**Implementation status (updated 2026-08-17): Azure foundations and releases are deployed; bounded-execution live proof is pending.** The verified Azure state remains: dev is shadow/scheduled, production is disabled/manual, both private PostgreSQL 17 foundations and web releases exist, and the operational version-pinned Foundry prompt agents are active. Those facts are preserved in [`specs/architecture.md`](../architecture.md) and [`specs/readiness.md`](../readiness.md).
+
+The issue #132 implementation adds the bounded runtime contract in [ADR 0015](./0015-bounded-synchronous-execution.md), migration `0009`, health/readiness behavior, scheduler limits, database timeouts, and provider ceilings in source. It has not been released to Azure and has no live timing, readiness, capacity, quota, or deadline-fence evidence. Source/CI evidence and later exact-release target evidence must remain distinctly classified and indexed in issue #76. No production promotion workflow or live-money path is shipped.
 
 ## Decision
 
@@ -165,6 +153,8 @@ its Vercel/Supabase framing.
     jobs to `Schedule`. To disable, roll back, or rotate, they first change and
     verify both jobs as `Manual`, then disable monitoring at boundary `0`.
 
+14. **Execution boundary: bounded synchronous PAPER runs.** [ADR 0015](./0015-bounded-synchronous-execution.md) fixes the ordering `125 s provider aggregate < 180 s app deadline < 210 s scheduler HTTP < 240 s ACA ingress platform bound < 270 s job replica < 300 s owned lease`. The web app remains at maximum three replicas, one pooled runtime database connection and one admitted run per replica. Both scheduled jobs have zero platform retries; idempotency remains defense in depth. Manual ops jobs retain their separate long-running timeouts.
+
 ## Consequences
 
 - **Positive:** One cloud provider owns compute, database, secrets, registry,
@@ -180,7 +170,7 @@ its Vercel/Supabase framing.
 - **Trade-off:** Single-zone prod accepts a regional-outage gap until
   zone-redundant HA is implemented; 35-day PITR is the mitigating control in
   the interim.
-- **Trade-off:** The dedicated Foundry account still hosts both environment
+- **Trade-off:** The operational fallback Foundry account hosts both environment
   deployments, so subscription/account-level quota remains aggregate even
   though names, capacities, identities, and runtime configuration are
   separated. Entra-only access removes shared model-key rotation.
@@ -189,22 +179,7 @@ its Vercel/Supabase framing.
   uncommitted or unreviewed manual schedule change is not captured by the
   Git-based recovery path in item 10; operational changes to schedules must
   go through Bicep, not console edits.
-- **Follow-ups required:** the Bicep templates, OIDC-federated GitHub
-  Actions deployment/forced-disable/rotation workflows, ops-job
-  scratch-loopback restore verification, and runbooks described above are
-  implemented (see "Implementation status" above). What remains before the
-  first disabled/manual release is operational:
-  register the required providers, complete the one-time bootstrap and GitHub
-  Environment/secret setup in `specs/deployment.md` §1–§2, run the first real
-  dev deploy, and produce
-  the first live evidence (preflight/backup/target-smoke reports) against
-  an actually-provisioned Azure environment. `specs/deployment.md` is now
-  the Azure ordered runbook; the prior Vercel/Supabase runbook is
-  preserved at `specs/archive/deployment.vercel-supabase.md`. `specs/readiness.md`
-  is updated to record implementation-complete-but-unprovisioned status
-  and does not yet contain any live-environment evidence for this target.
-  Production promotion remains a separate future design/review task; it is
-  intentionally not executable in the current repository.
+- **Follow-ups required:** Preserve the already verified Azure foundations, releases, prompt agents, and dev/prod rollout states. Before a release containing ADR 0015 can replace either live image, produce the exact source/CI record and future target timing, readiness, capacity, PostgreSQL 17/runtime-role, quota/cost, budget-exhaustion, terminal-run, and lease evidence required by issue #76. This ADR does not claim that issue #132 live evidence exists. Production promotion remains a separate future design/review task and live-money execution remains prohibited.
 
 ## Alternatives considered
 

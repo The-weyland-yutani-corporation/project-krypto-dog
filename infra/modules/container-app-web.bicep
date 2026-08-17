@@ -119,6 +119,8 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
               }
               initialDelaySeconds: 10
               periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
             }
             {
               type: 'Readiness'
@@ -128,6 +130,8 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
               }
               initialDelaySeconds: 5
               periodSeconds: 15
+              timeoutSeconds: 5
+              failureThreshold: 3
             }
           ]
         }
@@ -135,6 +139,16 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
       scale: {
         minReplicas: minReplicas
         maxReplicas: maxReplicas
+        rules: [
+          {
+            name: 'bounded-http-admission'
+            http: {
+              metadata: {
+                concurrentRequests: '1'
+              }
+            }
+          }
+        ]
       }
     }
   }

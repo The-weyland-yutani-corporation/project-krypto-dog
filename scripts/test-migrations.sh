@@ -716,7 +716,7 @@ if [[ "$upgrade_result" != "1|3|1|false|true|RECONCILED|2194.06250000|2|0.012000
   exit 1
 fi
 
-# --- Azure PostgreSQL safety transition (drizzle/0007): fresh install ---
+# --- Azure PostgreSQL safety and bounded-execution transition: fresh install ---
 #
 # A clean target migrated to the current (default, full) migration set must
 # have both obsolete Supabase HTTP cron functions absent and the
@@ -729,6 +729,7 @@ fi
 
 azure_0007_hash="fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71"
 azure_0008_hash="0f28fce3409b92986be1fe58a82b02a90dcbb48a0cab75a1bbfb6681e200638e"
+azure_0009_hash="289f3a32bdc4c47cd3c9d8c2c354226962fadc4ff5be80e9864574f8eebd42a5"
 
 create_database azure_target
 azure_migrator_password="krypto-migrator-test-pw-$(random_test_password)"
@@ -803,19 +804,34 @@ azure_fresh_result="$(psql "$azure_target_url" -Atc \
           ))::text || '\''|'\'' ||
           has_schema_privilege('\''public'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
           has_schema_privilege('\''anon'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
-          has_schema_privilege('\''authenticated'\'', '\''krypto'\'', '\''USAGE'\'')::text;')"
-if [[ "$azure_fresh_result" != "9|$azure_0008_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false" ]]; then
+          has_schema_privilege('\''authenticated'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."ProviderDailyUsage"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."ProviderDailyUsage"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."ProviderDailyUsage"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."ProviderDailyUsage"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."RuntimeContract"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."RuntimeContract"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."RuntimeContract"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_schema_privilege('\''krypto_runtime'\'', '\''drizzle'\'', '\''USAGE'\'')::text || '\''|'\'' ||
+          (SELECT ("schemaFingerprint" = '\''0009_bounded_execution_v1'\'')::text
+             FROM "krypto"."RuntimeContract" WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
+          (SELECT (count(*) = 2)::text FROM pg_constraint
+            WHERE conrelid = '\''krypto."AgentRun"'\''::regclass
+              AND conname IN ('\''AgentRun_deadline_after_start_check'\'', '\''AgentRun_deadline_exact_check'\'')) || '\''|'\'' ||
+          (SELECT (condeferrable AND condeferred)::text FROM pg_constraint
+            WHERE conname = '\''TradeExecution_commit_deadline_fence'\'');')"
+if [[ "$azure_fresh_result" != "10|$azure_0009_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false|true|true|true|false|true|false|false|false|true|true|true" ]]; then
   echo "Fresh Azure migration did not retire obsolete cron functions or establish the exact krypto_runtime privilege matrix: $azure_fresh_result" >&2
   exit 1
 fi
 
 
-# Reapplying 0007 directly must remain idempotent (guarded role creation,
-# IF EXISTS drops, additive grants/revokes).
-psql "$azure_target_url" -v ON_ERROR_STOP=1 \
-  -f drizzle/0007_azure_retire_supabase_http_functions.sql >/dev/null
-psql "$azure_target_url" -v ON_ERROR_STOP=1 \
-  -f drizzle/0007_azure_retire_supabase_http_functions.sql >/dev/null
+# Historical migrations are never re-applied after a later ledger entry.
+# In particular, 0007's then-complete runtime grant matrix predates the
+# RuntimeContract and ProviderDailyUsage tables added by 0009; manually
+# replaying 0007 out of ledger order would intentionally fail closed by
+# revoking access to those future tables. Upgrade coverage below exercises the
+# supported 0007 -> 0008 -> 0009 ordering instead.
 
 # --- Azure PostgreSQL safety transition: 0006-to-0007 upgrade, row preservation ---
 
@@ -890,8 +906,13 @@ azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentState"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
-          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text;')"
-if [[ "$azure_upgrade_result" != "9|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true" ]]; then
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          (SELECT count(*)::text FROM "krypto"."RuntimeContract"
+            WHERE "id" = '\''singleton'\'' AND "schemaFingerprint" = '\''0009_bounded_execution_v1'\'') || '\''|'\'' ||
+          (SELECT count(*)::text FROM "krypto"."ProviderDailyUsage") || '\''|'\'' ||
+          (SELECT count(*)::text FROM "krypto"."AgentRun"
+            WHERE "deadlineAt" = "startedAt" + interval '\''180 seconds'\'');')"
+if [[ "$azure_upgrade_result" != "10|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true|1|0|1" ]]; then
   echo "0006-to-0007 upgrade did not preserve rows, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
   exit 1
 fi
@@ -1055,9 +1076,11 @@ UPDATE "krypto"."AgentState"
    SET "updatedAt" = "updatedAt"
  WHERE "id" = 'singleton';
 INSERT INTO "krypto"."AgentRun" (
-  "id", "idempotencyKey", "triggerSource", "tradingMode", "strategyVersion"
+  "id", "idempotencyKey", "triggerSource", "tradingMode", "strategyVersion",
+  "startedAt", "deadlineAt"
 ) VALUES (
-  'runtime-permission-proof', 'runtime-permission-proof', 'test', 'DISABLED', 'test'
+  'runtime-permission-proof', 'runtime-permission-proof', 'test', 'DISABLED',
+  'test', statement_timestamp(), statement_timestamp() + interval '180 seconds'
 );
 UPDATE "krypto"."AgentRun"
    SET "outcome" = 'DISABLED'
@@ -1075,6 +1098,16 @@ INSERT INTO "krypto"."AgentJournal" (
   'runtime-permission-journal', 'permission proof only', '{}'::jsonb,
   'runtime-permission-trade', 'runtime-permission-proof'
 );
+SELECT "schemaFingerprint" FROM "krypto"."RuntimeContract"
+ WHERE "id" = 'singleton';
+INSERT INTO "krypto"."ProviderDailyUsage" (
+  "usageDate", "provider", "requestCount"
+) VALUES (
+  current_date, 'coinbase', 1
+);
+UPDATE "krypto"."ProviderDailyUsage"
+   SET "requestCount" = "requestCount" + 1
+ WHERE "usageDate" = current_date AND "provider" = 'coinbase';
 ROLLBACK;
 SQL
 if psql "$azure_runtime_url_current" \
@@ -1472,7 +1505,8 @@ DIRECT_URL="$operations_url" \
   npx drizzle-kit migrate --config "$through_0006_config" >/dev/null
 DIRECT_URL="$operations_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$operations_url" npx tsx scripts/test-operations-routes.ts
-DIRECT_URL="$operations_url" npx tsx scripts/test-target-smoke-evidence.ts
+DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
+  npx tsx scripts/test-target-smoke-evidence.ts
 DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
   npx tsx scripts/test-deployment-preflight.ts
 
@@ -1684,4 +1718,4 @@ if (
 }
 NODE
 
-echo "Migration tests passed for fresh install, original-0005-to-0006 rollout upgrade, private-schema security, cron rollout-mode fail-closed validation, decimal round-trip, idempotency constraints, v2 reconciliation, quarantine, transactional execution, run orchestration, operations routes, target-smoke evidence, deployment preflight, verified backup restoration, and the Azure PostgreSQL safety transition (0007 fresh install and 0006-to-0007 upgrade with row preservation, retirement of the obsolete Supabase HTTP cron functions, the exact fail-closed per-table krypto_runtime privilege matrix with no excess grants, idempotent password-based runtime-login bootstrap with real scram-sha-256 authentication and rotation proof where the cluster is self-managed, username-mismatch and elevated-role rejection, and the idempotent password-free membership-only bootstrap path), and the PostgreSQL trust boundary of drizzle/0008 (exact schema/object ownership transfer to krypto_schema_owner with the migration ledger remaining krypto_migrator-owned, the full role-attribute, safe-search-path, and connection-limit matrix, the migrator's SET-ROLE-only path to the schema owner with no inheritance and no scheduler membership, idempotent singleton initialization through the migrator SET-ROLE boundary, real runtime-login SELECT/UPDATE/INSERT operations with rollback, runtime DDL denial, krypto_runtime's and its login role's freedom from elevated membership, krypto_migrator's inability to read or write application tables without SET ROLE, runtime denial of drizzle/vault/cron/net/pg_net/public-unrelated objects, cluster-global SCRAM credential continuity and independent password rotation, and deployment-preflight.ts passing end-to-end and failing closed on a missing or unsafe MIGRATION_URL)."
+echo "Migration tests passed for fresh install, upgrades, schema security, transactional paper execution, run orchestration, operations, preflight, backup restoration, the PostgreSQL trust boundary through 0008, and bounded execution 0009 (exact 180-second immutable run deadlines, deferred PAPER commit fence, runtime schema fingerprint, provider-usage grants, row preservation, and no excess runtime privilege)."

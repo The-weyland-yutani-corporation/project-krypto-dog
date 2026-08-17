@@ -164,6 +164,30 @@ deployments. Agent projects, definitions, and project-scoped access use the
 reviewed authenticated local operator path for the historical first deployment;
 future workflow mutations use Enterprise-hosted Actions and environment gates.
 
+### Bounded execution and readiness contract
+
+[ADR 0015](./decisions/0015-bounded-synchronous-execution.md) keeps PAPER execution synchronous and fixes this safety ordering:
+
+```text
+provider aggregate 125s
+  Coinbase 20s + version-pinned Foundry 80s + ACS 20s + PostHog 5s
+< application absolute deadline 180s
+< scheduler HTTP 210s
+< ACA ingress platform bound 240s
+< scheduler job replica timeout 270s
+< owned lease expiry 300s
+```
+
+Inside the 180-second application window, providers receive 125 seconds, database policy/execution 20 seconds, terminal persistence and owned-lease release 15 seconds, cancellation/response 10 seconds, and slack 10 seconds. Both scheduled jobs use `replicaRetryLimit=0`; persisted idempotency remains defense in depth. Manual migration, preflight, backup, target-smoke, and activation-check jobs remain outside this lease/deadline chain and retain their longer job-specific timeouts.
+
+The web app has at most three replicas, `DATABASE_POOL_MAX=1` and one admitted run per replica, while the private PostgreSQL 17 `krypto_app` login has `CONNECTION LIMIT 20`. Runtime connections use connect/statement/lock/idle-in-transaction timeouts of 5/10/2/15 seconds.
+
+Liveness is dependency-free. Readiness is a four-second, non-mutating, provider-free query using only runtime `DATABASE_URL`. It proves release SHA/image digest, bounded runtime configuration, PostgreSQL 17 and current login/membership/denials/connection limit, the `0009_bounded_execution_v1` schema fingerprint, singleton reconciliation, lease sanity, rollout mode, and local admission. It returns only `ready`/`not_ready` plus opaque reason codes.
+
+Daily operator safety ceilings are Coinbase 1,000, version-pinned Foundry 200, PostHog 2,000, and ACS 100 requests per UTC day. Engineering owns the application/runtime contract; release/operator owns provider-plan, quota, and cost reconciliation before rollout; operator owns alert response. The ceilings must be reconciled against contracted provider quotas and costs and lowered when required.
+
+**Evidence status:** this contract is implemented in the issue #132 source change but has not been released to Azure. The verified live platform facts above remain valid; they do not constitute timing, readiness, capacity, quota, or deadline evidence for #132. Source/CI and future exact-release target evidence must be separately indexed in issue #76. Nothing in this contract authorizes live-money execution.
+
 ## Resource map and live state
 
 All listed foundation and release resources are live.

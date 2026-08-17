@@ -255,6 +255,14 @@ const APPLICATION_TABLES = [
   "AgentRun",
   "TradeExecution",
   "AgentJournal",
+  "ProviderDailyUsage",
+  "RuntimeContract",
+] as const;
+const PRE_BOUNDED_APPLICATION_TABLES = [
+  "AgentState",
+  "AgentRun",
+  "TradeExecution",
+  "AgentJournal",
 ] as const;
 const LEGACY_APPLICATION_TABLES = [
   "AgentState",
@@ -297,6 +305,10 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
   {
     createdAt: "1786579434481",
     hash: "0f28fce3409b92986be1fe58a82b02a90dcbb48a0cab75a1bbfb6681e200638e",
+  },
+  {
+    createdAt: "1786967376730",
+    hash: "289f3a32bdc4c47cd3c9d8c2c354226962fadc4ff5be80e9864574f8eebd42a5",
   },
 ] as const;
 /**
@@ -355,6 +367,8 @@ const RUNTIME_TABLE_PRIVILEGE_MATRIX: Readonly<Record<string, readonly string[]>
   AgentRun: ["SELECT", "INSERT", "UPDATE"],
   TradeExecution: ["SELECT", "INSERT"],
   AgentJournal: ["SELECT", "INSERT"],
+  ProviderDailyUsage: ["SELECT", "INSERT", "UPDATE"],
+  RuntimeContract: ["SELECT"],
 };
 /**
  * Sequences currently have no entries in the matrix because the krypto
@@ -1056,7 +1070,7 @@ export async function runDeploymentPreflight(
           LEGACY_APPLICATION_TABLES.every((table) =>
             publicTables.has(table),
           );
-        const exactPrivateLayout =
+        const exactCurrentPrivateLayout =
           publicTables.size === 0 &&
           kryptoTables.size === APPLICATION_TABLES.length &&
           kryptoRelations.length === APPLICATION_TABLES.length &&
@@ -1070,6 +1084,23 @@ export async function runDeploymentPreflight(
                 relation.name as (typeof APPLICATION_TABLES)[number],
               ),
           );
+        const exactPreBoundedPrivateLayout =
+          publicTables.size === 0 &&
+          kryptoTables.size === PRE_BOUNDED_APPLICATION_TABLES.length &&
+          kryptoRelations.length ===
+            PRE_BOUNDED_APPLICATION_TABLES.length &&
+          PRE_BOUNDED_APPLICATION_TABLES.every((table) =>
+            kryptoTables.has(table),
+          ) &&
+          kryptoRelations.every(
+            (relation) =>
+              relation.kind === "r" &&
+              PRE_BOUNDED_APPLICATION_TABLES.includes(
+                relation.name as (typeof PRE_BOUNDED_APPLICATION_TABLES)[number],
+              ),
+          );
+        const exactPrivateLayout =
+          exactCurrentPrivateLayout || exactPreBoundedPrivateLayout;
         const emptyLayout =
           inventory.applicationTables.length === 0 &&
           kryptoRelations.length === 0;
@@ -1282,9 +1313,12 @@ export async function runDeploymentPreflight(
             },
           });
           const migrationLayoutMatches =
-            (exactPrivateLayout &&
+            (exactCurrentPrivateLayout &&
+              inventory.drizzleMigrationCount ===
+                EXPECTED_DRIZZLE_MIGRATIONS.length) ||
+            (exactPreBoundedPrivateLayout &&
               inventory.drizzleMigrationCount >= 4 &&
-              inventory.drizzleMigrationCount <=
+              inventory.drizzleMigrationCount <
                 EXPECTED_DRIZZLE_MIGRATIONS.length) ||
             (exactLegacyLayout &&
               inventory.drizzleMigrationCount <= 2) ||

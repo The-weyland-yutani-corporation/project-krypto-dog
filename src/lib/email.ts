@@ -3,6 +3,15 @@ import {
   type EmailMessage,
   type EmailSendResponse,
 } from "@azure/communication-email";
+import {
+  ACS_PROVIDER_BUDGET_MS,
+  ProviderBudgetError,
+  type ExecutionDeadline,
+} from "@/lib/execution-envelope";
+import {
+  consumeProviderRequestBudget,
+  type ProviderBudgetStore,
+} from "@/lib/provider-budgets";
 
 export type EmailDeliveryResult =
   | { status: "sent"; id?: string }
@@ -23,6 +32,12 @@ interface AcsEmailConfig {
   connectionString: string;
   sender: string;
   recipient: string;
+}
+
+export interface EmailSendOptions {
+  deadline?: ExecutionDeadline;
+  providerDeadlineAt?: Date;
+  budgetStore?: ProviderBudgetStore;
 }
 
 type AcsEmailConfigResolution =
@@ -111,6 +126,7 @@ async function sendEmail(
   html: string,
   logData: unknown,
   deliveryName: string,
+  options: EmailSendOptions = {},
 ): Promise<EmailDeliveryResult> {
   const resolution = resolveAcsEmailConfig();
   if (!resolution.configured) {
@@ -122,6 +138,21 @@ async function sendEmail(
   }
 
   const { connectionString, sender, recipient } = resolution.config;
+  options.deadline?.assertActive(`ACS ${deliveryName}`);
+  if (options.deadline) {
+    await consumeProviderRequestBudget("acs", {
+      deadline: options.deadline,
+      store: options.budgetStore,
+    });
+  }
+  const providerRemainingMs =
+    (options.providerDeadlineAt?.getTime() ??
+      (options.deadline?.now().getTime() ?? Date.now()) +
+        ACS_PROVIDER_BUDGET_MS) -
+    (options.deadline?.now().getTime() ?? Date.now());
+  if (providerRemainingMs <= 0) {
+    throw new ProviderBudgetError("acs", "time");
+  }
   const message: EmailMessage = {
     senderAddress: sender,
     recipients: {
@@ -138,16 +169,23 @@ async function sendEmail(
   const timeout = setTimeout(() => {
     timedOut = true;
     abortController.abort();
-  }, EMAIL_SEND_TIMEOUT_MS);
+  }, Math.min(EMAIL_SEND_TIMEOUT_MS, providerRemainingMs));
+  const abortSignal = options.deadline
+    ? AbortSignal.any([
+        abortController.signal,
+        options.deadline.signalFor("ACS email", providerRemainingMs),
+      ])
+    : abortController.signal;
 
   try {
     const client = new EmailClient(connectionString);
     const poller = await client.beginSend(message, {
-      abortSignal: abortController.signal,
+      abortSignal,
     });
     const response = await poller.pollUntilDone({
-      abortSignal: abortController.signal,
+      abortSignal,
     });
+    options.deadline?.assertActive(`ACS ${deliveryName} response`);
 
     if (response.status !== "Succeeded") {
       throw new EmailDeliveryError(
@@ -164,6 +202,9 @@ async function sendEmail(
     return { status: "sent", id: response.id };
   } catch (error) {
     if (error instanceof EmailDeliveryError) throw error;
+    // Preserve the authoritative execution error instead of converting
+    // cancellation/deadline exhaustion into a generic provider failure.
+    options.deadline?.assertActive(`ACS ${deliveryName}`);
     if (timedOut) {
       throw new EmailDeliveryError(
         `Timed out sending ${deliveryName} through ACS Email after ${EMAIL_SEND_TIMEOUT_MS}ms`,
@@ -185,7 +226,8 @@ export async function sendGuardrailAlert(
     portfolioValue?: number;
     lastTradeTime?: Date;
     error?: string;
-  }
+  },
+  options: EmailSendOptions = {},
 ): Promise<EmailDeliveryResult> {
   const subject = `🚨 Krypto Alert: ${guardrailName} Triggered`;
   const timestamp = new Date().toISOString();
@@ -222,21 +264,24 @@ export async function sendGuardrailAlert(
     </div>
   `;
 
-  return sendEmail(subject, html, details, "guardrail alert");
+  return sendEmail(subject, html, details, "guardrail alert", options);
 }
 
-export async function sendDailySummary(data: {
-  portfolioValueUSD: number;
-  totalPnlUSD: number;
-  tradesExecuted: number;
-  tradesSummary: Array<{
-    direction: string;
-    asset: string;
-    amountUSD: number;
-    pnlUSD: number | null;
-  }>;
-  journalHighlights: string[];
-}): Promise<EmailDeliveryResult> {
+export async function sendDailySummary(
+  data: {
+    portfolioValueUSD: number;
+    totalPnlUSD: number;
+    tradesExecuted: number;
+    tradesSummary: Array<{
+      direction: string;
+      asset: string;
+      amountUSD: number;
+      pnlUSD: number | null;
+    }>;
+    journalHighlights: string[];
+  },
+  options: EmailSendOptions = {},
+): Promise<EmailDeliveryResult> {
   const dateStr = new Date().toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
@@ -315,5 +360,5 @@ export async function sendDailySummary(data: {
     </div>
   `;
 
-  return sendEmail(subject, html, data, "daily summary");
+  return sendEmail(subject, html, data, "daily summary", options);
 }
