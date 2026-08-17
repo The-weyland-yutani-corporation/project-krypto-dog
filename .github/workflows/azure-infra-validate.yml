@@ -38,19 +38,23 @@ env:
   POSTGRES_ADMIN_PASSWORD_PROD: stub-inert-value
   DATABASE_URL_DEV: stub-inert-value
   DIRECT_URL_DEV: stub-inert-value
+  MIGRATION_URL_DEV: stub-inert-value
   CRON_SECRET_DEV: stub-inert-value
   POSTHOG_API_KEY_DEV: stub-inert-value
   ADMIN_PASSWORD_DEV: stub-inert-value
   ADMIN_SESSION_SECRET_DEV: stub-inert-value
   RUNTIME_DATABASE_PASSWORD_DEV: stub-inert-value
+  MIGRATOR_DATABASE_PASSWORD_DEV: stub-inert-value
   DEPLOYMENT_APPROVAL_SECRET_DEV: stub-inert-value
   DATABASE_URL_PROD: stub-inert-value
   DIRECT_URL_PROD: stub-inert-value
+  MIGRATION_URL_PROD: stub-inert-value
   CRON_SECRET_PROD: stub-inert-value
   POSTHOG_API_KEY_PROD: stub-inert-value
   ADMIN_PASSWORD_PROD: stub-inert-value
   ADMIN_SESSION_SECRET_PROD: stub-inert-value
   RUNTIME_DATABASE_PASSWORD_PROD: stub-inert-value
+  MIGRATOR_DATABASE_PASSWORD_PROD: stub-inert-value
   DEPLOYMENT_APPROVAL_SECRET_PROD: stub-inert-value
 
 jobs:
