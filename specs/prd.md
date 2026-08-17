@@ -329,8 +329,9 @@ Krypto Foundry Agent Invoker with Entra tokens.
   Enterprise-hosted Actions are active, `CI_RUNNER_LABEL` is unset, and the
   temporary Azure self-hosted runner infrastructure is retired.
   Platform and production mutations require `@VeVarunSharma` environment
-  approval with `prevent_self_review=false`; development intentionally has no
-  reviewer. Branch, exact-SHA, and CI gates remain mandatory.
+  approval with `prevent_self_review=true` and administrator bypass disabled;
+  development intentionally has no reviewer. Branch, exact-SHA, and CI gates
+  remain mandatory.
 - **Subscription/region:** select **Visual Studio Enterprise Subscription** at
   runtime; deploy `rg-krypto-platform`, `rg-krypto-dev`, and
   `rg-krypto-prod` in `westus3`. A subscription owner must register/wait for

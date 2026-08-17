@@ -58,3 +58,4 @@ What did we choose, in one or two paragraphs?
 | [0010](./0010-staged-correction-ops.md) | Staged, report-only CorrectionOps | Accepted |
 | [0011](./0011-mock-first-worktree-harness.md) | Mock-first, per-worktree application harness | Accepted |
 | [0012](./0012-evidence-gated-automation-authority.md) | Evidence-gated automation authority | Accepted |
+| [0013](./0013-deployment-approval-provenance.md) | Deployment approval provenance and expiry | Accepted |

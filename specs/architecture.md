@@ -34,7 +34,8 @@ Enterprise-hosted Actions are active ([proof run
 `CI_RUNNER_LABEL` is unset, and the temporary Azure runner registrations and
 runner resource group are retired.
 `platform`, `production-deploy`, and `production-promotion` require
-`@VeVarunSharma` review with `prevent_self_review=false`; `development`
+`@VeVarunSharma` review with `prevent_self_review=true` and administrator
+bypass disabled; `development`
 intentionally has no required reviewer for routine dev releases. Branch,
 exact-SHA, and CI gates remain mandatory for every mutation. The first releases
 historically used the authenticated operator path before hosted execution was
@@ -268,7 +269,7 @@ deployment outputs.
 | Service | Entry point | Purpose |
 |---|---|---|
 | GitHub Actions | [Workflow runs](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions) | Platform, access, foundation, release, and evidence runs |
-| GitHub Environments | [Environment settings](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/settings/environments) | Branch policies on all environments; required `@VeVarunSharma` review (`prevent_self_review=false`) for platform and production boundaries; intentionally no reviewer for development |
+| GitHub Environments | [Environment settings](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/settings/environments) | Exact branch policies on all environments; required `@VeVarunSharma` review (`prevent_self_review=true`, administrator bypass disabled) for platform and production boundaries; intentionally no reviewer for development |
 | Azure | [Azure portal](https://portal.azure.com/) | Select **Visual Studio Enterprise Subscription**, then the existing platform/dev/prod resource groups; do not publish internal URLs or IDs |
 | Microsoft Foundry | [Foundry portal](https://ai.azure.com/) | Operate `ghcp-foundry-eastus2`; retain `ai-krypto-westus3` for a future dedicated migration |
 | PostHog | [PostHog US](https://us.posthog.com/) | Inspect mandatory dev/prod event tags; create a separate dev project before future production promotion |
