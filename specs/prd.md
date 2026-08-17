@@ -323,11 +323,14 @@ Krypto Foundry Agent Invoker with Entra tokens.
 - **State:** model fallback, foundations, releases, isolated Foundry projects,
   and prompt agents are live. Dev remains shadow/scheduled and production
   disabled/manual on the pre-agent image; the reviewed agent-integrated image
-  cutover is blocked only by GitHub Actions billing.
+  cutover remains pending the reviewed source merge and gated release.
 - **Deployment control:** GitHub Environments, branch restrictions, and
   protected values are configured except for a distinct dev PostHog key.
-  Required-reviewer rules are unsupported by the private-repo billing plan, so
-  mutation remains manual/paused behind branch, exact-SHA, and CI gates.
+  Enterprise-hosted Actions are active, `CI_RUNNER_LABEL` is unset, and the
+  temporary Azure self-hosted runner infrastructure is retired.
+  Platform and production mutations require `@VeVarunSharma` environment
+  approval with `prevent_self_review=false`; development intentionally has no
+  reviewer. Branch, exact-SHA, and CI gates remain mandatory.
 - **Subscription/region:** select **Visual Studio Enterprise Subscription** at
   runtime; deploy `rg-krypto-platform`, `rg-krypto-dev`, and
   `rg-krypto-prod` in `westus3`. A subscription owner must register/wait for
@@ -467,8 +470,8 @@ Production is still blocked by:
 
 - **Agent application cutover:** both releases, model deployments, isolated
   Foundry projects, and prompt agents are live, but the deployed app images are
-  still the validated pre-agent versions. GitHub Actions billing blocks the
-  reviewed replacement release.
+  still the validated pre-agent versions. The replacement release now awaits
+  reviewed source and the applicable exact-SHA/CI/environment gates.
 - **Operational account hardening:** Agent calls use Entra/project-scoped
   Consumer and Project Krypto stores no key, but the shared fallback account
   still permits legacy local/model key authentication. Disable it with the

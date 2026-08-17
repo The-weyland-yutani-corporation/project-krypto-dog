@@ -29,18 +29,22 @@ template and identity detail lives in
 | Scheduling | Dev hourly/daily jobs are `Schedule`; production and all ops jobs remain `Manual`. | **Dev shadow only** |
 
 GitHub Environments, branch restrictions, and protected values are configured.
-Required-reviewer rules are unsupported by the private repository's billing
-plan. GitHub-hosted jobs were blocked by the account's Actions billing state, so
-the first releases used the authenticated operator path with reviewed templates,
-immutable image digests, and the same fail-closed evidence validators.
-Production deploy remains disabled manually; the proven dev trigger is
-configured for use after the billing block is resolved.
+Enterprise-hosted Actions are active ([proof run
+31981510383](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31981510383)).
+`CI_RUNNER_LABEL` is unset, and the temporary Azure runner registrations and
+runner resource group are retired.
+`platform`, `production-deploy`, and `production-promotion` require
+`@VeVarunSharma` review with `prevent_self_review=false`; `development`
+intentionally has no required reviewer for routine dev releases. Branch,
+exact-SHA, and CI gates remain mandatory for every mutation. The first releases
+historically used the authenticated operator path before hosted execution was
+available.
 
 ## Azure topology and release gaps
 
 ```mermaid
 flowchart TB
-  GH["GitHub Actions<br/>Environments + OIDC<br/>manual/paused mutation"]
+  GH["Enterprise-hosted GitHub Actions<br/>Environments + OIDC<br/>review-gated platform/prod"]
 
   subgraph PLATFORM["model platform"]
     ACCOUNT["Dedicated future account · LIVE<br/>ai-krypto-westus3<br/>model-empty"]
@@ -156,8 +160,8 @@ existing target capacity on the same format/model/version/SKU dimension,
 making exact reruns idempotent without crediting unrelated capacity. It has
 separate environment-scoped what-if/apply jobs for the account and model
 deployments. Agent projects, definitions, and project-scoped access use the
-reviewed authenticated local operator path while GitHub Actions billing blocks
-hosted jobs.
+reviewed authenticated local operator path for the historical first deployment;
+future workflow mutations use Enterprise-hosted Actions and environment gates.
 
 ## Resource map and live state
 
@@ -264,7 +268,7 @@ deployment outputs.
 | Service | Entry point | Purpose |
 |---|---|---|
 | GitHub Actions | [Workflow runs](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions) | Platform, access, foundation, release, and evidence runs |
-| GitHub Environments | [Environment settings](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/settings/environments) | Configured environment values and branch restrictions; required reviewers are unavailable on the current plan, so mutation remains manual/paused |
+| GitHub Environments | [Environment settings](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/settings/environments) | Branch policies on all environments; required `@VeVarunSharma` review (`prevent_self_review=false`) for platform and production boundaries; intentionally no reviewer for development |
 | Azure | [Azure portal](https://portal.azure.com/) | Select **Visual Studio Enterprise Subscription**, then the existing platform/dev/prod resource groups; do not publish internal URLs or IDs |
 | Microsoft Foundry | [Foundry portal](https://ai.azure.com/) | Operate `ghcp-foundry-eastus2`; retain `ai-krypto-westus3` for a future dedicated migration |
 | PostHog | [PostHog US](https://us.posthog.com/) | Inspect mandatory dev/prod event tags; create a separate dev project before future production promotion |

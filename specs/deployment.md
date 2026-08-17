@@ -54,7 +54,7 @@ those values without making them public documentation.
 | Stage | Live state | Evidence |
 |---|---|---|
 | Providers/bootstrap | Required providers are registered; platform/dev/prod resource groups and four GitHub OIDC identities exist | Complete |
-| GitHub controls | Environments, branch restrictions, variables, and release secrets are configured. Required-reviewer rules are unsupported by the private-repo billing plan; mutation workflows are manual/paused behind branch, exact-SHA, and CI gates. | Staged; no reviewer enforcement |
+| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset and no self-hosted runner is registered. Platform and production environments require `@VeVarunSharma` review with `prevent_self_review=false`; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
 | Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments and isolated prompt agents on `ghcp-foundry-eastus2` succeeded. Both immutable agent version `1` deployments passed exact structured `HOLD` smokes. | Operational agents complete |
 | Workload access | Dev runtime/ops have the proven custom-only Project Krypto Foundry Agent Invoker. The reviewed source grants prod the same project-scoped role, but live prod remains untouched until an approved apply. Legacy account-scoped direct-model roles remain until each pre-agent image is replaced. | Dev proven; prod source ready; compatibility-role removal pending cutover |
 | Dev release | Live in shadow; manual activation and first scheduled execution passed with zero trades | Retained exact-SHA evidence |
@@ -131,22 +131,23 @@ az deployment sub create \
 Record the deployment outputs in a protected operator handoff. Client and
 principal IDs are configuration inputs, not documentation values.
 
-## 2. GitHub Environments and current manual gate
+## 2. GitHub Environments and approval gates
 
-**Current status: configured but reviewer enforcement unavailable.** The four
-Environments, branch restrictions, and protected variables/secrets are
-configured. The private repository's
-billing plan does not support required-reviewer rules. Keep mutation workflows
-manual/paused and require the configured branch, exact 40-hex SHA, and
-successful CI. Do not enable automatic mutation without an equivalent reviewed
-approval boundary.
+**Current status: Enterprise-hosted execution and reviewer enforcement active.**
+Run `31981510383` proved hosted Actions after transfer. `CI_RUNNER_LABEL` is
+unset, and the temporary Azure self-hosted runner registrations and runner
+resource group are retired. All four environments enforce branch policies.
+Platform and production
+mutations require live environment approval in addition to the configured
+branch, exact 40-hex SHA, and successful CI. Development intentionally omits a
+reviewer so routine dev delivery can proceed through the remaining gates.
 
-| Environment | Workflows | Required variables | Required secrets |
-|---|---|---|---|
-| `platform` | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
-| `development` | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
-| `production-deploy` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
-| `production-promotion` | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
+| Environment | Approval policy | Workflows | Required variables | Required secrets |
+|---|---|---|---|---|
+| `platform` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
+| `development` | No required reviewer (intentional); branch/exact-SHA/CI gates remain | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
+| `production-deploy` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
+| `production-promotion` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false`; forced-disable boundary only | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
 
 Bootstrap RBAC boundaries:
 
@@ -243,15 +244,16 @@ created a release, web Container App, or job.
 - `deployment_stage`: `foundation` or `full`.
 
 The workflow definition maps `workflow_run` events to `full`, but automatic
-mutation is currently paused. Manual SHAs must be ancestors of the configured
-target branch and have their own successful push-triggered CI run.
+development mutation remains subject to the configured branch and the
+triggering SHA's successful push-triggered CI run. Manual SHAs must be ancestors
+of the configured target branch and have their own successful CI run.
 
 ### First dev-run caveat
 
 GitHub evaluates a `workflow_run` trigger using the workflow file from the
-repository's default branch. Dispatch only manually at the exact CI-passed SHA
-while required-reviewer enforcement is unavailable. Automatic mutation remains
-paused; do not re-enable it solely because a workflow version reaches `main`.
+repository's default branch. Do not rely on a feature-branch workflow version:
+the default-branch workflow must contain the reviewed trigger and exact-SHA/CI
+gates. Manual dispatch remains available only for an exact CI-passed SHA.
 
 ### Foundation order
 
@@ -287,8 +289,8 @@ does not delete superseded assignments, so rollout evidence must verify the
 three partial built-ins are absent and exactly one custom invoker remains per
 runtime/ops identity.
 
-Because GitHub-hosted jobs are blocked at startup by the account Actions billing
-state, the authenticated local operator path was used. The reviewed
+The authenticated local operator path was used for the historical first
+deployment before Enterprise-hosted Actions became available. The reviewed
 `npm run foundry:agent` command deployed a toolless prompt agent in each project,
 fetched and exactly attested the persisted definition, and invoked the exact
 version with a no-trade structured `HOLD`.
@@ -308,10 +310,9 @@ the project-scoped custom invoker remains.
 
 **Current status: pre-agent release live; agent cutover pending.** Dev is
 shadow/scheduled on the previously validated image. The Foundry prompt agent is
-active and smoke-tested, but the new app image has not been released because
-GitHub-hosted Actions cannot start while the account billing block remains.
-Run `full` at the exact CI-passed SHA after that external block is cleared, or
-use the equivalent retained local release procedure.
+active and smoke-tested, but the new app image remains pending the reviewed
+source merge and gated release. Run `full` only at the exact CI-passed SHA;
+Enterprise-hosted Actions and the development environment are available.
 
 The implemented order is:
 
