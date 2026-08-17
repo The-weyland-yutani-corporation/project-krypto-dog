@@ -27,6 +27,7 @@
     "evidence": "npx tsx scripts/evidence.ts",
     "evidence:import": "npx tsx scripts/evidence.ts import",
     "evidence:evaluate": "npx tsx scripts/evidence.ts evaluate",
+    "evidence:runtime-matrix": "npx tsx scripts/runtime-matrix-evidence.ts",
     "deployment:preflight": "npx tsx scripts/deployment-preflight.ts",
     "deployment:backup": "npx tsx scripts/create-verified-backup.ts",
     "smoke:target": "npx tsx scripts/target-smoke.ts",

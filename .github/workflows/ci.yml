@@ -159,7 +159,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-17
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
-          /usr/lib/postgresql/17/bin/pg_dump --version
+
+      - name: Capture exact runtime matrix
+        env:
+          TEST_POSTGRES_ADMIN_URL: ${{ format('postgresql://postgres:{0}@127.0.0.1:5432/postgres', 'postgres') }}
+        run: npm run --silent evidence:runtime-matrix -- --out artifacts/runtime-matrix.json --commit "$GITHUB_SHA"
 
       - name: Run migration and transactional integration suite
         env:
@@ -172,6 +176,16 @@ jobs:
         run: |
           npm run db:generate
           test -z "$(git status --porcelain -- drizzle)"
+
+      - name: Upload exact runtime matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-matrix-${{ github.sha }}
+          path: artifacts/runtime-matrix.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
 
   docker-validate:
     name: Docker image target validation
