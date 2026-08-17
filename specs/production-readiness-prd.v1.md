@@ -252,6 +252,12 @@ contract.
 | ACCT-01 | Ledger, cost-basis, DCA, and anchor attestation | [#130](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/130) |
 | ROLL-01 | Attended PAPER promotion and 30-day continuity gate | [#127](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/127) |
 
+DB-01's design and source implementation is
+[ADR 0010](./decisions/0010-postgresql-trust-boundary-roles.md); its
+Consequences section is the required attended per-environment upgrade
+procedure and #76 evidence contract. Source implementation alone does not
+satisfy DB-01 — the ADR performs no live role migration.
+
 The existing release issues own the gate records:
 
 | Gate record | Issue |

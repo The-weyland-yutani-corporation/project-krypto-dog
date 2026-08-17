@@ -78,6 +78,7 @@ AZURE_FOUNDRY_AGENT_VERSION=1
 
 DATABASE_URL=******localhost:5433/krypto
 DIRECT_URL=******localhost:5433/krypto
+MIGRATION_URL=******localhost:5433/krypto
 
 POSTHOG_API_KEY=phc_local_stub
 POSTHOG_HOST=https://us.i.posthog.com
@@ -165,14 +166,23 @@ origin/cron-secret-fingerprint approval that schedule activation must match.
 
 ## 3. Apply schema and seed
 
+`db:migrate` (`drizzle-kit migrate`) requires `MIGRATION_URL` as the
+dedicated least-privilege `krypto_migrator` role -- never `DIRECT_URL`
+(see [ADR 0010](./decisions/0010-postgresql-trust-boundary-roles.md)). Run
+the one-time local role bootstrap first, against `DIRECT_URL`'s superuser:
+
 ```bash
+KRYPTO_MIGRATOR_LOGIN_PASSWORD=krypto_local \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts --mode database-roles
 npm run db:migrate
 npm run db:init
 ```
 
-`db:migrate` uses `DIRECT_URL`. `db:init` inserts the singleton only when it is
-absent and never deletes trade or journal history. Do not use `db:push` or
-`supabase db push` for application schema changes.
+The bootstrap step idempotently creates/converges `krypto_schema_owner`,
+`krypto_migrator`, `krypto_scheduler`, and `krypto_runtime`; re-running it is
+safe. `db:init` inserts the singleton only when it is absent and never
+deletes trade or journal history. Do not use `db:push` or `supabase db push`
+for application schema changes.
 
 To verify both a fresh install and adoption of the existing v2 schema against
 temporary local PostgreSQL clusters:

@@ -48,6 +48,24 @@ const canonicalMigrationRows = [
     .digest("hex"),
   createdAt: createdAt!,
 }));
+const trustBoundaryMigrationRow = {
+  hash: createHash("sha256")
+    .update(
+      readFileSync(
+        "drizzle/0008_postgresql_trust_boundaries.sql",
+        "utf8",
+      ),
+    )
+    .digest("hex"),
+  createdAt: "1786579434481",
+};
+// drizzleMigrationCount reaches TRUST_BOUNDARY_MIGRATION_COUNT (9) only
+// once migration 0008 (drizzle/0008_postgresql_trust_boundaries.sql) has
+// been applied.
+const trustBoundaryCompleteMigrationRows = [
+  ...canonicalMigrationRows,
+  trustBoundaryMigrationRow,
+];
 
 function installedFunctionSource(
   name: string,
@@ -97,10 +115,114 @@ function createSqlMock(
     | "azure-role-excess-future-relation"
     | "azure-login-not-member"
     | "azure-login-excess"
-    | "same-connection-role" = "safe",
+    | "same-connection-role"
+    | "trust-boundary-current"
+    | "trust-boundary-role-login-unsafe"
+    | "trust-boundary-migrator-inherits"
+    | "trust-boundary-runtime-elevated"
+    | "trust-boundary-bad-app-schema-owner"
+    | "trust-boundary-bad-ledger-owner"
+    | "trust-boundary-ledger-access-leak"
+    | "trust-boundary-legacy-access-leak"
+    | "trust-boundary-public-grant-leak"
+    | "trust-boundary-default-privilege-leak"
+    | "trust-boundary-public-schema-creatable"
+    | "trust-boundary-runtime-public-schema"
+    | "trust-boundary-connection-limit-unbounded"
+    | "trust-boundary-runtime-login-elevated"
+    | "trust-boundary-operator-elevated"
+    | "trust-boundary-migrator-create"
+    | "trust-boundary-search-path-unsafe" = "safe",
   systemIdentifier = "7123456789012345678",
 ) {
   const RUNTIME_LOGIN_CURRENT_USER = "azure_app_identity";
+  const isTrustBoundaryScenario = scenario.startsWith("trust-boundary");
+  const trustBoundaryRoleRows = !isTrustBoundaryScenario
+    ? []
+    : [
+        {
+          rolname: "krypto_schema_owner",
+          canLogin: scenario === "trust-boundary-role-login-unsafe",
+          inherits: true,
+          connectionLimit: 0,
+        },
+        {
+          rolname: "krypto_migrator",
+          canLogin: true,
+          inherits: scenario === "trust-boundary-migrator-inherits",
+          connectionLimit:
+            scenario === "trust-boundary-connection-limit-unbounded" ? -1 : 5,
+        },
+        {
+          rolname: "krypto_scheduler",
+          canLogin: false,
+          inherits: true,
+          connectionLimit: 0,
+        },
+        {
+          rolname: "krypto_runtime",
+          canLogin: false,
+          inherits: true,
+          connectionLimit: 0,
+        },
+        {
+          rolname: RUNTIME_LOGIN_CURRENT_USER,
+          canLogin: true,
+          inherits: true,
+          connectionLimit: 20,
+        },
+      ];
+  const trustBoundaryMigratorMembershipRows = !isTrustBoundaryScenario
+    ? []
+    : [
+        {
+          adminOption: false,
+          inheritOption: scenario === "trust-boundary-migrator-inherits",
+          setOption: true,
+        },
+      ];
+  const trustBoundaryRuntimeElevatedMembership = !isTrustBoundaryScenario
+    ? { ownerMember: null, migratorMember: null, schedulerMember: null }
+    : {
+        ownerMember: scenario === "trust-boundary-runtime-elevated",
+        migratorMember: false,
+        schedulerMember: false,
+      };
+  const trustBoundaryAppSchemaOwner = !isTrustBoundaryScenario
+    ? "postgres"
+    : scenario === "trust-boundary-bad-app-schema-owner"
+      ? "postgres"
+      : "krypto_schema_owner";
+  const trustBoundaryAppSchemaBadOwnerCount = 0;
+  const trustBoundaryMigrationLedgerOwner = !isTrustBoundaryScenario
+    ? "postgres"
+    : scenario === "trust-boundary-bad-ledger-owner"
+      ? "postgres"
+      : "krypto_migrator";
+  const trustBoundaryRuntimeLedgerAccess =
+    scenario === "trust-boundary-ledger-access-leak";
+  const trustBoundaryLegacySchemaAccess =
+    scenario === "trust-boundary-legacy-access-leak";
+  const trustBoundaryRuntimePublicGrants =
+    scenario === "trust-boundary-public-grant-leak"
+      ? [{ name: "table:krypto_state_mirror" }]
+      : [];
+  const trustBoundaryPublicSchemaCreatable =
+    scenario === "trust-boundary-public-schema-creatable";
+  const trustBoundaryDefaultAclLeaks =
+    scenario === "trust-boundary-default-privilege-leak"
+      ? [
+          {
+            defaclRole: "krypto_schema_owner",
+            objType: "r",
+            grantee: "PUBLIC",
+          },
+        ]
+      : [];
+  const trustBoundarySearchPath =
+    scenario === "trust-boundary-search-path-unsafe"
+      ? '"$user", public'
+      : "pg_catalog";
   const CORRECT_TABLE_PRIVILEGE_ROWS: Record<
     string,
     {
@@ -264,6 +386,14 @@ function createSqlMock(
               : sameRole
                 ? "krypto_migrator"
                 : RUNTIME_LOGIN_CURRENT_USER,
+            sessionUser: isDirectConnection
+              ? "krypto_owner"
+              : RUNTIME_LOGIN_CURRENT_USER,
+            searchPath: isDirectConnection
+              ? trustBoundarySearchPath
+              : scenario === "trust-boundary-search-path-unsafe"
+                ? '"$user", public'
+                : "krypto, pg_catalog",
           },
         ];
       }
@@ -402,7 +532,9 @@ function createSqlMock(
                     scenario === "azure-functions-present" ||
                     scenario === "azure-role-incomplete"
                   ? canonicalMigrationRows
-                  : canonicalMigrationRows.slice(0, 7);
+                  : scenario.startsWith("trust-boundary")
+                    ? trustBoundaryCompleteMigrationRows
+                    : canonicalMigrationRows.slice(0, 7);
         return scenario === "migration-drift"
           ? [
               {
@@ -513,6 +645,84 @@ function createSqlMock(
             present: scenario === "blocked",
           },
         ];
+      }
+      if (query.includes("migration connection identity")) {
+        return [
+          {
+            currentUser:
+              scenario === "same-connection-role"
+                ? "krypto_runtime"
+                : "krypto_migrator",
+            sessionUser: "krypto_migrator",
+            searchPath: trustBoundarySearchPath,
+          },
+        ];
+      }
+      if (query.includes("trust boundary role attributes")) {
+        return trustBoundaryRoleRows;
+      }
+      if (query.includes("trust boundary migrator membership options")) {
+        return trustBoundaryMigratorMembershipRows;
+      }
+      if (query.includes("trust boundary runtime elevated membership")) {
+        return [
+          {
+            ownerMember: trustBoundaryRuntimeElevatedMembership.ownerMember,
+            migratorMember: trustBoundaryRuntimeElevatedMembership.migratorMember,
+            schedulerMember: trustBoundaryRuntimeElevatedMembership.schedulerMember,
+          },
+        ];
+      }
+      if (query.includes("trust boundary explicit login memberships")) {
+        return [
+          {
+            runtimeLoginElevated:
+              scenario === "trust-boundary-runtime-login-elevated",
+            operatorElevated: scenario === "trust-boundary-operator-elevated",
+          },
+        ];
+      }
+      if (query.includes("trust boundary app schema owner")) {
+        return [{ owner: trustBoundaryAppSchemaOwner }];
+      }
+      if (query.includes("trust boundary app schema bad owner count")) {
+        return [{ badOwnerCount: trustBoundaryAppSchemaBadOwnerCount }];
+      }
+      if (query.includes("trust boundary migration ledger owner")) {
+        return [{ owner: trustBoundaryMigrationLedgerOwner }];
+      }
+      if (query.includes("trust boundary runtime migration ledger access")) {
+        return [{ hasAccess: trustBoundaryRuntimeLedgerAccess }];
+      }
+      if (query.includes("trust boundary legacy schema access")) {
+        return [{ hasAccess: trustBoundaryLegacySchemaAccess }];
+      }
+      if (query.includes("trust boundary runtime public object grants")) {
+        return trustBoundaryRuntimePublicGrants;
+      }
+      if (query.includes("trust boundary public schema create")) {
+        return [{ creatable: trustBoundaryPublicSchemaCreatable }];
+      }
+      if (query.includes("trust boundary runtime public schema access")) {
+        return [
+          {
+            hasAccess: scenario === "trust-boundary-runtime-public-schema",
+          },
+        ];
+      }
+      if (query.includes("trust boundary migrator create privileges")) {
+        return [
+          {
+            databaseCreate: true,
+            publicCreate: scenario === "trust-boundary-migrator-create",
+          },
+        ];
+      }
+      if (query.includes("trust boundary default privilege leaks")) {
+        return trustBoundaryDefaultAclLeaks;
+      }
+      if (query.includes("trust boundary search path")) {
+        return [{ searchPath: trustBoundarySearchPath }];
       }
       if (query.includes("FROM pg_roles")) {
         return [{ role: "anon" }, { role: "authenticated" }];
@@ -1293,5 +1503,404 @@ describe("deployment preflight helpers", () => {
       ),
     ).toEqual(expect.objectContaining({ status: "warn" }));
     expect(report.blockers).not.toContain("runtime-login-role-boundary");
+  });
+
+  describe("PostgreSQL trust boundary (GitHub issue #133)", () => {
+    it("passes a fully compliant trust boundary with a correct MIGRATION_URL", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(createSqlMock("trust-boundary-current") as never)
+        .mockReturnValueOnce(createSqlMock("trust-boundary-current") as never);
+
+      const report = await runDeploymentPreflight({
+        directUrl: "postgresql://postgres@db.example.com:5432/postgres",
+        runtimeUrl:
+          "postgresql://azure_app_identity@pooler.example.com:6543/postgres",
+        migrationUrl:
+          "postgresql://krypto_migrator@migrator-host.example.com:5432/postgres",
+      });
+
+      expect(report.inventory.drizzleMigrationCount).toBe(9);
+      for (const id of [
+        "trust-boundary-role-attributes",
+        "trust-boundary-migrator-set-role-path",
+        "trust-boundary-runtime-not-elevated",
+        "trust-boundary-operator-membership",
+        "trust-boundary-app-schema-ownership",
+        "trust-boundary-migration-ledger-ownership",
+        "trust-boundary-runtime-denial-matrix",
+        "trust-boundary-default-privileges",
+        "trust-boundary-public-schema-create",
+        "trust-boundary-runtime-public-schema",
+        "trust-boundary-migrator-connection-limit",
+        "trust-boundary-migrator-create-boundary",
+        "trust-boundary-search-path",
+        "migration-connectivity",
+        "migration-url-safety",
+        "migration-identity",
+      ]) {
+        expect(report.checks.find((check) => check.id === id)).toEqual(
+          expect.objectContaining({ status: "pass" }),
+        );
+      }
+      expect(
+        report.blockers.filter((id) => id.startsWith("trust-boundary")),
+      ).toEqual([]);
+      expect(
+        report.blockers.filter((id) => id.startsWith("migration-")),
+      ).toEqual([]);
+    });
+
+    it("warns (does not block) when the trust boundary has not been migrated yet", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(createSqlMock("safe") as never);
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.inventory.drizzleMigrationCount).toBe(7);
+      expect(report.blockers).toEqual([]);
+      expect(
+        report.checks.find(
+          (check) => check.id === "trust-boundary-role-attributes",
+        ),
+      ).toEqual(expect.objectContaining({ status: "warn" }));
+      expect(
+        report.checks.find((check) => check.id === "migration-connectivity"),
+      ).toEqual(expect.objectContaining({ status: "warn" }));
+    });
+
+    it("blocks when krypto_schema_owner or krypto_scheduler can log in", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-role-login-unsafe") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain("trust-boundary-role-attributes");
+    });
+
+    it("blocks when krypto_migrator inherits krypto_schema_owner instead of SET-only", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-migrator-inherits") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain(
+        "trust-boundary-migrator-set-role-path",
+      );
+    });
+
+    it("always blocks (regardless of provider) when krypto_runtime is a member of an elevated role", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-runtime-elevated") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(
+        report.checks.find(
+          (check) => check.id === "trust-boundary-runtime-not-elevated",
+        ),
+      ).toEqual(
+        expect.objectContaining({
+          status: "block",
+          evidence: expect.objectContaining({
+            runtimeIsMemberOfSchemaOwner: true,
+          }),
+        }),
+      );
+      expect(report.blockers).toContain(
+        "trust-boundary-runtime-not-elevated",
+      );
+    });
+
+    it("blocks a migrated environment whose krypto schema is not owned by krypto_schema_owner", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-bad-app-schema-owner") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain(
+        "trust-boundary-app-schema-ownership",
+      );
+    });
+
+    it("blocks a migrated environment whose drizzle ledger is not owned by krypto_schema_owner or krypto_migrator", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-bad-ledger-owner") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain(
+        "trust-boundary-migration-ledger-ownership",
+      );
+    });
+
+    it("always blocks when krypto_runtime can still reach the drizzle migration ledger", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-ledger-access-leak") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(
+        report.checks.find(
+          (check) => check.id === "trust-boundary-runtime-denial-matrix",
+        ),
+      ).toEqual(expect.objectContaining({ status: "block" }));
+      expect(report.blockers).toContain(
+        "trust-boundary-runtime-denial-matrix",
+      );
+    });
+
+    it("always blocks when krypto_runtime can still reach a legacy vault/cron/net/pg_net schema", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-legacy-access-leak") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain(
+        "trust-boundary-runtime-denial-matrix",
+      );
+    });
+
+    it("always blocks when krypto_runtime holds an unexpected public-schema grant", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-public-grant-leak") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(
+        report.checks.find(
+          (check) => check.id === "trust-boundary-runtime-denial-matrix",
+        ),
+      ).toEqual(
+        expect.objectContaining({
+          evidence: expect.objectContaining({
+            runtimePublicObjectGrants: ["table:krypto_state_mirror"],
+          }),
+        }),
+      );
+      expect(report.blockers).toContain(
+        "trust-boundary-runtime-denial-matrix",
+      );
+    });
+
+    it("always blocks on a default-privilege leak for krypto_schema_owner/krypto_migrator", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-default-privilege-leak") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain("trust-boundary-default-privileges");
+    });
+
+    it("always blocks when the PUBLIC pseudo-role still holds CREATE on the public schema", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-public-schema-creatable") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain(
+        "trust-boundary-public-schema-create",
+      );
+    });
+
+    it("blocks when the runtime login can use the unrelated public schema", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-runtime-public-schema") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain(
+        "trust-boundary-runtime-public-schema",
+      );
+    });
+
+    it("blocks a migrated environment whose krypto_migrator has an unbounded connection limit", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("trust-boundary-connection-limit-unbounded") as never,
+        );
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain(
+        "trust-boundary-migrator-connection-limit",
+      );
+    });
+
+    it("blocks explicit elevated membership on either runtime login or operator", async () => {
+        for (const scenario of [
+          "trust-boundary-runtime-login-elevated",
+          "trust-boundary-operator-elevated",
+        ] as const) {
+          mockedPostgres.mockReset();
+          mockedPostgres
+            .mockReturnValueOnce(createSqlMock("safe") as never)
+            .mockReturnValueOnce(createSqlMock(scenario) as never);
+
+          const report = await runDeploymentPreflight({
+            directUrl: "******db.example.com/postgres",
+            runtimeUrl: "******pooler.example.com/postgres",
+          });
+
+          expect(report.blockers).toContain(
+            scenario === "trust-boundary-runtime-login-elevated"
+              ? "trust-boundary-runtime-not-elevated"
+              : "trust-boundary-operator-membership",
+          );
+        }
+    });
+
+    it("blocks migrator CREATE outside SET ROLE and unsafe search paths", async () => {
+        for (const [scenario, blocker] of [
+          [
+            "trust-boundary-migrator-create",
+            "trust-boundary-migrator-create-boundary",
+          ],
+          ["trust-boundary-search-path-unsafe", "trust-boundary-search-path"],
+        ] as const) {
+          mockedPostgres.mockReset();
+          mockedPostgres
+            .mockReturnValueOnce(createSqlMock("safe") as never)
+            .mockReturnValueOnce(createSqlMock(scenario) as never);
+
+          const report = await runDeploymentPreflight({
+            directUrl: "******db.example.com/postgres",
+            runtimeUrl: "******pooler.example.com/postgres",
+          });
+
+          expect(report.blockers).toContain(blocker);
+        }
+    });
+
+    it("blocks a fully migrated environment missing MIGRATION_URL", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(createSqlMock("trust-boundary-current") as never);
+
+      const report = await runDeploymentPreflight({
+        directUrl: "******db.example.com/postgres",
+        runtimeUrl: "******pooler.example.com/postgres",
+      });
+
+      expect(report.blockers).toContain("migration-connectivity");
+      expect(report.blockers).toContain("migration-url-safety");
+      expect(report.blockers).toContain("migration-identity");
+    });
+
+    it("blocks when MIGRATION_URL authenticates as the wrong identity", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(
+          createSqlMock("same-connection-role") as never,
+        )
+        .mockReturnValueOnce(createSqlMock("trust-boundary-current") as never);
+
+      const report = await runDeploymentPreflight({
+        directUrl: "postgresql://postgres@db.example.com:5432/postgres",
+        runtimeUrl:
+          "postgresql://azure_app_identity@pooler.example.com:6543/postgres",
+        migrationUrl:
+          "postgresql://krypto_migrator@migrator-host.example.com:5432/postgres",
+      });
+
+      expect(
+        report.checks.find((check) => check.id === "migration-identity"),
+      ).toEqual(expect.objectContaining({ status: "block" }));
+      expect(report.blockers).toContain("migration-identity");
+    });
+
+    it("blocks when MIGRATION_URL collides with DATABASE_URL", async () => {
+      mockedPostgres
+        .mockReturnValueOnce(createSqlMock("safe") as never)
+        .mockReturnValueOnce(createSqlMock("trust-boundary-current") as never)
+        .mockReturnValueOnce(createSqlMock("trust-boundary-current") as never);
+
+      const report = await runDeploymentPreflight({
+        directUrl: "postgresql://postgres@db.example.com:5432/postgres",
+        runtimeUrl:
+          "postgresql://azure_app_identity@pooler.example.com:6543/postgres",
+        migrationUrl:
+          "postgresql://azure_app_identity@pooler.example.com:6543/postgres",
+      });
+
+      expect(
+        report.checks.find((check) => check.id === "migration-url-safety"),
+      ).toEqual(expect.objectContaining({ status: "block" }));
+      expect(report.blockers).toContain("migration-url-safety");
+    });
   });
 });

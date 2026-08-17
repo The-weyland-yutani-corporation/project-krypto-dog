@@ -6,7 +6,7 @@
 // supplied as @secure() parameters at deploy time and must never be
 // committed to a .bicepparam file.
 //
-// Web receives DATABASE_URL but never DIRECT_URL. The scheduler identity
+// Web receives DATABASE_URL but never DIRECT_URL or MIGRATION_URL. The scheduler identity
 // (hourly/daily jobs) is granted access to only the cron secret — the
 // jobs run `node --experimental-strip-types scripts/scheduled-trigger.mjs`
 // (the .mjs entrypoint imports its .ts implementation at
@@ -16,9 +16,10 @@
 // key the existing routes require are always attached correctly. The ops
 // identity (shared, for now, across all five manual jobs) is granted only
 // the secrets at least one of those jobs actually reads — DATABASE_URL,
-// DIRECT_URL, CRON_SECRET, ADMIN_PASSWORD (every job), plus POSTHOG_API_KEY
+// DIRECT_URL, MIGRATION_URL, CRON_SECRET, ADMIN_PASSWORD, plus POSTHOG_API_KEY
 // (target-smoke only, since src/deployment/target-smoke.ts's
 // runTargetSmoke() directly exercises that provider) and
+// migrator-database-password / KRYPTO_MIGRATOR_LOGIN_PASSWORD and
 // runtime-database-password /
 // AZURE_RUNTIME_LOGIN_PASSWORD (migrate-init only, for the fresh-
 // deployment runtime login role bootstrap) — never the ACS connection
@@ -170,9 +171,13 @@ param runtimeDatabaseLoginRole string = 'krypto_app'
 @secure()
 param databaseUrl string
 
-@description('Direct (migration-only) connection string. Supplied at deploy time; never committed. Granted to the scheduler-adjacent ops identity for migrate-init/preflight/verified-backup/target-smoke/activation-check — never to the runtime/web identity.')
+@description('Server-admin/operator connection string. Supplied at deploy time; never committed. Used only by protected operations jobs for role bootstrap, inventory, backup, and evidence checks; migrations use migrationUrl instead. Never granted to runtime or scheduler.')
 @secure()
 param directUrl string
+
+@description('Dedicated direct PostgreSQL migration connection string authenticating as krypto_migrator. Supplied at deploy time; never committed. Mounted only on migrate-init and preflight, never on web, scheduler, smoke, backup, or activation jobs.')
+@secure()
+param migrationUrl string
 
 @description('Shared secret validating the x-cron-secret header on /api/agent/run and /api/agent/daily-summary. Supplied at deploy time; never committed.')
 @secure()
@@ -193,6 +198,10 @@ param adminSessionSecret string
 @description('Fresh-deployment Azure PostgreSQL runtime login role password (AZURE_RUNTIME_LOGIN_PASSWORD — see src/deployment/bootstrap-runtime-role.ts). Supplied at deploy time; never committed. Granted only to the migrate-init operations job — no other job or identity needs it, since it exists solely to create/rotate the runtime login role\'s own credential on a fresh environment.')
 @secure()
 param runtimeDatabasePassword string
+
+@description('Dedicated PostgreSQL migrator password (KRYPTO_MIGRATOR_LOGIN_PASSWORD). Supplied at deploy time; never committed. Granted only to the protected ops identity and mounted only on migrate-init so the admin bootstrap can create or rotate krypto_migrator before MIGRATION_URL is used.')
+@secure()
+param migratorDatabasePassword string
 
 @description('Shared deployment-approval secret validating that a target-smoke or activation-check invocation is an authorized part of a real deploy/rollout, not an arbitrary manual trigger. Supplied at deploy time; never committed. Granted only to the ops identity, and mounted as DEPLOYMENT_APPROVAL_SECRET only on the target-smoke and activation-check jobs — never the web app, the scheduler jobs, or the other three ops jobs (migrate-init, preflight, verified-backup), none of which need it.')
 @secure()
@@ -244,6 +253,14 @@ resource directUrlSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   }
 }
 
+resource migrationUrlSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
+  parent: keyVault
+  name: 'migration-url'
+  properties: {
+    value: migrationUrl
+  }
+}
+
 resource cronSecretSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   parent: keyVault
   name: 'cron-secret'
@@ -289,6 +306,14 @@ resource runtimeDatabasePasswordSecret 'Microsoft.KeyVault/vaults/secrets@2024-1
   name: 'runtime-database-password'
   properties: {
     value: runtimeDatabasePassword
+  }
+}
+
+resource migratorDatabasePasswordSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
+  parent: keyVault
+  name: 'migrator-database-password'
+  properties: {
+    value: migratorDatabasePassword
   }
 }
 
@@ -411,6 +436,16 @@ resource opsDirectUrlAccess 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
+resource opsMigrationUrlAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, 'migration-url', opsIdentityPrincipalId, 'ops')
+  scope: migrationUrlSecret
+  properties: {
+    principalId: opsIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
+  }
+}
+
 resource opsCronSecretAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, 'cron-secret', opsIdentityPrincipalId, 'ops')
   scope: cronSecretSecret
@@ -446,6 +481,16 @@ resource opsPosthogApiKeyAccess 'Microsoft.Authorization/roleAssignments@2022-04
 resource opsRuntimeDatabasePasswordAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, 'runtime-database-password', opsIdentityPrincipalId, 'ops')
   scope: runtimeDatabasePasswordSecret
+  properties: {
+    principalId: opsIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
+  }
+}
+
+resource opsMigratorDatabasePasswordAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, 'migrator-database-password', opsIdentityPrincipalId, 'ops')
+  scope: migratorDatabasePasswordSecret
   properties: {
     principalId: opsIdentityPrincipalId
     principalType: 'ServicePrincipal'
@@ -627,8 +672,10 @@ module migrateInitJob 'modules/container-app-job.bicep' = {
     ])
     keyVaultSecretEnv: [
       { name: 'DIRECT_URL', keyVaultUrl: directUrlSecret.properties.secretUri }
+      { name: 'MIGRATION_URL', keyVaultUrl: migrationUrlSecret.properties.secretUri }
       // scripts/seed.ts's account-init path also reads DATABASE_URL.
       { name: 'DATABASE_URL', keyVaultUrl: databaseUrlSecret.properties.secretUri }
+      { name: 'KRYPTO_MIGRATOR_LOGIN_PASSWORD', keyVaultUrl: migratorDatabasePasswordSecret.properties.secretUri }
       // Fresh-deployment runtime login role credential — granted only to
       // this job, never to preflight/verified-backup/target-smoke/
       // activation-check.
@@ -638,7 +685,9 @@ module migrateInitJob 'modules/container-app-job.bicep' = {
   }
   dependsOn: [
     opsDirectUrlAccess
+    opsMigrationUrlAccess
     opsDatabaseUrlAccess
+    opsMigratorDatabasePasswordAccess
     opsRuntimeDatabasePasswordAccess
   ]
 }
@@ -668,12 +717,14 @@ module preflightJob 'modules/container-app-job.bicep' = {
     keyVaultSecretEnv: [
       { name: 'DATABASE_URL', keyVaultUrl: databaseUrlSecret.properties.secretUri }
       { name: 'DIRECT_URL', keyVaultUrl: directUrlSecret.properties.secretUri }
+      { name: 'MIGRATION_URL', keyVaultUrl: migrationUrlSecret.properties.secretUri }
     ]
     tags: envTags
   }
   dependsOn: [
     opsDatabaseUrlAccess
     opsDirectUrlAccess
+    opsMigrationUrlAccess
   ]
 }
 
