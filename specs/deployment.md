@@ -221,10 +221,10 @@ Requirements:
 - `DATABASE_URL` uses `krypto_app`; `DIRECT_URL` uses `krypto_owner`;
   `MIGRATION_URL` uses the dedicated least-privilege `krypto_migrator` role
   over a direct (non-pooled) connection. All three target the same private
-  server/database with `sslmode=require`. `MIGRATION_URL` and
-  `MIGRATOR_DATABASE_PASSWORD` are granted only to `migrate-init`;
-  The credential-bearing `MIGRATION_URL` is additionally mounted only on the
-  protected `preflight` job, which opens an explicit read-only transaction.
+  server/database with `sslmode=require`. `MIGRATOR_DATABASE_PASSWORD` is
+  granted only to `migrate-init`. The credential-bearing `MIGRATION_URL` is
+  mounted only on `migrate-init` and the protected `preflight` job; preflight
+  opens an explicit read-only transaction.
   See [ADR 0011](./decisions/0011-postgresql-trust-boundary-roles.md).
 
 ## 3. Provision the Foundry model platform
