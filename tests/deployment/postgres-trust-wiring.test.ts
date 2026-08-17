@@ -96,6 +96,18 @@ describe("PostgreSQL trust-boundary release wiring", () => {
     expect(rotation).toContain('--operation migrate-init');
   });
 
+  it("provides inert offline Bicep compiler stubs for the new secret inputs", () => {
+    const validation = read(".github/workflows/azure-infra-validate.yml");
+    for (const name of [
+      "MIGRATION_URL_DEV",
+      "MIGRATION_URL_PROD",
+      "MIGRATOR_DATABASE_PASSWORD_DEV",
+      "MIGRATOR_DATABASE_PASSWORD_PROD",
+    ]) {
+      expect(validation).toContain(`${name}: stub-inert-value`);
+    }
+  });
+
   it("makes database-role bootstrap part of retained migrate-init evidence", () => {
     const validator = read(".github/scripts/azure/validate-report.mjs");
     expect(validator).toContain(
