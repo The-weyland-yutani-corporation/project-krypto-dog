@@ -34,16 +34,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/VeVarunSharma/project-krypto-dog.git"
+    "url": "git+https://github.com/The-weyland-yutani-corporation/project-krypto-dog.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "bugs": {
-    "url": "https://github.com/VeVarunSharma/project-krypto-dog/issues"
+    "url": "https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues"
   },
-  "homepage": "https://github.com/VeVarunSharma/project-krypto-dog#readme",
+  "homepage": "https://github.com/The-weyland-yutani-corporation/project-krypto-dog#readme",
   "engines": {
     "node": ">=22.13.0 <23"
   },

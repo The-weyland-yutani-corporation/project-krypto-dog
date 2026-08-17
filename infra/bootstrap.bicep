@@ -72,7 +72,7 @@ param prodResourceGroupName string = 'rg-krypto-prod'
 ])
 param platformResourceGroupName string = 'rg-krypto-platform'
 
-@description('GitHub repository owner (org or user), e.g. VeVarunSharma.')
+@description('GitHub repository owner (org or user), e.g. The-weyland-yutani-corporation.')
 param githubOrg string
 
 @description('Immutable GitHub repository owner ID used by the configured OIDC subject format.')

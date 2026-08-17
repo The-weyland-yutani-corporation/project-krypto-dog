@@ -203,9 +203,9 @@ tests/                    # Jest unit + integration tests
 
 Observed live runs:
 
-- [Dedicated account succeeded; model deployment failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
-- [Dev foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
-- [Prod foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
+- [Dedicated account succeeded; model deployment failed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
+- [Dev foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841581875)
+- [Prod foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841960745)
 
 GitHub Environments, branch restrictions, and protected values are configured.
 Required-reviewer rules are unavailable on the private repository's billing
@@ -248,4 +248,4 @@ Project Krypto uses a hybrid spec strategy (see ADR [`0004-hybrid-spec-strategy.
 
 ## Repository
 
-[github.com/VeVarunSharma/project-krypto-dog](https://github.com/VeVarunSharma/project-krypto-dog)
+[github.com/The-weyland-yutani-corporation/project-krypto-dog](https://github.com/The-weyland-yutani-corporation/project-krypto-dog)

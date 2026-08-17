@@ -42,8 +42,8 @@ provision PostgreSQL there. It is not a current target.
 | Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
 | Foundry agents | Separate dev/prod projects and toolless prompt agents version `1` are active; exact-definition and structured `HOLD` smokes passed | Applied |
 | Foundry workload access | Dev runtime/ops have the proven custom-only `Project Krypto Foundry Agent Invoker`; the reviewed template adds the same project-scoped assignment for prod without changing live prod; legacy direct-model roles await app-image cutover | Dev proven; prod source ready |
-| Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
-| Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
+| Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841581875) |
+| Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841960745) |
 | Releases | Dev is shadow/scheduled; prod is disabled/manual. Both still run the pre-agent image until the reviewed cutover release. | Deployed |
 | Analytics | Shared ingestion key temporarily staged with mandatory dev/prod event tags; separate projects remain a promotion gate | Release-testable |
 

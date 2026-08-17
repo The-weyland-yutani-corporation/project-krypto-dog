@@ -95,7 +95,7 @@ const { reconcileAgenticPullRequests } =
     "../../.github/scripts/agentic-pr-reconciler.cjs",
   );
 
-const repository = "VeVarunSharma/project-krypto-dog";
+const repository = "The-weyland-yutani-corporation/project-krypto-dog";
 
 function pullRequest(
   number: number,
@@ -301,7 +301,7 @@ async function reconcile(
     github: harness.github,
     context: {
       repo: {
-        owner: "VeVarunSharma",
+        owner: "The-weyland-yutani-corporation",
         repo: "project-krypto-dog",
       },
     },
@@ -324,7 +324,7 @@ describe("agentic PR reconciler integration", () => {
     const { mocks } = await reconcile();
 
     expect(mocks.createCommitStatus).toHaveBeenCalledWith({
-      owner: "VeVarunSharma",
+      owner: "The-weyland-yutani-corporation",
       repo: "project-krypto-dog",
       sha: "sha-1",
       state: "success",
@@ -359,14 +359,14 @@ describe("agentic PR reconciler integration", () => {
     });
 
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
-      owner: "VeVarunSharma",
+      owner: "The-weyland-yutani-corporation",
       repo: "project-krypto-dog",
       workflow_id: "ci.yml",
       ref: "docs/agent-update-1",
       inputs: {},
     });
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
-      owner: "VeVarunSharma",
+      owner: "The-weyland-yutani-corporation",
       repo: "project-krypto-dog",
       workflow_id: "code-review.lock.yml",
       ref: "docs/agent-update-1",
@@ -403,14 +403,14 @@ describe("agentic PR reconciler integration", () => {
       }),
     );
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
-      owner: "VeVarunSharma",
+      owner: "The-weyland-yutani-corporation",
       repo: "project-krypto-dog",
       workflow_id: "security-review.lock.yml",
       ref: "docs/agent-update-1",
       inputs: targetInputs(1),
     });
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
-      owner: "VeVarunSharma",
+      owner: "The-weyland-yutani-corporation",
       repo: "project-krypto-dog",
       workflow_id: "trading-safety-review.lock.yml",
       ref: "docs/agent-update-1",
@@ -506,7 +506,7 @@ describe("agentic PR reconciler integration", () => {
 
     expect(mocks.approveWorkflowRun).toHaveBeenCalledTimes(1);
     expect(mocks.approveWorkflowRun).toHaveBeenCalledWith({
-      owner: "VeVarunSharma",
+      owner: "The-weyland-yutani-corporation",
       repo: "project-krypto-dog",
       run_id: 101,
     });
@@ -546,7 +546,7 @@ describe("agentic PR reconciler integration", () => {
     expect(reviewDispatches).toEqual([
       [
         {
-          owner: "VeVarunSharma",
+          owner: "The-weyland-yutani-corporation",
           repo: "project-krypto-dog",
           workflow_id: "code-review.lock.yml",
           ref: "docs/agent-update-1",
@@ -555,7 +555,7 @@ describe("agentic PR reconciler integration", () => {
       ],
       [
         {
-          owner: "VeVarunSharma",
+          owner: "The-weyland-yutani-corporation",
           repo: "project-krypto-dog",
           workflow_id: "code-review.lock.yml",
           ref: "docs/agent-update-2",
@@ -601,7 +601,7 @@ describe("agentic PR reconciler integration", () => {
       });
 
       expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
-        owner: "VeVarunSharma",
+        owner: "The-weyland-yutani-corporation",
         repo: "project-krypto-dog",
         workflow_id: "pr-self-heal.lock.yml",
         ref: "docs/agent-update-1",
@@ -637,7 +637,7 @@ describe("agentic PR reconciler integration", () => {
     expect(mocks.paginate).toHaveBeenCalledWith(
       mocks.listForRef,
       expect.objectContaining({
-        owner: "VeVarunSharma",
+        owner: "The-weyland-yutani-corporation",
         repo: "project-krypto-dog",
         ref: "sha-1",
         per_page: 100,
@@ -715,7 +715,7 @@ describe("agentic PR reconciler integration", () => {
     });
 
     expect(mocks.addLabels).toHaveBeenCalledWith({
-      owner: "VeVarunSharma",
+      owner: "The-weyland-yutani-corporation",
       repo: "project-krypto-dog",
       issue_number: 1,
       labels: ["self-heal-exhausted", "blocked"],
@@ -741,7 +741,7 @@ describe("agentic PR reconciler integration", () => {
     });
 
     expect(mocks.addLabels).toHaveBeenCalledWith({
-      owner: "VeVarunSharma",
+      owner: "The-weyland-yutani-corporation",
       repo: "project-krypto-dog",
       issue_number: 1,
       labels: ["self-heal-exhausted", "blocked"],
