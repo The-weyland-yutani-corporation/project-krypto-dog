@@ -189,7 +189,6 @@ export async function bootstrapRuntimeRoleMembership(
     if (!alreadyMember) {
       await sql`GRANT ${sql(RUNTIME_ROLE_NAME)} TO ${sql(loginRole)}`;
     }
-    await revokeElevatedRoleMembershipsDefensively(sql, loginRole);
 
     // Defense in depth: the runtime login role must never be a member of
     // any of the elevated trust-boundary roles (see
