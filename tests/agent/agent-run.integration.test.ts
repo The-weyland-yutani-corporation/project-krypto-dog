@@ -5,6 +5,10 @@ jest.mock("@/agent/run-flow", () => ({
 import { POST } from "@/app/api/agent/run/route";
 import { executeAgentRun } from "@/agent/run-flow";
 import { RequiredRolloutModeError } from "@/trading/errors";
+import {
+  resetRunAdmissionForTest,
+  tryAcquireRunAdmission,
+} from "@/lib/run-admission";
 
 const mockedExecuteAgentRun = executeAgentRun as jest.MockedFunction<
   typeof executeAgentRun
@@ -41,6 +45,8 @@ describe("POST /api/agent/run", () => {
     jest.clearAllMocks();
     process.env.CRON_SECRET = "test-cron-secret";
     process.env.ROLLOUT_MODE = "disabled";
+    process.env.AGENT_RUN_ADMISSION_CAPACITY = "1";
+    resetRunAdmissionForTest();
   });
 
   afterAll(() => {
@@ -73,11 +79,13 @@ describe("POST /api/agent/run", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mockedExecuteAgentRun).toHaveBeenCalledWith({
+    expect(mockedExecuteAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       triggerSource: "cron",
       idempotencyKey: "cron:2026-07-14T12",
       requiredMode: "disabled",
-    });
+      deadline: expect.any(Object),
+      signal: expect.any(AbortSignal),
+    }));
   });
 
   it("maps lease conflicts to HTTP 409", async () => {
@@ -88,6 +96,18 @@ describe("POST /api/agent/run", () => {
 
     const response = await POST(request() as never);
     expect(response.status).toBe(409);
+  });
+
+  it("rejects excess process admission without invoking orchestration", async () => {
+    const release = tryAcquireRunAdmission();
+    try {
+      const response = await POST(request() as never);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBe("1");
+      expect(mockedExecuteAgentRun).not.toHaveBeenCalled();
+    } finally {
+      release();
+    }
   });
 
   it("passes a required disabled mode into orchestration", async () => {
@@ -106,11 +126,11 @@ describe("POST /api/agent/run", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mockedExecuteAgentRun).toHaveBeenCalledWith({
+    expect(mockedExecuteAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       triggerSource: "cron",
       idempotencyKey: "smoke-run",
       requiredMode: "disabled",
-    });
+    }));
   });
 
   it("rejects invalid or changed required modes before a run", async () => {

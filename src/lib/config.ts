@@ -115,6 +115,13 @@ export function resolveAzureFoundryAgentConfig(
   };
 }
 
+function boundedEnvironmentInteger(maximum: number) {
+  return z
+    .string()
+    .regex(/^[1-9][0-9]*$/)
+    .refine((value) => Number(value) <= maximum);
+}
+
 const envSchema = z
   .object({
     // Azure OpenAI v1 with Microsoft Entra authentication
@@ -126,6 +133,7 @@ const envSchema = z
     AZURE_CLIENT_ID: z.string().uuid().optional(),
     // Other runtime config
     DATABASE_URL: z.string().url(),
+    DATABASE_POOL_MAX: z.string().regex(/^(?:[1-9]|10)$/).optional(),
     POSTHOG_API_KEY: z.string().min(1),
     POSTHOG_HOST: z.string().url().optional(),
     POSTHOG_ENVIRONMENT: z.enum(["dev", "prod"]).optional(),
@@ -138,6 +146,21 @@ const envSchema = z
     ADMIN_PASSWORD: z.string().min(1),
     ADMIN_SESSION_SECRET: z.string().min(1).optional(),
     NODE_ENV: z.enum(["development", "test", "production"]).optional(),
+    AGENT_RUN_ADMISSION_CAPACITY: z
+      .string()
+      .regex(/^(?:[1-9]|[12][0-9]|3[0-2])$/)
+      .optional(),
+    COINBASE_DAILY_REQUEST_BUDGET:
+      boundedEnvironmentInteger(1_000).optional(),
+    FOUNDRY_DAILY_REQUEST_BUDGET:
+      boundedEnvironmentInteger(200).optional(),
+    POSTHOG_DAILY_REQUEST_BUDGET:
+      boundedEnvironmentInteger(2_000).optional(),
+    ACS_DAILY_REQUEST_BUDGET:
+      boundedEnvironmentInteger(100).optional(),
+    RELEASE_SHA: z.string().regex(/^[0-9a-f]{40}$/).optional(),
+    IMAGE_DIGEST: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
+    EXECUTION_CONTRACT_VERSION: z.literal("bounded-sync-v1").optional(),
   })
   .check((ctx) => {
     const env = ctx.value;
@@ -191,6 +214,48 @@ const envSchema = z
         ctx.issues.push({
           code: "custom",
           message: "POSTHOG_ENVIRONMENT is required in production.",
+          input: ctx.value,
+        });
+      }
+      const boundedRuntimeConfig = [
+        "DATABASE_POOL_MAX",
+        "AGENT_RUN_ADMISSION_CAPACITY",
+        "COINBASE_DAILY_REQUEST_BUDGET",
+        "FOUNDRY_DAILY_REQUEST_BUDGET",
+        "POSTHOG_DAILY_REQUEST_BUDGET",
+        "ACS_DAILY_REQUEST_BUDGET",
+        "RELEASE_SHA",
+        "IMAGE_DIGEST",
+        "EXECUTION_CONTRACT_VERSION",
+      ].filter(
+        (name) =>
+          !env[name as keyof typeof env],
+      );
+      if (boundedRuntimeConfig.length > 0) {
+        ctx.issues.push({
+          code: "custom",
+          message: `Production bounded-runtime configuration is incomplete: ${boundedRuntimeConfig.join(", ")}.`,
+          input: ctx.value,
+        });
+      }
+      if (
+        env.DATABASE_POOL_MAX !== undefined &&
+        env.DATABASE_POOL_MAX !== "1"
+      ) {
+        ctx.issues.push({
+          code: "custom",
+          message: "Production DATABASE_POOL_MAX must be exactly 1.",
+          input: ctx.value,
+        });
+      }
+      if (
+        env.AGENT_RUN_ADMISSION_CAPACITY !== undefined &&
+        env.AGENT_RUN_ADMISSION_CAPACITY !== "1"
+      ) {
+        ctx.issues.push({
+          code: "custom",
+          message:
+            "Production AGENT_RUN_ADMISSION_CAPACITY must be exactly 1.",
           input: ctx.value,
         });
       }

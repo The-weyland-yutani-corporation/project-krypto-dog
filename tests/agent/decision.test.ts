@@ -4,6 +4,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { generateTradeDecision } from "@/agent/decision";
 import { DEFAULT_STRATEGY_CONFIG } from "@/trading/strategy-config";
 import { AgentUpstreamError } from "@/trading/errors";
+import { createExecutionDeadline } from "@/lib/execution-envelope";
 
 const model = {
   withStructuredOutput: jest.fn(() =>
@@ -280,5 +281,135 @@ describe("generateTradeDecision", () => {
       retryable: true,
       attemptCount: 1,
     });
+  });
+
+  it("honors provider Retry-After while remaining inside the absolute deadline", async () => {
+    const delays: number[] = [];
+    let calls = 0;
+    const agentInvoker = jest.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error("rate limited"), {
+          status: 429,
+          headers: new Headers({ "Retry-After": "2" }),
+        });
+      }
+      return {
+        decision: {
+          action: "HOLD" as const,
+          notionalUSD: null,
+          reasoning: "Wait",
+        },
+        tokenUsage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      };
+    });
+    const result = await generateTradeDecision(input, {
+      agentInvoker,
+      delayImpl: async (ms) => {
+        delays.push(ms);
+      },
+    });
+    expect(result.decision.action).toBe("HOLD");
+    expect(delays).toEqual([2_000]);
+  });
+
+  it("fails closed when Retry-After exceeds the Foundry budget", async () => {
+    const agentInvoker = jest.fn(async () => {
+      throw Object.assign(new Error("rate limited"), {
+        status: 429,
+        headers: new Headers({ "Retry-After": "90" }),
+      });
+    });
+    await expect(
+      generateTradeDecision(input, { agentInvoker }),
+    ).rejects.toMatchObject({
+      code: "provider-budget-exhausted",
+      provider: "foundry",
+      kind: "time",
+    });
+    expect(agentInvoker).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not invoke Foundry after cancellation", async () => {
+    const controller = new AbortController();
+    const deadline = createExecutionDeadline({ signal: controller.signal });
+    controller.abort();
+    const agentInvoker = jest.fn();
+    await expect(
+      generateTradeDecision(input, {
+        agentInvoker,
+        deadline,
+        budgetStore: { consume: async () => 1 },
+      }),
+    ).rejects.toMatchObject({ code: "execution-deadline-exhausted" });
+    expect(agentInvoker).not.toHaveBeenCalled();
+    deadline.dispose();
+  });
+
+  it("propagates cancellation while waiting to retry Foundry", async () => {
+    const controller = new AbortController();
+    const agentInvoker = jest.fn(async () => {
+      throw Object.assign(new Error("temporarily unavailable"), {
+        status: 429,
+      });
+    });
+    const pending = generateTradeDecision(input, {
+      agentInvoker,
+      signal: controller.signal,
+      retryDelayMs: 1_000,
+    });
+    setTimeout(() => controller.abort(new Error("cancel retry")), 1);
+    await expect(pending).rejects.toThrow("cancel retry");
+    expect(agentInvoker).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the absolute deadline for a budgeted Foundry retry", async () => {
+    let calls = 0;
+    const deadline = createExecutionDeadline();
+    const agentInvoker = jest.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw Object.assign(new Error("temporarily unavailable"), {
+          status: 429,
+        });
+      }
+      return {
+        decision: {
+          action: "HOLD" as const,
+          notionalUSD: null,
+          reasoning: "Wait",
+        },
+        tokenUsage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      };
+    });
+    await expect(
+      generateTradeDecision(input, {
+        agentInvoker,
+        deadline,
+        retryDelayMs: 1,
+        budgetStore: { consume: async () => calls + 1 },
+      }),
+    ).resolves.toMatchObject({ decision: { action: "HOLD" } });
+    expect(agentInvoker).toHaveBeenCalledTimes(2);
+    deadline.dispose();
+  });
+
+  it("rejects an already exhausted Foundry provider window", async () => {
+    const deadline = createExecutionDeadline();
+    const agentInvoker = jest.fn();
+    await expect(
+      generateTradeDecision(input, {
+        agentInvoker,
+        deadline,
+        providerDeadlineAt: new Date(deadline.now().getTime() - 1),
+        budgetStore: { consume: async () => 1 },
+      }),
+    ).rejects.toMatchObject({
+      code: "provider-budget-exhausted",
+      provider: "foundry",
+      kind: "time",
+    });
+    expect(agentInvoker).not.toHaveBeenCalled();
+    deadline.dispose();
   });
 });

@@ -12,10 +12,11 @@
 // and/or 'Schedule' is a separate, explicitly reviewed deploy of this
 // template, never a side effect of release.bicep (ADR 0008 items 11-12).
 //
-// The hourly cron is fixed at "0 * * * *" UTC with a replica retry limit
-// of 1; the daily cron is fixed at "5 0 * * *" UTC with a replica retry
-// limit of 0. These are not parameters — this template's only variable
-// surface is rolloutMode and the two trigger types.
+// The hourly cron is fixed at "0 * * * *" UTC and the daily cron is fixed at
+// "5 0 * * *" UTC. Both use replicaRetryLimit=0 and a 270-second replica
+// timeout; invocation idempotency remains defense in depth. These are not
+// parameters — this template's only variable surface is rolloutMode and the
+// two trigger types.
 //
 // The hourly/daily jobs run
 // `node --experimental-strip-types scripts/scheduled-trigger.mjs` (the
@@ -76,6 +77,31 @@ param webImageName string = 'krypto-web'
 @description('Immutable digest of the web image, e.g. sha256:<64-hex>. Must match the digest currently deployed by release.bicep. Also used, unmodified, by the hourly/daily scheduler jobs, which run from the same image as the web app.')
 @minLength(1)
 param imageDigest string
+
+@description('The 40-character lowercase-hex git commit SHA that produced the currently deployed image. Must match release.bicep.')
+@minLength(40)
+@maxLength(40)
+param releaseSha string
+
+@description('Fail-closed daily Coinbase request ceiling. Must match release.bicep.')
+@minValue(1)
+@maxValue(1000)
+param coinbaseDailyRequestBudget int = 1000
+
+@description('Fail-closed daily version-pinned Foundry invocation ceiling. Must match release.bicep.')
+@minValue(1)
+@maxValue(200)
+param foundryDailyRequestBudget int = 200
+
+@description('Fail-closed daily PostHog flush ceiling. Must match release.bicep.')
+@minValue(1)
+@maxValue(2000)
+param posthogDailyRequestBudget int = 2000
+
+@description('Fail-closed daily ACS Email send ceiling. Must match release.bicep.')
+@minValue(1)
+@maxValue(100)
+param acsDailyRequestBudget int = 100
 
 @description('Foundry project endpoint. Must match the value release.bicep deployed.')
 param azureFoundryProjectEndpoint string
@@ -223,6 +249,15 @@ module webApp 'modules/container-app-web.bicep' = {
       { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
       { name: 'ALERT_EMAIL_TO', value: alertEmailTo }
       { name: 'AZURE_COMMUNICATION_EMAIL_SENDER', value: communicationEmailSender }
+      { name: 'RELEASE_SHA', value: releaseSha }
+      { name: 'IMAGE_DIGEST', value: imageDigest }
+      { name: 'EXECUTION_CONTRACT_VERSION', value: 'bounded-sync-v1' }
+      { name: 'DATABASE_POOL_MAX', value: '1' }
+      { name: 'AGENT_RUN_ADMISSION_CAPACITY', value: '1' }
+      { name: 'COINBASE_DAILY_REQUEST_BUDGET', value: string(coinbaseDailyRequestBudget) }
+      { name: 'FOUNDRY_DAILY_REQUEST_BUDGET', value: string(foundryDailyRequestBudget) }
+      { name: 'POSTHOG_DAILY_REQUEST_BUDGET', value: string(posthogDailyRequestBudget) }
+      { name: 'ACS_DAILY_REQUEST_BUDGET', value: string(acsDailyRequestBudget) }
     ], legacyDirectModelEnv)
     keyVaultSecretEnv: [
       { name: 'DATABASE_URL', keyVaultUrl: databaseUrlSecret.properties.secretUri }
@@ -247,8 +282,8 @@ module hourlyAgentRunJob 'modules/container-app-job.bicep' = {
     jobIdentityId: schedulerIdentityId
     triggerType: hourlyTriggerType
     cronExpression: '0 * * * *'
-    replicaRetryLimit: 1
-    replicaTimeoutSeconds: 300
+    replicaRetryLimit: 0
+    replicaTimeoutSeconds: 270
     command: [
       'node'
     ]
@@ -261,6 +296,9 @@ module hourlyAgentRunJob 'modules/container-app-job.bicep' = {
       { name: 'SCHEDULED_ROUTE', value: '/api/agent/run' }
       { name: 'ROLLOUT_MODE', value: rolloutMode }
       { name: 'SCHEDULED_IDEMPOTENCY_NAMESPACE', value: '${imageDigest}-${validatedScheduleGeneration}' }
+      { name: 'RELEASE_SHA', value: releaseSha }
+      { name: 'IMAGE_DIGEST', value: imageDigest }
+      { name: 'EXECUTION_CONTRACT_VERSION', value: 'bounded-sync-v1' }
     ]
     keyVaultSecretEnv: [
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }
@@ -281,7 +319,7 @@ module dailySummaryJob 'modules/container-app-job.bicep' = {
     triggerType: dailyTriggerType
     cronExpression: '5 0 * * *'
     replicaRetryLimit: 0
-    replicaTimeoutSeconds: 300
+    replicaTimeoutSeconds: 270
     command: [
       'node'
     ]
@@ -293,6 +331,9 @@ module dailySummaryJob 'modules/container-app-job.bicep' = {
       { name: 'TARGET_BASE_URL', value: targetBaseUrl }
       { name: 'SCHEDULED_ROUTE', value: '/api/agent/daily-summary' }
       { name: 'ROLLOUT_MODE', value: rolloutMode }
+      { name: 'RELEASE_SHA', value: releaseSha }
+      { name: 'IMAGE_DIGEST', value: imageDigest }
+      { name: 'EXECUTION_CONTRACT_VERSION', value: 'bounded-sync-v1' }
     ]
     keyVaultSecretEnv: [
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }

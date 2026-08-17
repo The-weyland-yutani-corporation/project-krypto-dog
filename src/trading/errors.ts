@@ -59,11 +59,14 @@ export type AgentErrorType =
   | "AUTHORIZATION"
   | "CONFLICT"
   | "PERSISTENCE"
+  | "DEADLINE"
+  | "PROVIDER_BUDGET"
   | "UNKNOWN";
 
 export class AgentUpstreamError extends Error {
   attemptCount?: number;
   latencyMs?: number;
+  retryAfterMs?: number;
 
   constructor(
     readonly errorType: AgentErrorType,
@@ -94,7 +97,7 @@ export class AgentBindingMismatchError extends AgentUpstreamError {
 
 function readErrorField(
   error: unknown,
-  field: "status" | "code" | "name",
+  field: "status" | "code" | "name" | "headers" | "retryAfter",
 ): unknown {
   return typeof error === "object" && error !== null && field in error
     ? (error as Record<string, unknown>)[field]
@@ -114,13 +117,39 @@ export function classifyLlmError(error: unknown): AgentUpstreamError {
     return new AgentUpstreamError("LLM_AUTH", message, 502, false, error);
   }
   if (status === 429) {
-    return new AgentUpstreamError(
+    const classified = new AgentUpstreamError(
       "LLM_RATE_LIMIT",
       message,
       503,
       true,
       error,
     );
+    const direct = readErrorField(error, "retryAfter");
+    if (typeof direct === "number" && Number.isFinite(direct) && direct >= 0) {
+      classified.retryAfterMs = Math.ceil(direct * 1_000);
+    } else {
+      const headers = readErrorField(error, "headers");
+      if (
+        typeof headers === "object" &&
+        headers !== null &&
+        "get" in headers &&
+        typeof (headers as { get?: unknown }).get === "function"
+      ) {
+        const value = (headers as { get(name: string): string | null }).get(
+          "retry-after",
+        );
+        if (value) {
+          const seconds = Number(value);
+          const date = Date.parse(value);
+          classified.retryAfterMs = Number.isFinite(seconds)
+            ? Math.max(0, Math.ceil(seconds * 1_000))
+            : Number.isFinite(date)
+              ? Math.max(0, date - Date.now())
+              : undefined;
+        }
+      }
+    }
+    return classified;
   }
   if (
     status === 408 ||

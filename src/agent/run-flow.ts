@@ -5,6 +5,7 @@ import {
   eq,
   isNull,
   lt,
+  lte,
   or,
   sql,
 } from "drizzle-orm";
@@ -71,14 +72,25 @@ import type {
   TradingAccountSnapshot,
   TradingMarketSnapshot,
 } from "@/trading/types";
+import {
+  AdmissionCapacityError,
+  ExecutionDeadlineError,
+  ProviderBudgetError,
+  RUN_LEASE_DURATION_MS,
+  createExecutionDeadline,
+  type ExecutionDeadline,
+} from "@/lib/execution-envelope";
+import { reservePostHogBudget } from "@/lib/posthog";
 
 const ACCOUNT_ID = "singleton";
-const LEASE_DURATION_MS = 90_000;
+const LEASE_DURATION_MS = RUN_LEASE_DURATION_MS;
 
 export interface ExecuteAgentRunOptions {
   triggerSource: AgentTriggerSource;
   idempotencyKey?: string;
   requiredMode?: TradingMode;
+  signal?: AbortSignal;
+  deadline?: ExecutionDeadline;
 }
 
 export type ExecuteAgentRunOutcome =
@@ -92,6 +104,8 @@ type InvocationAcquisition =
       runId: string;
       leaseOwner: string;
       mode: TradingMode;
+      startedAt: Date;
+      deadlineAt: Date;
     }
   | { kind: "existing"; run: AgentRun }
   | { kind: "conflict"; runId: string; message: string };
@@ -187,6 +201,7 @@ async function acquireInvocation(
   options: ExecuteAgentRunOptions,
   mode: TradingMode,
   now: Date,
+  deadlineAt: Date,
 ): Promise<InvocationAcquisition> {
   const idempotencyKey =
     options.idempotencyKey ??
@@ -218,6 +233,79 @@ async function acquireInvocation(
     ) {
       return { kind: "existing", run: existing };
     }
+    if (
+      existing &&
+      existing.outcome === "RUNNING" &&
+      existing.deadlineAt.getTime() <= now.getTime()
+    ) {
+      const [leaseState] = await tx
+        .select({
+          leaseOwner: agentState.leaseOwner,
+          leaseExpiresAt: agentState.leaseExpiresAt,
+          isRunning: agentState.isRunning,
+        })
+        .from(agentState)
+        .where(eq(agentState.id, ACCOUNT_ID))
+        .for("update")
+        .limit(1);
+      if (
+        leaseState?.leaseOwner === existing.id &&
+        leaseState.leaseExpiresAt !== null &&
+        leaseState.leaseExpiresAt.getTime() > now.getTime()
+      ) {
+        return {
+          kind: "conflict",
+          runId: existing.id,
+          message: "The original invocation still owns an unexpired run lease",
+        };
+      }
+      const [terminal] = await tx
+        .update(agentRun)
+        .set({
+          outcome: "UPSTREAM_ERROR",
+          errorType: "execution-deadline-exhausted",
+          errorMessage:
+            "Recovered invocation had already exhausted its persisted deadline; no trade was attempted.",
+          latencyMs: Math.max(
+            0,
+            now.getTime() - existing.startedAt.getTime(),
+          ),
+          completedAt: now,
+        })
+        .where(
+          and(
+            eq(agentRun.id, existing.id),
+            eq(agentRun.outcome, "RUNNING"),
+          ),
+        )
+        .returning();
+      await tx
+        .update(agentState)
+        .set({
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          isRunning: false,
+          lastRunAt: now,
+          lastCompletedRunAt: now,
+        })
+        .where(
+          and(
+            eq(agentState.id, ACCOUNT_ID),
+            eq(agentState.leaseOwner, existing.id),
+            or(
+              isNull(agentState.leaseExpiresAt),
+              lte(agentState.leaseExpiresAt, now),
+            ),
+          ),
+        );
+      if (terminal) return { kind: "existing", run: terminal };
+      const [current] = await tx
+        .select()
+        .from(agentRun)
+        .where(eq(agentRun.id, existing.id))
+        .limit(1);
+      return { kind: "existing", run: current ?? existing };
+    }
 
     const runId = existing?.id ?? newRunId;
     const leaseOwner = runId;
@@ -229,6 +317,8 @@ async function acquireInvocation(
         tradingMode: databaseMode(mode),
         strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
         modelVersion: configuredModelVersion(),
+        startedAt: now,
+        deadlineAt,
       });
     }
 
@@ -245,7 +335,7 @@ async function acquireInvocation(
           or(
             isNull(agentState.leaseOwner),
             isNull(agentState.leaseExpiresAt),
-            lt(agentState.leaseExpiresAt, now),
+            lte(agentState.leaseExpiresAt, now),
           ),
         ),
       )
@@ -289,13 +379,19 @@ async function acquireInvocation(
           latencyMs: null,
           errorType: null,
           errorMessage: null,
-          startedAt: now,
           completedAt: null,
         })
         .where(eq(agentRun.id, runId));
     }
 
-    return { kind: "acquired", runId, leaseOwner, mode };
+    return {
+      kind: "acquired",
+      runId,
+      leaseOwner,
+      mode,
+      startedAt: existing?.startedAt ?? now,
+      deadlineAt: existing?.deadlineAt ?? deadlineAt,
+    };
   });
 }
 
@@ -345,7 +441,15 @@ async function completeRun(
       completedAt: now,
       ...values,
     })
-    .where(eq(agentRun.id, runId));
+    .where(
+      and(
+        eq(agentRun.id, runId),
+        or(
+          eq(agentRun.outcome, "RUNNING"),
+          eq(agentRun.outcome, outcome),
+        ),
+      ),
+    );
 }
 
 async function reconstructExistingRun(
@@ -378,7 +482,10 @@ async function reconstructExistingRun(
         ? "error"
         : run.outcome.toLowerCase(),
     reasoning: run.errorMessage ?? undefined,
-    error: status === "error" ? run.errorMessage ?? undefined : undefined,
+    error:
+      status === "error" || run.errorType === "post-commit-persistence"
+        ? run.errorMessage ?? undefined
+        : undefined,
     trade: trade
       ? {
           success: true,
@@ -395,6 +502,13 @@ async function reconstructExistingRun(
     durationMs: run.latencyMs ?? 0,
   };
 
+  if (run.errorType === "post-commit-persistence") {
+    return {
+      kind: "upstream_error",
+      result,
+      httpStatus: 500,
+    };
+  }
   if (result.status === "error") {
     return {
       kind: "upstream_error",
@@ -414,7 +528,13 @@ function persistedErrorHttpStatus(errorType: string | null): number {
       return 503;
     case "LLM_TIMEOUT":
     case "market-data-timeout":
+    case "execution-deadline-exhausted":
       return 504;
+    case "provider-budget-exhausted:coinbase:daily-requests":
+    case "provider-budget-exhausted:foundry:daily-requests":
+    case "provider-budget-exhausted:posthog:daily-requests":
+    case "provider-budget-exhausted:acs:daily-requests":
+      return 503;
     case "trade-conflict":
     case "lease-conflict":
       return 409;
@@ -426,7 +546,8 @@ function persistedErrorHttpStatus(errorType: string | null): number {
   }
 }
 
-async function loadTradingContext() {
+async function loadTradingContext(deadline: ExecutionDeadline) {
+  deadline.assertActive("trading context database read");
   const [state] = await db
     .select()
     .from(agentState)
@@ -448,10 +569,15 @@ async function loadTradingContext() {
     .limit(JOURNAL_CONTEXT_COUNT);
 
   const provider = getMarketDataProvider();
+  deadline.assertActive("Coinbase market data");
+  const providerDeadlineAt = new Date(
+    deadline.now().getTime() + 20_000,
+  );
   const [spotPriceUSD, closes] = await Promise.all([
-    provider.getEthSpotPrice(),
-    provider.getEthClosingPrices(100),
+    provider.getEthSpotPrice({ deadline, providerDeadlineAt }),
+    provider.getEthClosingPrices(100, { deadline, providerDeadlineAt }),
   ]);
+  deadline.assertActive("indicator calculation");
   const rsi = calculateRSI(closes, RSI_PERIOD);
   const emaShort = calculateEMA(closes, EMA_SHORT_PERIOD);
   const emaLong = calculateEMA(closes, EMA_LONG_PERIOD);
@@ -474,7 +600,9 @@ async function loadTradingContext() {
 async function markAccountToMarket(
   context: Awaited<ReturnType<typeof loadTradingContext>>,
   leaseOwner: string,
+  deadline: ExecutionDeadline,
 ): Promise<void> {
+  deadline.assertActive("mark account to market");
   const portfolioValueUSD =
     context.account.usdcBalance +
     context.account.ethBalance * context.market.spotPriceUSD;
@@ -671,9 +799,13 @@ function resultFromExecution(
 }
 
 function errorHttpStatus(error: unknown): number {
+  if (error instanceof ExecutionDeadlineError) return 504;
+  if (error instanceof ProviderBudgetError) return 503;
+  if (error instanceof AdmissionCapacityError) return 503;
   if (error instanceof AgentUpstreamError) {
     return error.httpStatus;
   }
+
   if (error instanceof MarketDataError) {
     return error.code === "timeout" ? 504 : 502;
   }
@@ -689,11 +821,33 @@ function errorHttpStatus(error: unknown): number {
   return 502;
 }
 
+export function normalizeAgentRunError(
+  error: unknown,
+  deadlineAt: Date,
+): unknown {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "57014" &&
+    "message" in error &&
+    typeof (error as { message?: unknown }).message === "string" &&
+    (error as { message: string }).message.includes(
+      "Paper trade commit rejected at or after AgentRun deadline",
+    )
+  ) {
+    return new ExecutionDeadlineError(
+      deadlineAt,
+      "paper execution commit",
+      (error as { message: string }).message,
+    );
+  }
+  return error;
+}
+
 export async function executeAgentRun(
   options: ExecuteAgentRunOptions,
 ): Promise<ExecuteAgentRunOutcome> {
-  const startedAt = new Date();
-  const startedMs = startedAt.getTime();
   let mode: TradingMode = "disabled";
   let modeError: TradingConfigurationError | null = null;
   try {
@@ -710,13 +864,27 @@ export async function executeAgentRun(
   if (options.requiredMode && mode !== options.requiredMode) {
     throw new RequiredRolloutModeError(options.requiredMode, mode);
   }
-  const acquisition = await acquireInvocation(
-    options,
-    mode,
-    startedAt,
-  );
+  const ownsRequestDeadline = !options.deadline;
+  const requestDeadline =
+    options.deadline ??
+    createExecutionDeadline({
+      signal: options.signal,
+    });
+  let acquisition: InvocationAcquisition;
+  try {
+    acquisition = await acquireInvocation(
+      options,
+      mode,
+      requestDeadline.startedAt,
+      requestDeadline.deadlineAt,
+    );
+  } catch (error) {
+    if (ownsRequestDeadline) requestDeadline.dispose();
+    throw error;
+  }
 
   if (acquisition.kind === "existing") {
+    if (ownsRequestDeadline) requestDeadline.dispose();
     return reconstructExistingRun(acquisition.run);
   }
   trackAgentRunStarted(options.triggerSource);
@@ -726,7 +894,7 @@ export async function executeAgentRun(
       status: "skipped",
       action: "conflict",
       error: acquisition.message,
-      durationMs: Date.now() - startedMs,
+      durationMs: Date.now() - requestDeadline.startedAt.getTime(),
     };
     trackGuardrailTriggered(
       "run-lease",
@@ -734,6 +902,7 @@ export async function executeAgentRun(
       options.triggerSource,
     );
     finalizeAnalytics(result, options.triggerSource);
+    if (ownsRequestDeadline) requestDeadline.dispose();
     return {
       kind: "mutex",
       message: acquisition.message,
@@ -742,6 +911,25 @@ export async function executeAgentRun(
   }
 
   const { runId, leaseOwner } = acquisition;
+  const persistedDeadlineAt = acquisition.deadlineAt;
+  const effectiveDeadlineAt = new Date(
+    Math.min(
+      persistedDeadlineAt.getTime(),
+      requestDeadline.deadlineAt.getTime(),
+    ),
+  );
+  const usesRequestDeadline =
+    acquisition.startedAt.getTime() === requestDeadline.startedAt.getTime() &&
+    effectiveDeadlineAt.getTime() === requestDeadline.deadlineAt.getTime();
+  const deadline = usesRequestDeadline
+    ? requestDeadline
+    : createExecutionDeadline({
+        startedAt: acquisition.startedAt,
+        deadlineAt: effectiveDeadlineAt,
+        signal: requestDeadline.signal,
+      });
+  const startedAt = acquisition.startedAt;
+  const startedMs = startedAt.getTime();
   let committedResult: AgentRunResult | null = null;
   let tradingContext: Awaited<ReturnType<typeof loadTradingContext>> | null =
     null;
@@ -764,8 +952,11 @@ export async function executeAgentRun(
       return { kind: "ok", result };
     }
 
-    const context = (tradingContext = await loadTradingContext());
-    await markAccountToMarket(context, leaseOwner);
+    deadline.assertActive("run execution");
+    await reservePostHogBudget({ deadline });
+    const context = (tradingContext = await loadTradingContext(deadline));
+    await markAccountToMarket(context, leaseOwner, deadline);
+    deadline.assertActive("deterministic policy evaluation");
     const policy = evaluateTradePolicy(
       context.account,
       context.market,
@@ -801,6 +992,7 @@ export async function executeAgentRun(
         accountSnapshotBefore: accountRecord(context.account),
         latencyMs: result.durationMs,
       });
+      deadline.assertActive("journal persistence");
       await persistJournal(runId, context.market, null, null);
       result.journalWritten = true;
       finalizeAnalytics(result, options.triggerSource);
@@ -822,6 +1014,15 @@ export async function executeAgentRun(
         policy,
         strategy: DEFAULT_STRATEGY_CONFIG,
         recentJournalEntries: context.recentJournalEntries,
+      }, {
+        deadline,
+        signal: deadline.signal,
+        providerDeadlineAt: new Date(
+          Math.min(
+            deadline.operationalDeadlineAt.getTime(),
+            deadline.now().getTime() + 80_000,
+          ),
+        ),
       });
       decision = generated.decision;
       tokenUsage = generated.tokenUsage;
@@ -849,6 +1050,7 @@ export async function executeAgentRun(
           latencyMs: result.durationMs,
         },
       );
+      deadline.assertActive("journal persistence");
       await persistJournal(runId, context.market, null, null);
       result.journalWritten = true;
       trackGuardrailTriggered(
@@ -860,6 +1062,7 @@ export async function executeAgentRun(
       return { kind: "ok", result };
     }
 
+    deadline.assertActive("deterministic authorization");
     const authorization = authorizeTradeIntent(
       policy,
       decision,
@@ -896,6 +1099,7 @@ export async function executeAgentRun(
         tokenUsage,
         latencyMs: result.durationMs,
       });
+      deadline.assertActive("journal persistence");
       await persistJournal(
         runId,
         context.market,
@@ -907,6 +1111,7 @@ export async function executeAgentRun(
       return { kind: "ok", result };
     }
 
+    deadline.assertActive("paper transaction");
     const execution = await executePaperTrade({
       agentRunId: runId,
       leaseOwner,
@@ -914,6 +1119,8 @@ export async function executeAgentRun(
       market: context.market,
       strategy: DEFAULT_STRATEGY_CONFIG,
       now: new Date(),
+      deadlineAt: persistedDeadlineAt,
+      deadline,
     });
     const completedAt = new Date();
     const result = resultFromExecution(
@@ -939,6 +1146,7 @@ export async function executeAgentRun(
       tokenUsage,
       latencyMs: result.durationMs,
     });
+    deadline.assertActive("journal persistence");
     await persistJournal(
       runId,
       context.market,
@@ -949,11 +1157,34 @@ export async function executeAgentRun(
     result.journalWritten = true;
     finalizeAnalytics(result, options.triggerSource);
     return { kind: "ok", result };
-  } catch (error) {
-    const completedAt = new Date();
+  } catch (caughtError) {
+    const error = normalizeAgentRunError(
+      caughtError,
+      persistedDeadlineAt,
+    );
+    const completedAt = deadline.now();
     const message =
       error instanceof Error ? error.message : String(error);
     const httpStatus = errorHttpStatus(error);
+    if (error instanceof ProviderBudgetError) {
+      trackGuardrailTriggered(
+        "provider-budget",
+        { provider: error.provider, kind: error.kind },
+        options.triggerSource,
+      );
+      console.error(
+        `[agent] bounded-runtime-failure code=${error.code} provider=${error.provider} kind=${error.kind}`,
+      );
+    } else if (error instanceof ExecutionDeadlineError) {
+      trackGuardrailTriggered(
+        "execution-deadline",
+        { phase: error.phase },
+        options.triggerSource,
+      );
+      console.error(
+        `[agent] bounded-runtime-failure code=${error.code} phase=${error.phase}`,
+      );
+    }
     if (committedResult) {
       committedResult.error = message;
       committedResult.journalWritten = false;
@@ -971,7 +1202,10 @@ export async function executeAgentRun(
       };
     }
     let bindingMismatchJournalWritten = false;
-    if (error instanceof AgentBindingMismatchError) {
+    if (
+      error instanceof AgentBindingMismatchError &&
+      deadline.remainingMs() > 0
+    ) {
       const details = {
         expectedBinding: error.expectedBinding,
         actualBinding: error.actualBinding,
@@ -1008,9 +1242,9 @@ export async function executeAgentRun(
           );
         }
       }
-      void sendGuardrailAlert("Foundry agent binding", {
+      await sendGuardrailAlert("Foundry agent binding", {
         error: message,
-      }).catch((alertError) => {
+      }, { deadline }).catch((alertError) => {
         console.error(
           "[agent] Failed to send Foundry binding guardrail alert:",
           alertError,
@@ -1041,7 +1275,9 @@ export async function executeAgentRun(
     await completeRun(
       runId,
       error instanceof MarketDataError ||
-        error instanceof AgentUpstreamError
+        error instanceof AgentUpstreamError ||
+        error instanceof ExecutionDeadlineError ||
+        error instanceof ProviderBudgetError
         ? "UPSTREAM_ERROR"
         : "INTERNAL_ERROR",
       completedAt,
@@ -1049,7 +1285,11 @@ export async function executeAgentRun(
         latencyMs: result.durationMs,
         tokenUsage: result.tokenUsage,
         errorType:
-          error instanceof AgentUpstreamError
+          error instanceof ExecutionDeadlineError
+            ? error.code
+            : error instanceof ProviderBudgetError
+              ? `${error.code}:${error.provider}:${error.kind}`
+          : error instanceof AgentUpstreamError
             ? error.errorType
             : error instanceof TradingDomainError
             ? error.code
@@ -1063,7 +1303,8 @@ export async function executeAgentRun(
     return { kind: "upstream_error", result, httpStatus };
   } finally {
     try {
-      const released = await releaseLease(leaseOwner, new Date());
+      deadline.assertActive("owned lease cleanup", true);
+      const released = await releaseLease(leaseOwner, deadline.now());
       if (!released) {
         console.error(
           `[agent] Lease ${leaseOwner} was not released because ownership changed`,
@@ -1088,5 +1329,7 @@ export async function executeAgentRun(
         options.triggerSource,
       );
     }
+    if (!usesRequestDeadline) deadline.dispose();
+    if (ownsRequestDeadline) requestDeadline.dispose();
   }
 }

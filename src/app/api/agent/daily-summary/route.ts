@@ -6,11 +6,29 @@ import { isValidCronSecret } from "@/lib/cron-auth";
 import { EmailDeliveryError, sendDailySummary } from "@/lib/email";
 import { readRequiredRolloutMode } from "@/lib/required-rollout-mode";
 import { resolveTradingMode } from "@/trading/strategy-config";
+import {
+  AdmissionCapacityError,
+  ExecutionDeadlineError,
+  ProviderBudgetError,
+  createExecutionDeadline,
+  type ExecutionDeadline,
+} from "@/lib/execution-envelope";
+import { tryAcquireRunAdmission } from "@/lib/run-admission";
+import {
+  flushPostHog,
+  reservePostHogBudget,
+} from "@/lib/posthog";
 
 async function recordDelivery(
   status: "sent" | "skipped" | "failed",
   detail: string | null,
+  deadline?: ExecutionDeadline,
+  terminal = false,
 ): Promise<void> {
+  deadline?.assertActive(
+    "daily summary delivery persistence",
+    terminal,
+  );
   await db.insert(agentJournal).values({
     entryText: `Daily summary delivery ${status}${detail ? `: ${detail}` : "."}`,
     marketConditions: {
@@ -22,11 +40,14 @@ async function recordDelivery(
   });
 }
 
-async function failureResponse(error: unknown): Promise<NextResponse> {
+async function failureResponse(
+  error: unknown,
+  deadline?: ExecutionDeadline,
+): Promise<NextResponse> {
   const message = error instanceof Error ? error.message : String(error);
   let alertAuditRecorded = true;
   try {
-    await recordDelivery("failed", message);
+    await recordDelivery("failed", message, deadline, true);
   } catch (auditError) {
     alertAuditRecorded = false;
     console.error("[daily-summary] Failed to record alert failure:", auditError);
@@ -34,7 +55,16 @@ async function failureResponse(error: unknown): Promise<NextResponse> {
   console.error("[daily-summary] Error:", error);
   return NextResponse.json(
     { error: message, alertAuditRecorded },
-    { status: error instanceof EmailDeliveryError ? 502 : 500 },
+    {
+      status:
+        error instanceof ExecutionDeadlineError
+          ? 504
+          : error instanceof ProviderBudgetError
+            ? 503
+            : error instanceof EmailDeliveryError
+              ? 502
+              : 500,
+    },
   );
 }
 
@@ -81,7 +111,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const deadline = createExecutionDeadline({ signal: request.signal });
+  let releaseAdmission: (() => void) | undefined;
   try {
+    releaseAdmission = tryAcquireRunAdmission(deadline);
+    await reservePostHogBudget({ deadline });
+    deadline.assertActive("daily summary database read");
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     // Fetch current portfolio state
@@ -133,21 +168,27 @@ export async function POST(request: NextRequest) {
       .slice(0, 5)
       .map((j) => j.entryText.slice(0, 200));
 
-    const delivery = await sendDailySummary({
-      portfolioValueUSD: Number(
-        state.portfolioValueUSDDecimal ?? state.portfolioValueUSD,
-      ),
-      totalPnlUSD: totalPnl,
-      tradesExecuted: recentTrades.length,
-      tradesSummary,
-      journalHighlights,
-    });
+    deadline.assertActive("daily summary ACS delivery");
+    const delivery = await sendDailySummary(
+      {
+        portfolioValueUSD: Number(
+          state.portfolioValueUSDDecimal ?? state.portfolioValueUSD,
+        ),
+        totalPnlUSD: totalPnl,
+        tradesExecuted: recentTrades.length,
+        tradesSummary,
+        journalHighlights,
+      },
+      { deadline },
+    );
     try {
+      deadline.assertActive("daily summary delivery journal");
       await recordDelivery(
         delivery.status,
         delivery.status === "sent"
           ? (delivery.id ?? null)
           : delivery.reason,
+        deadline,
       );
     } catch (error) {
       console.error("[daily-summary] Delivery succeeded but audit failed:", error);
@@ -170,6 +211,22 @@ export async function POST(request: NextRequest) {
       totalPnlUSD: totalPnl,
     });
   } catch (error) {
-    return failureResponse(error);
+    if (error instanceof AdmissionCapacityError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 503, headers: { "Retry-After": "1" } },
+      );
+    }
+    return failureResponse(error, deadline);
+  } finally {
+    if (deadline.remainingMs() > 0) {
+      try {
+        await flushPostHog({ deadline });
+      } catch (error) {
+        console.error("[daily-summary] Failed to flush analytics:", error);
+      }
+    }
+    releaseAdmission?.();
+    deadline.dispose();
   }
 }

@@ -1,3 +1,14 @@
+import {
+  COINBASE_PROVIDER_BUDGET_MS,
+  ProviderBudgetError,
+  parseRetryAfterMs,
+  type ExecutionDeadline,
+} from "@/lib/execution-envelope";
+import {
+  consumeProviderRequestBudget,
+  type ProviderBudgetStore,
+} from "@/lib/provider-budgets";
+
 export type CandleRaw = [number, number, number, number, number, number];
 
 export interface FourHourCandle {
@@ -27,6 +38,7 @@ export class MarketDataError extends Error {
     code: MarketDataErrorCode,
     retryable = false,
     options?: ErrorOptions,
+    readonly retryAfterMs?: number,
   ) {
     super(message, options);
     this.name = "MarketDataError";
@@ -36,9 +48,21 @@ export class MarketDataError extends Error {
 }
 
 export interface MarketDataProvider {
-  getEthSpotPrice(): Promise<number>;
-  getEthFourHourCandles(count?: number): Promise<FourHourCandle[]>;
-  getEthClosingPrices(count?: number): Promise<number[]>;
+  getEthSpotPrice(options?: MarketDataRequestOptions): Promise<number>;
+  getEthFourHourCandles(
+    count?: number,
+    options?: MarketDataRequestOptions,
+  ): Promise<FourHourCandle[]>;
+  getEthClosingPrices(
+    count?: number,
+    options?: MarketDataRequestOptions,
+  ): Promise<number[]>;
+}
+
+export interface MarketDataRequestOptions {
+  deadline?: ExecutionDeadline;
+  providerDeadlineAt?: Date;
+  budgetStore?: ProviderBudgetStore;
 }
 
 interface CoinbaseMarketDataProviderOptions {
@@ -47,6 +71,7 @@ interface CoinbaseMarketDataProviderOptions {
   timeoutMs?: number;
   maxAttempts?: number;
   retryBaseMs?: number;
+  delayImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 interface HourlyCandle {
@@ -208,20 +233,50 @@ export function createCoinbaseMarketDataProvider(
     throw new Error("Invalid Coinbase market-data provider options");
   }
 
-  async function requestJson(url: string, label: string): Promise<unknown> {
+  async function requestJson(
+    url: string,
+    label: string,
+    requestOptions: MarketDataRequestOptions,
+  ): Promise<unknown> {
     let lastError: MarketDataError | undefined;
+    const providerDeadlineAt =
+      requestOptions.providerDeadlineAt ??
+      new Date((requestOptions.deadline?.now().getTime() ?? Date.now()) +
+        COINBASE_PROVIDER_BUDGET_MS);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      requestOptions.deadline?.assertActive("Coinbase request");
+      const providerRemainingMs =
+        providerDeadlineAt.getTime() -
+        (requestOptions.deadline?.now().getTime() ?? Date.now());
+      if (providerRemainingMs <= 0) {
+        throw new ProviderBudgetError("coinbase", "time");
+      }
+      if (requestOptions.deadline) {
+        await consumeProviderRequestBudget("coinbase", {
+          deadline: requestOptions.deadline,
+          store: requestOptions.budgetStore,
+        });
+      }
       const controller = new AbortController();
       let timedOut = false;
       const timeout = setTimeout(() => {
         timedOut = true;
         controller.abort();
-      }, timeoutMs);
+      }, Math.min(timeoutMs, providerRemainingMs));
+      const signal = requestOptions.deadline
+        ? AbortSignal.any([
+            controller.signal,
+            requestOptions.deadline.signalFor(
+              "Coinbase request",
+              providerRemainingMs,
+            ),
+          ])
+        : controller.signal;
 
       try {
         const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-        const response = await fetchImpl(url, { signal: controller.signal });
+        const response = await fetchImpl(url, { signal });
 
         if (!response.ok) {
           const retryable = response.status === 429 || response.status >= 500;
@@ -229,6 +284,8 @@ export function createCoinbaseMarketDataProvider(
             `${label} returned ${response.status} ${response.statusText}`,
             "http",
             retryable,
+            undefined,
+            parseRetryAfterMs(response.headers.get("retry-after")),
           );
         }
 
@@ -243,6 +300,7 @@ export function createCoinbaseMarketDataProvider(
           );
         }
       } catch (error) {
+        requestOptions.deadline?.assertActive("Coinbase request");
         const normalized = normalizeRequestError(error, label, timedOut);
         lastError = normalized;
         if (!normalized.retryable || attempt === maxAttempts - 1) {
@@ -252,7 +310,19 @@ export function createCoinbaseMarketDataProvider(
         clearTimeout(timeout);
       }
 
-      await delay(retryBaseMs * 2 ** attempt);
+      const retryMs =
+        lastError?.retryAfterMs ?? retryBaseMs * 2 ** attempt;
+      const remaining =
+        providerDeadlineAt.getTime() -
+        (requestOptions.deadline?.now().getTime() ?? Date.now());
+      if (retryMs >= remaining) {
+        throw new ProviderBudgetError("coinbase", "time");
+      }
+      if (requestOptions.deadline) {
+        await requestOptions.deadline.delay(retryMs, "Coinbase retry");
+      } else {
+        await (options.delayImpl ?? delay)(retryMs);
+      }
     }
 
     throw (
@@ -261,10 +331,13 @@ export function createCoinbaseMarketDataProvider(
     );
   }
 
-  async function getEthSpotPrice(): Promise<number> {
+  async function getEthSpotPrice(
+    requestOptions: MarketDataRequestOptions = {},
+  ): Promise<number> {
     const payload = (await requestJson(
       "https://api.coinbase.com/v2/prices/ETH-USD/spot",
       "Coinbase spot price",
+      requestOptions,
     )) as { data?: { amount?: unknown } };
     const price = Number(payload?.data?.amount);
 
@@ -280,6 +353,7 @@ export function createCoinbaseMarketDataProvider(
 
   async function getEthFourHourCandles(
     count: number = 100,
+    requestOptions: MarketDataRequestOptions = {},
   ): Promise<FourHourCandle[]> {
     validateCount(count);
 
@@ -318,6 +392,7 @@ export function createCoinbaseMarketDataProvider(
       const payload = await requestJson(
         url.toString(),
         "Coinbase candles",
+        requestOptions,
       );
       if (!Array.isArray(payload)) {
         const message =
@@ -396,8 +471,11 @@ export function createCoinbaseMarketDataProvider(
   return {
     getEthSpotPrice,
     getEthFourHourCandles,
-    async getEthClosingPrices(count?: number): Promise<number[]> {
-      const candles = await getEthFourHourCandles(count);
+    async getEthClosingPrices(
+      count?: number,
+      requestOptions?: MarketDataRequestOptions,
+    ): Promise<number[]> {
+      const candles = await getEthFourHourCandles(count, requestOptions);
       return candles.map((candle) => candle.close);
     },
   };

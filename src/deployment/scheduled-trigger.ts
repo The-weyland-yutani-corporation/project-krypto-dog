@@ -22,12 +22,11 @@
 // re-delivered trigger within the same hour lands on the same AgentRun row
 // instead of starting a second one.
 //
-// Retries are deliberately out of scope here: the agent-run job's retry
-// behavior is controlled by its Azure Container Apps Job `replicaRetryLimit`
-// configuration, and the daily-summary job intentionally has no retry. This
-// module performs exactly one attempt and reports success or failure via its
-// return value / thrown error so the caller's process exit code reflects the
-// outcome for the job runtime to act on.
+// Retries are deliberately out of scope here. Both scheduler jobs use
+// replicaRetryLimit=0; invocation idempotency remains defense in depth rather
+// than a reason to extend the bounded execution chain. This module performs
+// exactly one attempt and reports success or failure via its return value /
+// thrown error so the caller's process exit code reflects the outcome.
 //
 // Required environment variables when run as a CLI: TARGET_BASE_URL,
 // SCHEDULED_ROUTE, CRON_SECRET, ROLLOUT_MODE (see validators below). An
@@ -52,7 +51,7 @@ const ALLOWED_ROLLOUT_MODES: readonly RolloutMode[] = [
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+export const SCHEDULED_HTTP_TIMEOUT_MS = 210_000;
 
 export class ScheduledTriggerConfigError extends Error {
   constructor(message: string) {
@@ -290,7 +289,7 @@ export async function runScheduledTrigger(
   const config = resolveScheduledTriggerConfig(options.env);
   const now = options.now ?? new Date();
   const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? SCHEDULED_HTTP_TIMEOUT_MS;
 
   const requestUrl = new URL(config.route, config.targetUrl);
   const idempotencyKey = buildIdempotencyKey(

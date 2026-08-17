@@ -8,6 +8,9 @@ import {
   pgSchema,
   numeric,
   integer,
+  date,
+  primaryKey,
+  check,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -157,6 +160,10 @@ export const agentRun = kryptoSchema.table(
       precision: 3,
       withTimezone: true,
     }),
+    deadlineAt: timestamp("deadlineAt", {
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
   },
   (table) => [
     uniqueIndex("AgentRun_idempotencyKey_uidx").on(table.idempotencyKey),
@@ -165,6 +172,65 @@ export const agentRun = kryptoSchema.table(
       table.outcome,
       table.startedAt,
     ),
+    check(
+      "AgentRun_deadline_after_start_check",
+      sql`${table.deadlineAt} > ${table.startedAt}`,
+    ),
+    check(
+      "AgentRun_deadline_exact_check",
+      sql`${table.deadlineAt} = ${table.startedAt} + interval '180 seconds'`,
+    ),
+  ],
+);
+
+export const providerDailyUsage = kryptoSchema.table(
+  "ProviderDailyUsage",
+  {
+    usageDate: date("usageDate").notNull(),
+    provider: text("provider").notNull(),
+    requestCount: integer("requestCount").notNull().default(0),
+    updatedAt: timestamp("updatedAt", {
+      precision: 3,
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "ProviderDailyUsage_pkey",
+      columns: [table.usageDate, table.provider],
+    }),
+    check(
+      "ProviderDailyUsage_provider_check",
+      sql`${table.provider} IN ('coinbase', 'foundry', 'posthog', 'acs')`,
+    ),
+    check(
+      "ProviderDailyUsage_requestCount_check",
+      sql`${table.requestCount} >= 0`,
+    ),
+  ],
+);
+
+/**
+ * Runtime-readable migration contract.  The runtime role intentionally cannot
+ * read drizzle.__drizzle_migrations; readiness reads this single row instead.
+ */
+export const runtimeContract = kryptoSchema.table(
+  "RuntimeContract",
+  {
+    id: text("id").primaryKey().default("singleton"),
+    schemaFingerprint: text("schemaFingerprint").notNull(),
+    contractVersion: integer("contractVersion").notNull(),
+    updatedAt: timestamp("updatedAt", {
+      precision: 3,
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check("RuntimeContract_singleton_check", sql`${table.id} = 'singleton'`),
   ],
 );
 
@@ -280,3 +346,5 @@ export type AgentJournal = typeof agentJournal.$inferSelect;
 export type NewAgentRun = typeof agentRun.$inferInsert;
 export type NewTradeExecution = typeof tradeExecution.$inferInsert;
 export type NewAgentJournal = typeof agentJournal.$inferInsert;
+export type ProviderDailyUsage = typeof providerDailyUsage.$inferSelect;
+export type RuntimeContract = typeof runtimeContract.$inferSelect;

@@ -2,6 +2,7 @@ import {
   buildIdempotencyKey,
   resolveScheduledTriggerConfig,
   runScheduledTrigger,
+  SCHEDULED_HTTP_TIMEOUT_MS,
   ScheduledTriggerConfigError,
   ScheduledTriggerRequestError,
   validateCronSecret,
@@ -11,6 +12,9 @@ import {
   validateScheduledRoute,
   validateTargetBaseUrl,
 } from "@/deployment/scheduled-trigger";
+import {
+  SCHEDULER_HTTP_TIMEOUT_MS,
+} from "@/lib/execution-envelope";
 
 const VALID_ENV = {
   TARGET_BASE_URL: "https://krypto.example.com",
@@ -18,6 +22,10 @@ const VALID_ENV = {
   CRON_SECRET: "trigger-secret",
   ROLLOUT_MODE: "disabled",
 };
+
+it("keeps the dependency-free scheduler timeout aligned with the app contract", () => {
+  expect(SCHEDULED_HTTP_TIMEOUT_MS).toBe(SCHEDULER_HTTP_TIMEOUT_MS);
+});
 
 describe("validateTargetBaseUrl", () => {
   it("accepts an HTTPS base URL", () => {

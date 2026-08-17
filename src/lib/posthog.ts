@@ -1,6 +1,16 @@
 import { PostHog } from "posthog-node";
+import {
+  POSTHOG_PROVIDER_BUDGET_MS,
+  ProviderBudgetError,
+  type ExecutionDeadline,
+} from "@/lib/execution-envelope";
+import {
+  consumeProviderRequestBudget,
+  type ProviderBudgetStore,
+} from "@/lib/provider-budgets";
 
 let client: PostHog | null = null;
+const reservedDeadlines = new WeakSet<ExecutionDeadline>();
 
 export function getPostHogClient(): PostHog {
   if (client) return client;
@@ -34,8 +44,10 @@ export function getPostHogClient(): PostHog {
 
   client = new PostHog(apiKey, {
     host,
-    flushAt: 1,
+    // Provider admission/budgeting happens at the explicit bounded flush.
+    flushAt: 1_000,
     flushInterval: 0,
+    requestTimeout: POSTHOG_PROVIDER_BUDGET_MS,
   });
   return client;
 }
@@ -60,9 +72,65 @@ export function capturePostHog(
   });
 }
 
-export async function flushPostHog(): Promise<void> {
+export async function reservePostHogBudget(options: {
+  deadline: ExecutionDeadline;
+  budgetStore?: ProviderBudgetStore;
+}): Promise<boolean> {
+  if (!process.env.POSTHOG_API_KEY || reservedDeadlines.has(options.deadline)) {
+    return false;
+  }
+  options.deadline.assertActive("PostHog budget reservation");
+  await consumeProviderRequestBudget("posthog", {
+    deadline: options.deadline,
+    store: options.budgetStore,
+  });
+  reservedDeadlines.add(options.deadline);
+  return true;
+}
+
+export async function flushPostHog(options: {
+  deadline?: ExecutionDeadline;
+  budgetStore?: ProviderBudgetStore;
+} = {}): Promise<void> {
   if (client) {
-    await client.flush();
+    options.deadline?.assertActive("PostHog flush");
+    if (
+      options.deadline &&
+      !reservedDeadlines.has(options.deadline)
+    ) {
+      await reservePostHogBudget(options as {
+        deadline: ExecutionDeadline;
+        budgetStore?: ProviderBudgetStore;
+      });
+    }
+    const flush = client.flush();
+    if (!options.deadline) {
+      await flush;
+      return;
+    }
+    const signal = options.deadline.signalFor(
+      "PostHog flush",
+      POSTHOG_PROVIDER_BUDGET_MS,
+    );
+    try {
+      await Promise.race([
+        flush,
+        new Promise<never>((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () =>
+              reject(
+                signal.reason ??
+                  new ProviderBudgetError("posthog", "time"),
+              ),
+            { once: true },
+          );
+        }),
+      ]);
+      options.deadline.assertActive("PostHog flush completion");
+    } finally {
+      reservedDeadlines.delete(options.deadline);
+    }
   }
 }
 

@@ -2,6 +2,7 @@ import {
   createCoinbaseMarketDataProvider,
   createFixtureMarketDataProvider,
 } from "@/lib/market-data-provider";
+import { createExecutionDeadline } from "@/lib/execution-envelope";
 
 const NOW = new Date("2026-07-14T12:34:00.000Z");
 const ONE_HOUR_SECONDS = 60 * 60;
@@ -195,9 +196,73 @@ describe("coinbase market data provider", () => {
       maxAttempts: 2,
       retryBaseMs: 0,
     });
-
     await expect(provider.getEthFourHourCandles(1)).resolves.toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors Retry-After before retrying", async () => {
+    const delays: number[] = [];
+    const fetchMock = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValueOnce(
+        new Response("rate limited", {
+          status: 429,
+          headers: { "Retry-After": "2" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ data: { amount: "2345.67" } }),
+      );
+    const provider = createCoinbaseMarketDataProvider({
+      fetchImpl: fetchMock,
+      maxAttempts: 2,
+      delayImpl: async (ms) => {
+        delays.push(ms);
+      },
+    });
+    await expect(provider.getEthSpotPrice()).resolves.toBe(2345.67);
+    expect(delays).toEqual([2_000]);
+  });
+
+  it("fails closed when Retry-After exceeds the Coinbase budget", async () => {
+    const fetchMock = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValue(
+        new Response("rate limited", {
+          status: 429,
+          headers: { "Retry-After": "30" },
+        }),
+      );
+    const provider = createCoinbaseMarketDataProvider({
+      fetchImpl: fetchMock,
+      maxAttempts: 2,
+    });
+    await expect(provider.getEthSpotPrice()).rejects.toMatchObject({
+      code: "provider-budget-exhausted",
+      provider: "coinbase",
+      kind: "time",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates caller cancellation into Coinbase", async () => {
+    const controller = new AbortController();
+    const deadline = createExecutionDeadline({ signal: controller.signal });
+    const provider = createCoinbaseMarketDataProvider({
+      fetchImpl: jest.fn(async (_input, init) => {
+        controller.abort(new Error("caller cancelled"));
+        if (init?.signal?.aborted) throw init.signal.reason;
+        throw new Error("unreachable");
+      }),
+      maxAttempts: 1,
+    });
+    await expect(
+      provider.getEthSpotPrice({
+        deadline,
+        budgetStore: { consume: async () => 1 },
+      }),
+    ).rejects.toMatchObject({ code: "execution-deadline-exhausted" });
+    deadline.dispose();
   });
 
   it("aborts a request that exceeds its timeout", async () => {

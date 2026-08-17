@@ -18,6 +18,16 @@ import {
 } from "@/trading/types";
 import type { StrategyConfig } from "@/trading/strategy-config";
 import { classifyLlmError } from "@/trading/errors";
+import {
+  ExecutionDeadlineError,
+  FOUNDRY_PROVIDER_BUDGET_MS,
+  ProviderBudgetError,
+  type ExecutionDeadline,
+} from "@/lib/execution-envelope";
+import {
+  consumeProviderRequestBudget,
+  type ProviderBudgetStore,
+} from "@/lib/provider-budgets";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
@@ -38,6 +48,10 @@ interface GenerateDecisionOptions {
   timeoutMs?: number;
   maxAttempts?: number;
   retryDelayMs?: number;
+  deadline?: ExecutionDeadline;
+  providerDeadlineAt?: Date;
+  budgetStore?: ProviderBudgetStore;
+  delayImpl?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 type MessageWithUsage = BaseMessage & {
@@ -115,15 +129,33 @@ function boundedPositiveInteger(
 function attemptSignal(
   callerSignal: AbortSignal | undefined,
   timeoutMs: number,
+  deadline?: ExecutionDeadline,
 ): AbortSignal {
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  return callerSignal
-    ? AbortSignal.any([callerSignal, timeoutSignal])
-    : timeoutSignal;
+  const signals = [timeoutSignal];
+  if (callerSignal) signals.push(callerSignal);
+  if (deadline) {
+    signals.push(deadline.signalFor("Foundry invocation", timeoutMs));
+  }
+  return signals.length === 1 ? timeoutSignal : AbortSignal.any(signals);
 }
 
-async function waitForRetry(delayMs: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, delayMs));
+async function waitForRetry(
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw signal.reason;
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export async function generateTradeDecision(
@@ -200,12 +232,45 @@ export async function generateTradeDecision(
   let response: ProviderDecisionResponse | undefined;
   let finalError: unknown;
   let attemptCount = 0;
+  const providerDeadlineAt =
+    options.providerDeadlineAt ??
+    new Date(
+      (options.deadline?.now().getTime() ?? Date.now()) +
+        FOUNDRY_PROVIDER_BUDGET_MS,
+    );
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attemptCount = attempt;
     try {
-      response = await invokeAttempt(attemptSignal(options.signal, timeoutMs));
+      options.deadline?.assertActive("Foundry invocation");
+      const providerRemainingMs =
+        providerDeadlineAt.getTime() -
+        (options.deadline?.now().getTime() ?? Date.now());
+      if (providerRemainingMs <= 0) {
+        throw new ProviderBudgetError("foundry", "time");
+      }
+      if (options.deadline) {
+        await consumeProviderRequestBudget("foundry", {
+          deadline: options.deadline,
+          store: options.budgetStore,
+        });
+      }
+      response = await invokeAttempt(
+        attemptSignal(
+          options.signal,
+          Math.min(timeoutMs, providerRemainingMs),
+          options.deadline,
+        ),
+      );
+      options.deadline?.assertActive("Foundry response");
       break;
     } catch (error) {
+      if (
+        error instanceof ExecutionDeadlineError ||
+        error instanceof ProviderBudgetError
+      ) {
+        throw error;
+      }
+      options.deadline?.assertActive("Foundry retry");
       const classified = classifyLlmError(error);
       classified.attemptCount = attempt;
       classified.latencyMs = Date.now() - startedAt;
@@ -213,7 +278,21 @@ export async function generateTradeDecision(
       if (!classified.retryable || attempt === maxAttempts) {
         throw classified;
       }
-      await waitForRetry(retryDelayMs * attempt);
+      const retryMs = classified.retryAfterMs ?? retryDelayMs * attempt;
+      const providerRemainingMs =
+        providerDeadlineAt.getTime() -
+        (options.deadline?.now().getTime() ?? Date.now());
+      if (
+        retryMs >= providerRemainingMs ||
+        (options.deadline && retryMs >= options.deadline.remainingMs())
+      ) {
+        throw new ProviderBudgetError("foundry", "time");
+      }
+      if (options.deadline) {
+        await options.deadline.delay(retryMs, "Foundry retry");
+      } else {
+        await (options.delayImpl ?? waitForRetry)(retryMs, options.signal);
+      }
     }
   }
 
