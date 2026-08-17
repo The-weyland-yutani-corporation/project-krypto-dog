@@ -30,6 +30,7 @@
     "evidence:runtime-matrix": "npx tsx scripts/runtime-matrix-evidence.ts",
     "deployment:preflight": "npx tsx scripts/deployment-preflight.ts",
     "deployment:backup": "npx tsx scripts/create-verified-backup.ts",
+    "deployment:verify-github-environments": "npx tsx scripts/verify-github-environment-protection.ts && bash .github/scripts/azure/verify-github-environment-protection.sh --environment platform && bash .github/scripts/azure/verify-github-environment-protection.sh --environment production-deploy && bash .github/scripts/azure/verify-github-environment-protection.sh --environment production-promotion",
     "smoke:target": "npx tsx scripts/target-smoke.ts",
     "azure:ops-job": "npx tsx scripts/azure/ops-job.ts"
   },

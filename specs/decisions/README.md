@@ -53,3 +53,4 @@ What did we choose, in one or two paragraphs?
 | [0007](./0007-evidence-based-goals.md) | Evidence-based goals and removal of guaranteed-profit language | Accepted |
 | [0008](./0008-azure-native-deployment-architecture.md) | Azure-native deployment architecture (Container Apps, Flexible Server, Key Vault, Bicep) — implemented, provisioning pending | Accepted |
 | [0009](./0009-foundry-prompt-agent-boundary.md) | Foundry prompt agents as a read-only decision boundary | Accepted |
+| [0010](./0010-deployment-approval-provenance.md) | Deployment approval provenance and expiry | Accepted |

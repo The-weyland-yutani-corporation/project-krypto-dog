@@ -49,39 +49,72 @@ async function main(): Promise<void> {
     const releaseSha = "c0e4ed2724a9880d5a5dfcdf954490f2d86e8e2f";
     const imageDigest =
       "sha256:d32ebcff1be028d183b8ba7ce4e1506b0adf3a7a90b02d5c6a202fabceaf1e68";
+    const approvedAt = new Date("2026-08-14T00:00:00.000Z");
     await createTargetApproval({
       databaseUrl,
       approvalId,
       bindingId,
+      modeMismatchEvidenceId:
+        "deployment-smoke-mode-mismatch-123e4567-e89b-42d3-a456-426614174002",
+      cronEvidenceId:
+        "deployment-smoke-cron-123e4567-e89b-42d3-a456-426614174003",
+      adminEvidenceId:
+        "deployment-smoke-admin-123e4567-e89b-42d3-a456-426614174004",
       targetOrigin: "https://krypto.example.com",
       cronSecret: "test-cron-secret",
       releaseSha,
       imageDigest,
       approvalSecret: TEST_APPROVAL_SECRET,
+      approvedAt,
     });
     const [approval] = await sql<
       Array<{
         event: string | null;
+        modeMismatchEvidenceId: string | null;
+        cronEvidenceId: string | null;
+        adminEvidenceId: string | null;
         targetOrigin: string | null;
         cronSecretBinding: string | null;
         releaseSha: string | null;
         imageDigest: string | null;
         rolloutMode: string | null;
+        approvedAt: string | null;
+        createdAt: string;
         approvalSignature: string | null;
       }>
     >`
       SELECT
         "marketConditions" ->> 'event' AS event,
+        "marketConditions" ->> 'modeMismatchEvidenceId' AS "modeMismatchEvidenceId",
+        "marketConditions" ->> 'cronEvidenceId' AS "cronEvidenceId",
+        "marketConditions" ->> 'adminEvidenceId' AS "adminEvidenceId",
         "marketConditions" ->> 'targetOrigin' AS "targetOrigin",
         "marketConditions" ->> 'cronSecretBinding' AS "cronSecretBinding",
         "marketConditions" ->> 'releaseSha' AS "releaseSha",
         "marketConditions" ->> 'imageDigest' AS "imageDigest",
         "marketConditions" ->> 'rolloutMode' AS "rolloutMode",
-        "marketConditions" ->> 'approvalSignature' AS "approvalSignature"
+        "marketConditions" ->> 'approvedAt' AS "approvedAt",
+        "marketConditions" ->> 'approvalSignature' AS "approvalSignature",
+        to_char(
+          "createdAt",
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+        ) AS "createdAt"
       FROM "krypto"."AgentJournal"
       WHERE id = ${approvalId}
     `;
     assert.equal(approval?.event, "deployment-smoke-approved");
+    assert.equal(
+      approval?.modeMismatchEvidenceId,
+      "deployment-smoke-mode-mismatch-123e4567-e89b-42d3-a456-426614174002",
+    );
+    assert.equal(
+      approval?.cronEvidenceId,
+      "deployment-smoke-cron-123e4567-e89b-42d3-a456-426614174003",
+    );
+    assert.equal(
+      approval?.adminEvidenceId,
+      "deployment-smoke-admin-123e4567-e89b-42d3-a456-426614174004",
+    );
     assert.equal(approval?.targetOrigin, "https://krypto.example.com");
     assert.equal(
       approval?.cronSecretBinding,
@@ -91,6 +124,8 @@ async function main(): Promise<void> {
     assert.equal(approval?.releaseSha, releaseSha);
     assert.equal(approval?.imageDigest, imageDigest);
     assert.equal(approval?.rolloutMode, "disabled");
+    assert.equal(approval?.approvedAt, approvedAt.toISOString());
+    assert.equal(approval?.createdAt, approvedAt.toISOString());
     assert.match(approval?.approvalSignature ?? "", /^[a-f0-9]{64}$/);
 
     await sql`

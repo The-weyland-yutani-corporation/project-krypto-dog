@@ -96,7 +96,8 @@ values are configured. Enterprise-hosted Actions are active, `CI_RUNNER_LABEL`
 is unset, and the temporary Azure runner registrations/resource group are
 retired. `platform`,
 `production-deploy`, and `production-promotion` require `@VeVarunSharma` review
-with `prevent_self_review=false`; `development` intentionally has no reviewer.
+with `prevent_self_review=true` and administrator bypass disabled; `development`
+intentionally has no reviewer.
 Configured branch, exact-SHA, and CI gates remain mandatory. The authenticated
 operator path used for the first release remains historical evidence, not the
 current execution constraint.
@@ -131,7 +132,8 @@ credential downgrade.
 - [x] Configure `platform`, `development`, `production-deploy`, and the
   forced-disable-only `production-promotion` GitHub Environments, including
   branch restrictions and protected values. Require `@VeVarunSharma` review
-  with `prevent_self_review=false` on platform and both production boundaries;
+  with `prevent_self_review=true` and administrator bypass disabled on platform
+  and both production boundaries;
   intentionally omit a development reviewer for routine dev delivery.
 - [x] Stage a dev telemetry fallback with mandatory
       `deployment_environment=dev`; do not count it as final project isolation.

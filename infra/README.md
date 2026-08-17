@@ -40,7 +40,7 @@ provision PostgreSQL there. It is not a current target.
 | Surface | Live state | Evidence |
 |---|---|---|
 | Subscription/bootstrap | Required providers registered; three resource groups and four GitHub OIDC identities exist | Bootstrap complete |
-| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset, and the temporary Azure runner registrations/resource group are retired. Platform and both production environments require `@VeVarunSharma` review with `prevent_self_review=false`; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
+| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset, and the temporary Azure runner registrations/resource group are retired. Platform and both production environments require `@VeVarunSharma` review with `prevent_self_review=true` and administrator bypass disabled; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
 | Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
 | Foundry agents | Separate dev/prod projects and toolless prompt agents version `1` are active; exact-definition and structured `HOLD` smokes passed | Applied |
 | Foundry workload access | Dev runtime/ops have the proven custom-only `Project Krypto Foundry Agent Invoker`; the reviewed template adds the same project-scoped assignment for prod without changing live prod; legacy direct-model roles await app-image cutover | Dev proven; prod source ready |
@@ -129,7 +129,8 @@ resource-group Contributor can deploy other resources in that group.
 Template separation therefore also depends on protected workflow files,
 GitHub Environment reviewers, branch rules, and CODEOWNERS. The `platform`,
 `production-deploy`, and `production-promotion` environments require review by
-`@VeVarunSharma` with `prevent_self_review=false`. `development` intentionally
+`@VeVarunSharma` with `prevent_self_review=true` and administrator bypass
+disabled. `development` intentionally
 has no required reviewer for routine dev delivery. Every path still requires
 its configured branch, exact source SHA, and successful CI.
 
