@@ -188,6 +188,8 @@ function createSqlMock(options: {
       calls.push(query);
       if (
         query === "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY" ||
+        query === "SET LOCAL TIME ZONE 'UTC'" ||
+        query === "SET LOCAL TIME ZONE DEFAULT" ||
         query.startsWith("SET LOCAL statement_timeout") ||
         query === "ROLLBACK"
       ) {
@@ -297,6 +299,8 @@ describe("schedule-activation verifier", () => {
     expect(sql.__calls[0]).toBe(
       "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
     );
+    expect(sql.__calls).toContain("SET LOCAL TIME ZONE 'UTC'");
+    expect(sql.__calls).toContain("SET LOCAL TIME ZONE DEFAULT");
     expect(sql.__calls).not.toContain("COMMIT");
     expect(sql.__calls[sql.__calls.length - 1]).toBe("ROLLBACK");
   });
