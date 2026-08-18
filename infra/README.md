@@ -48,6 +48,26 @@ Engineering owns the application/runtime contract. Release/operator owns reconci
 
 **Deployment evidence status:** these settings exist in source but have not been applied and proven in the live Azure releases. Existing live foundation/release facts remain valid; they are not issue #132 evidence. The first exact release must publish separately classified source/CI and future target records to issue #76. No template adds live-money execution.
 
+### OPS-01 durable incident/alert contract
+
+[ADR 0016](../specs/decisions/0016-durable-safety-incidents-and-independent-alerts.md)
+requires an append-only PostgreSQL incident/event/outbox/delivery ledger, a
+separately operated least-privilege relay, redacted durable-evidence export, and
+external Azure alerts over both Log Analytics/platform signals and the database
+evidence. Every PAPER execution must commit its post-commit obligations with
+ledger truth. A journal, analytics, telemetry, or notification failure must
+remain independently alertable without re-executing or rewriting a trade.
+
+The source templates now define the non-trading five-minute relay and expanded
+alert catalog. The relay uses the runtime identity only to open a read-only
+database session, imports no run/model/provider/policy/executor code, emits an
+allowlisted latest-state export plus heartbeat, and has no cron secret. This is
+source/CI behavior, not proof of a live incident schema, relay execution,
+Action Group delivery, responder roster, drill, or issue #125 Azure evidence.
+Production remains disabled/manual, and existing PR #224 / PR #228 branch,
+exact-SHA, CI, protected-environment, Enterprise-hosted execution, and reviewer
+controls remain unchanged.
+
 `eastus2` was a rejected candidate because the selected subscription cannot
 provision PostgreSQL there. It is not a current target.
 
@@ -496,8 +516,32 @@ job-start override is prohibited: it can discard the rest of the live template.
 
 - a Log Analytics workspace;
 - an email Action Group; and
-- a severity-1 scheduled-query alert that checks both scheduler jobs for
-  terminal failure signals every five minutes over a 15-minute window.
+- a critical scheduled-query alert that checks both trading scheduler jobs and
+  the non-trading safety relay for terminal failure signals every five minutes
+  over a 15-minute window; and
+- the issue #125 independent safety catalog, including latest durable export,
+  relay absence, pending acknowledgment/escalation, and test-fire rules.
+
+These are the live limited foundation resources; their earlier successful
+Action Group test dispatches do not satisfy OPS-01. The future exact release
+must apply and prove the source catalog in
+[`specs/monitoring.md`](../specs/monitoring.md):
+
+- missing-run/readiness/capacity and platform failure detection that does not
+  depend on web-process liveness;
+- redacted durable database incident/outbox origin, pending-age, attempt, and
+  receipt visibility in the external monitoring plane;
+- a relay with an identity and failure boundary separate from the web process;
+- warning and critical delivery, deduplication, acknowledgment, escalation,
+  containment, explicit resolution, and no-auto-resolution behavior; and
+- immutable/checksum-addressed monitor exports, roster, drill/game-day
+  timelines, correlation/redaction review, outbox evidence, and preserved-ledger
+  proof indexed in issue #76.
+
+Numeric thresholds come only from
+`specs/production-readiness-prd.v1.md` §8.1. The operator procedure is
+[`specs/incident-response.md`](../specs/incident-response.md). No Bicep or Azure
+mutation is authorized by this contract.
 
 `schedule-monitoring.bicep` independently owns the absence alert so neither an
 environment redeploy nor a rollout-state deployment can reset monitoring.
@@ -510,8 +554,10 @@ boundary `0`:
 - enabled before a `Schedule` rollout;
 - bound to the workflow-supplied UTC schedule activation timestamp;
 - live Log Analytics schema validation is fail-closed when enabling;
-- two-hour lookback/grace measured within the current activation window; and
-- severity 1 when no successful hourly completion exists after that grace.
+- lookback/grace measured within the current activation window under the
+  authoritative Scheduled completion SLO in
+  `specs/production-readiness-prd.v1.md` §8.1; and
+- severity 1 when that SLO's missing-completion critical condition is reached.
 
 The split is an ordering control. Before enabling `Schedule`, a workflow
 what-ifs, deploys, and validates `schedule-monitoring.bicep` with the current
@@ -605,14 +651,26 @@ For `.bicepparam` compilation, export inert local stubs only:
 
 ```bash
 POSTGRES_ADMIN_PASSWORD_DEV=stub POSTGRES_ADMIN_PASSWORD_PROD=stub \
-DATABASE_URL_DEV=stub DIRECT_URL_DEV=stub CRON_SECRET_DEV=stub \
+DATABASE_URL_DEV=stub DIRECT_URL_DEV=stub MIGRATION_URL_DEV=stub CRON_SECRET_DEV=stub \
 POSTHOG_API_KEY_DEV=stub ADMIN_PASSWORD_DEV=stub \
 ADMIN_SESSION_SECRET_DEV=stub RUNTIME_DATABASE_PASSWORD_DEV=stub \
-DEPLOYMENT_APPROVAL_SECRET_DEV=stub \
-DATABASE_URL_PROD=stub DIRECT_URL_PROD=stub CRON_SECRET_PROD=stub \
+MIGRATOR_DATABASE_PASSWORD_DEV=stub DEPLOYMENT_APPROVAL_SECRET_DEV=stub \
+SAFETY_PRIMARY_ON_CALL_DEV=stub-primary SAFETY_BACKUP_ON_CALL_DEV=stub-backup \
+SAFETY_RELEASE_OWNER_DEV=stub-release SAFETY_APPROVER_DEV=stub-safety \
+SAFETY_EVIDENCE_CUSTODIAN_DEV=stub-evidence SAFETY_ROLLBACK_OWNER_DEV=stub-rollback \
+SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY_DEV=stub-primary-key SAFETY_BACKUP_ON_CALL_PUBLIC_KEY_DEV=stub-backup-key \
+SAFETY_RELEASE_OWNER_PUBLIC_KEY_DEV=stub-release-key SAFETY_APPROVER_PUBLIC_KEY_DEV=stub-safety-key \
+SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY_DEV=stub-evidence-key SAFETY_ROLLBACK_OWNER_PUBLIC_KEY_DEV=stub-rollback-key \
+DATABASE_URL_PROD=stub DIRECT_URL_PROD=stub MIGRATION_URL_PROD=stub CRON_SECRET_PROD=stub \
 POSTHOG_API_KEY_PROD=stub ADMIN_PASSWORD_PROD=stub \
 ADMIN_SESSION_SECRET_PROD=stub RUNTIME_DATABASE_PASSWORD_PROD=stub \
-DEPLOYMENT_APPROVAL_SECRET_PROD=stub \
+MIGRATOR_DATABASE_PASSWORD_PROD=stub DEPLOYMENT_APPROVAL_SECRET_PROD=stub \
+SAFETY_PRIMARY_ON_CALL_PROD=stub-primary SAFETY_BACKUP_ON_CALL_PROD=stub-backup \
+SAFETY_RELEASE_OWNER_PROD=stub-release SAFETY_APPROVER_PROD=stub-safety \
+SAFETY_EVIDENCE_CUSTODIAN_PROD=stub-evidence SAFETY_ROLLBACK_OWNER_PROD=stub-rollback \
+SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY_PROD=stub-primary-key SAFETY_BACKUP_ON_CALL_PUBLIC_KEY_PROD=stub-backup-key \
+SAFETY_RELEASE_OWNER_PUBLIC_KEY_PROD=stub-release-key SAFETY_APPROVER_PUBLIC_KEY_PROD=stub-safety-key \
+SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY_PROD=stub-evidence-key SAFETY_ROLLBACK_OWNER_PUBLIC_KEY_PROD=stub-rollback-key \
   bash -c 'for f in infra/params/*.bicepparam; do az bicep build-params --file "$f"; done'
 ```
 

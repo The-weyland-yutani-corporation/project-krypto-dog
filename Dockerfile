@@ -108,6 +108,8 @@ COPY --from=builder /app/public ./public
 # validation/request/idempotency implementation.
 COPY --from=builder /app/scripts/scheduled-trigger.mjs ./scripts/scheduled-trigger.mjs
 COPY --from=builder /app/src/deployment/scheduled-trigger.ts ./src/deployment/scheduled-trigger.ts
+COPY --from=builder /app/scripts/safety-incident-relay.mjs ./scripts/safety-incident-relay.mjs
+COPY --from=builder /app/src/deployment/safety-incident-relay.ts ./src/deployment/safety-incident-relay.ts
 
 # The official Node images provision a non-root `node` user (uid/gid 1000).
 USER node

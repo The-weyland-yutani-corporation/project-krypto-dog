@@ -38,6 +38,12 @@ export interface TradeResult {
 export interface AgentRunResult {
   status: "executed" | "skipped" | "error" | "locked";
   runId?: string;
+  requestId?: string;
+  releaseId?: string;
+  deploymentId?: string;
+  providerAttemptId?: string | null;
+  transactionId?: string;
+  incidentId?: string;
   action?: string;
   reasoning?: string;
   trade?: TradeResult;

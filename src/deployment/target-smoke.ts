@@ -46,7 +46,7 @@ export type TargetSmokeBinding = {
 };
 
 export type TargetSmokeReport = {
-  schemaVersion: "1.5.0";
+  schemaVersion: "1.6.0";
   generatedAt: string;
   target: string;
   releaseSha: string;
@@ -740,6 +740,12 @@ export async function runTargetSmoke(
   const releaseSha = validateReleaseSha(options.releaseSha);
   const imageDigest = validateImageDigest(options.imageDigest);
   const approvalSecret = validateApprovalSecret(options.approvalSecret);
+  const safetyReleaseOwner = process.env.SAFETY_RELEASE_OWNER?.trim();
+  if (!safetyReleaseOwner) {
+    throw new Error(
+      "SAFETY_RELEASE_OWNER is required for the non-trading safety test-fire contract.",
+    );
+  }
 
   const now = dependencies.now ?? (() => new Date());
   const randomUuid = dependencies.randomUuid ?? (() => crypto.randomUUID());
@@ -800,7 +806,7 @@ export async function runTargetSmoke(
 
   function blockedReport(manualGate: string): TargetSmokeReport {
     return {
-      schemaVersion: "1.5.0",
+      schemaVersion: "1.6.0",
       generatedAt: now().toISOString(),
       target: sanitizedTarget(options.baseUrl),
       releaseSha,
@@ -1133,6 +1139,66 @@ export async function runTargetSmoke(
     (value) => value,
   );
 
+  const safetyTestFire = await check(
+    "safety-incident-test-fire-dry-run",
+    "Protected warning test fire proves the non-trading incident contract without persistence",
+    async () => {
+      const response = await request(
+        fetchImpl,
+        new URL("/api/admin/safety-incidents/test-fire", baseUrl),
+        {
+          method: "POST",
+          headers: {
+            cookie: login.value!,
+            origin: baseUrl.origin,
+            "content-type": "application/json",
+            "x-request-id": `target-smoke-${evidenceIds.admin}`,
+          },
+          body: JSON.stringify({
+            severity: "WARNING",
+            dryRun: true,
+            drill: false,
+            actorId: safetyReleaseOwner,
+            actorRole: "RELEASE_OWNER",
+            reason: "Target smoke non-trading warning test fire",
+          }),
+        },
+      );
+      const body = await responseJson(response);
+      const roster =
+        body.roster !== null &&
+        typeof body.roster === "object" &&
+        !Array.isArray(body.roster)
+          ? (body.roster as Record<string, unknown>)
+          : null;
+      if (
+        response.status !== 200 ||
+        body.dryRun !== true ||
+        body.persisted !== false ||
+        body.incidentType !== "TEST_FIRE_WARNING" ||
+        roster?.complete !== true ||
+        roster?.authenticatorsConfigured !== true
+      ) {
+        throw new Error(
+          "Safety warning test fire was not a complete non-trading dry run.",
+        );
+      }
+      return {
+        status: response.status,
+        incidentType: body.incidentType,
+        persisted: body.persisted,
+        rosterComplete: roster.complete,
+        authenticatorsConfigured: roster.authenticatorsConfigured,
+      };
+    },
+    (value) => value,
+  );
+  if (!safetyTestFire.passed) {
+    return blockedReport(
+      "Complete the protected responder roster and non-trading test-fire contract before rollout evidence.",
+    );
+  }
+
   const adminLogout = await check(
       "admin-logout",
       "Logout clears the admin cookie and protected access",
@@ -1395,7 +1461,7 @@ export async function runTargetSmoke(
   }
 
   return {
-    schemaVersion: "1.5.0",
+    schemaVersion: "1.6.0",
     generatedAt: targetApproval.value.approvedAt,
     target: sanitizedTarget(options.baseUrl),
     releaseSha,
@@ -1409,6 +1475,7 @@ export async function runTargetSmoke(
       "Confirm the deployment_smoke event is visible in PostHog.",
       "Confirm the daily summary reached the intended mailbox.",
       "Review target logs for the two disabled run IDs before shadow promotion.",
+      "Run attended non-trading warning and critical delivery/acknowledgment/escalation drills and index immutable evidence in issue #76 before #75.",
     ],
     binding: targetApproval.value,
   };

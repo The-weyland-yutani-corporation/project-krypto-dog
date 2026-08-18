@@ -9,6 +9,13 @@ targetScope = 'resourceGroup'
 @description('Azure region for the scheduled query alert rules.')
 param location string
 
+@description('Short environment name for deterministic safety alert names.')
+@allowed([
+  'dev'
+  'prod'
+])
+param environmentName string
+
 @description('Action Group name.')
 param actionGroupName string
 
@@ -28,10 +35,13 @@ param hourlyJobName string
 @description('Daily summary Container Apps Job name.')
 param dailyJobName string
 
+@description('Non-trading safety incident relay Container Apps Job name.')
+param safetyIncidentRelayJobName string
+
 @description('Tags applied to all monitoring resources.')
 param tags object = {}
 
-var failedJobExecutionAlertName = 'alert-${hourlyJobName}-or-${dailyJobName}-failed'
+var failedJobExecutionAlertName = 'alert-krypto-${environmentName}-job-failed'
 
 // Query assumptions (Azure Log Analytics destination): Container Apps emits
 // legacy ContainerAppSystemLogs_CL with JobName_s, Reason_s, Type_s and Log_s;
@@ -43,7 +53,7 @@ var failedJobExecutionAlertName = 'alert-${hourlyJobName}-or-${dailyJobName}-fai
 var failedJobExecutionQuery = format('''
 ContainerAppSystemLogs_CL
 | where TimeGenerated >= ago(15m)
-| where JobName_s in ("{0}", "{1}")
+| where JobName_s in ("{0}", "{1}", "{2}")
 | extend ExitCode = toint(extract(@"exit code:?\s*'?(-?\d+)'?", 1, tolower(Log_s)))
 | where Reason_s in~ ("Failed", "BackoffLimitExceeded", "DeadlineExceeded")
     or (Reason_s =~ "ProcessExited" and isnotnull(ExitCode) and ExitCode != 0)
@@ -51,7 +61,7 @@ ContainerAppSystemLogs_CL
     or Log_s contains "backoff limit exceeded"
     or Log_s contains "deadline exceeded"
 | project TimeGenerated, JobName = JobName_s, Reason = Reason_s, Type = Type_s, Log = Log_s
-''', hourlyJobName, dailyJobName)
+''', hourlyJobName, dailyJobName, safetyIncidentRelayJobName)
 
 resource actionGroup 'microsoft.insights/actiongroups@2023-01-01' = {
   name: actionGroupName
@@ -77,7 +87,7 @@ resource failedJobExecutionAlert 'Microsoft.Insights/scheduledQueryRules@2023-12
   kind: 'LogAlert'
   properties: {
     displayName: 'Container Apps scheduler job execution failed'
-    description: 'Alerts when the ${hourlyJobName} or ${dailyJobName} Container Apps Job emits a terminal failure signal.'
+    description: 'Alerts when a trading scheduler or the non-trading safety relay emits a terminal failure signal.'
     severity: 1
     enabled: true
     evaluationFrequency: 'PT5M'
@@ -117,14 +127,35 @@ resource failedJobExecutionAlert 'Microsoft.Insights/scheduledQueryRules@2023-12
         signal: 'container-apps-job-failed'
         hourlyJob: hourlyJobName
         dailyJob: dailyJobName
+        safetyRelayJob: safetyIncidentRelayJobName
+        severityClass: 'critical'
+        ownerRole: 'PRIMARY_ON_CALL'
+        backupRole: 'BACKUP_ON_CALL'
+        deduplication: 'jobName+executionId'
+        acknowledgmentTarget: 'PT5M'
+        escalationAfter: 'PT5M'
+        runbook: 'https://github.com/The-weyland-yutani-corporation/project-krypto-dog/blob/main/specs/incident-response.md'
       }
     }
-    autoMitigate: true
+    autoMitigate: false
     checkWorkspaceAlertsStorageConfigured: false
     skipQueryValidation: true
+  }
+}
+
+module safetyAlerts 'safety-alerts.bicep' = {
+  name: 'independent-safety-alerts'
+  params: {
+    location: location
+    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
+    actionGroupId: actionGroup.id
+    environmentName: environmentName
+    tags: tags
   }
 }
 
 output actionGroupId string = actionGroup.id
 output failedJobExecutionAlertId string = failedJobExecutionAlert.id
 output failedJobExecutionAlertName string = failedJobExecutionAlert.name
+output safetyAlertIds array = safetyAlerts.outputs.alertIds
+output safetyAlertNames array = safetyAlerts.outputs.alertNames

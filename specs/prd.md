@@ -83,7 +83,7 @@ compatibility. New orchestration and execution use the numeric columns.
 
 | Column group | Notes |
 |---|---|
-| identity | unique run ID and unique idempotency key |
+| identity | unique run ID, unique idempotency key, and allowlisted request/release/deployment/provider-attempt correlation |
 | lifecycle | trigger, trading mode, outcome, start/end time, immutable `deadlineAt = startedAt + 180 seconds`, latency |
 | attribution | strategy version, model version, market/account snapshots |
 | decision | structured model proposal and deterministic authorization result |
@@ -95,7 +95,10 @@ Atomic `(usageDate, provider)` counters enforce fail-closed UTC-day request ceil
 
 ### `RuntimeContract`
 
-A runtime-readable singleton publishes schema fingerprint `0009_bounded_execution_v1` and contract version `1` for readiness. The runtime remains denied access to the Drizzle migration ledger.
+A runtime-readable singleton publishes current schema fingerprint
+`0010_safety_incidents_v1` and contract version `2` for readiness, retaining the
+bounded-execution contract and adding append-only incident evidence. The runtime
+remains denied access to the Drizzle migration ledger.
 
 ### `TradeExecution`
 
@@ -120,6 +123,20 @@ A runtime-readable singleton publishes schema fingerprint `0009_bounded_executio
 | `tradeExecutionId` | `text` (FK, nullable) | links journal to the trade it caused, if any |
 | `agentRunId` | `text` (FK, nullable) | links journal to the originating run |
 | `createdAt` | `timestamp(3)` | indexed |
+
+### `SafetyIncidentOutbox`
+
+Append-only incident/lifecycle/outbox events use application-generated
+`eventId` and stable `incidentId`, monotonic event sequence, type, severity,
+status, deduplication key, named owner/backup roles, linked runbook, and
+occurrence/persistence/acknowledgment/escalation/resolution timestamps.
+Allowlisted correlation covers request, run, release, deployment, provider
+attempt, paper transaction, and incident. `redactedContext` and lifecycle
+evidence accept only bounded allowlisted primitives; secrets, credentials, raw
+prompts, provider payloads, URLs, and headers are rejected. Runtime has
+`SELECT, INSERT` only; database triggers reject update/delete. PAPER execution
+inserts its initial post-commit obligation in the same transaction as ledger,
+state, and terminal run truth.
 
 ---
 
@@ -244,6 +261,26 @@ that would persist a paper trade.
   clears the safety lock in a row-locked transaction, and persists the prior
   lock state and operator reason. The agent remains operator-paused until a
   separate audited resume.
+
+### `GET|POST /api/admin/safety-incidents`
+
+- Protected by the admin session; lifecycle mutation also requires same-origin
+  validation and an actor matching the fail-closed responder roster.
+- `GET` lists latest immutable incident events with redacted context excluded by
+  default.
+- `POST` is deliberately fail closed for every human lifecycle change because
+  the current admin session is shared. `npm run incident:respond` appends
+  signed acknowledge/escalate/resolve events through the protected owner/
+  migrator lane. Resolution requires distinct release-owner/trading-safety
+  confirmation and complete evidence; a successful retry never resolves.
+
+### `POST /api/admin/safety-incidents/test-fire`
+
+- Strictly non-trading: it never calls run-flow, model/provider decision code,
+  policy, executor, or paper state.
+- Dry-run is the target-smoke contract. Persisted warning/critical drills require
+  an explicit drill flag, complete roster, and disabled/shadow mode. Source
+  validation never enables the flag or fires Azure alerts.
 
 ### `/admin`, `/admin/trades`, `/admin/journal`
 - Server-rendered AgentRun/accounting/lease dashboard with auto-refresh,
@@ -438,6 +475,22 @@ current target.
 | Crashed run lease | Owner-checked cleanup runs inside the 15-second terminal reserve; otherwise the 300-second lease expires. A later invocation can recover only an expired lease. |
 | Deadline, cancellation, admission, or scheduler timeout | Persist one typed terminal no-trade result where possible; release only the owned lease; scheduler has one 210-second HTTP attempt, zero replica retries, and a 270-second replica timeout. |
 
+Production-paper qualification additionally requires the pending behavior in
+[ADR 0016](./decisions/0016-durable-safety-incidents-and-independent-alerts.md):
+safety state changes atomically append an incident and outbox obligation; every
+PAPER execution commits its post-commit obligations with ledger truth; a
+separate relay and Azure monitors observe durable evidence and application
+absence; and retry success never auto-resolves the original incident. Journal,
+analytics, telemetry, or notification failure must preserve the committed
+ledger, append correlated incident evidence, and never re-execute or hide the
+trade.
+
+That behavior is **not implemented by this documentation change**. The current
+post-commit incident/outbox and independent-alert gap remains an OPS-01 blocker
+before issue #75 / PR-G2. Numeric targets are governed only by
+`production-readiness-prd.v1.md` §8.1, and response is governed by
+[`incident-response.md`](./incident-response.md).
+
 ---
 
 ## 12. Testing
@@ -515,6 +568,12 @@ Production is still blocked by:
   the unconditional post-provider no-trade database check.
 - **Analytics isolation:** the prod PostHog key is staged; the distinct dev key
   is still missing.
+- **Safety incident control plane:** ADR 0016 and the incident runbook are
+  documented and source foundations must be classified through exact CI
+  evidence. Full runtime transaction/post-commit integration, a separate relay,
+  expanded Azure alert catalog, fail-closed responder roster, drills, and
+  exact-release issue #76 target proof remain unproven. Earlier Action Group
+  dispatches do not satisfy OPS-01.
 - **Historical and paper evidence:** imported walk-forward reports are
   deliberately classified engineering-only and cannot satisfy release gates.
   Real holdout datasets and the required 30-day production paper window do not

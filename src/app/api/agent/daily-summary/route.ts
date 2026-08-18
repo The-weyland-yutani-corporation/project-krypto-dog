@@ -18,48 +18,146 @@ import {
   flushPostHog,
   reservePostHogBudget,
 } from "@/lib/posthog";
+import {
+  requestIdFromHeaders,
+  resolveReleaseDeploymentCorrelation,
+} from "@/lib/correlation";
+import { safetyIncidentRepository } from "@/lib/safety-incidents";
 
 async function recordDelivery(
   status: "sent" | "skipped" | "failed",
   detail: string | null,
   deadline?: ExecutionDeadline,
   terminal = false,
-): Promise<void> {
+): Promise<string> {
   deadline?.assertActive(
     "daily summary delivery persistence",
     terminal,
   );
-  await db.insert(agentJournal).values({
-    entryText: `Daily summary delivery ${status}${detail ? `: ${detail}` : "."}`,
-    marketConditions: {
-      event: "daily-summary-delivery",
-      status,
-      detail,
-      timestamp: new Date().toISOString(),
-    },
-  });
+  const [entry] = await db
+    .insert(agentJournal)
+    .values({
+      entryText: `Daily summary delivery ${status}${detail ? `: ${detail}` : "."}`,
+      marketConditions: {
+        event: "daily-summary-delivery",
+        status,
+        detail,
+        timestamp: new Date().toISOString(),
+      },
+    })
+    .returning({ id: agentJournal.id });
+  if (!entry) throw new Error("Daily delivery audit returned no evidence ID");
+  return entry.id;
 }
 
 async function failureResponse(
   error: unknown,
+  correlation: {
+    requestId: string;
+    releaseId: string;
+    deploymentId: string;
+  },
+  obligationIncidentId: string | null,
   deadline?: ExecutionDeadline,
+  priorAuditFailure = false,
 ): Promise<NextResponse> {
   const message = error instanceof Error ? error.message : String(error);
-  let alertAuditRecorded = true;
+  let alertAuditRecorded = !priorAuditFailure;
   try {
     await recordDelivery("failed", message, deadline, true);
-  } catch (auditError) {
+  } catch {
     alertAuditRecorded = false;
-    console.error("[daily-summary] Failed to record alert failure:", auditError);
+    console.error(
+      JSON.stringify({
+        eventType: "journal_persistence_failed",
+        requestId: correlation.requestId,
+        failureCode: "daily-delivery-failure-audit",
+      }),
+    );
   }
-  console.error("[daily-summary] Error:", error);
+  if (obligationIncidentId) {
+    try {
+      await safetyIncidentRepository.appendDeliveryLifecycle({
+        incidentId: obligationIncidentId,
+        eventKind: "DELIVERY_FAILED",
+        attemptId: `daily-failure:${correlation.requestId}`,
+        evidence: {
+          deliveryChannel: "acs-email",
+          deliveryFailureCode:
+            error instanceof EmailDeliveryError
+              ? "acs-delivery-failed"
+              : error instanceof ProviderBudgetError
+                ? "provider-budget"
+                : error instanceof ExecutionDeadlineError
+                  ? "execution-deadline"
+                  : "daily-summary-failed",
+          retryOutcome: "not-resolved",
+        },
+      });
+    } catch {
+      console.error(
+        JSON.stringify({
+          eventType: "incident_lifecycle_persistence_failed",
+          requestId: correlation.requestId,
+          failureCode: "daily-delivery-obligation-update",
+        }),
+      );
+    }
+  }
+  const incident = await safetyIncidentRepository.createOrGet({
+    incidentType:
+      error instanceof EmailDeliveryError
+        ? "EMAIL_DELIVERY_FAILURE"
+        : error instanceof ProviderBudgetError ||
+            error instanceof AdmissionCapacityError ||
+            error instanceof ExecutionDeadlineError
+          ? "DEADLINE_BUDGET_EXHAUSTION"
+          : "POST_COMMIT_FAILURE",
+    severity: "CRITICAL",
+    dedupKey: `daily-summary-failure:${correlation.requestId}`,
+    requestId: correlation.requestId,
+    releaseId: correlation.releaseId,
+    deploymentId: correlation.deploymentId,
+    redactedContext: {
+      component: "daily-summary",
+      operation: "delivery",
+      failureCode:
+        error instanceof EmailDeliveryError
+          ? "acs-delivery-failed"
+          : error instanceof ProviderBudgetError
+            ? "provider-budget"
+            : error instanceof AdmissionCapacityError
+              ? "admission-capacity"
+            : error instanceof ExecutionDeadlineError
+              ? "execution-deadline"
+              : "daily-summary-failed",
+      deliveryChannel: "acs-email",
+      outcome: "error",
+    },
+    ownerRole: "PRIMARY_ON_CALL",
+    backupRole: "BACKUP_ON_CALL",
+    runbook: "specs/incident-response.md#daily-delivery-failure",
+  });
+  console.error(
+    JSON.stringify({
+      eventType: "daily_summary_failed",
+      requestId: correlation.requestId,
+      incidentId: incident.event.incidentId,
+      failureCode: "daily-summary-failed",
+    }),
+  );
   return NextResponse.json(
-    { error: message, alertAuditRecorded },
+    {
+      error: message,
+      alertAuditRecorded,
+      incidentId: incident.event.incidentId,
+    },
     {
       status:
         error instanceof ExecutionDeadlineError
           ? 504
-          : error instanceof ProviderBudgetError
+          : error instanceof ProviderBudgetError ||
+              error instanceof AdmissionCapacityError
             ? 503
             : error instanceof EmailDeliveryError
               ? 502
@@ -113,8 +211,31 @@ export async function POST(request: NextRequest) {
 
   const deadline = createExecutionDeadline({ signal: request.signal });
   let releaseAdmission: (() => void) | undefined;
+  const correlation = {
+    requestId: requestIdFromHeaders(request.headers),
+    ...resolveReleaseDeploymentCorrelation(),
+  };
+  let obligationIncidentId: string | null = null;
   try {
     releaseAdmission = tryAcquireRunAdmission(deadline);
+    const obligation = await safetyIncidentRepository.createOrGet({
+      incidentType: "DAILY_DELIVERY_OBLIGATION",
+      severity: "WARNING",
+      dedupKey: `daily-summary-obligation:${correlation.requestId}`,
+      requestId: correlation.requestId,
+      releaseId: correlation.releaseId,
+      deploymentId: correlation.deploymentId,
+      redactedContext: {
+        component: "daily-summary",
+        operation: "delivery",
+        deliveryChannel: "acs-email",
+        rolloutMode: actualMode,
+      },
+      ownerRole: "PRIMARY_ON_CALL",
+      backupRole: "BACKUP_ON_CALL",
+      runbook: "specs/incident-response.md#daily-delivery-failure",
+    });
+    obligationIncidentId = obligation.event.incidentId;
     await reservePostHogBudget({ deadline });
     deadline.assertActive("daily summary database read");
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -127,10 +248,7 @@ export async function POST(request: NextRequest) {
       .limit(1);
 
     if (!state) {
-      return NextResponse.json(
-        { error: "AgentState not found" },
-        { status: 500 }
-      );
+      throw new Error("AgentState not found");
     }
 
     // Fetch last 24h trades
@@ -183,23 +301,33 @@ export async function POST(request: NextRequest) {
     );
     try {
       deadline.assertActive("daily summary delivery journal");
-      await recordDelivery(
+      const journalId = await recordDelivery(
         delivery.status,
         delivery.status === "sent"
           ? (delivery.id ?? null)
           : delivery.reason,
         deadline,
       );
-    } catch (error) {
-      console.error("[daily-summary] Delivery succeeded but audit failed:", error);
-      return NextResponse.json(
-        {
-          generated: true,
-          delivery,
-          alertAuditRecorded: false,
-          error: error instanceof Error ? error.message : String(error),
+      await flushPostHog({ deadline });
+      await safetyIncidentRepository.appendDeliveryLifecycle({
+        incidentId: obligationIncidentId,
+        eventKind: "DELIVERY_CONFIRMED",
+        attemptId: `daily-confirmed:${correlation.requestId}`,
+        evidence: {
+          artifactRef: `agent-journal:${journalId}`,
+          deliveryChannel: "acs-email",
+          deliveryReceiptId:
+            delivery.status === "sent" ? (delivery.id ?? "sent") : "skipped",
+          verification: "delivery-and-audit-persisted",
         },
-        { status: 500 },
+      });
+    } catch (error) {
+      return failureResponse(
+        error,
+        correlation,
+        obligationIncidentId,
+        deadline,
+        true,
       );
     }
 
@@ -207,25 +335,32 @@ export async function POST(request: NextRequest) {
       generated: true,
       delivery,
       alertAuditRecorded: true,
+      incidentId: obligationIncidentId,
       tradesCount: recentTrades.length,
       totalPnlUSD: totalPnl,
     });
   } catch (error) {
     if (error instanceof AdmissionCapacityError) {
+      console.error(
+        JSON.stringify({
+          eventType: "readiness_capacity_failure",
+          requestId: correlation.requestId,
+          route: "/api/agent/daily-summary",
+          failureCode: error.code,
+        }),
+      );
       return NextResponse.json(
         { error: error.message, code: error.code },
         { status: 503, headers: { "Retry-After": "1" } },
       );
     }
-    return failureResponse(error, deadline);
+    return failureResponse(
+      error,
+      correlation,
+      obligationIncidentId,
+      deadline,
+    );
   } finally {
-    if (deadline.remainingMs() > 0) {
-      try {
-        await flushPostHog({ deadline });
-      } catch (error) {
-        console.error("[daily-summary] Failed to flush analytics:", error);
-      }
-    }
     releaseAdmission?.();
     deadline.dispose();
   }

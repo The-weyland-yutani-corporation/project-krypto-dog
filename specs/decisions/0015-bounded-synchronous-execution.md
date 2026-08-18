@@ -71,7 +71,9 @@ The application also checks the deadline before policy, locked execution, state 
   - the 40-hex release SHA and sha256 image digest bindings;
   - `EXECUTION_CONTRACT_VERSION` and presence/bounds of database-pool, admission, and provider daily-ceiling configuration;
   - PostgreSQL 17, the current login, membership in `krypto_runtime`, safe non-elevated attributes, `CONNECTION LIMIT 20`, stable `current_user`/`session_user`/`current_role`, inheritance, and denial of elevated roles and the `drizzle` migration ledger;
-  - the `0009_bounded_execution_v1` runtime schema fingerprint;
+  - the reviewed runtime schema fingerprint (`0009_bounded_execution_v1` at
+    this decision; advanced to `0010_safety_incidents_v1`/contract `2` by
+    ADR 0016 without changing the bounded timings);
   - exactly one `AgentState` singleton, `RECONCILED` accounting, a sane idle or owned/unexpired 300-second lease, a valid rollout mode, and one free local admission slot.
 
 The response contains only `status` and an ordered list of opaque, stable reason codes. It does not return role names, privileges, versions, digests, configuration, lease owners, or database values. Readiness is an admission signal, not a provider health cache.

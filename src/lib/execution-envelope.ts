@@ -39,6 +39,7 @@ export const PROVIDER_TIME_BUDGET_MS: Readonly<Record<ProviderName, number>> =
 
 export class ExecutionDeadlineError extends Error {
   readonly code = "execution-deadline-exhausted";
+  providerAttemptId?: string;
 
   constructor(
     readonly deadlineAt: Date,
@@ -52,6 +53,7 @@ export class ExecutionDeadlineError extends Error {
 
 export class ProviderBudgetError extends Error {
   readonly code = "provider-budget-exhausted";
+  providerAttemptId?: string;
 
   constructor(
     readonly provider: ProviderName,

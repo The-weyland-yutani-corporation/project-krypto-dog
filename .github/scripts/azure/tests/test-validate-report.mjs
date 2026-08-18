@@ -91,6 +91,13 @@ run(
 );
 
 run(
+  "target-smoke-missing-safety-check.json",
+  ["--operation", "target-smoke", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1],
+  false,
+  "report missing the non-trading safety test-fire check -- must reject",
+);
+
+run(
   "target-smoke-malformed-approved-at.json",
   ["--operation", "target-smoke", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1],
   false,

@@ -189,6 +189,115 @@ describe("production migration safety", () => {
     expect(ledger).not.toMatch(/\bDELETE\s+FROM\b/i);
   });
 
+  it("adds the reviewed append-only safety incident outbox without weakening role boundaries", () => {
+    const migration = read("drizzle/0010_safety_incidents.sql");
+    const journal = JSON.parse(
+      read("drizzle/meta/_journal.json"),
+    ) as {
+      entries: Array<{ idx: number; when: number; tag: string }>;
+    };
+
+    expect(
+      createHash("sha256").update(migration).digest("hex"),
+    ).toBe(
+      "e81e8e38bcf2e32855a4d98dd3c76950c26d0e9aeecba536adb0f12278920095",
+    );
+    expect(journal.entries.at(-1)).toEqual(
+      expect.objectContaining({
+        idx: 10,
+        when: 1786993492359,
+        tag: "0010_safety_incidents",
+      }),
+    );
+    expect(migration).toContain('SET ROLE "krypto_schema_owner"');
+    expect(migration).toContain(
+      'CREATE TABLE "krypto"."SafetyIncidentOutbox"',
+    );
+    expect(migration).toContain('"eventId" text PRIMARY KEY NOT NULL');
+    expect(migration).not.toMatch(/\b(?:serial|bigserial)\b/i);
+    expect(migration).toContain(
+      '"SafetyIncidentOutbox_incidentId_eventSequence_uidx"',
+    );
+    expect(migration).toContain(
+      '"SafetyIncidentOutbox_created_dedupKey_uidx"',
+    );
+    expect(migration).toContain(
+      `WHERE "eventKind" = 'CREATED'`,
+    );
+    expect(migration).toContain(
+      'REFERENCES "krypto"."AgentRun"("id") ON DELETE restrict',
+    );
+    expect(migration).toContain(
+      'REFERENCES "krypto"."TradeExecution"("id") ON DELETE restrict',
+    );
+    expect(migration).toContain(
+      'BEFORE UPDATE OR DELETE ON "krypto"."SafetyIncidentOutbox"',
+    );
+    expect(migration).toContain(
+      '"SafetyIncidentOutbox_validate_insert"',
+    );
+    expect(migration).toContain(
+      "Runtime identity cannot resolve safety incidents",
+    );
+    expect(migration).toContain(
+      "Resolution requires a distinct complementary role",
+    );
+    expect(migration).toContain(
+      'REVOKE ALL PRIVILEGES ON TABLE "krypto"."SafetyIncidentOutbox" FROM PUBLIC',
+    );
+    expect(migration).toContain(
+      'GRANT SELECT, INSERT ON TABLE "krypto"."SafetyIncidentOutbox" TO "krypto_runtime"',
+    );
+    expect(migration).not.toMatch(
+      /GRANT[^;]*(?:UPDATE|DELETE|TRUNCATE|TRIGGER|REFERENCES)[^;]*ON TABLE "krypto"\."SafetyIncidentOutbox"/i,
+    );
+    const backfillIndex = migration.indexOf(
+      `UPDATE "krypto"."AgentRun"`,
+    );
+    for (const column of ["requestId", "releaseId", "deploymentId"]) {
+      expect(migration).toContain(
+        `ALTER TABLE "krypto"."AgentRun" ADD COLUMN "${column}" text`,
+      );
+      expect(migration.indexOf(
+        `ALTER COLUMN "${column}" SET NOT NULL`,
+      )).toBeGreaterThan(backfillIndex);
+    }
+    expect(migration).toContain("'legacy-agent-run:' || \"id\"");
+    expect(migration).toContain(
+      `"schemaFingerprint" = '0010_safety_incidents_v1'`,
+    );
+    expect(migration).toContain('"contractVersion" = 2');
+    expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);
+    expect(migration).not.toMatch(/\bTRUNCATE\b/i);
+    expect(migration).not.toMatch(/\bDROP\s+TABLE\b/i);
+  });
+
+  it("does not expose an evidence-reset override after incident evidence exists", () => {
+    const reset = read("scripts/reset-state.ts");
+    expect(reset).toContain("safetyIncidentOutbox");
+    expect(reset).toContain(
+      "There is no evidence-reset override",
+    );
+    expect(reset).not.toContain("ALLOW_DESTRUCTIVE_RESET");
+    expect(reset).not.toMatch(/delete\(safetyIncidentOutbox\)/);
+  });
+
+  it("keeps resolution in the protected owner lane rather than runtime/admin", () => {
+    const operation = read("scripts/resolve-safety-incident.ts");
+    const adminRoute = read(
+      "src/app/api/admin/safety-incidents/route.ts",
+    );
+    expect(operation).toContain('required("DIRECT_URL")');
+    expect(operation).toContain(
+      'SET LOCAL ROLE "krypto_schema_owner"',
+    );
+    expect(operation).toContain("verifySafetyActorAssertion");
+    expect(operation).toContain("REQUIRED_EVIDENCE");
+    expect(adminRoute).toContain(
+      "Human lifecycle changes are unavailable through the shared admin session",
+    );
+  });
+
   it("requires the direct database URL for non-migration database commands", () => {
     const config = read("drizzle.config.ts");
 

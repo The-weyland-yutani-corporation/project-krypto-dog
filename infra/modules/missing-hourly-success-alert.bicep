@@ -71,7 +71,7 @@ resource missingHourlySuccessAlert 'Microsoft.Insights/scheduledQueryRules@2023-
   properties: {
     displayName: 'Hourly agent-run missing successful execution'
     description: 'Alerts when ${hourlyJobName} has no successful execution for more than two hours within the explicitly enabled schedule window.'
-    severity: 1
+    severity: 0
     enabled: enabled
     evaluationFrequency: 'PT5M'
     windowSize: 'PT2H'
@@ -102,9 +102,16 @@ resource missingHourlySuccessAlert 'Microsoft.Insights/scheduledQueryRules@2023-
         hourlyJob: hourlyJobName
         lookback: 'PT2H'
         scheduleEnabledAtUnixSeconds: validatedScheduleEnabledAtUnixSeconds
+        severityClass: 'critical'
+        ownerRole: 'PRIMARY_ON_CALL'
+        backupRole: 'BACKUP_ON_CALL'
+        deduplication: 'hourlyJob+scheduleEnabledAtUnixSeconds'
+        acknowledgmentTarget: 'PT5M'
+        escalationAfter: 'PT5M'
+        runbook: 'https://github.com/The-weyland-yutani-corporation/project-krypto-dog/blob/main/specs/incident-response.md'
       }
     }
-    autoMitigate: true
+    autoMitigate: false
     checkWorkspaceAlertsStorageConfigured: false
     skipQueryValidation: !enabled
   }

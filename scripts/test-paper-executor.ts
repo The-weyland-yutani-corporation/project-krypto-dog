@@ -6,6 +6,7 @@ import * as schema from "../src/db/schema";
 import {
   agentRun,
   agentState,
+  safetyIncidentOutbox,
   tradeExecution,
 } from "../src/db/schema";
 import { createPaperExecutor } from "../src/trading/paper-executor";
@@ -48,6 +49,9 @@ async function prepareRun(
   await adminDb.insert(agentRun).values({
     id,
     idempotencyKey: `${id}-idempotency`,
+    requestId: `${id}-request`,
+    releaseId: "database-test-release",
+    deploymentId: "database-test-deployment",
     triggerSource: "database-test",
     tradingMode: "PAPER",
     strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
@@ -113,6 +117,17 @@ async function main() {
     concurrent.map((result) => result.status).sort(),
     ["executed", "idempotent"],
   );
+  assert.equal(concurrent[0]?.incidentId, concurrent[1]?.incidentId);
+  assert.equal(
+    (
+      await adminDb
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(eq(safetyIncidentOutbox.agentRunId, "executor-run-1"))
+    ).length,
+    1,
+    "the paper commit and one deduplicated post-commit obligation must be atomic",
+  );
 
   const [firstTradeCount] = await adminDb
     .select({ id: tradeExecution.id })
@@ -162,6 +177,16 @@ async function main() {
     .from(tradeExecution)
     .where(eq(tradeExecution.agentRunId, "executor-run-2"));
   assert.equal(rolledBackTrades.length, 0);
+  assert.equal(
+    (
+      await adminDb
+        .select()
+        .from(safetyIncidentOutbox)
+        .where(eq(safetyIncidentOutbox.agentRunId, "executor-run-2"))
+    ).length,
+    0,
+    "rolled-back paper state must not leave a fabricated incident origin",
+  );
 
   await secondExecutor({
     ...firstRequest,

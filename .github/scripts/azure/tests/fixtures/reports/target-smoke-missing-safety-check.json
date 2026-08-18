@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "1.6.0",
+  "generatedAt": "2026-08-14T00:00:00.000Z",
+  "target": "https://krypto.example.com/",
+  "evidenceIds": {
+    "databaseBinding": "deployment-smoke-binding-123e4567-e89b-42d3-a456-426614174000",
+    "approval": "deployment-smoke-approved-123e4567-e89b-42d3-a456-426614174001",
+    "modeMismatch": "deployment-smoke-mode-mismatch-123e4567-e89b-42d3-a456-426614174002",
+    "cron": "deployment-smoke-cron-123e4567-e89b-42d3-a456-426614174003",
+    "admin": "deployment-smoke-admin-123e4567-e89b-42d3-a456-426614174004"
+  },
+  "checks": [],
+  "passed": true,
+  "releaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "rolloutMode": "disabled",
+  "binding": {
+    "approvalId": "deployment-smoke-approved-123e4567-e89b-42d3-a456-426614174001",
+    "bindingId": "deployment-smoke-binding-123e4567-e89b-42d3-a456-426614174000",
+    "modeMismatchEvidenceId": "deployment-smoke-mode-mismatch-123e4567-e89b-42d3-a456-426614174002",
+    "cronEvidenceId": "deployment-smoke-cron-123e4567-e89b-42d3-a456-426614174003",
+    "adminEvidenceId": "deployment-smoke-admin-123e4567-e89b-42d3-a456-426614174004",
+    "targetOrigin": "https://krypto.example.com",
+    "releaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "rolloutMode": "disabled",
+    "cronSecretBinding": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "approvedAt": "2026-08-14T00:00:00.000Z",
+    "approvalSignature": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  }
+}

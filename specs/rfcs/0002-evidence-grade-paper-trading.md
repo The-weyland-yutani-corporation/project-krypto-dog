@@ -7,6 +7,7 @@
 > This RFC remains architectural design context. Production-paper controls,
 > acceptance thresholds, and authorization are governed by
 > [`../production-readiness-prd.v1.md`](../production-readiness-prd.v1.md).
+> Its §8.1 table is the only normative numeric SLI/SLO source.
 
 Implementation note (2026-07-14): the v2.1 deterministic policy, structured
 decision boundary, exact transactional paper executor, AgentRun ledger, and
@@ -17,6 +18,9 @@ the clean target still needs migration, backup, Vault, disabled deployment and
 smoke; shadow/paper observation and financial evidence are not complete. The
 imported walk-forward evidence foundation is engineering-only and cannot satisfy
 the production evidence gates in this RFC.
+
+ADR 0016's durable incident/outbox and independent-alert contract is accepted
+design context but is not implemented or proven by this documentation update.
 
 ## Summary
 
@@ -132,6 +136,28 @@ Beyond the authorization architecture, v2.1 must also:
 - Align PostHog event schema, Resend email paths, and admin dashboard state across
   all code paths.
 
+### Durable safety incidents and independent alerts (ADR 0016)
+
+Before the shadow evidence gate, the production-paper control plane must satisfy
+[ADR 0016](../decisions/0016-durable-safety-incidents-and-independent-alerts.md):
+
+- safety state changes atomically append an incident origin, lifecycle event,
+  and durable alert outbox obligation;
+- every PAPER execution commits its post-commit obligations with immutable
+  ledger truth;
+- a separate least-privilege relay and Azure rules observe external
+  Log Analytics/platform signals plus redacted durable incident/outbox
+  evidence, not process liveness alone;
+- correlation is allowlisted and redacted across request, run, release,
+  deployment, provider, transaction, and incident IDs; and
+- delivery, acknowledgment, escalation, containment, recovery, and explicit
+  resolution remain append-only; a retry never auto-resolves an incident.
+
+The fail-closed responder roster, scenario response, non-trading warning and
+critical drills, game day, and issue #76 evidence contract are in
+[`../incident-response.md`](../incident-response.md). A missing or stale roster
+blocks issue #75 / PR-G2.
+
 ## Revised strategy parameters
 
 The default account remains $200, but starting paper capital becomes
@@ -197,8 +223,9 @@ artifacts must be retained outside source control:
 - [ ] First manual shadow invocation completes as `SHADOW`, writes no
       `TradeExecution`, releases its lease, and produces a coherent journal.
 - [ ] Fixed cron jobs are enabled only after that manual invocation.
-- [ ] Shadow runs for at least 72 consecutive hours with at least 95% of
-      expected scheduled invocations persisted and no unexplained gaps.
+- [ ] Shadow runs for the declared 72-hour window and satisfies the Scheduled
+      completion and Run error SLOs in the authoritative PRD §8.1 table; no
+      consecutive scheduled miss remains unexplained.
 - [ ] Every shadow run is terminal; zero executions are recorded; accounting
       remains `RECONCILED`; no stale/overlapping lease or duplicate run exists.
 - [ ] Daily summary delivery is `sent` on at least two consecutive days.
@@ -206,6 +233,9 @@ artifacts must be retained outside source control:
       failures, and journals in the window are reviewed. No production state
       fault injection is permitted; deterministic guardrail fault cases remain
       proven by the real-PostgreSQL integration suite.
+- [ ] OPS-01 source/CI and future exact-release monitor/outbox evidence, current
+      roster, warning/critical drills, acknowledgments/escalations, and game-day
+      timeline are indexed in issue #76.
 
 ### Gate 2 -- paper mode eligible
 
@@ -229,8 +259,8 @@ artifacts must be retained outside source control:
 - [ ] One unchanged strategy/model/cost configuration ran in paper mode for at
       least 30 calendar days; configuration changes start a new evidence
       attribution window.
-- [ ] At least 95% of expected scheduled runs have terminal persisted outcomes;
-      all missing windows and provider outages are classified.
+- [ ] Scheduled runs satisfy the authoritative PRD §8.1 completion and
+      run-error SLOs; all missing windows and provider outages are classified.
 - [ ] Every execution reconciles, no duplicate execution exists, and no
       unresolved alert, lease, authorization, or accounting incident remains.
 - [ ] At least one evaluation window (per `specs/evaluation.md` §4) completed and
@@ -251,9 +281,10 @@ requires cron disablement plus `ROLLOUT_MODE=disabled`:
 - an unauthorized route succeeding, a fixed function becoming broadly
   executable, or the legacy arbitrary-path function reappearing;
 - stale/invalid market data reaching model inference or execution;
-- two consecutive missed scheduled runs or two consecutive unclassified
-  upstream/internal failures;
-- failed daily-summary delivery for more than 24 hours;
+- any Scheduled completion, Run error, readiness, incident-delivery,
+  acknowledgment/escalation, or recovery breach in the authoritative PRD §8.1
+  table;
+- failed or missing daily-summary delivery that remains unclassified;
 - drawdown lock, operator safety concern, suspected credential exposure, or
   migration drift.
 

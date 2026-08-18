@@ -41,6 +41,18 @@ param legacyDirectModelCompatibility = false
 param posthogHost = 'https://us.i.posthog.com'
 param posthogEnvironment = 'dev'
 param alertEmailTo = 'varun.sharma.exe@gmail.com'
+param safetyPrimaryOnCall = readEnvironmentVariable('SAFETY_PRIMARY_ON_CALL_DEV')
+param safetyBackupOnCall = readEnvironmentVariable('SAFETY_BACKUP_ON_CALL_DEV')
+param safetyReleaseOwner = readEnvironmentVariable('SAFETY_RELEASE_OWNER_DEV')
+param safetyApprover = readEnvironmentVariable('SAFETY_APPROVER_DEV')
+param safetyEvidenceCustodian = readEnvironmentVariable('SAFETY_EVIDENCE_CUSTODIAN_DEV')
+param safetyRollbackOwner = readEnvironmentVariable('SAFETY_ROLLBACK_OWNER_DEV')
+param safetyPrimaryOnCallPublicKey = readEnvironmentVariable('SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY_DEV')
+param safetyBackupOnCallPublicKey = readEnvironmentVariable('SAFETY_BACKUP_ON_CALL_PUBLIC_KEY_DEV')
+param safetyReleaseOwnerPublicKey = readEnvironmentVariable('SAFETY_RELEASE_OWNER_PUBLIC_KEY_DEV')
+param safetyApproverPublicKey = readEnvironmentVariable('SAFETY_APPROVER_PUBLIC_KEY_DEV')
+param safetyEvidenceCustodianPublicKey = readEnvironmentVariable('SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY_DEV')
+param safetyRollbackOwnerPublicKey = readEnvironmentVariable('SAFETY_ROLLBACK_OWNER_PUBLIC_KEY_DEV')
 param communicationEmailSender = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender'
 
 // Promotion surface. Change these deliberately, in their own reviewed

@@ -50,6 +50,20 @@ env:
   DEV_WEB_APP_NAME: ca-dev-web
   DEV_HOURLY_JOB_NAME: caj-dev-agent-run
   DEV_DAILY_JOB_NAME: caj-dev-daily-summary
+  # Recognized placeholder fallbacks preserve the absolute disabled/Manual
+  # rollback path while runtime readiness/target smoke reject shadow/PAPER.
+  SAFETY_PRIMARY_ON_CALL_DEV: ${{ vars.KRYPTO_SAFETY_PRIMARY_ON_CALL || '[required-primary-on-call]' }}
+  SAFETY_BACKUP_ON_CALL_DEV: ${{ vars.KRYPTO_SAFETY_BACKUP_ON_CALL || '[required-backup-on-call]' }}
+  SAFETY_RELEASE_OWNER_DEV: ${{ vars.KRYPTO_SAFETY_RELEASE_OWNER || '[required-release-owner]' }}
+  SAFETY_APPROVER_DEV: ${{ vars.KRYPTO_SAFETY_APPROVER || '[required-safety-approver]' }}
+  SAFETY_EVIDENCE_CUSTODIAN_DEV: ${{ vars.KRYPTO_SAFETY_EVIDENCE_CUSTODIAN || '[required-evidence-custodian]' }}
+  SAFETY_ROLLBACK_OWNER_DEV: ${{ vars.KRYPTO_SAFETY_ROLLBACK_OWNER || '[required-rollback-owner]' }}
+  SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY_DEV: ${{ vars.KRYPTO_SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY || '[required-primary-public-key]' }}
+  SAFETY_BACKUP_ON_CALL_PUBLIC_KEY_DEV: ${{ vars.KRYPTO_SAFETY_BACKUP_ON_CALL_PUBLIC_KEY || '[required-backup-public-key]' }}
+  SAFETY_RELEASE_OWNER_PUBLIC_KEY_DEV: ${{ vars.KRYPTO_SAFETY_RELEASE_OWNER_PUBLIC_KEY || '[required-release-public-key]' }}
+  SAFETY_APPROVER_PUBLIC_KEY_DEV: ${{ vars.KRYPTO_SAFETY_APPROVER_PUBLIC_KEY || '[required-approver-public-key]' }}
+  SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY_DEV: ${{ vars.KRYPTO_SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY || '[required-custodian-public-key]' }}
+  SAFETY_ROLLBACK_OWNER_PUBLIC_KEY_DEV: ${{ vars.KRYPTO_SAFETY_ROLLBACK_OWNER_PUBLIC_KEY || '[required-rollback-public-key]' }}
 
 jobs:
   gate:

@@ -1,5 +1,9 @@
 import { z } from "zod/v4";
 import { normalizeAppOrigin } from "@/lib/app-origin";
+import {
+  readSafetyRoster,
+  safetyActorPublicKeysConfigured,
+} from "@/lib/safety-roster";
 
 // ---------------------------------------------------------------------------
 // Optional direct Azure OpenAI v1 diagnostic endpoint validation
@@ -164,6 +168,23 @@ const envSchema = z
     RELEASE_SHA: z.string().regex(/^[0-9a-f]{40}$/).optional(),
     IMAGE_DIGEST: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional(),
     EXECUTION_CONTRACT_VERSION: z.literal("bounded-sync-v1").optional(),
+    SAFETY_PRIMARY_ON_CALL: z.string().min(1).max(120).optional(),
+    SAFETY_BACKUP_ON_CALL: z.string().min(1).max(120).optional(),
+    SAFETY_RELEASE_OWNER: z.string().min(1).max(120).optional(),
+    SAFETY_APPROVER: z.string().min(1).max(120).optional(),
+    SAFETY_EVIDENCE_CUSTODIAN: z.string().min(1).max(120).optional(),
+    SAFETY_ROLLBACK_OWNER: z.string().min(1).max(120).optional(),
+    SAFETY_INCIDENT_DRILL_ENABLED: z.enum(["true", "false"]).optional(),
+    SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY: z.string().min(8).max(256).optional(),
+    SAFETY_BACKUP_ON_CALL_PUBLIC_KEY: z.string().min(8).max(256).optional(),
+    SAFETY_RELEASE_OWNER_PUBLIC_KEY: z.string().min(8).max(256).optional(),
+    SAFETY_APPROVER_PUBLIC_KEY: z.string().min(8).max(256).optional(),
+    SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY: z
+      .string()
+      .min(8)
+      .max(256)
+      .optional(),
+    SAFETY_ROLLBACK_OWNER_PUBLIC_KEY: z.string().min(8).max(256).optional(),
   })
   .check((ctx) => {
     const env = ctx.value;
@@ -198,6 +219,25 @@ const envSchema = z
     }
 
     if (env.NODE_ENV === "production") {
+      if (env.ROLLOUT_MODE === "shadow" || env.ROLLOUT_MODE === "paper") {
+        try {
+          readSafetyRoster(env as Record<string, string | undefined>);
+          if (
+            !safetyActorPublicKeysConfigured(
+              env as Record<string, string | undefined>,
+            )
+          ) {
+            throw new Error("Safety actor public keys are incomplete");
+          }
+        } catch {
+          ctx.issues.push({
+            code: "custom",
+            message:
+              "A complete, non-placeholder safety responder roster is required for shadow or paper.",
+            input: ctx.value,
+          });
+        }
+      }
       if (!env.AZURE_CLIENT_ID) {
         ctx.issues.push({
           code: "custom",

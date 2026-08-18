@@ -2,8 +2,8 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft |
-| Version | 1.0 |
+| Status | Approved requirements; not a deployment or rollout authorization |
+| Version | 1.1 |
 | Baseline reference (main tip at authoring) | `main@38901cf1a620a60d3a8821220183c3a6ca971e29` |
 | Document owner | `@VeVarunSharma` |
 | Release owner | Required before PR-G1; recorded in issue #76 |
@@ -28,6 +28,7 @@ procedures:
 | [`readiness.md`](./readiness.md) | Current evidence/status ledger and gate disposition |
 | [`deployment.md`](./deployment.md) | Operator procedures |
 | [`monitoring.md`](./monitoring.md) | Signals, dashboards, alerts, and response instructions |
+| [`incident-response.md`](./incident-response.md) | Incident roles, lifecycle, scenario response, drills, and evidence procedure |
 | [`evaluation.md`](./evaluation.md) | Metric definitions and evaluation methodology |
 | [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) | Architectural design context |
 | [`decisions/`](./decisions/) | Accepted architectural decisions |
@@ -152,6 +153,11 @@ Before PR-G1:
 - the actor requesting a target mutation MUST NOT self-approve it; and
 - PAPER promotion MUST have distinct release and trading-safety approvers.
 
+The incident roster must additionally be accepted for the exact release and
+declared window. A missing, placeholder, unavailable, untested, contradictory,
+or stale primary on-call, backup on-call, release owner, trading-safety
+approver, evidence custodian, or rollback owner blocks issue #75 / PR-G2.
+
 ## 6. Authorization model
 
 Authorization is separated into five decisions:
@@ -253,6 +259,37 @@ contract.
 | ACCT-01 | Ledger, cost-basis, DCA, and anchor attestation | [#130](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/130) |
 | ROLL-01 | Attended PAPER promotion and 30-day continuity gate | [#127](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/127) |
 
+### 8.1 Authoritative production-paper SLIs/SLOs
+
+This is the single normative numeric SLI/SLO table. `monitoring.md`,
+`incident-response.md`, deployment procedures, drills, and gate reports MUST
+reference it rather than define local thresholds.
+
+| SLI | Numerator / measurement | Denominator and window | Required SLO and breach |
+|---|---|---|---|
+| Readiness availability and latency | Availability numerator: scheduled probes returning `ready`. Latency measurement: end-to-end duration of every scheduled probe; a timeout or missing result is recorded as a failed probe and as latency beyond the objective. | One independent probe every `5 minutes` during an eligible window. Denominator: all expected probes in rolling `24 hours`. | Availability `>= 99.9%`; latency p95 `<= 4 seconds`. Any continuous readiness failure longer than `5 minutes` is critical regardless of the rolling result. |
+| Scheduled completion | Expected hourly slot with a persisted terminal scheduled `AgentRun`; terminal no-trade outcomes count as completion while their error category remains in the run-error SLI. | Denominator: all expected hourly slots in the declared active schedule window and, operationally, rolling `24 hours`. Manual/admin/drill runs are excluded from the denominator but retained as evidence. | `>= 95%` terminal completion. A missing success for more than `2 hours` is critical. No two consecutive scheduled misses may remain unexplained. |
+| Run error rate | Terminal scheduled runs classified `error`. Missing terminal runs remain failures of Scheduled completion rather than being silently added to this numerator. | Denominator: all terminal scheduled runs in rolling `24 hours`. Manual/admin/drill runs are excluded but retained. | `<= 1%`. Any critical error category is immediate and is not delayed or averaged away by the rate. |
+| Lease age and overlap | Lease observations with one owner and active age below the stale boundary; separately count overlaps. Observe at acquisition, state transitions, terminal handling, and every readiness sample. | Denominator: every lease observation in the declared window and rolling `24 hours`. | Configured expiry `<= 300 seconds`; an active lease is stale at age `>= 300 seconds`; overlap count `0`. Any stale or overlapping observation is critical. |
+| Reconciliation and quarantine | Committed `TradeExecution` rows verified against immutable ledger/materialized state within the objective. | Denominator: every committed execution in the declared window and rolling `24 hours`; no execution is excluded. A zero-execution window records `0/0` and no ratio breach. | `100%` reconciled within `5 minutes` of commit. Any quarantine is critical immediately. |
+| Incident persistence and external delivery | Persistence numerator: safety-relevant state-changing transactions that atomically persist the incident origin, initial event, and outbox obligation. Delivery numerator: incidents independently observed externally within the severity objective. | Persistence denominator: every safety-relevant state-changing transaction. Delivery denominator: every new warning/critical incident in its per-incident window. Externally detected absence/platform incidents are not in the transaction denominator but are in delivery. | Persistence `100%` in the same database transaction as the state change. External observation: critical `<= 5 minutes`; warning `<= 15 minutes`. Any missing critical persistence is critical immediately. |
+| Acknowledgment and escalation | Incidents acknowledged by a named responder within objective; overdue unacknowledged incidents with an independently delivered escalation event/receipt. | Acknowledgment denominator: every externally observed warning/critical incident. Escalation denominator: every incident still unacknowledged at its severity deadline. Windows begin at external observation. | Critical acknowledgment `<= 5 minutes`, with escalation at `5 minutes` if unacknowledged. Warning acknowledgment `<= 15 minutes`, with escalation at `15 minutes` if unacknowledged. Required result is `100%`. |
+| Containment and recovery | Critical incidents with recorded containment; declared recovery events whose restored boundary meets both data and service objectives. | Containment denominator: every critical incident, measured from external observation. Recovery denominator: every declared recovery event; RPO is age of the latest verified restorable point at detection, and RTO is recovery declaration to a verified disabled/manual ready target. | Critical containment `<= 15 minutes`; `RPO <= 1 hour`; `RTO <= 4 hours`. Required result is `100%`. |
+
+All windows are UTC half-open intervals. The only permitted denominator
+exclusion is predeclared, approved maintenance during which the target is
+verified disabled/manual with no schedule; the excluded interval and all
+observations remain in evidence. Provider outages, platform failures, missing
+measurements, retries, rollbacks, failed alerts/drills, and unfavorable outcomes
+are not exclusions. A zero denominator must be recorded and cannot be presented
+as positive evidence.
+
+No operator, implementation, dashboard, drill, or release report may lower a
+threshold, pause its clock, change its denominator after observation, downgrade
+a qualifying critical category, or average across windows to make a gate pass.
+A threshold change requires a new PRD version and the approvals in §22; a local
+runbook may be stricter but never weaker.
+
 DB-01's design and source implementation is
 [ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md); its
 Consequences section is the required attended per-environment upgrade
@@ -276,6 +313,29 @@ Production PAPER runs target Azure Container Apps plus private PostgreSQL 17 and
 Daily application safety ceilings are Coinbase `1,000`, version-pinned Foundry `200`, PostHog `2,000`, and ACS `100` requests per UTC day. Engineering owns the application/runtime contract; release/operator owns provider-plan, quota, rate-limit, and cost reconciliation before rollout; operator owns deadline/budget/capacity alert response. Exhaustion MUST persist a no-trade condition and alert rather than execute or return a success-shaped trade fallback.
 
 Source implementation does not satisfy RUN-01 target proof. No issue #132 live Azure evidence is claimed. The exact future release MUST separately index source/CI and target timing, region, capacity, readiness, PostgreSQL runtime identity/timeouts, quota/cost, fault, terminal-run, PAPER deadline-fence, and lease evidence in issue #76. RUN-01 remains PAPER-only and adds no live execution capability.
+
+### OPS-01 durable incidents and independent alerts
+
+OPS-01 MUST satisfy
+[ADR 0016](./decisions/0016-durable-safety-incidents-and-independent-alerts.md):
+
+- safety-relevant state changes atomically persist an immutable incident origin,
+  initial event, and append-only outbox obligation;
+- every PAPER execution commits its post-commit obligations with ledger truth,
+  so journal, analytics, telemetry, or notification failure cannot erase the
+  alert obligation or trigger re-execution;
+- lifecycle, delivery attempts, acknowledgments, escalations, containment,
+  recovery, and resolution are appended rather than overwritten;
+- a separate least-privilege relay and external Azure rules monitor platform/Log
+  Analytics signals plus redacted durable database incident/outbox evidence;
+- stable request, run, release, deployment, provider, transaction, and incident
+  correlation is allowlisted and redacted; and
+- retry or later success never auto-resolves an incident.
+
+The operating procedure is
+[`incident-response.md`](./incident-response.md). Source/CI completion does not
+prove target migration state, relay, Azure rules, Action Group delivery, roster,
+drills, or target behavior.
 
 The existing release issues own the gate records:
 
@@ -393,6 +453,8 @@ PR-G1 does not authorize shadow.
 
 - PR-G1 is complete.
 - M2M-01, RUN-01, OPS-01, and SAFE-01 are complete on the target.
+- The exact-release incident-response roster is current, accepted, test-fired,
+  and indexed in issue #76; any placeholder or stale role blocks entry.
 - A distinct shadow activation approval is current.
 - The shadow window and expected schedule are declared before activation.
 
@@ -406,7 +468,8 @@ PR-G1 does not authorize shadow.
   ceil(0.95 * 72) = 69
   ```
 
-- No two consecutive hourly slots may remain unexplained.
+- This is the fixed-window result of the Scheduled completion SLO in §8.1; its
+  no-consecutive-unexplained-miss rule also applies.
 - Manual/admin runs are excluded from the scheduled denominator but remain in
   evidence and review.
 - An exact 72-hour window normally contains three daily-summary schedule slots.
@@ -489,7 +552,8 @@ PR-G3 authorizes only the declared paper ledger.
   ceil(0.95 * 720) = 684
   ```
 
-- No unexplained consecutive misses remain.
+- This is the fixed-window result of the Scheduled completion SLO in §8.1; no
+  consecutive miss may remain unexplained.
 - All scheduled and manual runs remain in the dataset.
 
 ### Exit
@@ -552,6 +616,20 @@ Issue #76 requires the following exact evidence categories for the frozen releas
 
 For RUN-01, source/CI evidence includes the exact merge/checks, runtime matrix, migration `0009` hash/drift, constants/configuration, and deterministic deadline/retry/cancellation/pool/lock/budget/readiness tests. Future target evidence includes the immutable ACA deployment and private PostgreSQL 17 identity, live duration/capacity/timeouts/readiness, provider plan/quota/cost reconciliation, exhaustion alerts, terminal persistence, owned-lease cleanup/expiry, and PAPER deadline fence. The future package does not exist merely because this PRD or source implementation exists.
 
+For OPS-01, source/CI evidence includes the exact merge/checks; ADR, runbook,
+and SLI/SLO table versions; incident/outbox migration inventory and hashes;
+append-only denial and retention tests; atomic state-change/incident/outbox and
+post-commit-obligation tests; relay deduplication/retry/provider-failure and
+no-auto-resolution tests; and correlation-allowlist/redaction tests. Future
+exact-release target evidence includes redacted Azure monitor exports, durable
+database incident/outbox exports and pending-age proof, exact-target Action
+Group/channel receipts, a current named/tested roster, warning and critical
+drill timelines, detections, acknowledgments, escalations, containment and
+explicit resolutions, game-day follow-ups, correlation/redaction review,
+preserved-ledger and reconciliation proof, and recovery evidence. This source
+documentation claims no live drills, Action Group delivery, completed on-call
+roster, or Azure OPS-01 evidence.
+
 One canonical issue/comment thread must index every gate and artifact. Every artifact must be immutable or checksum-addressed and bound to the exact artifact, deployment, target, migration, configuration, actor, and timestamp it proves. Missing, stale, expired, or contradictory evidence is blocking, and synthetic/engineering evidence must never be presented as production-performance evidence.
 
 ## 16. Absolute stop and rollback
@@ -596,10 +674,8 @@ fresh preflight, fresh evidence-bound approval, and a new declared window.
 
 ## 17. Recovery and retention
 
-The production-paper boundary MUST meet:
-
-- **RPO <= 1 hour**
-- **RTO <= 4 hours**
+The production-paper boundary MUST meet the Containment and recovery SLO in
+§8.1. No recovery procedure may define a different objective.
 
 Recovery includes:
 
@@ -631,13 +707,13 @@ evidence.
 | Source trust | High-risk merge cannot pass on AI/self/stale approval alone |
 | Target trust | Wrong/stale artifact, target, config, key, or approval is rejected |
 | Shadow mutation | Zero trades and zero balance/cost-basis mutation |
-| Shadow completeness | At least 69/72 terminal scheduled runs |
+| Shadow completeness | Scheduled completion SLO in §8.1 for the declared window |
 | Daily summary in shadow | Every expected slot terminal and sent |
-| PAPER continuity | At least 684/720 terminal scheduled runs |
-| Accounting | Every execution reconciled; mismatch quarantines |
+| PAPER continuity | Scheduled completion SLO in §8.1 for the declared window |
+| Accounting | Reconciliation and quarantine SLO in §8.1 |
 | Stop | Zero commits after stop acknowledgment |
-| Recovery | RPO <= 1 hour and RTO <= 4 hours |
-| Alerting | Critical test alerts delivered, acknowledged, escalated, and linked |
+| Recovery | Containment and recovery SLO in §8.1 |
+| Alerting | Incident delivery, acknowledgment, and escalation SLOs in §8.1; drill evidence linked |
 | Evidence | Every gate artifact immutable/checksum-addressed and indexed |
 | Live boundary | No real-fund capability or credential present |
 
