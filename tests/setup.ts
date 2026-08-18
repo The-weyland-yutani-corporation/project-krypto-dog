@@ -14,7 +14,7 @@ process.env.POSTHOG_API_KEY = "phc_test_key";
 process.env.POSTHOG_HOST = "https://app.posthog.com";
 process.env.POSTHOG_ENVIRONMENT = "dev";
 process.env.CRON_SECRET = "test-cron-secret";
-process.env.ADMIN_SESSION_SECRET = "test-admin-session-secret";
+process.env.ADMIN_IDENTITY_MODE = "disabled";
 
 // ---------------------------------------------------------------------------
 // Mock: Drizzle db

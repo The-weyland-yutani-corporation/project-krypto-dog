@@ -27,6 +27,14 @@ param runtimeIdentityClientId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentity
 param schedulerIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId'
 
 param webAppName = 'ca-prod-web'
+param adminEntraTenantId = readEnvironmentVariable('ADMIN_ENTRA_TENANT_ID_PROD')
+param adminEntraClientId = readEnvironmentVariable('ADMIN_ENTRA_CLIENT_ID_PROD')
+param adminEntraAudience = readEnvironmentVariable('ADMIN_ENTRA_AUDIENCE_PROD')
+param adminEntraOperatorAllowlist = json(readEnvironmentVariable('ADMIN_ENTRA_OPERATOR_ALLOWLIST_PROD'))
+param adminEntraMfaAuthContext = readEnvironmentVariable('ADMIN_ENTRA_MFA_AUTH_CONTEXT_PROD')
+param adminEntraStepUpAuthContext = readEnvironmentVariable('ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT_PROD')
+param adminAuthNotBefore = readEnvironmentVariable('ADMIN_AUTH_NOT_BEFORE_PROD')
+param adminAuthPolicyVersion = readEnvironmentVariable('ADMIN_AUTH_POLICY_VERSION_PROD')
 param hourlyJobName = 'caj-prod-agent-run'
 param dailyJobName = 'caj-prod-daily-summary'
 

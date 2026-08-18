@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { and, eq, isNull, lte, or } from "drizzle-orm";
 import { db } from "@/db";
 import { agentJournal, agentState } from "@/db/schema";
-import { requireAdminSession } from "@/lib/admin-route-auth";
+import { requireAdminOperator } from "@/lib/admin-route-auth";
 import { checkSameOrigin } from "@/lib/csrf";
+import { recordOperatorAuditEvent } from "@/lib/operator-audit";
 
 /**
  * Recover a legacy or expired run lease left over from a crashed run.
@@ -14,8 +15,8 @@ import { checkSameOrigin } from "@/lib/csrf";
 export async function POST(request: NextRequest) {
   const csrf = checkSameOrigin(request);
   if (csrf) return csrf;
-  const auth = await requireAdminSession(request);
-  if (auth) return auth;
+  const auth = await requireAdminOperator(request, "RECOVER_RUN_LEASE");
+  if (!auth.ok) return auth.response;
 
   const recovery = await db.transaction(async (tx) => {
     const [priorState] = await tx
@@ -61,13 +62,21 @@ export async function POST(request: NextRequest) {
       return { kind: "active" as const, priorState };
     }
 
+    const auditEventId = await recordOperatorAuditEvent({
+      writer: tx,
+      operator: auth.operator,
+      action: "RECOVER_RUN_LEASE",
+      requestHeaders: request.headers,
+      outcome: "APPLIED",
+    });
     await tx.insert(agentJournal).values({
-      entryText: "Operator recovered an expired or legacy run lease.",
+      entryText: `${auth.operator.operatorName} recovered an expired or legacy run lease.`,
       marketConditions: {
         event: "lease-recovery",
         priorLeaseOwner: priorState.leaseOwner,
         priorLeaseExpiresAt:
           priorState.leaseExpiresAt?.toISOString() ?? null,
+        operatorAuditEventId: auditEventId,
         timestamp: new Date().toISOString(),
       },
     });

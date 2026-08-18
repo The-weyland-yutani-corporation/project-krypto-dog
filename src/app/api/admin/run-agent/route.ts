@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { executeAgentRun } from "@/agent/run-flow";
 import { checkSameOrigin } from "@/lib/csrf";
-import { requireAdminSession } from "@/lib/admin-route-auth";
+import { requireAdminOperator } from "@/lib/admin-route-auth";
 import { readRequiredRolloutMode } from "@/lib/required-rollout-mode";
 import { RequiredRolloutModeError } from "@/trading/errors";
 import {
@@ -11,14 +11,15 @@ import {
 } from "@/lib/execution-envelope";
 import { tryAcquireRunAdmission } from "@/lib/run-admission";
 import { requestIdFromHeaders } from "@/lib/correlation";
+import { recordOperatorAuditEvent } from "@/lib/operator-audit";
 
 // We intentionally do *not* accept the cron secret here. If `CRON_SECRET` ever
 // leaks, an attacker still cannot drive the agent through the admin surface.
 export async function POST(request: NextRequest) {
   const csrf = checkSameOrigin(request);
   if (csrf) return csrf;
-  const auth = await requireAdminSession(request);
-  if (auth) return auth;
+  const auth = await requireAdminOperator(request, "RUN_AGENT");
+  if (!auth.ok) return auth.response;
   const requestId = requestIdFromHeaders(request.headers);
 
   let deadline: ExecutionDeadline | undefined;
@@ -41,6 +42,13 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+    await recordOperatorAuditEvent({
+      operator: auth.operator,
+      action: "RUN_AGENT",
+      requestHeaders: request.headers,
+      requestId,
+      outcome: "REQUESTED",
+    });
     deadline = createExecutionDeadline({ signal: request.signal });
     releaseAdmission = tryAcquireRunAdmission(deadline);
     const outcome = await executeAgentRun({

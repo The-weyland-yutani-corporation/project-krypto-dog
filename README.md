@@ -84,8 +84,8 @@ cp .env.example .env
 # For attended agent calls, run `az login` and fill in the environment-specific
 # AZURE_FOUNDRY_PROJECT_ENDPOINT, AZURE_FOUNDRY_AGENT_NAME, and immutable
 # AZURE_FOUNDRY_AGENT_VERSION. Azure runtime also requires AZURE_CLIENT_ID.
-# Fill in POSTHOG_API_KEY, CRON_SECRET,
-# ADMIN_PASSWORD, and ADMIN_SESSION_SECRET.
+# Fill in POSTHOG_API_KEY and CRON_SECRET. Local admin access defaults to
+# ADMIN_IDENTITY_MODE=disabled; there is no local password fallback.
 # ACS Email vars may be omitted locally; non-production delivery then reports
 # an explicit console-only skipped result.
 

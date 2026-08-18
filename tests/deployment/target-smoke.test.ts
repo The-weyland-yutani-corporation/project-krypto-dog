@@ -1,6 +1,5 @@
 import {
   cronSecretBinding,
-  extractSessionCookie,
   runTargetSmoke,
   validateImageDigest,
   validateReleaseSha,
@@ -36,6 +35,16 @@ const TEST_RELEASE_SHA = "c0e4ed2724a9880d5a5dfcdf954490f2d86e8e2f";
 const TEST_IMAGE_DIGEST =
   "sha256:d32ebcff1be028d183b8ba7ce4e1506b0adf3a7a90b02d5c6a202fabceaf1e68";
 const TEST_APPROVAL_SECRET = "approval-secret-of-sufficient-length-x";
+const TEST_ADMIN_IDENTITY = {
+  tenantId: "11111111-1111-4111-8111-111111111111",
+  audience: "22222222-2222-4222-8222-222222222222",
+  issuer:
+    "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0",
+  operatorId: "33333333-3333-4333-8333-333333333333",
+  operatorRole: "RELEASE_OWNER" as const,
+  mfaAuthContext: "c1",
+  stepUpAuthContext: "c2",
+};
 
 const successfulFetch: typeof fetch = async (input, init) => {
   const url = new URL(
@@ -77,49 +86,53 @@ const successfulFetch: typeof fetch = async (input, init) => {
       ? Response.json({ action: "disabled" })
       : Response.json({ error: "Invalid mode" }, { status: 400 });
   }
+  if (url.pathname === "/api/auth/login" && init?.method === "GET") {
+    return new Response(null, {
+      status: 307,
+      headers: {
+        location:
+          "https://krypto.example.com/.auth/login/aad?post_login_redirect_uri=/admin",
+        "cache-control": "no-store, max-age=0",
+      },
+    });
+  }
   if (url.pathname === "/api/auth/login") {
     return Response.json(
-      { success: true },
+      { error: "Password authentication is not available" },
       {
-        headers: {
-          "set-cookie":
-            "krypto-admin-token=token-value; Path=/; HttpOnly; SameSite=Lax",
+        status: 401,
+        headers: { "cache-control": "no-store, max-age=0" },
+      },
+    );
+  }
+  if (url.pathname.startsWith("/api/admin/")) {
+    return Response.json(
+      { error: "Unauthorized" },
+      {
+        status: 401,
+      headers: {
+          "cache-control": "no-store, max-age=0",
+          "content-security-policy": "default-src 'self'",
+          "permissions-policy": "camera=()",
+          "referrer-policy": "no-referrer",
+          "strict-transport-security": "max-age=31536000",
+          "x-content-type-options": "nosniff",
+          "x-frame-options": "DENY",
         },
       },
     );
   }
-  if (url.pathname === "/admin") {
-    return new Response("admin", {
-      status: headers.has("cookie") ? 200 : 401,
-    });
-  }
-  if (url.pathname === "/api/admin/run-agent") {
-    return headers.has("cookie") &&
-      headers.get("x-required-rollout-mode") === "disabled"
-      ? Response.json({ action: "disabled" })
-      : Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (url.pathname === "/api/admin/safety-incidents/test-fire") {
-    return headers.has("cookie")
-      ? Response.json({
-          dryRun: true,
-          persisted: false,
-          incidentType: "TEST_FIRE_WARNING",
-          roster: {
-            complete: true,
-            authenticatorsConfigured: true,
-          },
-        })
-      : Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (url.pathname === "/api/auth/logout") {
+  if (url.pathname === "/.auth/login/aad") {
     return new Response(null, {
-      status: 303,
+      status: 302,
       headers: {
-        "set-cookie":
-          "krypto-admin-token=; Path=/; Max-Age=0; HttpOnly",
+        location:
+          "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/oauth2/v2.0/authorize",
       },
     });
+  }
+  if (url.pathname === "/.auth/me") {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (url.pathname === "/api/agent/daily-summary") {
     return headers.has("x-cron-secret") &&
@@ -172,16 +185,6 @@ describe("target deployment smoke", () => {
     ).toThrow("does not match");
   });
 
-  it("extracts only the admin session cookie", () => {
-    const headers = new Headers({
-      "set-cookie":
-        "krypto-admin-token=token-value; Path=/; HttpOnly; SameSite=Lax",
-    });
-    expect(extractSessionCookie(headers)).toBe(
-      "krypto-admin-token=token-value",
-    );
-  });
-
   it("validates an exact lowercase 40-hex release SHA and rejects everything else", () => {
     expect(validateReleaseSha(TEST_RELEASE_SHA)).toBe(TEST_RELEASE_SHA);
     expect(() => validateReleaseSha(TEST_RELEASE_SHA.toUpperCase())).toThrow(
@@ -226,10 +229,10 @@ describe("target deployment smoke", () => {
         expectedHost: "krypto.example.com",
         databaseUrl: "postgresql://operator:secret@db.example.com/postgres",
         cronSecret: "cron-secret",
-        adminPassword: "admin-password",
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        adminIdentity: TEST_ADMIN_IDENTITY,
       },
       {
         fetchImpl: successfulFetch,
@@ -257,8 +260,8 @@ describe("target deployment smoke", () => {
                 deliveryStatus: null,
               }
             : {
-                runCount: 2,
-                disabledRunCount: 2,
+                runCount: 1,
+                disabledRunCount: 1,
                 tradeCount: 4,
                 leaseReleased: true,
                 deliveryStatus: "sent",
@@ -294,7 +297,7 @@ describe("target deployment smoke", () => {
 
     expect(report.passed).toBe(true);
     expect(report.schemaVersion).toBe("1.7.0");
-    expect(report.checks).toHaveLength(18);
+    expect(report.checks).toHaveLength(16);
     expect(report.checks.every((check) => check.status === "pass")).toBe(
       true,
     );
@@ -349,10 +352,10 @@ describe("target deployment smoke", () => {
           expectedHost: "krypto.example.com",
           databaseUrl: "******db.example.com/postgres",
           cronSecret: "cron-secret",
-          adminPassword: "admin-password",
           releaseSha: "",
           imageDigest: TEST_IMAGE_DIGEST,
           approvalSecret: TEST_APPROVAL_SECRET,
+          adminIdentity: TEST_ADMIN_IDENTITY,
         },
         { fetchImpl },
       ),
@@ -364,10 +367,10 @@ describe("target deployment smoke", () => {
           expectedHost: "krypto.example.com",
           databaseUrl: "******db.example.com/postgres",
           cronSecret: "cron-secret",
-          adminPassword: "admin-password",
           releaseSha: "NOT-LOWERCASE-HEX",
           imageDigest: TEST_IMAGE_DIGEST,
           approvalSecret: TEST_APPROVAL_SECRET,
+          adminIdentity: TEST_ADMIN_IDENTITY,
         },
         { fetchImpl },
       ),
@@ -379,10 +382,10 @@ describe("target deployment smoke", () => {
           expectedHost: "krypto.example.com",
           databaseUrl: "******db.example.com/postgres",
           cronSecret: "cron-secret",
-          adminPassword: "admin-password",
           releaseSha: TEST_RELEASE_SHA,
           imageDigest: "not-a-digest",
           approvalSecret: TEST_APPROVAL_SECRET,
+          adminIdentity: TEST_ADMIN_IDENTITY,
         },
         { fetchImpl },
       ),
@@ -399,10 +402,10 @@ describe("target deployment smoke", () => {
           expectedHost: "krypto.example.com",
           databaseUrl: "******db.example.com/postgres",
           cronSecret: "cron-secret",
-          adminPassword: "admin-password",
           releaseSha: TEST_RELEASE_SHA,
           imageDigest: TEST_IMAGE_DIGEST,
           approvalSecret: "",
+          adminIdentity: TEST_ADMIN_IDENTITY,
         },
         { fetchImpl },
       ),
@@ -414,10 +417,10 @@ describe("target deployment smoke", () => {
           expectedHost: "krypto.example.com",
           databaseUrl: "******db.example.com/postgres",
           cronSecret: "cron-secret",
-          adminPassword: "admin-password",
           releaseSha: TEST_RELEASE_SHA,
           imageDigest: TEST_IMAGE_DIGEST,
           approvalSecret: "too-short",
+          adminIdentity: TEST_ADMIN_IDENTITY,
         },
         { fetchImpl },
       ),
@@ -440,10 +443,10 @@ describe("target deployment smoke", () => {
         expectedHost: "krypto.example.com",
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "super-secret-cron-value",
-        adminPassword: "admin-password",
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        adminIdentity: TEST_ADMIN_IDENTITY,
       },
       {
         fetchImpl: successfulFetch,
@@ -471,8 +474,8 @@ describe("target deployment smoke", () => {
                 deliveryStatus: null,
               }
             : {
-                runCount: 2,
-                disabledRunCount: 2,
+                runCount: 1,
+                disabledRunCount: 1,
                 tradeCount: 4,
                 leaseReleased: true,
                 deliveryStatus: "sent",
@@ -519,10 +522,10 @@ describe("target deployment smoke", () => {
         expectedHost: "krypto.example.com",
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "cron-secret",
-        adminPassword: "admin-password",
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        adminIdentity: TEST_ADMIN_IDENTITY,
       },
       {
         fetchImpl: async () =>
@@ -546,10 +549,10 @@ describe("target deployment smoke", () => {
         expectedHost: "krypto.example.com",
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "cron-secret",
-        adminPassword: "admin-password",
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        adminIdentity: TEST_ADMIN_IDENTITY,
       },
       {
         fetchImpl: successfulFetch,
@@ -603,10 +606,10 @@ describe("target deployment smoke", () => {
         expectedHost: "krypto.example.com",
         databaseUrl: "postgresql://operator:secret@db.example.com/postgres",
         cronSecret: "cron-secret",
-        adminPassword: "admin-password",
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        adminIdentity: TEST_ADMIN_IDENTITY,
       },
       {
         fetchImpl,
@@ -652,10 +655,10 @@ describe("target deployment smoke", () => {
         expectedHost: "krypto.example.com",
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "cron-secret",
-        adminPassword: "admin-password",
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        adminIdentity: TEST_ADMIN_IDENTITY,
       },
       {
         fetchImpl,
@@ -689,10 +692,10 @@ describe("target deployment smoke", () => {
         expectedHost: "krypto.example.com",
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "cron-secret",
-        adminPassword: "admin-password",
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        adminIdentity: TEST_ADMIN_IDENTITY,
       },
       {
         fetchImpl: successfulFetch,
@@ -726,10 +729,10 @@ describe("target deployment smoke", () => {
         expectedHost: "krypto.example.com",
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "cron-secret",
-        adminPassword: "admin-password",
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        adminIdentity: TEST_ADMIN_IDENTITY,
       },
       {
         fetchImpl: successfulFetch,
@@ -756,8 +759,8 @@ describe("target deployment smoke", () => {
                 deliveryStatus: null,
               }
             : {
-                runCount: 1,
-                disabledRunCount: 1,
+                runCount: 2,
+                disabledRunCount: 2,
                 tradeCount: 4,
                 leaseReleased: true,
                 deliveryStatus: "sent",
@@ -782,10 +785,10 @@ describe("target deployment smoke", () => {
         expectedHost: "krypto.example.com",
         databaseUrl: "******db.example.com/postgres",
         cronSecret: "cron-secret",
-        adminPassword: "admin-password",
         releaseSha: TEST_RELEASE_SHA,
         imageDigest: TEST_IMAGE_DIGEST,
         approvalSecret: TEST_APPROVAL_SECRET,
+        adminIdentity: TEST_ADMIN_IDENTITY,
       },
       {
         fetchImpl: successfulFetch,
@@ -817,8 +820,8 @@ describe("target deployment smoke", () => {
           }
           fullInspectionCount += 1;
           return {
-            runCount: 2,
-            disabledRunCount: 2,
+            runCount: 1,
+            disabledRunCount: 1,
             tradeCount: fullInspectionCount === 1 ? 4 : 5,
             leaseReleased: true,
             deliveryStatus: "sent",

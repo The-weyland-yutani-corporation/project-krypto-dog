@@ -1,4 +1,5 @@
 jest.mock("@/deployment/target-smoke", () => ({
+  ...jest.requireActual("@/deployment/target-smoke"),
   runTargetSmoke: jest.fn(),
   validateImageDigest: jest.fn((value: string) => value),
 }));
@@ -23,7 +24,14 @@ const REQUIRED_ENV = {
   TARGET_CONFIRM_HOST: "prod.example.com",
   DIRECT_URL: "postgresql://user:pass@db.example.com/krypto",
   CRON_SECRET: "cron-secret-value",
-  ADMIN_PASSWORD: "admin-password-value",
+  ADMIN_ENTRA_TENANT_ID: "11111111-1111-4111-8111-111111111111",
+  ADMIN_ENTRA_AUDIENCE: "22222222-2222-4222-8222-222222222222",
+  ADMIN_ENTRA_ISSUER:
+    "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0",
+  ADMIN_ENTRA_OPERATOR_ALLOWLIST:
+    '[{"id":"33333333-3333-4333-8333-333333333333","name":"Target Smoke Operator","role":"RELEASE_OWNER"}]',
+  ADMIN_ENTRA_MFA_AUTH_CONTEXT: "c1",
+  ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT: "c2",
   IMAGE_DIGEST: `sha256:${"e".repeat(64)}`,
   DEPLOYMENT_APPROVAL_SECRET: "a".repeat(40),
 };
@@ -52,7 +60,7 @@ describe("scripts/azure/operations/target-smoke", () => {
     "requires %s before invoking runTargetSmoke",
     async (missingKey) => {
       delete process.env[missingKey];
-      await expect(run(CONTEXT)).rejects.toThrow(/required for the target-smoke operation/);
+      await expect(run(CONTEXT)).rejects.toThrow(/required/);
       expect(mockedRunTargetSmoke).not.toHaveBeenCalled();
     },
   );
@@ -70,7 +78,15 @@ describe("scripts/azure/operations/target-smoke", () => {
         expectedHost: REQUIRED_ENV.TARGET_CONFIRM_HOST,
         databaseUrl: REQUIRED_ENV.DIRECT_URL,
         cronSecret: REQUIRED_ENV.CRON_SECRET,
-        adminPassword: REQUIRED_ENV.ADMIN_PASSWORD,
+        adminIdentity: {
+          tenantId: REQUIRED_ENV.ADMIN_ENTRA_TENANT_ID,
+          audience: REQUIRED_ENV.ADMIN_ENTRA_AUDIENCE,
+          issuer: REQUIRED_ENV.ADMIN_ENTRA_ISSUER,
+          operatorId: "33333333-3333-4333-8333-333333333333",
+          operatorRole: "RELEASE_OWNER",
+          mfaAuthContext: "c1",
+          stepUpAuthContext: "c2",
+        },
         releaseSha: CONTEXT.releaseSha,
         imageDigest: REQUIRED_ENV.IMAGE_DIGEST,
         approvalSecret: REQUIRED_ENV.DEPLOYMENT_APPROVAL_SECRET,

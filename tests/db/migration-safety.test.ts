@@ -202,7 +202,7 @@ describe("production migration safety", () => {
     ).toBe(
       "e81e8e38bcf2e32855a4d98dd3c76950c26d0e9aeecba536adb0f12278920095",
     );
-    expect(journal.entries.at(-2)).toEqual(
+    expect(journal.entries.at(-3)).toEqual(
       expect.objectContaining({
         idx: 10,
         when: 1786993492359,
@@ -279,7 +279,7 @@ describe("production migration safety", () => {
     ) as {
       entries: Array<{ idx: number; when: number; tag: string }>;
     };
-    expect(journal.entries.at(-1)).toEqual(
+    expect(journal.entries.at(-2)).toEqual(
       expect.objectContaining({
         idx: 11,
         when: 1787009045958,
@@ -301,6 +301,48 @@ describe("production migration safety", () => {
     expect(migration).not.toMatch(
       /UPDATE\s+"krypto"\."TradeExecution"/i,
     );
+  });
+
+  it("adds immutable named-operator provenance with an exact runtime grant", () => {
+    const migration = read("drizzle/0012_operator_admin_identity.sql");
+    const journal = JSON.parse(
+      read("drizzle/meta/_journal.json"),
+    ) as {
+      entries: Array<{ idx: number; when: number; tag: string }>;
+    };
+    expect(journal.entries.at(-1)).toEqual(
+      expect.objectContaining({
+        idx: 12,
+        when: 1787015085502,
+        tag: "0012_operator_admin_identity",
+      }),
+    );
+    expect(migration).toContain('SET ROLE "krypto_schema_owner"');
+    expect(migration).toContain(
+      'CREATE TABLE "krypto"."OperatorAuditEvent"',
+    );
+    expect(migration).toContain(
+      'BEFORE UPDATE OR DELETE ON "krypto"."OperatorAuditEvent"',
+    );
+    expect(migration).toContain(
+      'GRANT SELECT, INSERT ON TABLE "krypto"."OperatorAuditEvent" TO "krypto_runtime"',
+    );
+    expect(migration).toContain(
+      `"persistedAt" + interval '60 seconds' >= "krypto"."OperatorAuditEvent"."occurredAt"`,
+    );
+    expect(migration).toContain(
+      `"occurredAt" + interval '60 seconds' >= "krypto"."OperatorAuditEvent"."persistedAt"`,
+    );
+    expect(migration).not.toMatch(
+      /GRANT[^;]*(?:UPDATE|DELETE|TRUNCATE|TRIGGER|REFERENCES)[^;]*ON TABLE "krypto"\."OperatorAuditEvent"/i,
+    );
+    expect(migration).toContain(
+      `"schemaFingerprint" = '0012_operator_admin_identity_v1'`,
+    );
+    expect(migration).toContain('"contractVersion" = 4');
+    expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);
+    expect(migration).not.toMatch(/\bTRUNCATE\b/i);
+    expect(migration).not.toMatch(/\bDROP\s+TABLE\b/i);
   });
 
   it("does not expose an evidence-reset override after incident evidence exists", () => {
@@ -325,7 +367,7 @@ describe("production migration safety", () => {
     expect(operation).toContain("verifySafetyActorAssertion");
     expect(operation).toContain("REQUIRED_EVIDENCE");
     expect(adminRoute).toContain(
-      "Human lifecycle changes are unavailable through the shared admin session",
+      "Human lifecycle changes remain unavailable through the web runtime",
     );
   });
 

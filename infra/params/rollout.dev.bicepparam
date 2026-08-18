@@ -23,6 +23,14 @@ param runtimeIdentityClientId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentity
 param schedulerIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId'
 
 param webAppName = 'ca-dev-web'
+param adminEntraTenantId = readEnvironmentVariable('ADMIN_ENTRA_TENANT_ID_DEV')
+param adminEntraClientId = readEnvironmentVariable('ADMIN_ENTRA_CLIENT_ID_DEV')
+param adminEntraAudience = readEnvironmentVariable('ADMIN_ENTRA_AUDIENCE_DEV')
+param adminEntraOperatorAllowlist = json(readEnvironmentVariable('ADMIN_ENTRA_OPERATOR_ALLOWLIST_DEV'))
+param adminEntraMfaAuthContext = readEnvironmentVariable('ADMIN_ENTRA_MFA_AUTH_CONTEXT_DEV')
+param adminEntraStepUpAuthContext = readEnvironmentVariable('ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT_DEV')
+param adminAuthNotBefore = readEnvironmentVariable('ADMIN_AUTH_NOT_BEFORE_DEV')
+param adminAuthPolicyVersion = readEnvironmentVariable('ADMIN_AUTH_POLICY_VERSION_DEV')
 param hourlyJobName = 'caj-dev-agent-run'
 param dailyJobName = 'caj-dev-daily-summary'
 

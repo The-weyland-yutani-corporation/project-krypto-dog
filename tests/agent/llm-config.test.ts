@@ -62,8 +62,17 @@ const ALL_ENV_KEYS = [
   "POSTHOG_ENVIRONMENT",
   "CRON_SECRET",
   "APP_ORIGIN",
-  "ADMIN_PASSWORD",
-  "ADMIN_SESSION_SECRET",
+  "ADMIN_IDENTITY_MODE",
+  "ADMIN_PLATFORM_AUTH",
+  "ADMIN_ENTRA_TENANT_ID",
+  "ADMIN_ENTRA_CLIENT_ID",
+  "ADMIN_ENTRA_AUDIENCE",
+  "ADMIN_ENTRA_ISSUER",
+  "ADMIN_ENTRA_OPERATOR_ALLOWLIST",
+  "ADMIN_ENTRA_MFA_AUTH_CONTEXT",
+  "ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT",
+  "ADMIN_AUTH_NOT_BEFORE",
+  "ADMIN_AUTH_POLICY_VERSION",
   "AZURE_COMMUNICATION_CONNECTION_STRING",
   "AZURE_COMMUNICATION_EMAIL_SENDER",
   "ALERT_EMAIL_TO",
@@ -117,8 +126,19 @@ function withEnv(
     POSTHOG_ENVIRONMENT: "dev",
     CRON_SECRET: "test-secret",
     APP_ORIGIN: "https://krypto.example.com",
-    ADMIN_PASSWORD: "test-password",
-    ADMIN_SESSION_SECRET: "test-admin-session-secret",
+    ADMIN_IDENTITY_MODE: "entra",
+    ADMIN_PLATFORM_AUTH: "azure-container-apps",
+    ADMIN_ENTRA_TENANT_ID: "11111111-1111-4111-8111-111111111111",
+    ADMIN_ENTRA_CLIENT_ID: "22222222-2222-4222-8222-222222222222",
+    ADMIN_ENTRA_AUDIENCE: "22222222-2222-4222-8222-222222222222",
+    ADMIN_ENTRA_ISSUER:
+      "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0",
+    ADMIN_ENTRA_OPERATOR_ALLOWLIST:
+      '[{"id":"33333333-3333-4333-8333-333333333333","name":"Test Operator","role":"RELEASE_OWNER"}]',
+    ADMIN_ENTRA_MFA_AUTH_CONTEXT: "c1",
+    ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT: "c2",
+    ADMIN_AUTH_NOT_BEFORE: "1970-01-01T00:00:00.000Z",
+    ADMIN_AUTH_POLICY_VERSION: "test-v1",
     AZURE_COMMUNICATION_CONNECTION_STRING:
       "endpoint=https://test.communication.azure.com/;accesskey=test-key",
     AZURE_COMMUNICATION_EMAIL_SENDER: "DoNotReply@test.azurecomm.net",
@@ -439,7 +459,17 @@ describe("validateEnv", () => {
     "AZURE_COMMUNICATION_CONNECTION_STRING",
     "AZURE_COMMUNICATION_EMAIL_SENDER",
     "ALERT_EMAIL_TO",
-    "ADMIN_SESSION_SECRET",
+    "ADMIN_IDENTITY_MODE",
+    "ADMIN_PLATFORM_AUTH",
+    "ADMIN_ENTRA_TENANT_ID",
+    "ADMIN_ENTRA_CLIENT_ID",
+    "ADMIN_ENTRA_AUDIENCE",
+    "ADMIN_ENTRA_ISSUER",
+    "ADMIN_ENTRA_OPERATOR_ALLOWLIST",
+    "ADMIN_ENTRA_MFA_AUTH_CONTEXT",
+    "ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT",
+    "ADMIN_AUTH_NOT_BEFORE",
+    "ADMIN_AUTH_POLICY_VERSION",
     "POSTHOG_ENVIRONMENT",
     "APP_ORIGIN",
   ])("requires %s in production", (name) => {
@@ -454,6 +484,45 @@ describe("validateEnv", () => {
       },
     );
   });
+
+  it("rejects disabled or internally inconsistent production admin identity policy", () => {
+    for (const overrides of [
+      { ADMIN_IDENTITY_MODE: "disabled" },
+      { ADMIN_ENTRA_ISSUER: "https://login.microsoftonline.com/wrong/v2.0" },
+      {
+        ADMIN_ENTRA_MFA_AUTH_CONTEXT: "c1",
+        ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT: "c1",
+      },
+      { ADMIN_AUTH_NOT_BEFORE: "not-a-valid-date-value" },
+    ]) {
+      withEnv(
+        {
+          NODE_ENV: "production",
+          AZURE_CLIENT_ID: TEST_CLIENT_ID,
+          ...overrides,
+        },
+        () => {
+          expect(() => validateEnv()).toThrow("Invalid environment variables");
+        },
+      );
+    }
+  });
+
+  it.each(["not-json", "[]", "{}"])(
+    "rejects malformed or empty production operator allowlist %s",
+    (allowlist) => {
+      withEnv(
+        {
+          NODE_ENV: "production",
+          AZURE_CLIENT_ID: TEST_CLIENT_ID,
+          ADMIN_ENTRA_OPERATOR_ALLOWLIST: allowlist,
+        },
+        () => {
+          expect(() => validateEnv()).toThrow("Invalid environment variables");
+        },
+      );
+    },
+  );
 
   it.each([
     "http://krypto.example.com",

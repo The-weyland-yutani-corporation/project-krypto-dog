@@ -108,6 +108,17 @@ const ledgerAttestationMigrationRow = {
     .digest("hex"),
   createdAt: "1787009045958",
 };
+const operatorAdminIdentityMigrationRow = {
+  hash: createHash("sha256")
+    .update(
+      readFileSync(
+        "drizzle/0012_operator_admin_identity.sql",
+        "utf8",
+      ),
+    )
+    .digest("hex"),
+  createdAt: "1787015085502",
+};
 // drizzleMigrationCount reaches TRUST_BOUNDARY_MIGRATION_COUNT (9) only
 // once migration 0008 (drizzle/0008_postgresql_trust_boundaries.sql) has
 // been applied.
@@ -120,6 +131,7 @@ const safetyIncidentCompleteMigrationRows = [
   boundedExecutionMigrationRow,
   safetyIncidentMigrationRow,
   ledgerAttestationMigrationRow,
+  operatorAdminIdentityMigrationRow,
 ];
 
 function installedFunctionSource(
@@ -357,6 +369,15 @@ function createSqlMock(
       hasTrigger: false,
       hasReferences: false,
     },
+    OperatorAuditEvent: {
+      hasSelect: true,
+      hasInsert: true,
+      hasUpdate: false,
+      hasDelete: false,
+      hasTruncate: false,
+      hasTrigger: false,
+      hasReferences: false,
+    },
   };
   function tablePrivilegeRows(roleName: unknown) {
     const rows = Object.entries(CORRECT_TABLE_PRIVILEGE_ROWS)
@@ -367,6 +388,7 @@ function createSqlMock(
             "ProviderDailyUsage",
             "RuntimeContract",
             "SafetyIncidentOutbox",
+            "OperatorAuditEvent",
           ].includes(name),
       )
       .map(([name, privileges]) => ({ name, ...privileges }));
@@ -536,6 +558,7 @@ function createSqlMock(
             { schemaName: "krypto", tableName: "ProviderDailyUsage" },
             { schemaName: "krypto", tableName: "RuntimeContract" },
             { schemaName: "krypto", tableName: "SafetyIncidentOutbox" },
+            { schemaName: "krypto", tableName: "OperatorAuditEvent" },
           ];
         }
         if (scenario === "incomplete") {
@@ -577,6 +600,7 @@ function createSqlMock(
             { schema: "krypto", name: "ProviderDailyUsage", kind: "r" },
             { schema: "krypto", name: "RuntimeContract", kind: "r" },
             { schema: "krypto", name: "SafetyIncidentOutbox", kind: "r" },
+            { schema: "krypto", name: "OperatorAuditEvent", kind: "r" },
           ];
         }
         if (scenario === "legacy" || scenario === "public-incomplete") {
@@ -1455,7 +1479,7 @@ describe("deployment preflight helpers", () => {
     });
 
     expect(report.schemaVersion).toBe("1.7.0");
-    expect(report.inventory.drizzleMigrationCount).toBe(12);
+    expect(report.inventory.drizzleMigrationCount).toBe(13);
     expect(report.inventory.unresolvedCriticalSafetyIncidentCount).toBe(0);
     expect(
       report.checks.find(

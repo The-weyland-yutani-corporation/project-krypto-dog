@@ -1,64 +1,113 @@
 import { NextRequest } from "next/server";
-import { createAdminSessionToken } from "@/lib/admin-auth";
-import { requireAdminSession } from "@/lib/admin-route-auth";
+import { requireAdminOperator } from "@/lib/admin-route-auth";
+import {
+  ADMIN_TEST_NOW,
+  adminIdentityEnv,
+  adminPrincipalHeaders,
+} from "../helpers/admin-identity";
 
-function request(token?: string): NextRequest {
-  return new NextRequest("http://localhost:3000/api/admin/pause", {
-    headers: token
-      ? { cookie: `krypto-admin-token=${token}` }
-      : undefined,
-  });
-}
-
-describe("requireAdminSession", () => {
-  const originalSecret = process.env.ADMIN_SESSION_SECRET;
-  const originalNodeEnv = process.env.NODE_ENV;
+describe("requireAdminOperator", () => {
+  const saved = { ...process.env };
 
   beforeEach(() => {
-    process.env.ADMIN_SESSION_SECRET = "route-auth-test-secret";
+    jest.useFakeTimers();
+    jest.setSystemTime(ADMIN_TEST_NOW);
+    Object.assign(process.env, adminIdentityEnv());
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   afterAll(() => {
-    if (originalSecret === undefined) {
-      delete process.env.ADMIN_SESSION_SECRET;
-    } else {
-      process.env.ADMIN_SESSION_SECRET = originalSecret;
-    }
-    process.env.NODE_ENV = originalNodeEnv;
+    process.env = saved;
   });
 
-  it("accepts a valid signed session", async () => {
-    const token = await createAdminSessionToken("route-auth-test-secret");
-    await expect(requireAdminSession(request(token))).resolves.toBeNull();
-  });
-
-  it("rejects missing, expired, and forged sessions", async () => {
-    await expect(requireAdminSession(request())).resolves.toMatchObject({
-      status: 401,
+  it("returns the named operator for a valid platform principal", async () => {
+    const request = new NextRequest("https://krypto.example/api/admin/pause", {
+      headers: adminPrincipalHeaders(),
     });
+    await expect(
+      requireAdminOperator(request, "PAUSE_AGENT"),
+    ).resolves.toMatchObject({
+      ok: true,
+      operator: { operatorName: "Release Owner Test" },
+    });
+  });
 
-    const expired = await createAdminSessionToken(
-      "route-auth-test-secret",
-      new Date("2020-01-01T00:00:00.000Z"),
+  it("returns fail-closed no-store responses for missing and stale auth", async () => {
+    const missing = await requireAdminOperator(
+      new NextRequest("https://krypto.example/api/admin/pause"),
+      "PAUSE_AGENT",
     );
-    await expect(requireAdminSession(request(expired))).resolves.toMatchObject({
-      status: 401,
-    });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.response.status).toBe(401);
+      expect(missing.response.headers.get("cache-control")).toBe(
+        "no-store, max-age=0",
+      );
+      expect(missing.response.headers.get("x-frame-options")).toBe("DENY");
+    }
 
-    const valid = await createAdminSessionToken("route-auth-test-secret");
-    const forged = `${valid.slice(0, -1)}${valid.endsWith("0") ? "1" : "0"}`;
-    await expect(requireAdminSession(request(forged))).resolves.toMatchObject({
-      status: 401,
-    });
+    const stale = await requireAdminOperator(
+      new NextRequest("https://krypto.example/api/admin/pause", {
+        headers: adminPrincipalHeaders({ authContexts: ["c1"] }),
+      }),
+      "PAUSE_AGENT",
+    );
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) {
+      expect(stale.response.status).toBe(403);
+      expect(stale.response.headers.get("www-authenticate")).toContain(
+        "insufficient_authentication_context",
+      );
+    }
   });
 
-  it("fails closed when production session configuration is missing", async () => {
-    const token = await createAdminSessionToken("route-auth-test-secret");
-    process.env.NODE_ENV = "production";
-    delete process.env.ADMIN_SESSION_SECRET;
+  it("maps MFA, role, and unavailable-boundary failures without leaking claims", async () => {
+    const mfa = await requireAdminOperator(
+      new NextRequest("https://krypto.example/api/admin/pause", {
+        headers: adminPrincipalHeaders({
+          authMethods: ["pwd"],
+          authContexts: [],
+        }),
+      }),
+      "PAUSE_AGENT",
+    );
+    expect(mfa.ok).toBe(false);
+    if (!mfa.ok) {
+      expect(mfa.response.status).toBe(403);
+      expect(await mfa.response.json()).toEqual({
+        error: "MFA-backed authentication is required",
+        code: "MFA_REQUIRED",
+      });
+    }
 
-    await expect(requireAdminSession(request(token))).resolves.toMatchObject({
-      status: 401,
-    });
+    const role = await requireAdminOperator(
+      new NextRequest("https://krypto.example/api/admin/unlock", {
+        headers: adminPrincipalHeaders({ role: "OPERATOR" }),
+      }),
+      "UNLOCK_AGENT",
+    );
+    expect(role.ok).toBe(false);
+    if (!role.ok) {
+      expect(role.response.status).toBe(403);
+      expect(await role.response.json()).toMatchObject({
+        error: "Operator is not authorized",
+      });
+    }
+
+    process.env.ADMIN_IDENTITY_MODE = "disabled";
+    const unavailable = await requireAdminOperator(
+      new NextRequest("https://krypto.example/api/admin/pause"),
+      "PAUSE_AGENT",
+    );
+    expect(unavailable.ok).toBe(false);
+    if (!unavailable.ok) {
+      expect(unavailable.response.status).toBe(503);
+      expect(await unavailable.response.json()).toMatchObject({
+        error: "Admin identity boundary is unavailable",
+      });
+    }
   });
 });

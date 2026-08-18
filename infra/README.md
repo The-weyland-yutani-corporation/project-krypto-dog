@@ -357,8 +357,7 @@ DIRECT_URL
 MIGRATION_URL
 CRON_SECRET
 POSTHOG_API_KEY
-ADMIN_PASSWORD
-ADMIN_SESSION_SECRET
+ADMIN_ENTRA_CLIENT_SECRET
 RUNTIME_DATABASE_PASSWORD
 MIGRATOR_DATABASE_PASSWORD
 DEPLOYMENT_APPROVAL_SECRET
@@ -401,11 +400,11 @@ secret resource, not the whole vault.
 
 | Identity | Workload | Secret access | Other access |
 |---|---|---|---|
-| runtime | Web Container App | `database-url`, `cron-secret`, `posthog-api-key`, `azure-communication-connection-string`, `admin-password`, `admin-session-secret` | ACR pull; project-scoped Project Krypto Foundry Agent Invoker |
+| runtime | Web Container App and built-in auth sidecar | `database-url`, `cron-secret`, `posthog-api-key`, `azure-communication-connection-string`, `admin-entra-client-secret` (auth sidecar only; not a container env var) | ACR pull; project-scoped Project Krypto Foundry Agent Invoker |
 | scheduler | Hourly and daily jobs | `cron-secret` only | ACR pull; no Foundry role |
-| ops | Five manual jobs (shared identity; per-job container env is narrower — see the ops jobs table below) | Union of `database-url`, `direct-url`, `migration-url`, `cron-secret`, `admin-password`, `posthog-api-key`, `runtime-database-password`, `migrator-database-password`, `deployment-approval-secret` | ACR pull; evidence-container writer; project-scoped Project Krypto Foundry Agent Invoker |
+| ops | Five manual jobs (shared identity; per-job container env is narrower — see the ops jobs table below) | Union of `database-url`, `direct-url`, `migration-url`, `cron-secret`, `posthog-api-key`, `runtime-database-password`, `migrator-database-password`, `deployment-approval-secret` | ACR pull; evidence-container writer; project-scoped Project Krypto Foundry Agent Invoker |
 
-The ops identity never receives the ACS connection string or admin session
+The ops identity never receives the ACS connection string or Entra client
 secret. Target smoke validates ACS by asking the running app to send and
 persist a daily-summary delivery; the runtime, not the ops process, holds the
 ACS secret.
@@ -425,8 +424,8 @@ The web Container App receives:
 
 | Kind | Settings |
 |---|---|
-| Nonsecret | `NODE_ENV=production`, Foundry project/name/version and `AZURE_CLIENT_ID`, `APP_ORIGIN`, PostHog/ACS/rollout values, `RELEASE_SHA`, `IMAGE_DIGEST`, `EXECUTION_CONTRACT_VERSION=bounded-sync-v1`, `DATABASE_POOL_MAX=1`, `AGENT_RUN_ADMISSION_CAPACITY=1`, and the four provider daily ceilings |
-| Key Vault-backed | `DATABASE_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `AZURE_COMMUNICATION_CONNECTION_STRING`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET` |
+| Nonsecret | `NODE_ENV=production`, exact Entra tenant/client/audience/issuer, named operator allowlist, authentication contexts, revocation/policy values, Foundry project/name/version and `AZURE_CLIENT_ID`, `APP_ORIGIN`, PostHog/ACS/rollout values, `RELEASE_SHA`, `IMAGE_DIGEST`, `EXECUTION_CONTRACT_VERSION=bounded-sync-v1`, `DATABASE_POOL_MAX=1`, `AGENT_RUN_ADMISSION_CAPACITY=1`, and the four provider daily ceilings |
+| Key Vault-backed | `DATABASE_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `AZURE_COMMUNICATION_CONNECTION_STRING`; the auth sidecar separately resolves `admin-entra-client-secret` without exposing it as container environment |
 
 `DIRECT_URL` never reaches the runtime.
 
@@ -461,7 +460,7 @@ timeouts.
 | `migrate-init` | `AZURE_RUNTIME_LOGIN_ROLE` | `DIRECT_URL`, `MIGRATION_URL`, `DATABASE_URL`, `KRYPTO_MIGRATOR_LOGIN_PASSWORD`, `AZURE_RUNTIME_LOGIN_PASSWORD` |
 | `preflight` | — | `DATABASE_URL`, `DIRECT_URL`, `MIGRATION_URL` |
 | `verified-backup` | — | `DATABASE_URL`, `DIRECT_URL` |
-| `target-smoke` | target URL/host, digest, disabled mode, Azure OpenAI base/deployment, `POSTHOG_HOST` | `CRON_SECRET`, `ADMIN_PASSWORD`, `DIRECT_URL`, `POSTHOG_API_KEY`, `DEPLOYMENT_APPROVAL_SECRET` |
+| `target-smoke` | target URL/host, digest, disabled mode, Azure OpenAI base/deployment, `POSTHOG_HOST` | `CRON_SECRET`, `DIRECT_URL`, `POSTHOG_API_KEY`, `DEPLOYMENT_APPROVAL_SECRET` |
 | `activation-check` | target origin, digest | `CRON_SECRET`, `DIRECT_URL`, `DEPLOYMENT_APPROVAL_SECRET` |
 
 All five also receive `ENVIRONMENT_NAME`, `RELEASE_SHA`,
@@ -650,8 +649,14 @@ For `.bicepparam` compilation, export inert local stubs only:
 ```bash
 POSTGRES_ADMIN_PASSWORD_DEV=stub POSTGRES_ADMIN_PASSWORD_PROD=stub \
 DATABASE_URL_DEV=stub DIRECT_URL_DEV=stub MIGRATION_URL_DEV=stub CRON_SECRET_DEV=stub \
-POSTHOG_API_KEY_DEV=stub ADMIN_PASSWORD_DEV=stub \
-ADMIN_SESSION_SECRET_DEV=stub RUNTIME_DATABASE_PASSWORD_DEV=stub \
+POSTHOG_API_KEY_DEV=stub ADMIN_ENTRA_CLIENT_SECRET_DEV=stub \
+ADMIN_ENTRA_TENANT_ID_DEV=11111111-1111-4111-8111-111111111111 \
+ADMIN_ENTRA_CLIENT_ID_DEV=22222222-2222-4222-8222-222222222222 \
+ADMIN_ENTRA_AUDIENCE_DEV=22222222-2222-4222-8222-222222222222 \
+ADMIN_ENTRA_OPERATOR_ALLOWLIST_DEV='[{"id":"33333333-3333-4333-8333-333333333333","name":"Stub Operator","role":"RELEASE_OWNER"}]' \
+ADMIN_ENTRA_MFA_AUTH_CONTEXT_DEV=c1 ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT_DEV=c2 \
+ADMIN_AUTH_NOT_BEFORE_DEV=1970-01-01T00:00:00.000Z ADMIN_AUTH_POLICY_VERSION_DEV=stub-v1 \
+RUNTIME_DATABASE_PASSWORD_DEV=stub \
 MIGRATOR_DATABASE_PASSWORD_DEV=stub DEPLOYMENT_APPROVAL_SECRET_DEV=stub \
 SAFETY_PRIMARY_ON_CALL_DEV=stub-primary SAFETY_BACKUP_ON_CALL_DEV=stub-backup \
 SAFETY_RELEASE_OWNER_DEV=stub-release SAFETY_APPROVER_DEV=stub-safety \
@@ -660,8 +665,14 @@ SAFETY_PRIMARY_ON_CALL_PUBLIC_KEY_DEV=stub-primary-key SAFETY_BACKUP_ON_CALL_PUB
 SAFETY_RELEASE_OWNER_PUBLIC_KEY_DEV=stub-release-key SAFETY_APPROVER_PUBLIC_KEY_DEV=stub-safety-key \
 SAFETY_EVIDENCE_CUSTODIAN_PUBLIC_KEY_DEV=stub-evidence-key SAFETY_ROLLBACK_OWNER_PUBLIC_KEY_DEV=stub-rollback-key \
 DATABASE_URL_PROD=stub DIRECT_URL_PROD=stub MIGRATION_URL_PROD=stub CRON_SECRET_PROD=stub \
-POSTHOG_API_KEY_PROD=stub ADMIN_PASSWORD_PROD=stub \
-ADMIN_SESSION_SECRET_PROD=stub RUNTIME_DATABASE_PASSWORD_PROD=stub \
+POSTHOG_API_KEY_PROD=stub ADMIN_ENTRA_CLIENT_SECRET_PROD=stub \
+ADMIN_ENTRA_TENANT_ID_PROD=44444444-4444-4444-8444-444444444444 \
+ADMIN_ENTRA_CLIENT_ID_PROD=55555555-5555-4555-8555-555555555555 \
+ADMIN_ENTRA_AUDIENCE_PROD=55555555-5555-4555-8555-555555555555 \
+ADMIN_ENTRA_OPERATOR_ALLOWLIST_PROD='[{"id":"66666666-6666-4666-8666-666666666666","name":"Stub Operator","role":"RELEASE_OWNER"}]' \
+ADMIN_ENTRA_MFA_AUTH_CONTEXT_PROD=c1 ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT_PROD=c2 \
+ADMIN_AUTH_NOT_BEFORE_PROD=1970-01-01T00:00:00.000Z ADMIN_AUTH_POLICY_VERSION_PROD=stub-v1 \
+RUNTIME_DATABASE_PASSWORD_PROD=stub \
 MIGRATOR_DATABASE_PASSWORD_PROD=stub DEPLOYMENT_APPROVAL_SECRET_PROD=stub \
 SAFETY_PRIMARY_ON_CALL_PROD=stub-primary SAFETY_BACKUP_ON_CALL_PROD=stub-backup \
 SAFETY_RELEASE_OWNER_PROD=stub-release SAFETY_APPROVER_PROD=stub-safety \

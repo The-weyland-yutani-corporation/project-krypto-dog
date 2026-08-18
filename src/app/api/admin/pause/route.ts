@@ -3,8 +3,9 @@ import { z } from "zod/v4";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { agentJournal, agentState } from "@/db/schema";
-import { requireAdminSession } from "@/lib/admin-route-auth";
+import { requireAdminOperator } from "@/lib/admin-route-auth";
 import { checkSameOrigin } from "@/lib/csrf";
+import { recordOperatorAuditEvent } from "@/lib/operator-audit";
 
 const PauseBody = z.object({ paused: z.boolean() });
 
@@ -18,9 +19,6 @@ const PauseBody = z.object({ paused: z.boolean() });
 export async function POST(request: NextRequest) {
   const csrf = checkSameOrigin(request);
   if (csrf) return csrf;
-  const auth = await requireAdminSession(request);
-  if (auth) return auth;
-
   let parsed: z.infer<typeof PauseBody>;
   try {
     parsed = PauseBody.parse(await request.json());
@@ -33,6 +31,9 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
+  const action = parsed.paused ? "PAUSE_AGENT" : "RESUME_AGENT";
+  const auth = await requireAdminOperator(request, action);
+  if (!auth.ok) return auth.response;
 
   const updated = await db.transaction(async (tx) => {
     const [state] = await tx
@@ -46,11 +47,19 @@ export async function POST(request: NextRequest) {
       });
     if (!state) return null;
 
+    const auditEventId = await recordOperatorAuditEvent({
+      writer: tx,
+      operator: auth.operator,
+      action,
+      requestHeaders: request.headers,
+      outcome: "APPLIED",
+    });
     await tx.insert(agentJournal).values({
-      entryText: `Operator ${parsed.paused ? "paused" : "resumed"} the agent.`,
+      entryText: `${auth.operator.operatorName} ${parsed.paused ? "paused" : "resumed"} the agent.`,
       marketConditions: {
         event: "operator-pause",
         paused: parsed.paused,
+        operatorAuditEventId: auditEventId,
         timestamp: new Date().toISOString(),
       },
     });

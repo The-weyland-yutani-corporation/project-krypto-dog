@@ -272,6 +272,7 @@ const APPLICATION_TABLES = [
   "ProviderDailyUsage",
   "RuntimeContract",
   "SafetyIncidentOutbox",
+  "OperatorAuditEvent",
 ] as const;
 const BOUNDED_APPLICATION_TABLES = [
   "AgentState",
@@ -341,6 +342,10 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
     createdAt: "1787009045958",
     hash: "7c06289622f560a11de41e48acc37fafbdb1776a76436fffc17e739881fda0e8",
   },
+  {
+    createdAt: "1787015085502",
+    hash: "ef45d0acc0da4540f96cbaa656c5a73e20488d75e3c6eb0e63ea61941f8742bb",
+  },
 ] as const;
 /**
  * Migration count at which 0006 (the last migration that still installs
@@ -401,6 +406,7 @@ const RUNTIME_TABLE_PRIVILEGE_MATRIX: Readonly<Record<string, readonly string[]>
   ProviderDailyUsage: ["SELECT", "INSERT", "UPDATE"],
   RuntimeContract: ["SELECT"],
   SafetyIncidentOutbox: ["SELECT", "INSERT"],
+  OperatorAuditEvent: ["SELECT", "INSERT"],
 };
 /**
  * Sequences currently have no entries in the matrix because the krypto

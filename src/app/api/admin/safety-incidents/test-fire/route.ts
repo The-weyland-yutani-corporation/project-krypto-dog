@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod/v4";
-import { requireAdminSession } from "@/lib/admin-route-auth";
+import { requireAdminOperator } from "@/lib/admin-route-auth";
 import {
   requestIdFromHeaders,
   resolveReleaseDeploymentCorrelation,
@@ -19,6 +19,7 @@ import {
 } from "@/lib/safety-roster";
 import { readSafetyActorPublicKeys } from "@/lib/safety-actor-auth";
 import { resolveTradingMode } from "@/trading/strategy-config";
+import { recordOperatorAuditEvent } from "@/lib/operator-audit";
 
 const TestFireBody = z
   .object({
@@ -49,8 +50,11 @@ const TestFireBody = z
 export async function POST(request: NextRequest) {
   const csrf = checkSameOrigin(request);
   if (csrf) return csrf;
-  const auth = await requireAdminSession(request);
-  if (auth) return auth;
+  const auth = await requireAdminOperator(
+    request,
+    "TEST_FIRE_SAFETY_INCIDENT",
+  );
+  if (!auth.ok) return auth.response;
 
   let body: unknown;
   try {
@@ -86,7 +90,9 @@ export async function POST(request: NextRequest) {
   }
   if (
     rosterAssignmentForRole(roster, parsed.data.actorRole) !==
-    parsed.data.actorId
+      parsed.data.actorId ||
+    parsed.data.actorId !== auth.operator.operatorName ||
+    parsed.data.actorRole !== auth.operator.role
   ) {
     return NextResponse.json(
       { error: "Actor does not match the protected roster assignment" },
@@ -101,6 +107,13 @@ export async function POST(request: NextRequest) {
     parsed.data.severity === "CRITICAL"
       ? "TEST_FIRE_CRITICAL"
       : "TEST_FIRE_WARNING";
+  const auditEventId = await recordOperatorAuditEvent({
+    operator: auth.operator,
+    action: "TEST_FIRE_SAFETY_INCIDENT",
+    requestHeaders: request.headers,
+    requestId,
+    outcome: parsed.data.dryRun ? "NO_CHANGE" : "REQUESTED",
+  });
 
   if (parsed.data.dryRun) {
     return NextResponse.json(
@@ -111,6 +124,7 @@ export async function POST(request: NextRequest) {
         severity: parsed.data.severity,
         rolloutMode,
         requestId,
+        operatorAuditEventId: auditEventId,
         ...correlation,
         roster: summarizeSafetyRoster(roster, authenticatorsConfigured),
       },
@@ -159,7 +173,7 @@ export async function POST(request: NextRequest) {
       ownerRole: "PRIMARY_ON_CALL",
       backupRole: "BACKUP_ON_CALL",
       runbook: "specs/incident-response.md#non-trading-drills-and-game-day",
-      actorId: parsed.data.actorId,
+      actorId: auth.operator.operatorId,
       actorRole: parsed.data.actorRole,
       evidence: {
         summary: parsed.data.reason,

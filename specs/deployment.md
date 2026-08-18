@@ -165,9 +165,35 @@ reviewer so routine dev delivery can proceed through the remaining gates.
 | Environment | Approval policy | Workflows | Required variables | Required secrets |
 |---|---|---|---|---|
 | `platform` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true` | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
-| `development` | No required reviewer (intentional); branch/exact-SHA/CI gates remain | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `MIGRATION_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `MIGRATOR_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
+| `development` | No required reviewer (intentional); branch/exact-SHA/CI gates remain | `azure-deploy-dev.yml` | Existing deployment values plus `ADMIN_ENTRA_TENANT_ID`, `ADMIN_ENTRA_CLIENT_ID`, `ADMIN_ENTRA_AUDIENCE`, `ADMIN_ENTRA_OPERATOR_ALLOWLIST`, both authentication-context IDs, revocation cutoff, and policy version | Existing independent values plus `ADMIN_ENTRA_CLIENT_SECRET`; no admin password/session secret |
 | `production-deploy` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
 | `production-promotion` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true`; forced-disable boundary only | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
+
+### IAM-01 Microsoft Entra setup and evidence
+
+Before deploying the issue #129 source, create one single-tenant Entra web app
+per environment with redirect URI
+`https://<container-app-fqdn>/.auth/login/aad/callback`. Define the three exact
+app roles from ADR 0015, keep user assignment required, and provide the reviewed
+tenant/client/audience and named object-ID allowlist through GitHub Environment
+variables. Store only the confidential client value in the protected
+`ADMIN_ENTRA_CLIENT_SECRET`; release Bicep writes it to Key Vault and registers a
+Key Vault-backed Container App secret that is not exposed to the application
+container or ops jobs.
+
+Create distinct Conditional Access authentication contexts for routine MFA and
+sensitive step-up. Both require phishing-resistant MFA; sensitive use must
+produce `auth_time` within five minutes. Configure Entra sign-in/risk alerts and
+the Project Krypto credential-concern incident path. Do not deploy placeholder
+IDs, broaden tenant/audience, assign directory-wide application roles, or add a
+password fallback.
+
+After deployment, retain target smoke proving anonymous, spoofed platform-header,
+password-only, redirect, and HTTP security-header behavior. Separately perform
+an attended normal operator flow across every sensitive route and the
+two-custodian, time-bounded emergency-account activation/deactivation drill.
+Index redacted Entra/PIM/Container Apps/`OperatorAuditEvent` records in issue
+#76. Source/CI success is not this live evidence and does not close #129.
 
 ### Approval and evidence procedure
 

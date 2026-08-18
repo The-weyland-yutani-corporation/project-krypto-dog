@@ -516,6 +516,85 @@ export const safetyIncidentOutbox = kryptoSchema.table(
   ],
 );
 
+export const operatorAuditEvent = kryptoSchema.table(
+  "OperatorAuditEvent",
+  {
+    eventId: text("eventId")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    requestId: text("requestId").notNull(),
+    releaseId: text("releaseId").notNull(),
+    deploymentId: text("deploymentId").notNull(),
+    action: text("action").notNull(),
+    outcome: text("outcome").notNull(),
+    operatorId: text("operatorId").notNull(),
+    operatorName: text("operatorName").notNull(),
+    subjectId: text("subjectId").notNull(),
+    operatorRole: text("operatorRole").notNull(),
+    authenticationMethod: text("authenticationMethod").notNull(),
+    authenticationContext: text("authenticationContext").notNull(),
+    mfaEvidence: text("mfaEvidence").notNull(),
+    authenticatedAt: timestamp("authenticatedAt", {
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+    tokenIssuedAt: timestamp("tokenIssuedAt", {
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+    sessionIdHash: text("sessionIdHash").notNull(),
+    policyVersion: text("policyVersion").notNull(),
+    occurredAt: timestamp("occurredAt", {
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+    persistedAt: timestamp("persistedAt", {
+      precision: 3,
+      withTimezone: true,
+    })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+  },
+  (table) => [
+    index("OperatorAuditEvent_requestId_idx").on(table.requestId),
+    index("OperatorAuditEvent_operatorId_occurredAt_idx").on(
+      table.operatorId,
+      table.occurredAt,
+    ),
+    index("OperatorAuditEvent_action_occurredAt_idx").on(
+      table.action,
+      table.occurredAt,
+    ),
+    check(
+      "OperatorAuditEvent_action_check",
+      sql`${table.action} IN ('READ_ADMIN', 'RUN_AGENT', 'PAUSE_AGENT', 'RESUME_AGENT', 'UNLOCK_AGENT', 'RECOVER_RUN_LEASE', 'READ_SAFETY_INCIDENTS', 'TEST_FIRE_SAFETY_INCIDENT', 'CHANGE_SAFETY_INCIDENT')`,
+    ),
+    check(
+      "OperatorAuditEvent_outcome_check",
+      sql`${table.outcome} IN ('REQUESTED', 'APPLIED', 'NO_CHANGE')`,
+    ),
+    check(
+      "OperatorAuditEvent_operatorRole_check",
+      sql`${table.operatorRole} IN ('OPERATOR', 'RELEASE_OWNER', 'SAFETY_APPROVER')`,
+    ),
+    check(
+      "OperatorAuditEvent_authenticationMethod_check",
+      sql`${table.authenticationMethod} = 'ENTRA_MFA'`,
+    ),
+    check(
+      "OperatorAuditEvent_sessionIdHash_check",
+      sql`${table.sessionIdHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "OperatorAuditEvent_timestamp_check",
+      sql`${table.persistedAt} + interval '60 seconds' >= ${table.occurredAt}
+        AND ${table.occurredAt} + interval '60 seconds' >= ${table.persistedAt}
+        AND ${table.occurredAt} + interval '60 seconds' >= ${table.authenticatedAt}
+        AND ${table.occurredAt} + interval '60 seconds' >= ${table.tokenIssuedAt}`,
+    ),
+  ],
+);
+
 export const agentJournal = kryptoSchema.table(
   "AgentJournal",
   {
@@ -542,10 +621,12 @@ export type AgentState = typeof agentState.$inferSelect;
 export type AgentRun = typeof agentRun.$inferSelect;
 export type TradeExecution = typeof tradeExecution.$inferSelect;
 export type SafetyIncidentOutbox = typeof safetyIncidentOutbox.$inferSelect;
+export type OperatorAuditEvent = typeof operatorAuditEvent.$inferSelect;
 export type AgentJournal = typeof agentJournal.$inferSelect;
 export type NewAgentRun = typeof agentRun.$inferInsert;
 export type NewTradeExecution = typeof tradeExecution.$inferInsert;
 export type NewSafetyIncidentOutbox = typeof safetyIncidentOutbox.$inferInsert;
+export type NewOperatorAuditEvent = typeof operatorAuditEvent.$inferInsert;
 export type NewAgentJournal = typeof agentJournal.$inferInsert;
 export type ProviderDailyUsage = typeof providerDailyUsage.$inferSelect;
 export type RuntimeContract = typeof runtimeContract.$inferSelect;

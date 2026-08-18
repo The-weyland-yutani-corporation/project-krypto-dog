@@ -41,6 +41,35 @@ param nonSecretEnv array = []
 @description('Key Vault-backed secret environment variables as {name, keyVaultUrl} objects. keyVaultUrl must be a versionless secret URI (e.g. the Key Vault secret resource\'s .properties.secretUri, not .properties.secretUriWithVersion) so Container Apps resolves the latest secret version on rotation without requiring a redeploy of this template.')
 param keyVaultSecretEnv array = []
 
+@description('Versionless Key Vault URI for the Entra web app client secret used only by Container Apps authentication. It is registered as a Container App secret but is not exposed to the application container environment.')
+@secure()
+param adminEntraClientSecretKeyVaultUrl string
+
+@description('Microsoft Entra application client ID for this exact Container App origin.')
+@minLength(36)
+@maxLength(36)
+param adminEntraClientId string
+
+@description('Exact token audience accepted by both Container Apps authentication and application authorization.')
+@minLength(1)
+param adminEntraAudience string
+
+@description('Exact Entra v2 OpenID issuer for the configured tenant and Azure cloud.')
+@minLength(1)
+param adminEntraIssuer string
+
+@description('Immutable allowlisted Microsoft Entra operator object IDs. Names and roles are enforced again by application authorization.')
+@minLength(1)
+param adminEntraAllowedPrincipalIds array
+
+@description('Conditional Access authentication context required for routine MFA-backed administration.')
+@minLength(1)
+param adminEntraMfaAuthContext string
+
+@description('Distinct Conditional Access authentication context required for recent sensitive-operation step-up.')
+@minLength(1)
+param adminEntraStepUpAuthContext string
+
 @description('Target container port the app listens on.')
 param targetPort int = 3000
 
@@ -53,13 +82,25 @@ param maxReplicas int = 3
 @description('Tags applied to the Container App.')
 param tags object = {}
 
-var secrets = [
+var environmentSecrets = [
   for entry in keyVaultSecretEnv: {
     name: toLower(replace(entry.name, '_', '-'))
     keyVaultUrl: entry.keyVaultUrl
     identity: runtimeIdentityId
   }
 ]
+
+var adminEntraClientSecretName = 'admin-entra-client-secret'
+var validatedAdminEntraStepUpAuthContext = adminEntraStepUpAuthContext == adminEntraMfaAuthContext
+  ? fail('Admin routine MFA and sensitive step-up authentication contexts must be distinct.')
+  : adminEntraStepUpAuthContext
+var secrets = concat(environmentSecrets, [
+  {
+    name: adminEntraClientSecretName
+    keyVaultUrl: adminEntraClientSecretKeyVaultUrl
+    identity: runtimeIdentityId
+  }
+])
 
 var secretEnvVars = [
   for entry in keyVaultSecretEnv: {
@@ -150,6 +191,71 @@ resource webApp 'Microsoft.App/containerApps@2025-01-01' = {
           }
         ]
       }
+    }
+  }
+}
+
+resource adminAuth 'Microsoft.App/containerApps/authConfigs@2025-01-01' = {
+  parent: webApp
+  name: 'current'
+  properties: {
+    globalValidation: {
+      unauthenticatedClientAction: 'AllowAnonymous'
+      redirectToProvider: 'azureactivedirectory'
+    }
+    httpSettings: {
+      requireHttps: true
+      routes: {
+        apiPrefix: '/.auth'
+      }
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        login: {
+          disableWWWAuthenticate: false
+          loginParameters: [
+            'max_age=300'
+            'prompt=login'
+            'claims={"id_token":{"acrs":{"essential":true,"value":"${validatedAdminEntraStepUpAuthContext}"}}}'
+          ]
+        }
+        registration: {
+          clientId: adminEntraClientId
+          clientSecretSettingName: adminEntraClientSecretName
+          openIdIssuer: adminEntraIssuer
+        }
+        validation: {
+          allowedAudiences: [
+            adminEntraAudience
+          ]
+          defaultAuthorizationPolicy: {
+            allowedPrincipals: {
+              identities: adminEntraAllowedPrincipalIds
+            }
+          }
+        }
+      }
+    }
+    login: {
+      allowedExternalRedirectUrls: []
+      cookieExpiration: {
+        convention: 'FixedTime'
+        timeToExpiration: '08:00:00'
+      }
+      nonce: {
+        nonceExpirationInterval: '00:05:00'
+        validateNonce: true
+      }
+      preserveUrlFragmentsForLogins: false
+      tokenStore: {
+        enabled: true
+        tokenRefreshExtensionHours: 8
+      }
+    }
+    platform: {
+      enabled: true
+      runtimeVersion: '~1'
     }
   }
 }
