@@ -370,11 +370,7 @@ export function authorizeAdminRequest(
   if (env.ADMIN_IDENTITY_MODE !== "entra") {
     return { ok: false, status: 503, code: "IDENTITY_DISABLED" };
   }
-  if (
-    env.ADMIN_PLATFORM_AUTH !== "azure-container-apps" ||
-    (env.NODE_ENV === "production" &&
-      env.ADMIN_PLATFORM_AUTH !== "azure-container-apps")
-  ) {
+  if (env.ADMIN_PLATFORM_AUTH !== "azure-container-apps") {
     return { ok: false, status: 503, code: "PLATFORM_BOUNDARY_INVALID" };
   }
 

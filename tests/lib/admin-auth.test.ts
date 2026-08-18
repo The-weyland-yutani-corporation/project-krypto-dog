@@ -77,6 +77,16 @@ describe("platform-backed admin authorization", () => {
         now: ADMIN_TEST_NOW,
       }),
     ).toMatchObject({ ok: false, code: "PLATFORM_BOUNDARY_INVALID" });
+    expect(
+      authorizeAdminRequest(adminPrincipalHeaders(), "READ_ADMIN", {
+        env: {
+          ...adminIdentityEnv(),
+          NODE_ENV: "test",
+          ADMIN_PLATFORM_AUTH: "forwarded-header",
+        },
+        now: ADMIN_TEST_NOW,
+      }),
+    ).toMatchObject({ ok: false, code: "PLATFORM_BOUNDARY_INVALID" });
   });
 
   it.each([
