@@ -27,7 +27,7 @@ permissions:
 jobs:
   reconcile:
     name: Reconcile agentic pull requests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 10
 
     steps:

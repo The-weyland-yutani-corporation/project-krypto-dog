@@ -12,7 +12,7 @@
 | **v1** | Paper-trading scaffolding: agent loop, guardrails, schema, tools, admin dashboard | ✅ Shipped (tag `spec/v1`) |
 | **v2** | Hardening: admin auth, balance validation, full PostHog/email wiring, env validation, Drizzle consolidation | ⚠️ Code baseline shipped (tag `spec/v2`) -- NOT production-ready. See §14. |
 | **v2.1** | Safety and Correctness: atomic execution, deterministic authorization, non-destructive migrations, cost-basis PnL, owned expiring run leases, dependency remediation | ✅ Implemented -- live Azure target evidence remains before deployment |
-| **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Azure account/foundations/access are provisioned; Luna model deployment is blocked and no release exists. Live smoke and rollout evidence remain. Production promotion is intentionally unimplemented pending a new evidence-bound review; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
+| **v2.2** | Evidence-Grade Paper Trading: target preflight/backup/smoke, shadow and paper rollout, 30-day evidence collection | 🚧 Azure releases are live: dev is shadow/scheduled and prod disabled/manual. Foundry prompt agents are active; the agent-integrated app-image cutover and 30-day qualifying paper window remain. Production promotion is intentionally unimplemented pending a new evidence-bound review; see [`rfcs/0002-evidence-grade-paper-trading.md`](./rfcs/0002-evidence-grade-paper-trading.md) |
 | **v3** | Live Coinbase AgentKit execution on Base L2, sentiment, advanced orders, scaling | 📋 RFC stub only -- see [`rfcs/0001-v3-live-trading.md`](./rfcs/0001-v3-live-trading.md) |
 
 ---
@@ -286,14 +286,16 @@ paper-trading evidence checklist are documented in
 ## 9. Environment variables
 
 Production configuration is validated at startup (see
-[`.env.example`](../.env.example)). The Azure OpenAI base URL and deployment
-name retain valid target shapes even in disabled mode; production also requires
-the workload identity client ID and complete ACS configuration.
+[`.env.example`](../.env.example)). The Foundry project, agent name, and
+immutable version retain valid target shapes even in disabled mode; production
+also requires the workload identity client ID and complete ACS configuration.
 
 | Variable | Purpose | Required |
 |---|---|---|
-| `AZURE_OPENAI_BASE_URL` | Dedicated Azure OpenAI v1 base URL ending `/openai/v1` | yes |
-| `AZURE_OPENAI_DEPLOYMENT_NAME` | Environment deployment: `krypto-dev-luna` or `krypto-prod-luna` | yes |
+| `AZURE_FOUNDRY_PROJECT_ENDPOINT` | Environment project endpoint ending `/api/projects/<project>` | yes |
+| `AZURE_FOUNDRY_AGENT_NAME` | Environment agent: `krypto-dev-decision` or `krypto-prod-decision` | yes |
+| `AZURE_FOUNDRY_AGENT_VERSION` | Exact immutable version attested during deployment | yes |
+| `AZURE_OPENAI_BASE_URL` / `AZURE_OPENAI_DEPLOYMENT_NAME` | Optional attended platform-operator direct-model diagnostics | no |
 | `AZURE_CLIENT_ID` | Runtime/ops user-assigned identity client ID used for Entra authentication | production |
 | `DATABASE_URL` | Least-privilege `krypto_app` PostgreSQL URL | yes |
 | `DIRECT_URL` | Direct/session database URL for migration and initialization commands | deployment only |
@@ -309,21 +311,26 @@ the workload identity client ID and complete ACS configuration.
 | `ADMIN_PASSWORD` | Admin dashboard password | yes |
 | `ADMIN_SESSION_SECRET` | HMAC key for expiring admin cookies | yes in production |
 
-Rollout mode is validated when a run begins. Luna configuration is validated
+Rollout mode is validated when a run begins. Agent configuration is validated
 at startup, while inference is skipped in disabled mode. Foundry accepts no
-application API key: runtime/ops UAMIs receive only Cognitive Services OpenAI
-User and use Entra tokens.
+application API key: runtime/ops UAMIs use the project-scoped custom Project
+Krypto Foundry Agent Invoker with Entra tokens.
 
 ---
 
 ## 10. Deployment model
 
-- **State:** account/foundations/access provisioned; model and releases blocked.
-  No Container App, job, schedule, or public Azure URL exists.
+- **State:** model fallback, foundations, releases, isolated Foundry projects,
+  and prompt agents are live. Dev remains shadow/scheduled and production
+  disabled/manual on the pre-agent image; the reviewed agent-integrated image
+  cutover remains pending the reviewed source merge and gated release.
 - **Deployment control:** GitHub Environments, branch restrictions, and
   protected values are configured except for a distinct dev PostHog key.
-  Required-reviewer rules are unsupported by the private-repo billing plan, so
-  mutation remains manual/paused behind branch, exact-SHA, and CI gates.
+  Enterprise-hosted Actions are active, `CI_RUNNER_LABEL` is unset, and the
+  temporary Azure self-hosted runner infrastructure is retired.
+  Platform and production mutations require `@VeVarunSharma` environment
+  approval with `prevent_self_review=false`; development intentionally has no
+  reviewer. Branch, exact-SHA, and CI gates remain mandatory.
 - **Subscription/region:** select **Visual Studio Enterprise Subscription** at
   runtime; deploy `rg-krypto-platform`, `rg-krypto-dev`, and
   `rg-krypto-prod` in `westus3`. A subscription owner must register/wait for
@@ -343,8 +350,9 @@ User and use Entra tokens.
   Azure error `715-123420`. Support API ticket creation is unavailable without
   an eligible support plan; portal/account support action is required.
 - **Hosting:** Next.js runs in Azure Container Apps. Web and ops images are
-  digest-pinned in separate dev/prod ACRs. Both ACRs and Container Apps
-  environments exist; no web app, image release, or job is deployed.
+  digest-pinned in separate dev/prod ACRs. Both environment releases are live;
+  the next release replaces direct inference with the version-pinned Foundry
+  Agent client.
 - **Database:** private Azure PostgreSQL Flexible Server 17. Reviewed Drizzle
   migrations use `DIRECT_URL`; runtime uses least-privilege `DATABASE_URL`.
 - **Singleton initialization:** `npm run db:init` inserts the account only when
@@ -356,9 +364,8 @@ User and use Entra tokens.
   Monitoring is enabled and validated before Schedule; disable paths verify
   Manual jobs before disabling monitoring.
 - **Foundation/access dependency:** deploy environment foundations for dev and
-  prod, then bind both runtime/ops identity pairs through the protected
-  `azure-platform-access.yml` workflow before full releases. This checkpoint is
-  complete.
+  prod, then create isolated Foundry projects/agents and bind each runtime/ops
+  pair to the project-scoped custom invoker before full releases.
 - **Dev rollout:** disabled/manual evidence → shadow/manual →
   one unique `manual-shadow:` hourly execution → post-run activation-check
   proving the exact safe no-trade `AgentRun` and released lease → monitored
@@ -461,16 +468,21 @@ the engineering-only evidence-pipeline foundation are implemented.
 
 Production is still blocked by:
 
-- **Azure release:** the Foundry account, both foundations, and workload-access
-  bindings are live, but model deployment is blocked by Azure `715-123420` and
-  no Container App or job exists.
-- **Replacement initialization:** both private Azure PostgreSQL 17 foundations
-  exist. Reviewed migration, initialization, and baseline restore-verified
-  backup remain.
-- **Production smoke/evidence:** Luna/Entra, Coinbase, ACS Email, separate
-  PostHog projects, admin, disabled/shadow/paper modes, Container Apps Jobs,
-  alerts, backup, and rollback have not been proven on a live release. The prod
-  PostHog key is staged; the distinct dev key is missing.
+- **Agent application cutover:** both releases, model deployments, isolated
+  Foundry projects, and prompt agents are live, but the deployed app images are
+  still the validated pre-agent versions. The replacement release now awaits
+  reviewed source and the applicable exact-SHA/CI/environment gates.
+- **Operational account hardening:** Agent calls use Entra/project-scoped
+  Consumer and Project Krypto stores no key, but the shared fallback account
+  still permits legacy local/model key authentication. Disable it with the
+  account owner or migrate to the dedicated Entra-only account before any
+  production promotion.
+- **Production smoke/evidence:** the pre-agent production release passed
+  migration, backup restore, provider/email/admin target smoke, and disabled
+  state checks. The agent-integrated image must repeat target smoke, including
+  the unconditional post-provider no-trade database check.
+- **Analytics isolation:** the prod PostHog key is staged; the distinct dev key
+  is still missing.
 - **Historical and paper evidence:** imported walk-forward reports are
   deliberately classified engineering-only and cannot satisfy release gates.
   Real holdout datasets and the required 30-day production paper window do not

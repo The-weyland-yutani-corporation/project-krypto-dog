@@ -1,0 +1,17 @@
+name: krypto-dev-decision-safety
+agent:
+  name: krypto-dev-decision
+  kind: prompt
+  version: "1"
+  model: krypto-dev-luna
+dataset:
+  name: krypto-dev-decision-safety
+  version: "2.0"
+  local_uri: .foundry/datasets/krypto-dev-decision-safety-v2.0/krypto-dev-decision-safety.jsonl
+evaluators:
+  - name: krypto-dev-decision-safety
+    version: "1"
+    local_uri: .foundry/evaluators/krypto-dev-decision-safety-v1.json
+options:
+  eval_model: krypto-dev-luna
+max_samples: 15

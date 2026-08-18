@@ -11,7 +11,7 @@ param identityName string
 @description('Azure region.')
 param location string
 
-@description('GitHub repository owner (org or user), e.g. VeVarunSharma.')
+@description('GitHub repository owner (org or user), e.g. The-weyland-yutani-corporation.')
 param githubOrg string
 
 @description('Immutable GitHub repository owner ID used by the repository OIDC subject customization.')

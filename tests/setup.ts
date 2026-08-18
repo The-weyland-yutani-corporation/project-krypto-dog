@@ -5,6 +5,10 @@ process.env.NODE_ENV = "test";
 process.env.AZURE_OPENAI_BASE_URL =
   "https://test.openai.azure.com/openai/v1";
 process.env.AZURE_OPENAI_DEPLOYMENT_NAME = "krypto-test-luna";
+process.env.AZURE_FOUNDRY_PROJECT_ENDPOINT =
+  "https://test.services.ai.azure.com/api/projects/krypto-test-agents";
+process.env.AZURE_FOUNDRY_AGENT_NAME = "krypto-test-decision";
+process.env.AZURE_FOUNDRY_AGENT_VERSION = "1";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 process.env.POSTHOG_API_KEY = "phc_test_key";
 process.env.POSTHOG_HOST = "https://app.posthog.com";

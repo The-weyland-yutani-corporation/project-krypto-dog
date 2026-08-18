@@ -70,8 +70,9 @@ param opsImageDigest = 'sha256:REPLACE_WITH_PUSHED_OPS_DIGEST'
 // deployed.
 param releaseSha = 'REPLACE_WITH_REAL_COMMIT_SHA000000000000'
 
-param azureOpenAIBaseUrl = 'https://ghcp-foundry-eastus2.openai.azure.com/openai/v1/'
-param azureOpenAIDeploymentName = 'krypto-prod-luna'
+param azureFoundryProjectEndpoint = 'https://ghcp-foundry-eastus2.services.ai.azure.com/api/projects/krypto-prod-agents'
+param azureFoundryAgentName = 'krypto-prod-decision'
+param azureFoundryAgentVersion = '1'
 
 param posthogHost = 'https://us.i.posthog.com'
 param posthogEnvironment = 'prod'

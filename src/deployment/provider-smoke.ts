@@ -2,6 +2,7 @@ import { HumanMessage } from "@langchain/core/messages";
 import { z } from "zod/v4";
 
 import { buildLLM } from "@/agent/llm";
+import { getFoundryDecisionInvoker } from "@/agent/foundry-agent";
 import { getMarketDataProvider } from "@/lib/market-data-provider";
 import {
   flushPostHog,
@@ -124,6 +125,44 @@ export async function smokeFoundry(
   };
 }
 
+export async function smokeFoundryAgent(
+  timeoutMs = 30_000,
+): Promise<ProviderSmokeResult["foundry"]> {
+  const startedAt = Date.now();
+  const response = await getFoundryDecisionInvoker()(
+    JSON.stringify({
+      instruction:
+        "Read-only deployment validation. Return HOLD and do not propose or execute a trade.",
+      eligibleActions: {
+        hold: true,
+        buy: null,
+        sell: null,
+      },
+    }),
+    AbortSignal.timeout(timeoutMs),
+  );
+  if (
+    response.decision.action !== "HOLD" ||
+    response.decision.notionalUSD !== null
+  ) {
+    throw new Error("Foundry Agent no-trade smoke did not return HOLD.");
+  }
+  const latencyMs = Date.now() - startedAt;
+
+  return {
+    latencyMs,
+    responseLength: JSON.stringify(response.decision).length,
+    inputTokens: response.tokenUsage.inputTokens,
+    outputTokens: response.tokenUsage.outputTokens,
+    totalTokens: response.tokenUsage.totalTokens,
+    structured: {
+      latencyMs,
+      action: response.decision.action,
+      notionalUSD: response.decision.notionalUSD,
+    },
+  };
+}
+
 export async function smokeCoinbase(): Promise<
   ProviderSmokeResult["coinbase"]
 > {
@@ -199,14 +238,13 @@ export async function runReadOnlyProviderSmoke(): Promise<ReadOnlyProviderSmokeR
 }
 
 export async function runProviderSmoke(): Promise<ProviderSmokeResult> {
-  const [foundry, structured, coinbase, postHog] = await Promise.all([
-    smokeFoundry(),
-    smokeLunaStructuredOutput(),
+  const [foundry, coinbase, postHog] = await Promise.all([
+    smokeFoundryAgent(),
     smokeCoinbase(),
     smokePostHog(),
   ]);
   return {
-    foundry: { ...foundry, structured },
+    foundry,
     coinbase,
     postHog,
   };

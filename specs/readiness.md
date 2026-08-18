@@ -17,7 +17,7 @@ observations remain historical only; its archived procedure is
 
 | Scope | Current decision | Blocking reason |
 |---|---|---|
-| Azure platform | **Operational fallback ready** | Dev/prod Luna deployments on the established account passed Entra plain and structured `HOLD` smokes; the dedicated account remains model-empty |
+| Azure platform | **Operational agents ready** | Dev/prod toolless prompt agents version `1` passed exact structured `HOLD` smokes; the dedicated account remains model-empty |
 | Azure dev | **Deployment-ready in shadow** | First scheduled run passed with zero trades; paper promotion still requires its separate evidence window |
 | Azure prod | **Deployment-ready, disabled/manual** | Backup and target smoke passed; no promotion workflow is shipped |
 | v2.2 paper rollout | **Not ready** | No 30-day qualifying paper evidence window, separate PostHog projects, or approved production promotion design |
@@ -37,10 +37,11 @@ not satisfy a live Azure gate.
 | Model | OpenAI `gpt-5.6-luna` version `2026-07-09` |
 | Deployment SKU/capacity | `GlobalStandard`; desired dev 10 + prod 10, with deployment-pair-aware incremental validation against the exact quota dimension |
 | Deployment names | `krypto-dev-luna`, `krypto-prod-luna` |
-| Foundry auth | Project Krypto mounts no model API key; runtime and ops UAMIs receive only **Cognitive Services OpenAI User** |
+| Foundry auth | Project Krypto mounts no model or agent API key; runtime and ops UAMIs receive only project-scoped **Project Krypto Foundry Agent Invoker** |
+| Operational account local auth | Shared fallback still permits legacy local/model key auth; disable with the account owner or migrate before any production promotion |
 | Deployment mutation scope | All mutation roles are resource-group-scoped; prod-deploy and platform Locks Contributor remain in their respective resource groups |
 | Deployment subscription reads | One-action Project Krypto Provider Registration Reader on platform/dev/prod-deploy; Cognitive Services Usages Reader additionally on platform; no broad Reader |
-| Runtime model config | `AZURE_OPENAI_BASE_URL` ending `/openai/v1`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_CLIENT_ID` |
+| Runtime agent config | `AZURE_FOUNDRY_PROJECT_ENDPOINT`, `AZURE_FOUNDRY_AGENT_NAME`, immutable `AZURE_FOUNDRY_AGENT_VERSION`, `AZURE_CLIENT_ID` |
 | Email | Separate dev/prod Azure Communication Services Email resources with Azure-managed domains |
 | Analytics | Mandatory `deployment_environment` property now; distinct PostHog projects remain a production-promotion prerequisite |
 
@@ -50,26 +51,28 @@ deployment option.
 
 ## 3. Implemented workflow surfaces
 
-Six Azure workflow surfaces implement or validate the target:
+Five Azure workflow surfaces implement or validate the target; Foundry Agent
+project/agent deployment currently uses the documented authenticated local path:
 
 | Workflow | Responsibility | Current live status |
 |---|---|---|
 | `azure-infra-validate.yml` | Source validation for Bicep, parameters, workflow contracts, and Azure helper tests | Validation-only; cannot produce live deployment evidence |
 | `azure-platform.yml` | Dedicated Foundry account/model plan, apply, exact catalog/quota check, and no-trade smoke | Dedicated account/model attempt failed after account/catalog/quota; operational fallback models and smokes were completed separately |
-| `azure-platform-access.yml` | Separate plan/apply for four runtime/ops account-role bindings | Applied; dev/prod runtime and ops each have Cognitive Services OpenAI User |
 | `azure-deploy-dev.yml` | Dev `foundation` or `full` release and monitored shadow activation | Live equivalent operator path completed; dev shadow/scheduled |
 | `azure-deploy-prod.yml` | Prod `foundation` or `full` release ending disabled/manual | Live equivalent operator path completed; prod disabled/manual |
 | `azure-rotate-secrets.yml` | Safe prod secret rotation with current-release disable/backup controls | Not run; production release exists and is currently disabled/manual |
 
-Platform account/model mutation and platform access each use separate
-environment-scoped what-if and apply jobs. GitHub Environments, branch
-restrictions, and protected values are configured. Required-reviewer rules are unsupported by the private-repo
-billing plan, so mutation workflows are manual/paused behind configured branch,
-exact-SHA, and CI gates. GitHub-hosted jobs were blocked by the account Actions
-billing state during the first release, so the authenticated operator path used
-the same reviewed templates and evidence validators. Production deploy remains
-disabled manually; the proven dev automatic trigger is configured but cannot
-start while the billing block remains.
+Platform account/model mutation uses separate environment-scoped what-if and
+apply jobs. Agent project/access mutation used the equivalent local
+what-if/apply path. GitHub Environments, branch restrictions, and protected
+values are configured. Enterprise-hosted Actions are active, `CI_RUNNER_LABEL`
+is unset, and the temporary Azure runner registrations/resource group are
+retired. `platform`,
+`production-deploy`, and `production-promotion` require `@VeVarunSharma` review
+with `prevent_self_review=false`; `development` intentionally has no reviewer.
+Configured branch, exact-SHA, and CI gates remain mandatory. The authenticated
+operator path used for the first release remains historical evidence, not the
+current execution constraint.
 
 No executable production promotion workflow is shipped or approved.
 `production-promotion` remains only as the environment-scoped forced-disable
@@ -100,8 +103,9 @@ credential downgrade.
   evidence-storage locks.
 - [x] Configure `platform`, `development`, `production-deploy`, and the
   forced-disable-only `production-promotion` GitHub Environments, including
-  branch restrictions and the currently available protected values. Required
-  reviewers are unavailable on the current plan; keep mutation manual/paused.
+  branch restrictions and protected values. Require `@VeVarunSharma` review
+  with `prevent_self_review=false` on platform and both production boundaries;
+  intentionally omit a development reviewer for routine dev delivery.
 - [x] Stage a dev telemetry fallback with mandatory
       `deployment_environment=dev`; do not count it as final project isolation.
 - [x] Run the Foundry account what-if/apply; verify local auth disabled and the
@@ -115,19 +119,30 @@ credential downgrade.
       smokes against both fallback deployments.
 - [x] Deploy the dev foundation.
 - [x] Deploy the prod foundation.
-- [x] Retain both foundation handoffs and bind the exact dev/prod runtime and
-  ops principal IDs through `azure-platform-access.yml`.
-- [x] Verify exactly one Cognitive Services OpenAI User assignment per
-  workload principal before any full release.
+- [x] Retain both foundation handoffs and deploy isolated Foundry dev/prod
+  projects; prove the project-scoped custom-only invoker for dev and preserve
+  the reviewed equivalent for prod without mutating live prod.
+- [x] Deploy and exactly attest toolless dev/prod prompt-agent version `1`;
+  pass remote no-trade `HOLD` smoke for each.
+- [x] Remove the four unused workload roles from the model-empty dedicated
+  account; retain its platform smoke role and verified `CanNotDelete` lock.
+- [ ] Release the agent-integrated app image, pass final post-provider no-trade
+  database checks, then remove the four temporary account-scoped direct-model
+  roles. Enterprise-hosted Actions are available; this remains gated on reviewed
+  source, exact-SHA CI, and the environment-specific approval policy.
+- [ ] Disable local/model key authentication on the shared operational account
+  with its owner, or migrate the agents/models to the Entra-only dedicated
+  account, before any production promotion design.
 
-Both foundations are mandatory before the access workflow because the four
+Both foundations are mandatory before agent access binding because the four
 principal IDs are created by those foundations. A full release before access
 binding is not an approved shortcut.
 
-Any full dev run must remain a manual dispatch at the exact CI-passed 40-hex
-SHA while required-reviewer enforcement is unavailable. GitHub evaluates
-`workflow_run` with the workflow version on the default branch, but automatic
-mutation must remain paused regardless of that trigger behavior.
+Any full dev run must use the exact CI-passed 40-hex SHA. GitHub evaluates
+`workflow_run` with the workflow version on the default branch, so that
+default-branch source must contain the reviewed trigger and gates. Development
+has no reviewer by design; platform and production mutations require their
+live environment approval.
 
 ## 5. Configuration readiness
 

@@ -14,8 +14,8 @@
 //                            types; grants no Microsoft.Authorization/
 //                            roleAssignments/write since rollout.bicep
 //                            never creates a role assignment)
-//   - platform            -> platform resource group (platform.bicep and
-//                            platform-access.bicep only; the one-time account
+//   - platform            -> platform resource group (platform.bicep only; the
+//                            one-time account
 //                            template includes a delete lock and is deployed
 //                            by the bootstrap operator; this identity is never
 //                            given any right in the dev or prod resource
@@ -24,7 +24,7 @@
 //                            group)
 //
 // Run this once (or whenever environment/repo names change) before
-// platform-account.bicep, platform.bicep, platform-access.bicep,
+// platform-account.bicep, platform.bicep, foundry-agents.bicep,
 // environment.bicep, release.bicep, or rollout.bicep.
 //
 // NOTE: only the dev/prod-vs-platform resource group scoping above is an
@@ -72,7 +72,7 @@ param prodResourceGroupName string = 'rg-krypto-prod'
 ])
 param platformResourceGroupName string = 'rg-krypto-platform'
 
-@description('GitHub repository owner (org or user), e.g. VeVarunSharma.')
+@description('GitHub repository owner (org or user), e.g. The-weyland-yutani-corporation.')
 param githubOrg string
 
 @description('Immutable GitHub repository owner ID used by the configured OIDC subject format.')
@@ -93,7 +93,7 @@ param prodDeployGithubEnvironmentName string = 'production-deploy'
 @description('GitHub repository Environment name federated to the prod promotion identity (runs rollout.bicep for prod only — the one template that flips ROLLOUT_MODE/trigger types).')
 param prodPromotionGithubEnvironmentName string = 'production-promotion'
 
-@description('GitHub repository Environment name federated to the platform identity (runs platform.bicep and platform-access.bicep only).')
+@description('GitHub repository Environment name federated to the platform identity (runs the dedicated account/model templates only).')
 param platformGithubEnvironmentName string = 'platform'
 
 @description('Dev GitHub OIDC identity name.')
@@ -191,10 +191,10 @@ module prodPromotionOidcIdentity 'modules/oidc-identity.bicep' = {
   }
 }
 
-// Platform: runs ONLY the dedicated platform templates. platform-access.bicep
-// creates the four reviewed Cognitive Services OpenAI User bindings for the
-// dev/prod runtime and ops identities, so this identity needs the current
-// RBAC-granting built-in role in addition to Contributor.
+// Platform: runs ONLY the dedicated platform templates. It needs the current
+// RBAC-granting built-in role for platform model-smoke access in addition to
+// Contributor. Operational fallback agent projects/access use an attended
+// local operator because they live outside this identity's resource group.
 //
 // SECURITY TRADE-OFF: Role Based Access Control Administrator is scoped to
 // rg-krypto-platform only, never the subscription or the dev/prod resource
@@ -240,6 +240,37 @@ resource platformQuotaReader 'Microsoft.Authorization/roleAssignments@2022-04-01
       'Microsoft.Authorization/roleDefinitions',
       cognitiveServicesUsagesReaderRoleId
     )
+  }
+}
+
+// Version-pinned prompt-agent invocation creates internal agent messages in
+// addition to Responses resources. Keep this custom data-plane role narrower
+// than Foundry User and exclude agent deletion, state mutation, key access, and
+// every control-plane action.
+var foundryAgentInvokerRoleId = '44dfdabf-22ec-45f5-923b-b42e44bdad76'
+resource foundryAgentInvokerRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: foundryAgentInvokerRoleId
+  properties: {
+    roleName: 'Project Krypto Foundry Agent Invoker'
+    description: 'Invoke a versioned Project Krypto Foundry prompt agent without agent deletion, state mutation, key access, or infrastructure permissions.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: []
+        notActions: []
+        dataActions: [
+          'Microsoft.CognitiveServices/accounts/AIServices/agents/read'
+          'Microsoft.CognitiveServices/accounts/AIServices/agents/write'
+          'Microsoft.CognitiveServices/accounts/AIServices/responses/read'
+          'Microsoft.CognitiveServices/accounts/AIServices/responses/write'
+          'Microsoft.CognitiveServices/accounts/AIServices/endpoints/interact/action'
+        ]
+        notDataActions: []
+      }
+    ]
+    assignableScopes: [
+      subscription().id
+    ]
   }
 }
 

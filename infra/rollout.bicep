@@ -77,11 +77,23 @@ param webImageName string = 'krypto-web'
 @minLength(1)
 param imageDigest string
 
-@description('Azure OpenAI v1 base URL. Must match the value release.bicep deployed.')
-param azureOpenAIBaseUrl string
+@description('Foundry project endpoint. Must match the value release.bicep deployed.')
+param azureFoundryProjectEndpoint string
 
-@description('Azure OpenAI model deployment name. Must match the value release.bicep deployed.')
-param azureOpenAIDeploymentName string
+@description('Read-only Foundry decision agent name. Must match release.bicep.')
+param azureFoundryAgentName string
+
+@description('Immutable Foundry decision agent version. Must match release.bicep.')
+param azureFoundryAgentVersion string
+
+@description('Temporary compatibility switch for force-disabling a pre-agent image. Never enable for a newly released agent-integrated image.')
+param legacyDirectModelCompatibility bool = false
+
+@description('Legacy Azure OpenAI v1 base URL. Required only when legacyDirectModelCompatibility is true.')
+param legacyAzureOpenAIBaseUrl string = ''
+
+@description('Legacy Azure OpenAI deployment name. Required only when legacyDirectModelCompatibility is true.')
+param legacyAzureOpenAIDeploymentName string = ''
 
 @description('PostHog ingestion host. Must match the value release.bicep deployed.')
 param posthogHost string = 'https://us.i.posthog.com'
@@ -137,6 +149,18 @@ var parsedScheduleGeneration = int(scheduleGenerationUnixSeconds)
 var validatedScheduleGeneration = hourlyTriggerType == 'Schedule' && parsedScheduleGeneration <= 0
   ? fail('scheduleGenerationUnixSeconds must be positive when the hourly trigger is Schedule.')
   : string(parsedScheduleGeneration)
+var validatedLegacyAzureOpenAIBaseUrl = legacyDirectModelCompatibility && empty(legacyAzureOpenAIBaseUrl)
+  ? fail('legacyAzureOpenAIBaseUrl is required when legacyDirectModelCompatibility is true.')
+  : legacyAzureOpenAIBaseUrl
+var validatedLegacyAzureOpenAIDeploymentName = legacyDirectModelCompatibility && empty(legacyAzureOpenAIDeploymentName)
+  ? fail('legacyAzureOpenAIDeploymentName is required when legacyDirectModelCompatibility is true.')
+  : legacyAzureOpenAIDeploymentName
+var legacyDirectModelEnv = legacyDirectModelCompatibility
+  ? [
+      { name: 'AZURE_OPENAI_BASE_URL', value: validatedLegacyAzureOpenAIBaseUrl }
+      { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: validatedLegacyAzureOpenAIDeploymentName }
+    ]
+  : []
 
 resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' existing = {
   name: keyVaultName
@@ -188,17 +212,18 @@ module webApp 'modules/container-app-web.bicep' = {
     imageDigestRef: webImageDigestRef
     runtimeIdentityId: runtimeIdentityId
     rolloutMode: rolloutMode
-    nonSecretEnv: [
+    nonSecretEnv: concat([
       { name: 'NODE_ENV', value: 'production' }
-      { name: 'AZURE_OPENAI_BASE_URL', value: azureOpenAIBaseUrl }
-      { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', value: azureOpenAIDeploymentName }
+      { name: 'AZURE_FOUNDRY_PROJECT_ENDPOINT', value: azureFoundryProjectEndpoint }
+      { name: 'AZURE_FOUNDRY_AGENT_NAME', value: azureFoundryAgentName }
+      { name: 'AZURE_FOUNDRY_AGENT_VERSION', value: azureFoundryAgentVersion }
       { name: 'AZURE_CLIENT_ID', value: runtimeIdentityClientId }
       { name: 'APP_ORIGIN', value: targetBaseUrl }
       { name: 'POSTHOG_HOST', value: posthogHost }
       { name: 'POSTHOG_ENVIRONMENT', value: posthogEnvironment }
       { name: 'ALERT_EMAIL_TO', value: alertEmailTo }
       { name: 'AZURE_COMMUNICATION_EMAIL_SENDER', value: communicationEmailSender }
-    ]
+    ], legacyDirectModelEnv)
     keyVaultSecretEnv: [
       { name: 'DATABASE_URL', keyVaultUrl: databaseUrlSecret.properties.secretUri }
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }

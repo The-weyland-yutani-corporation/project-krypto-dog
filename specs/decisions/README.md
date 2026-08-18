@@ -54,6 +54,7 @@ What did we choose, in one or two paragraphs?
 | [0008](./0008-agentic-merge-authorization.md) | Current-head agent checks authorize same-repository merges | Accepted |
 | [0008](./0008-azure-native-deployment-architecture.md) | Azure-native deployment architecture (Container Apps, Flexible Server, Key Vault, Bicep) — implemented, provisioning pending | Accepted |
 | [0009](./0009-agent-legible-architecture-boundaries.md) | Agent-legible architecture boundaries | Accepted |
+| [0009](./0009-foundry-prompt-agent-boundary.md) | Foundry prompt agents as a read-only decision boundary | Accepted |
 | [0010](./0010-staged-correction-ops.md) | Staged, report-only CorrectionOps | Accepted |
 | [0011](./0011-mock-first-worktree-harness.md) | Mock-first, per-worktree application harness | Accepted |
 | [0012](./0012-evidence-gated-automation-authority.md) | Evidence-gated automation authority | Accepted |

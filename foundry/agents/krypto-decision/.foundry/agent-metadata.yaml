@@ -1,0 +1,24 @@
+defaultEnvironment: dev
+environments:
+  dev:
+    projectEndpoint: https://ghcp-foundry-eastus2.services.ai.azure.com/api/projects/krypto-dev-agents
+    agentName: krypto-dev-decision
+    agentVersion: "1"
+    evaluationSuites:
+      - id: safety-smoke
+        generationJobId: datagen-c1b9209fcbc74984902496483b04c7a1
+        generationSource: agent-instructions
+        dataset: krypto-dev-decision-safety
+        datasetVersion: "2.0"
+        datasetFile: .foundry/datasets/krypto-dev-decision-safety-v2.0.ref.json
+        datasetContentPath: .foundry/datasets/krypto-dev-decision-safety-v2.0
+        evaluators:
+          - name: krypto-dev-decision-safety
+            version: "1"
+            threshold: 0.5
+            definitionFile: .foundry/evaluators/krypto-dev-decision-safety-v1.json
+        tags:
+          tier: smoke
+          purpose: safety
+          stage: curated
+          evaluatorGenerationJobId: evaluatorgen-krypto-dev-decision-safety-v1-934830ac

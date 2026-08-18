@@ -26,7 +26,7 @@ permissions:
 jobs:
   canary:
     name: Exercise native agentic auto-merge
-    if: github.repository == 'VeVarunSharma/project-krypto-dog'
+    if: github.repository == 'The-weyland-yutani-corporation/project-krypto-dog'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:

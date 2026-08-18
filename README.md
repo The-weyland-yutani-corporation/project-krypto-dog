@@ -81,9 +81,10 @@ docker compose up -d
 
 # 3. Configure env
 cp .env.example .env
-# For attended model calls, run `az login` and fill in AZURE_OPENAI_BASE_URL
-# (ending /openai/v1) plus AZURE_OPENAI_DEPLOYMENT_NAME. Azure runtime also
-# requires AZURE_CLIENT_ID. Fill in POSTHOG_API_KEY, CRON_SECRET,
+# For attended agent calls, run `az login` and fill in the environment-specific
+# AZURE_FOUNDRY_PROJECT_ENDPOINT, AZURE_FOUNDRY_AGENT_NAME, and immutable
+# AZURE_FOUNDRY_AGENT_VERSION. Azure runtime also requires AZURE_CLIENT_ID.
+# Fill in POSTHOG_API_KEY, CRON_SECRET,
 # ADMIN_PASSWORD, and ADMIN_SESSION_SECRET.
 # ACS Email vars may be omitted locally; non-production delivery then reports
 # an explicit console-only skipped result.
@@ -123,10 +124,11 @@ open http://localhost:3000/admin/login
 | `npm run db:init` | Idempotently initialize the `AgentState` singleton |
 | `npm run test:migrations` | Real-PostgreSQL migration, privilege/tamper, decimal, transaction, lease, run-flow, preflight, and backup tests |
 | `npm run db:studio` | Drizzle Studio (browse the DB) |
-| `npm run smoke:llm` | Verify Foundry model access without tools or trading |
+| `npm run foundry:agent -- <deploy\|show\|smoke> --environment <dev\|prod> --project-endpoint <endpoint>` | Deploy, attest, inspect, or no-trade smoke the environment's immutable Foundry prompt agent |
+| `npm run smoke:llm` | Optional platform-operator diagnostic for direct Luna model access; application runtime does not use this path |
 | `npm run deployment:preflight -- --provider azure` | Prove runtime/direct DB identity, exact schema/migration state, leases, ACLs, and retirement of legacy scheduler/Vault objects |
 | `npm run deployment:backup -- --out <dir>` | Bind `DATABASE_URL`/`DIRECT_URL`, refuse active legacy scheduler/queued HTTP state and migration-only targets, create checksummed archives, and optionally prove a local restore |
-| `npm run smoke:target -- --base-url <url> --confirm-host <host>` | Bind runtime/direct DB and scheduler auth, prove mismatched-mode rejection plus disabled runs, admin/postconditions, ACS Email, Luna/Entra, Coinbase, and PostHog |
+| `npm run smoke:target -- --base-url <url> --confirm-host <host>` | Bind runtime/direct DB and scheduler auth, prove mismatched-mode rejection plus disabled runs, admin/postconditions, ACS Email, exact Foundry Agent `HOLD`, Coinbase, PostHog, and final unchanged trade state |
 | `npm run backtest -- --scenario scenarios/dip-recovery.json` | Run deterministic paper scenario evaluation |
 | `npm run backtest:all` | Emit aggregate JSON for every engineering scenario |
 | `npm run evidence:import -- --input <dataset.json> --out <materialized.json>` | Strictly validate and hash a versioned JSON evidence dataset |
@@ -166,9 +168,9 @@ src/
   lib/                    # Indicators, analytics, email, config, types
   proxy.ts                # Admin route protection
 drizzle/                  # Generated migrations
-infra/                     # Bicep platform account/model/access, dev/prod foundation,
+infra/                     # Bicep platform account/model/agents, dev/prod foundation,
                            # release, rollout, and schedule monitoring
-.github/workflows/azure-* # OIDC platform/access, validation, deploy, and rotation flows
+.github/workflows/azure-* # OIDC platform, validation, deploy, and rotation flows
 supabase/operations/      # Historical Vercel/Supabase cron operations
 specs/                    # Product spec, ADRs, RFCs, deployment runbook
 scripts/                  # One-shot scripts (seed, etc.)
@@ -178,10 +180,11 @@ tests/                    # Jest unit + integration tests
 ## Deploying
 
 > **WARNING:** No executable production promotion workflow is shipped or
-> approved.
-> Azure foundations and operational Luna deployments are provisioned, but every
-> full release/evidence/rollout gate remains for future promotions. See
-> [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
+> approved. Dev is live in shadow/scheduled mode and production is
+> disabled/manual on the validated pre-agent image. Foundry prompt agents are
+> active; the agent-integrated image cutover remains gated by reviewed release
+> smoke and legacy-role retirement. See
+> [`specs/readiness.md`](./specs/readiness.md) for the remaining gates.
 
 > **Target platform: Azure-native; dev and production releases deployed.**
 > The approved deployment plan supersedes Vercel/Supabase with a fully
@@ -200,18 +203,23 @@ tests/                    # Jest unit + integration tests
 
 Observed live runs:
 
-- [Dedicated account succeeded; model deployment failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
-- [Dev foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
-- [Prod foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
+- [Dedicated account succeeded; model deployment failed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
+- [Dev foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841581875)
+- [Prod foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841960745)
 
 GitHub Environments, branch restrictions, and protected values are configured.
-Required-reviewer rules are unavailable on the private repository's billing
-plan. GitHub-hosted jobs were also blocked at startup by the account's Actions
-billing state, so the first releases used the authenticated operator path with
-the same reviewed templates, exact source trees, immutable digests, and
-fail-closed evidence checks. Branch protection was restored after each reviewed
-merge. Shared-key PostHog telemetry is environment-tagged but cannot qualify as
-final project isolation for production promotion.
+Enterprise-hosted Actions are active ([proof run
+31981510383](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31981510383));
+`CI_RUNNER_LABEL` is unset; the temporary Azure self-hosted runner registrations
+and their runner resource group are retired. `platform`, `production-deploy`,
+and `production-promotion` require
+review by `@VeVarunSharma` with `prevent_self_review=false`; `development`
+intentionally has no required reviewer so routine dev releases can proceed.
+Every mutation still requires the configured branch, an exact CI-passed source
+SHA, and the workflow's fail-closed checks. The first releases used the
+authenticated operator path before Enterprise-hosted Actions became available.
+Shared-key PostHog telemetry is environment-tagged but cannot qualify as final
+project isolation for production promotion.
 
 Dev completed the staged
 disabled/manual → shadow/manual → unique manual shadow run → post-run
@@ -245,4 +253,4 @@ Project Krypto uses a hybrid spec strategy (see ADR [`0004-hybrid-spec-strategy.
 
 ## Repository
 
-[github.com/VeVarunSharma/project-krypto-dog](https://github.com/VeVarunSharma/project-krypto-dog)
+[github.com/The-weyland-yutani-corporation/project-krypto-dog](https://github.com/The-weyland-yutani-corporation/project-krypto-dog)

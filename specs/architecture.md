@@ -18,7 +18,7 @@ template and identity detail lives in
 |---|---|---|
 | Azure subscription | Runtime selection is **Visual Studio Enterprise Subscription**. Required providers are registered; bootstrap created the three resource groups and four GitHub OIDC identities. Its subscription ID and internal identifiers remain unpublished. | **Bootstrap complete** |
 | Region | `westus3` hosts `rg-krypto-platform`, `rg-krypto-dev`, and `rg-krypto-prod`. | **Provisioned** |
-| Platform | Dedicated `ai-krypto-westus3` exists with local auth disabled and a verified `CanNotDelete` lock, but remains model-empty after Azure `715-123420`. | [Dedicated-account attempt](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
+| Platform | Dedicated `ai-krypto-westus3` exists with local auth disabled and a verified `CanNotDelete` lock, but remains model-empty after Azure `715-123420`. | [Dedicated-account attempt](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884) |
 | Model | Operational `krypto-dev-luna` and `krypto-prod-luna` deployments exist on established account `ghcp-foundry-eastus2`: OpenAI `gpt-5.6-luna` `2026-07-09`, `GlobalStandard`, capacity 10 each. Entra plain and strict structured `HOLD` smokes passed. | **Provisioned fallback** |
 | Azure dev | `ca-dev-web` is live in `shadow`; hourly/daily jobs are scheduled and monitored. Migration, target smoke, one manual shadow run, activation check, alert dispatch, scheduled success, and post-run zero-trade checks passed. | **Deployed and shadow-ready** |
 | Azure prod | `ca-prod-web` is live in `disabled`; all seven jobs are `Manual`. Migration, restore-verified backup, target smoke, exact-digest, zero-trade, and no-schedule checks passed. | **Deployed disabled/manual** |
@@ -29,18 +29,22 @@ template and identity detail lives in
 | Scheduling | Dev hourly/daily jobs are `Schedule`; production and all ops jobs remain `Manual`. | **Dev shadow only** |
 
 GitHub Environments, branch restrictions, and protected values are configured.
-Required-reviewer rules are unsupported by the private repository's billing
-plan. GitHub-hosted jobs were blocked by the account's Actions billing state, so
-the first releases used the authenticated operator path with reviewed templates,
-immutable image digests, and the same fail-closed evidence validators.
-Production deploy remains disabled manually; the proven dev trigger is
-configured for use after the billing block is resolved.
+Enterprise-hosted Actions are active ([proof run
+31981510383](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31981510383)).
+`CI_RUNNER_LABEL` is unset, and the temporary Azure runner registrations and
+runner resource group are retired.
+`platform`, `production-deploy`, and `production-promotion` require
+`@VeVarunSharma` review with `prevent_self_review=false`; `development`
+intentionally has no required reviewer for routine dev releases. Branch,
+exact-SHA, and CI gates remain mandatory for every mutation. The first releases
+historically used the authenticated operator path before hosted execution was
+available.
 
 ## Azure topology and release gaps
 
 ```mermaid
 flowchart TB
-  GH["GitHub Actions<br/>Environments + OIDC<br/>manual/paused mutation"]
+  GH["Enterprise-hosted GitHub Actions<br/>Environments + OIDC<br/>review-gated platform/prod"]
 
   subgraph PLATFORM["model platform"]
     ACCOUNT["Dedicated future account · LIVE<br/>ai-krypto-westus3<br/>model-empty"]
@@ -93,10 +97,16 @@ flowchart TB
 ```
 
 Runtime and ops user-assigned managed identities authenticate to Foundry
-through Microsoft Entra ID. Each receives exactly **Cognitive Services
-OpenAI User** at the account scope. Scheduler identities call the app and
-receive no direct model role. Foundry local authentication/API keys are
-disabled.
+through Microsoft Entra ID. Each receives only the matching project's custom
+**Project Krypto Foundry Agent Invoker** role. Its five data actions permit
+agent read/write, Responses read/write, and endpoint interaction; it grants no
+delete, state, key, or control-plane action. Scheduler identities call the app
+and receive no direct agent/model role. The dedicated account disables local
+auth; the shared operational fallback account still permits legacy local/model
+key auth, although Project Krypto stores no key. That account-level exception
+and the legacy account-scoped direct-model roles remain blockers until the live
+pre-agent image is replaced, post-provider no-trade smoke passes, and the
+account owner disables local auth or approves migration.
 
 ### Deployment identity security boundary
 
@@ -136,8 +146,9 @@ after bootstrap.
 | Dev deployment | `krypto-dev-luna`, capacity 10 |
 | Prod deployment | `krypto-prod-luna`, capacity 10 |
 | Upgrade policy | `NoAutoUpgrade` |
-| Runtime API | Azure OpenAI v1 base URL ending `/openai/v1` |
-| Runtime auth | User-assigned managed identity selected by `AZURE_CLIENT_ID` |
+| Runtime API | Foundry project Responses API with immutable agent reference |
+| Runtime auth | Project-scoped custom Project Krypto Foundry Agent Invoker on the UAMI selected by `AZURE_CLIENT_ID` |
+| Agent isolation | `krypto-dev-agents` / `krypto-prod-agents`; toolless prompt agents `krypto-dev-decision` / `krypto-prod-decision` |
 
 The existing platform fallback was selected only after the dedicated account
 returned Azure `715-123420`. The same exact catalog/quota contract applies.
@@ -148,9 +159,9 @@ It passes both target deployment-name/capacity pairs and subtracts only exact
 existing target capacity on the same format/model/version/SKU dimension,
 making exact reruns idempotent without crediting unrelated capacity. It has
 separate environment-scoped what-if/apply jobs for the account and model
-deployments. `azure-platform-access.yml` has its own pair for workload role
-bindings. They are currently manual/paused; no required-reviewer enforcement is
-available on this repository plan.
+deployments. Agent projects, definitions, and project-scoped access use the
+reviewed authenticated local operator path for the historical first deployment;
+future workflow mutations use Enterprise-hosted Actions and environment gates.
 
 ## Resource map and live state
 
@@ -161,6 +172,7 @@ All listed foundation and release resources are live.
 | Resource group | `rg-krypto-platform` | `rg-krypto-dev` | `rg-krypto-prod` | All live |
 | Foundry account | Dedicated `ai-krypto-westus3`; operational `ghcp-foundry-eastus2` | — | — | Both live; operational account hosts models |
 | Model deployment | — | `krypto-dev-luna` | `krypto-prod-luna` | Both live on operational account; Entra smokes passed |
+| Foundry prompt agent | — | `krypto-dev-decision@1` | `krypto-prod-decision@1` | Both active; exact-definition and structured `HOLD` smokes passed |
 | VNet | — | `vnet-krypto-dev` | `vnet-krypto-prod` | Both live |
 | Container Apps environment | — | `cae-krypto-dev` | `cae-krypto-prod` | Both live |
 | Web app | — | `ca-dev-web` | `ca-prod-web` | Both live; dev shadow, prod disabled |
@@ -235,9 +247,10 @@ a new evidence-bound design and review.
   GitHub.
 - The runtime receives `AZURE_COMMUNICATION_CONNECTION_STRING`,
   `AZURE_COMMUNICATION_EMAIL_SENDER`, and `ALERT_EMAIL_TO`.
-- Foundry runtime configuration is `AZURE_OPENAI_BASE_URL`,
-  `AZURE_OPENAI_DEPLOYMENT_NAME`, and `AZURE_CLIENT_ID`; there is no model API
-  key.
+- Foundry runtime configuration is `AZURE_FOUNDRY_PROJECT_ENDPOINT`,
+  `AZURE_FOUNDRY_AGENT_NAME`, immutable `AZURE_FOUNDRY_AGENT_VERSION`, and
+  `AZURE_CLIENT_ID`; there is no model or agent API key. Direct Azure OpenAI
+  settings are optional platform-operator diagnostics only.
 
 ## Live endpoint register
 
@@ -254,8 +267,8 @@ deployment outputs.
 
 | Service | Entry point | Purpose |
 |---|---|---|
-| GitHub Actions | [Workflow runs](https://github.com/VeVarunSharma/project-krypto-dog/actions) | Platform, access, foundation, release, and evidence runs |
-| GitHub Environments | [Environment settings](https://github.com/VeVarunSharma/project-krypto-dog/settings/environments) | Configured environment values and branch restrictions; required reviewers are unavailable on the current plan, so mutation remains manual/paused |
+| GitHub Actions | [Workflow runs](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions) | Platform, access, foundation, release, and evidence runs |
+| GitHub Environments | [Environment settings](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/settings/environments) | Branch policies on all environments; required `@VeVarunSharma` review (`prevent_self_review=false`) for platform and production boundaries; intentionally no reviewer for development |
 | Azure | [Azure portal](https://portal.azure.com/) | Select **Visual Studio Enterprise Subscription**, then the existing platform/dev/prod resource groups; do not publish internal URLs or IDs |
 | Microsoft Foundry | [Foundry portal](https://ai.azure.com/) | Operate `ghcp-foundry-eastus2`; retain `ai-krypto-westus3` for a future dedicated migration |
 | PostHog | [PostHog US](https://us.posthog.com/) | Inspect mandatory dev/prod event tags; create a separate dev project before future production promotion |

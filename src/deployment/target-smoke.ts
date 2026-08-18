@@ -1190,6 +1190,39 @@ export async function runTargetSmoke(
       executionEnvironment: "operator",
     }),
   );
+  const finalDatabasePostconditions = await check(
+    "final-database-postconditions",
+    "Provider validation leaves trades unchanged and the run lease released",
+    async () => {
+      const value = await inspectAfter({
+        databaseUrl: options.databaseUrl,
+        idempotencyKeys: [
+          evidenceIds.modeMismatch,
+          evidenceIds.cron,
+          evidenceIds.admin,
+        ],
+        startedAt,
+      });
+      if (
+        value.runCount !== 2 ||
+        value.disabledRunCount !== 2 ||
+        value.tradeCount !== before.value!.tradeCount ||
+        !value.leaseReleased ||
+        value.deliveryStatus !== "sent"
+      ) {
+        throw new Error(
+          "Provider validation changed target database postconditions.",
+        );
+      }
+      return value;
+    },
+    (value) => value,
+  );
+  if (!finalDatabasePostconditions.passed) {
+    return blockedReport(
+      "Reject provider validation until final no-trade database postconditions pass.",
+    );
+  }
   if (!providerConnectivity.passed) {
     return blockedReport(
       "Resolve provider connectivity before approving cron configuration.",

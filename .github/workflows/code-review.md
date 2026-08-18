@@ -16,12 +16,16 @@ permissions:
   issues: read
   checks: read
   copilot-requests: write
+runs-on: "${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}"
+runs-on-slim: "${{ vars.CI_RUNNER_LABEL || 'ubuntu-slim' }}"
 tools:
   github:
     mode: gh-proxy
     toolsets: [default]
 network: defaults
 safe-outputs:
+  threat-detection:
+    runs-on: "${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}"
   add-comment:
     target: "*"
     max: 1

@@ -24,7 +24,7 @@ permissions:
 jobs:
   quality:
     name: Quality and evidence gates
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
 
     steps:
@@ -56,6 +56,9 @@ jobs:
         env:
           AZURE_OPENAI_BASE_URL: https://stub.openai.azure.com/openai/v1/
           AZURE_OPENAI_DEPLOYMENT_NAME: krypto-test-luna
+          AZURE_FOUNDRY_PROJECT_ENDPOINT: https://stub.services.ai.azure.com/api/projects/krypto-test-agents
+          AZURE_FOUNDRY_AGENT_NAME: krypto-test-decision
+          AZURE_FOUNDRY_AGENT_VERSION: "1"
           AZURE_CLIENT_ID: 00000000-0000-0000-0000-000000000000
           AZURE_COMMUNICATION_CONNECTION_STRING: endpoint=https://stub.communication.azure.com/;accesskey=stub
           AZURE_COMMUNICATION_EMAIL_SENDER: DoNotReply@stub.azurecomm.net
@@ -114,7 +117,7 @@ jobs:
 
   postgres:
     name: PostgreSQL migrations and execution
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
     services:
       postgres:
@@ -205,7 +208,7 @@ jobs:
 
   docker-validate:
     name: Docker image target validation
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:

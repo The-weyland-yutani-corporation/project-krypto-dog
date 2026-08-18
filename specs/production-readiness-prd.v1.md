@@ -240,27 +240,27 @@ contract.
 
 | ID | Requirement | Issue |
 |---|---|---|
-| SRC-01 | Trusted source governance and CI/CD supply-chain controls | [#131](https://github.com/VeVarunSharma/project-krypto-dog/issues/131) |
-| DEP-01 | Protected exact-SHA target mutations and deployment provenance | [#126](https://github.com/VeVarunSharma/project-krypto-dog/issues/126) |
-| IAM-01 | MFA-backed admin identity and controlled break-glass access | [#129](https://github.com/VeVarunSharma/project-krypto-dog/issues/129) |
-| M2M-01 | Signed, scoped, replay-protected, rotatable cron requests | [#128](https://github.com/VeVarunSharma/project-krypto-dog/issues/128) |
-| DB-01 | Separate database owner, migrator, scheduler, and runtime roles | [#133](https://github.com/VeVarunSharma/project-krypto-dog/issues/133) |
-| RUN-01 | Bounded deadlines, readiness, capacity, region, and provider budgets | [#132](https://github.com/VeVarunSharma/project-krypto-dog/issues/132) |
-| OPS-01 | Independent safety alerts, SLOs, incident evidence, and on-call | [#125](https://github.com/VeVarunSharma/project-krypto-dog/issues/125) |
-| REC-01 | Full-stack recovery, RPO/RTO, restore, and retention | [#134](https://github.com/VeVarunSharma/project-krypto-dog/issues/134) |
-| SAFE-01 | Absolute stop fence for in-flight paper commits | [#135](https://github.com/VeVarunSharma/project-krypto-dog/issues/135) |
-| ACCT-01 | Ledger, cost-basis, DCA, and anchor attestation | [#130](https://github.com/VeVarunSharma/project-krypto-dog/issues/130) |
-| ROLL-01 | Attended PAPER promotion and 30-day continuity gate | [#127](https://github.com/VeVarunSharma/project-krypto-dog/issues/127) |
+| SRC-01 | Trusted source governance and CI/CD supply-chain controls | [#131](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/131) |
+| DEP-01 | Protected exact-SHA target mutations and deployment provenance | [#126](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/126) |
+| IAM-01 | MFA-backed admin identity and controlled break-glass access | [#129](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/129) |
+| M2M-01 | Signed, scoped, replay-protected, rotatable cron requests | [#128](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/128) |
+| DB-01 | Separate database owner, migrator, scheduler, and runtime roles | [#133](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/133) |
+| RUN-01 | Bounded deadlines, readiness, capacity, region, and provider budgets | [#132](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/132) |
+| OPS-01 | Independent safety alerts, SLOs, incident evidence, and on-call | [#125](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/125) |
+| REC-01 | Full-stack recovery, RPO/RTO, restore, and retention | [#134](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/134) |
+| SAFE-01 | Absolute stop fence for in-flight paper commits | [#135](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/135) |
+| ACCT-01 | Ledger, cost-basis, DCA, and anchor attestation | [#130](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/130) |
+| ROLL-01 | Attended PAPER promotion and 30-day continuity gate | [#127](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/127) |
 
 The existing release issues own the gate records:
 
 | Gate record | Issue |
 |---|---|
-| NULL-safe cron migration | [#72](https://github.com/VeVarunSharma/project-krypto-dog/issues/72) |
-| Node 22/PostgreSQL 17 build and integration matrix | [#73](https://github.com/VeVarunSharma/project-krypto-dog/issues/73) |
-| Disabled target attestation and smoke | [#74](https://github.com/VeVarunSharma/project-krypto-dog/issues/74) |
-| 72-hour shadow window | [#75](https://github.com/VeVarunSharma/project-krypto-dog/issues/75) |
-| Canonical evidence and go/no-go index | [#76](https://github.com/VeVarunSharma/project-krypto-dog/issues/76) |
+| NULL-safe cron migration | [#72](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/72) |
+| Node 22/PostgreSQL 17 build and integration matrix | [#73](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/73) |
+| Disabled target attestation and smoke | [#74](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/74) |
+| 72-hour shadow window | [#75](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/75) |
+| Canonical evidence and go/no-go index | [#76](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/76) |
 
 ## 9. Gate-wide rules
 
@@ -309,8 +309,8 @@ The following changes invalidate approval and restart the applicable window:
 
 ### Exit
 
-- [#72](https://github.com/VeVarunSharma/project-krypto-dog/issues/72)
-  and [#73](https://github.com/VeVarunSharma/project-krypto-dog/issues/73)
+- [#72](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/72)
+  and [#73](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/73)
   are complete against the exact merged source SHA.
 - SRC-01 is complete.
 - Required CI, database, security, and trading-safety checks pass on the final

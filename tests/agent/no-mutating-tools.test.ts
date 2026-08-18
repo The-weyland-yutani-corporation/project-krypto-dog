@@ -34,4 +34,22 @@ describe("structured LLM boundary", () => {
       "@langchain/langgraph",
     );
   });
+
+  it("deploys the Foundry prompt agent without tools or execution authority", () => {
+    const deployScript = fs.readFileSync(
+      path.join(root, "scripts/foundry-agent.ts"),
+      "utf8",
+    );
+    const instructions = fs.readFileSync(
+      path.join(
+        root,
+        "foundry/agents/krypto-decision/instructions.md",
+      ),
+      "utf8",
+    );
+
+    expect(deployScript).toContain("tools: []");
+    expect(instructions).toMatch(/You have no\s+tools/i);
+    expect(instructions).toMatch(/cannot execute/i);
+  });
 });
