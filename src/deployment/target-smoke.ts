@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import postgres from "postgres";
 
 import type { ProviderSmokeResult } from "@/deployment/provider-smoke";
@@ -13,10 +13,39 @@ export type TargetSmokeCheck = {
   evidence?: Record<string, unknown>;
 };
 
+export type TargetSmokeBinding = {
+  approvalId: string;
+  bindingId: string;
+  targetOrigin: string;
+  releaseSha: string;
+  imageDigest: string;
+  rolloutMode: "disabled";
+  /**
+   * Keyed HMAC-SHA256 (full hex) binding the cron secret to the
+   * DEPLOYMENT_APPROVAL_SECRET. Replaces the retired MD5(cronSecret)
+   * fingerprint, which anything that already knows CRON_SECRET (e.g. the
+   * runtime itself) could recompute and forge into a fabricated
+   * AgentJournal row. Nothing that only knows CRON_SECRET can reproduce
+   * this value.
+   */
+  cronSecretBinding: string;
+  /**
+   * Keyed HMAC-SHA256 (full hex) approval signature over the canonical,
+   * versioned serialization of bindingId/targetOrigin/releaseSha/
+   * imageDigest/rolloutMode/cronSecretBinding. Proves the whole row was
+   * produced by something holding DEPLOYMENT_APPROVAL_SECRET -- runtime
+   * inserting AgentJournal rows on its own cannot fabricate this.
+   */
+  approvalSignature: string;
+};
+
 export type TargetSmokeReport = {
-  schemaVersion: "1.2.0";
+  schemaVersion: "1.4.0";
   generatedAt: string;
   target: string;
+  releaseSha: string;
+  imageDigest: string;
+  rolloutMode: "disabled";
   evidenceIds: {
     databaseBinding: string;
     approval: string;
@@ -28,6 +57,7 @@ export type TargetSmokeReport = {
   providerChecksRunFrom: "operator-environment";
   passed: boolean;
   manualGatesRemaining: string[];
+  binding: TargetSmokeBinding | null;
 };
 
 export type TargetSmokeOptions = {
@@ -36,6 +66,18 @@ export type TargetSmokeOptions = {
   databaseUrl: string;
   cronSecret: string;
   adminPassword: string;
+  /** Exact lowercase 40-hex commit SHA of the deployed release. Required, validated, never guessed. */
+  releaseSha: string;
+  /** Exact `sha256:<64-hex>` digest of the deployed image. Required, validated, never guessed. */
+  imageDigest: string;
+  /**
+   * High-entropy secret shared only between operator/ops-job invocations
+   * of target-smoke and activation-check -- runtime/web never receives
+   * it. Required and length-validated (never guessed or defaulted) so
+   * the persisted cron-secret binding and approval signature cannot be
+   * forged by anything that only knows CRON_SECRET.
+   */
+  approvalSecret: string;
 };
 
 type PreSmokeEvidence = {
@@ -77,6 +119,9 @@ export type TargetSmokeDependencies = {
     bindingId: string;
     targetOrigin: string;
     cronSecret: string;
+    releaseSha: string;
+    imageDigest: string;
+    approvalSecret: string;
   }) => Promise<void>;
   now?: () => Date;
   randomUuid?: () => string;
@@ -139,6 +184,143 @@ export function validateTargetBaseUrl(
   return url;
 }
 
+const RELEASE_SHA_PATTERN = /^[0-9a-f]{40}$/;
+const IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * Validates an exact, lowercase 40-hex commit SHA. Never derives, defaults,
+ * or truncates a value -- an invalid or missing SHA is a hard failure.
+ */
+export function validateReleaseSha(value: string): string {
+  if (!RELEASE_SHA_PATTERN.test(value)) {
+    throw new Error(
+      "RELEASE_SHA must be exactly 40 lowercase hexadecimal characters.",
+    );
+  }
+  return value;
+}
+
+/**
+ * Validates an exact `sha256:<64-hex>` image digest. Never derives,
+ * defaults, or guesses a value -- an invalid or missing digest is a hard
+ * failure.
+ */
+export function validateImageDigest(value: string): string {
+  if (!IMAGE_DIGEST_PATTERN.test(value)) {
+    throw new Error(
+      "IMAGE_DIGEST must be an exact sha256:<64 lowercase hex> digest.",
+    );
+  }
+  return value;
+}
+
+const APPROVAL_SECRET_MIN_LENGTH = 32;
+
+/**
+ * Validates DEPLOYMENT_APPROVAL_SECRET: required and long enough to serve
+ * as high-entropy HMAC-SHA256 key material (minimum 32 characters, i.e.
+ * at least 256 bits of key space assuming reasonable character
+ * diversity). Actual entropy cannot be measured from a string alone, so
+ * length is enforced as the fail-closed proxy -- a short/guessable value
+ * is rejected rather than silently accepted.
+ */
+export function validateApprovalSecret(value: string): string {
+  if (value.length < APPROVAL_SECRET_MIN_LENGTH) {
+    throw new Error(
+      `DEPLOYMENT_APPROVAL_SECRET must be at least ${APPROVAL_SECRET_MIN_LENGTH} characters of high-entropy material.`,
+    );
+  }
+  return value;
+}
+
+const APPROVAL_PAYLOAD_VERSION = "1";
+
+function lengthPrefixed(value: string): string {
+  return `${Buffer.byteLength(value, "utf8")}:${value}`;
+}
+
+/**
+ * Canonical, versioned, unambiguous serialization of the fields bound by
+ * the approval signature. Every field is netstring-style length-prefixed
+ * so no delimiter choice or field content can make two distinct field
+ * sets serialize identically.
+ */
+export function canonicalApprovalPayload(fields: {
+  bindingId: string;
+  targetOrigin: string;
+  releaseSha: string;
+  imageDigest: string;
+  /**
+   * The write path (`createTargetApproval`) only ever signs the literal
+   * "disabled". This is typed as `string` (not the literal) so
+   * verification can reconstruct the exact payload that was signed from
+   * whatever value is actually persisted -- including a tampered or
+   * legacy value -- and let the signature check fail on its own rather
+   * than on a type mismatch.
+   */
+  rolloutMode: string;
+  cronSecretBinding: string;
+}): string {
+  return [
+    APPROVAL_PAYLOAD_VERSION,
+    lengthPrefixed(fields.bindingId),
+    lengthPrefixed(fields.targetOrigin),
+    lengthPrefixed(fields.releaseSha),
+    lengthPrefixed(fields.imageDigest),
+    lengthPrefixed(fields.rolloutMode),
+    lengthPrefixed(fields.cronSecretBinding),
+  ].join(".");
+}
+
+/**
+ * Keyed HMAC-SHA256 (full hex) binding of the cron secret to
+ * DEPLOYMENT_APPROVAL_SECRET. Unlike the retired MD5(cronSecret)
+ * fingerprint, this cannot be recomputed by anything that knows only
+ * CRON_SECRET -- runtime/web never receives DEPLOYMENT_APPROVAL_SECRET,
+ * so it cannot forge a deployment-smoke-approved row.
+ */
+export function cronSecretBinding(
+  cronSecret: string,
+  approvalSecret: string,
+): string {
+  return createHmac("sha256", approvalSecret)
+    .update(cronSecret)
+    .digest("hex");
+}
+
+/**
+ * Keyed HMAC-SHA256 (full hex) approval signature over the canonical
+ * payload, using DEPLOYMENT_APPROVAL_SECRET as the key.
+ */
+export function computeApprovalSignature(
+  payload: string,
+  approvalSecret: string,
+): string {
+  return createHmac("sha256", approvalSecret).update(payload).digest("hex");
+}
+
+/**
+ * Constant-time comparison of a known-good expected value against a
+ * possibly-attacker-influenced or missing persisted value. Never
+ * short-circuits on a fast `!==` before the lengths are known to match,
+ * and treats anything that is not exactly a string as a hard mismatch
+ * (a missing/legacy/unsigned row must never pass).
+ */
+export function constantTimeEqual(
+  expected: string,
+  actual: string | null | undefined,
+): boolean {
+  if (typeof actual !== "string") {
+    return false;
+  }
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const actualBuffer = Buffer.from(actual, "utf8");
+  if (expectedBuffer.length !== actualBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
 export function extractSessionCookie(headers: Headers): string {
   const values =
     "getSetCookie" in headers &&
@@ -156,7 +338,7 @@ export function extractSessionCookie(headers: Headers): string {
   return cookie;
 }
 
-async function readOnly<T>(
+export async function readOnly<T>(
   databaseUrl: string,
   operation: (sql: postgres.Sql) => Promise<T>,
 ): Promise<T> {
@@ -364,16 +546,15 @@ export async function createTargetBinding(input: {
   }
 }
 
-function cronSecretFingerprint(secret: string): string {
-  return createHash("md5").update(secret).digest("hex");
-}
-
 export async function createTargetApproval(input: {
   databaseUrl: string;
   approvalId: string;
   bindingId: string;
   targetOrigin: string;
   cronSecret: string;
+  releaseSha: string;
+  imageDigest: string;
+  approvalSecret: string;
 }): Promise<void> {
   const sql = postgres(input.databaseUrl, {
     max: 1,
@@ -381,6 +562,18 @@ export async function createTargetApproval(input: {
     connect_timeout: 10,
   });
   try {
+    const binding = cronSecretBinding(input.cronSecret, input.approvalSecret);
+    const signature = computeApprovalSignature(
+      canonicalApprovalPayload({
+        bindingId: input.bindingId,
+        targetOrigin: input.targetOrigin,
+        releaseSha: input.releaseSha,
+        imageDigest: input.imageDigest,
+        rolloutMode: "disabled",
+        cronSecretBinding: binding,
+      }),
+      input.approvalSecret,
+    );
     await sql`
       INSERT INTO "krypto"."AgentJournal" (
         id,
@@ -393,7 +586,11 @@ export async function createTargetApproval(input: {
           event: "deployment-smoke-approved",
           bindingId: input.bindingId,
           targetOrigin: input.targetOrigin,
-          cronSecretMd5: cronSecretFingerprint(input.cronSecret),
+          cronSecretBinding: binding,
+          releaseSha: input.releaseSha,
+          imageDigest: input.imageDigest,
+          rolloutMode: "disabled",
+          approvalSignature: signature,
           approvedAt: new Date().toISOString(),
         })}
       )
@@ -447,6 +644,15 @@ export async function runTargetSmoke(
       "DIRECT_URL, CRON_SECRET, and ADMIN_PASSWORD are required.",
     );
   }
+  if (!options.releaseSha || !options.imageDigest) {
+    throw new Error("RELEASE_SHA and IMAGE_DIGEST are required.");
+  }
+  if (!options.approvalSecret) {
+    throw new Error("DEPLOYMENT_APPROVAL_SECRET is required.");
+  }
+  const releaseSha = validateReleaseSha(options.releaseSha);
+  const imageDigest = validateImageDigest(options.imageDigest);
+  const approvalSecret = validateApprovalSecret(options.approvalSecret);
 
   const now = dependencies.now ?? (() => new Date());
   const randomUuid = dependencies.randomUuid ?? (() => crypto.randomUUID());
@@ -496,14 +702,18 @@ export async function runTargetSmoke(
 
   function blockedReport(manualGate: string): TargetSmokeReport {
     return {
-      schemaVersion: "1.2.0",
+      schemaVersion: "1.4.0",
       generatedAt: now().toISOString(),
       target: sanitizedTarget(options.baseUrl),
+      releaseSha,
+      imageDigest,
+      rolloutMode: "disabled",
       evidenceIds,
       checks,
       providerChecksRunFrom: "operator-environment",
       passed: false,
       manualGatesRemaining: [manualGate],
+      binding: null,
     };
   }
 
@@ -988,33 +1198,60 @@ export async function runTargetSmoke(
 
   const targetApproval = await check(
     "target-cron-approval",
-    "Successful smoke binds the reviewed target origin and cron secret fingerprint",
+    "Successful smoke binds the reviewed target origin, release, image digest, and keyed cron-secret binding",
     async () => {
+      const cronBinding = cronSecretBinding(
+        options.cronSecret,
+        approvalSecret,
+      );
+      const signature = computeApprovalSignature(
+        canonicalApprovalPayload({
+          bindingId: evidenceIds.databaseBinding,
+          targetOrigin: baseUrl.origin,
+          releaseSha,
+          imageDigest,
+          rolloutMode: "disabled",
+          cronSecretBinding: cronBinding,
+        }),
+        approvalSecret,
+      );
       await createApproval({
         databaseUrl: options.databaseUrl,
         approvalId: evidenceIds.approval,
         bindingId: evidenceIds.databaseBinding,
         targetOrigin: baseUrl.origin,
         cronSecret: options.cronSecret,
+        releaseSha,
+        imageDigest,
+        approvalSecret,
       });
-      return {
+      const binding: TargetSmokeBinding = {
         approvalId: evidenceIds.approval,
         bindingId: evidenceIds.databaseBinding,
         targetOrigin: baseUrl.origin,
+        releaseSha,
+        imageDigest,
+        rolloutMode: "disabled",
+        cronSecretBinding: cronBinding,
+        approvalSignature: signature,
       };
+      return binding;
     },
     (value) => value,
   );
-  if (!targetApproval.passed) {
+  if (!targetApproval.passed || !targetApproval.value) {
     return blockedReport(
       "Persist the successful target/cron approval before enabling schedules.",
     );
   }
 
   return {
-    schemaVersion: "1.2.0",
+    schemaVersion: "1.4.0",
     generatedAt: now().toISOString(),
     target: sanitizedTarget(options.baseUrl),
+    releaseSha,
+    imageDigest,
+    rolloutMode: "disabled",
     evidenceIds,
     checks,
     providerChecksRunFrom: "operator-environment",
@@ -1024,5 +1261,6 @@ export async function runTargetSmoke(
       "Confirm the daily summary reached the intended mailbox.",
       "Review target logs for the two disabled run IDs before shadow promotion.",
     ],
+    binding: targetApproval.value,
   };
 }

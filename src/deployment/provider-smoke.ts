@@ -1,10 +1,11 @@
 import { HumanMessage } from "@langchain/core/messages";
+import { z } from "zod/v4";
 
 import { buildLLM } from "@/agent/llm";
 import { getMarketDataProvider } from "@/lib/market-data-provider";
 import {
   flushPostHog,
-  getPostHogClient,
+  capturePostHog,
   shutdownPostHog,
 } from "@/lib/posthog";
 
@@ -15,6 +16,7 @@ export type ProviderSmokeResult = {
     inputTokens: number | null;
     outputTokens: number | null;
     totalTokens: number | null;
+    structured: LunaStructuredSmokeResult;
   };
   coinbase: {
     latencyMs: number;
@@ -28,9 +30,76 @@ export type ProviderSmokeResult = {
   };
 };
 
+const noTradeSmokeSchema = z.object({
+  action: z.literal("HOLD"),
+  notionalUSD: z.null(),
+  reasoning: z.string().trim().min(1),
+});
+const noTradeSmokeWireSchema = z.object({
+  action: z.literal("HOLD"),
+  notionalUSD: z.null(),
+  reasoning: z.string(),
+});
+
+export type LunaStructuredSmokeResult = {
+  latencyMs: number;
+  action: "HOLD";
+  notionalUSD: null;
+};
+
+type TokenUsage = {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+};
+
+function tokenUsage(
+  usage:
+    | {
+        input_tokens?: number;
+        output_tokens?: number;
+        total_tokens?: number;
+      }
+    | undefined,
+): TokenUsage {
+  return {
+    inputTokens: usage?.input_tokens ?? null,
+    outputTokens: usage?.output_tokens ?? null,
+    totalTokens: usage?.total_tokens ?? null,
+  };
+}
+
+export async function smokeLunaStructuredOutput(
+  timeoutMs = 30_000,
+  model = buildLLM(),
+): Promise<LunaStructuredSmokeResult> {
+  const startedAt = Date.now();
+  const structuredModel = model.withStructuredOutput(noTradeSmokeWireSchema, {
+    name: "no_trade_smoke",
+    method: "jsonSchema",
+    strict: true,
+  });
+  const response = noTradeSmokeSchema.parse(
+    await structuredModel.invoke(
+      [
+        new HumanMessage(
+          "This is a read-only provider validation. Return HOLD with null notionalUSD and a short reason. Do not propose or execute a trade.",
+        ),
+      ],
+      { signal: AbortSignal.timeout(timeoutMs) },
+    ),
+  );
+
+  return {
+    latencyMs: Date.now() - startedAt,
+    action: response.action,
+    notionalUSD: response.notionalUSD,
+  };
+}
+
 export async function smokeFoundry(
   timeoutMs = 30_000,
-): Promise<ProviderSmokeResult["foundry"]> {
+): Promise<Omit<ProviderSmokeResult["foundry"], "structured">> {
   const startedAt = Date.now();
   const response = await buildLLM().invoke(
     [
@@ -47,13 +116,11 @@ export async function smokeFoundry(
   if (!content.trim()) {
     throw new Error("Foundry returned an empty response.");
   }
-  const usage = response.usage_metadata;
+  const usage = tokenUsage(response.usage_metadata);
   return {
     latencyMs: Date.now() - startedAt,
     responseLength: content.length,
-    inputTokens: usage?.input_tokens ?? null,
-    outputTokens: usage?.output_tokens ?? null,
-    totalTokens: usage?.total_tokens ?? null,
+    ...usage,
   };
 }
 
@@ -88,7 +155,7 @@ export async function smokePostHog(): Promise<
   const startedAt = Date.now();
   const smokeId = crypto.randomUUID();
   try {
-    getPostHogClient().capture({
+    capturePostHog({
       distinctId: "krypto-deployment-smoke",
       event: "deployment_smoke",
       properties: {
@@ -131,10 +198,15 @@ export async function runReadOnlyProviderSmoke(): Promise<ReadOnlyProviderSmokeR
 }
 
 export async function runProviderSmoke(): Promise<ProviderSmokeResult> {
-  const [foundry, coinbase, postHog] = await Promise.all([
+  const [foundry, structured, coinbase, postHog] = await Promise.all([
     smokeFoundry(),
+    smokeLunaStructuredOutput(),
     smokeCoinbase(),
     smokePostHog(),
   ]);
-  return { foundry, coinbase, postHog };
+  return {
+    foundry: { ...foundry, structured },
+    coinbase,
+    postHog,
+  };
 }

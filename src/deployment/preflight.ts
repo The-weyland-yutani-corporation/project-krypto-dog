@@ -1,9 +1,46 @@
 import { createHash } from "node:crypto";
 import postgres from "postgres";
 
-export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "1.3.0";
+export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "1.4.0";
 
 export type PreflightStatus = "pass" | "warn" | "block";
+
+/**
+ * The database provider a preflight run targets. Explicit only: callers
+ * (for example Azure deployment workflows) must pass this rather than
+ * relying on inference from connection strings, and there is no silent
+ * fallback for an unrecognized value — {@link parseDeploymentProvider}
+ * throws instead of guessing.
+ */
+export type DeploymentProvider = "supabase" | "azure";
+
+const KNOWN_DEPLOYMENT_PROVIDERS: readonly DeploymentProvider[] = [
+  "supabase",
+  "azure",
+];
+
+/**
+ * Validates an explicit provider value (for example from a CLI flag or
+ * environment variable). Returns `undefined` only when no value was given
+ * at all; an unrecognized non-empty value always throws so a typo or
+ * misconfigured workflow never silently falls back to legacy behavior.
+ */
+export function parseDeploymentProvider(
+  value: string | undefined | null,
+): DeploymentProvider | undefined {
+  if (value === undefined || value === null || value.trim() === "") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (
+    (KNOWN_DEPLOYMENT_PROVIDERS as readonly string[]).includes(normalized)
+  ) {
+    return normalized as DeploymentProvider;
+  }
+  throw new Error(
+    `Unknown deployment provider: ${value}. Expected one of ${KNOWN_DEPLOYMENT_PROVIDERS.join(", ")}.`,
+  );
+}
 
 export interface PreflightCheck {
   id: string;
@@ -32,6 +69,10 @@ export interface DeploymentInventory {
   serverVersion: string | null;
   directSystemIdentifier: string | null;
   runtimeSystemIdentifier: string | null;
+  /** current_user on the DIRECT_URL (admin/migration) connection. */
+  directCurrentUser: string | null;
+  /** current_user on the DATABASE_URL (application runtime) connection. */
+  runtimeCurrentUser: string | null;
   applicationTables: Array<{ schema: string; table: string }>;
   protectedSchemas: string[];
   protectedRelations: Array<{
@@ -67,11 +108,47 @@ export interface DeploymentInventory {
     vaultAccess: boolean;
   }>;
   vaultSecretNames: string[];
+  runtimeRole: RuntimeRoleInventory | null;
+  runtimeLoginRole: RuntimeLoginRoleInventory | null;
+}
+
+export interface RuntimeRoleInventory {
+  name: string;
+  present: boolean;
+  isGroupRole: boolean;
+  schemaUsage: boolean;
+  missingTablePrivileges: string[];
+  missingSequencePrivileges: string[];
+  /**
+   * Privileges granted to krypto_runtime that exceed the exact per-table
+   * matrix (for example DELETE, TRUNCATE, TRIGGER, REFERENCES, or any
+   * privilege on a relation not in the matrix at all). A fail-closed
+   * matrix must report these as blocking, not merely note what's missing.
+   */
+  excessTablePrivileges: string[];
+  excessSequencePrivileges: string[];
+}
+
+/**
+ * Proof that the actual Azure/application login role in current_user on
+ * DATABASE_URL — not just the krypto_runtime group role itself — is a
+ * member of krypto_runtime and inherits exactly the matrix's privileges
+ * (no more, no less). Populated only when the runtime connection captured
+ * a current_user.
+ */
+export interface RuntimeLoginRoleInventory {
+  currentUser: string | null;
+  isMemberOfRuntimeRole: boolean;
+  missingTablePrivileges: string[];
+  missingSequencePrivileges: string[];
+  excessTablePrivileges: string[];
+  excessSequencePrivileges: string[];
 }
 
 export interface DeploymentPreflightReport {
   schemaVersion: string;
   generatedAt: string;
+  provider: DeploymentProvider | null;
   target: {
     directUrl: string | null;
     runtimeUrl: string | null;
@@ -87,6 +164,15 @@ export interface DeploymentPreflightInput {
   directUrl?: string;
   runtimeUrl?: string;
   now?: Date;
+  /**
+   * Explicit deployment provider. Pass `"azure"` from Azure workflows so
+   * Azure-specific expectations apply (obsolete Supabase HTTP cron
+   * functions must be absent once current; absent Vault secrets are
+   * expected rather than a warning). Omit for the legacy/default
+   * (Supabase-shaped) behavior — there is no inference from the
+   * connection strings themselves.
+   */
+  provider?: DeploymentProvider;
 }
 
 const APPLICATION_TABLES = [
@@ -129,7 +215,209 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
     createdAt: "1784174542964",
     hash: "a614858a8a9e85ae5ece4b9f3046e865e3ed46d780581c1a2843ff8a5ccfde3d",
   },
+  {
+    createdAt: "1786579433481",
+    hash: "fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71",
+  },
 ] as const;
+/**
+ * Migration count at which 0006 (the last migration that still installs
+ * the fixed, parameterless Supabase HTTP-invocation cron functions) is
+ * current. Below this count the functions may legitimately not exist yet;
+ * at or above it (once 0007 applies) they are retired and must be absent.
+ */
+const NULL_SAFE_CRON_FUNCTIONS_MIGRATION_COUNT = 7;
+const MODE_BOUND_NULLABLE_CRON_FUNCTIONS_MIGRATION_COUNT = 6;
+/**
+ * Migration count at which 0007 (drizzle/0007_azure_retire_supabase_http_functions.sql)
+ * is applied and the obsolete Supabase HTTP-invocation cron functions are
+ * dropped in favor of Azure Container Apps Jobs calling the application's
+ * HTTP routes directly. See specs/decisions/0008-azure-native-deployment-architecture.md.
+ */
+const CRON_FUNCTIONS_RETIRED_MIGRATION_COUNT = 8;
+const RUNTIME_ROLE_NAME = "krypto_runtime";
+/**
+ * Exact, fail-closed per-table privilege matrix for krypto_runtime (and,
+ * transitively via membership, for the Azure application login role).
+ * Anything granted beyond this list — including any privilege on a
+ * relation not listed here at all, such as a future table, partitioned
+ * table, view, materialized view, or foreign table, or a future sequence —
+ * is reported as an excess/blocking privilege rather than silently
+ * accepted; future migrations must grant new relations' privileges
+ * explicitly rather than relying on a default. Only the four named base
+ * tables below are ever allowed any privilege at all; every other current
+ * or future relation kind the scan inspects (see
+ * {@link RUNTIME_SCANNED_TABLE_RELKINDS}) has an implicit empty allow-list,
+ * so any grant on it — of any kind — is excess.
+ */
+const RUNTIME_TABLE_PRIVILEGE_MATRIX: Readonly<Record<string, readonly string[]>> = {
+  AgentState: ["SELECT", "UPDATE"],
+  AgentRun: ["SELECT", "INSERT", "UPDATE"],
+  TradeExecution: ["SELECT", "INSERT"],
+  AgentJournal: ["SELECT", "INSERT"],
+};
+/**
+ * Sequences currently have no entries in the matrix because the krypto
+ * schema has no sequence-backed columns (all primary keys are
+ * application-generated text). If a future migration introduces one, it
+ * must appear here with its exact required privileges before the scan
+ * below will accept it — until then any granted sequence privilege is
+ * reported as excess.
+ */
+const RUNTIME_SEQUENCE_PRIVILEGE_MATRIX: Readonly<
+  Record<string, readonly string[]>
+> = {};
+const RUNTIME_TABLE_PRIVILEGE_KINDS = [
+  "SELECT",
+  "INSERT",
+  "UPDATE",
+  "DELETE",
+  "TRUNCATE",
+  "TRIGGER",
+  "REFERENCES",
+] as const;
+const RUNTIME_SEQUENCE_PRIVILEGE_KINDS = ["USAGE", "SELECT", "UPDATE"] as const;
+/**
+ * Every non-sequence relation kind the table-privilege scan inspects:
+ * ordinary tables (`r`), partitioned tables (`p`), views (`v`), materialized
+ * views (`m`), and foreign tables (`f`). All of these support table-style
+ * ACLs (`has_table_privilege` never errors on any of them, unlike
+ * sequences), and — because none of them except the four named base tables
+ * appear in {@link RUNTIME_TABLE_PRIVILEGE_MATRIX} — any krypto_runtime
+ * privilege found on any of them is reported as excess. This closes the gap
+ * where a future partitioned table, view, materialized view, or foreign
+ * table could carry an unreviewed grant invisible to a scan scoped only to
+ * `relkind = 'r'`.
+ */
+const RUNTIME_SCANNED_TABLE_RELKINDS = ["r", "p", "v", "m", "f"] as const;
+
+interface RuntimePrivilegeScanResult {
+  missingTablePrivileges: string[];
+  missingSequencePrivileges: string[];
+  excessTablePrivileges: string[];
+  excessSequencePrivileges: string[];
+}
+
+/**
+ * Scans every relation in the krypto schema and diffs the privileges
+ * actually granted to `roleName` (directly or via role membership)
+ * against {@link RUNTIME_TABLE_PRIVILEGE_MATRIX} /
+ * {@link RUNTIME_SEQUENCE_PRIVILEGE_MATRIX}. Reusable for both the
+ * krypto_runtime group role itself and, for requirement #3, the actual
+ * Azure application login role's current_user — proving the runtime
+ * login inherits exactly the intended privileges, no more and no less.
+ *
+ * The table-style scan covers every relkind in
+ * {@link RUNTIME_SCANNED_TABLE_RELKINDS} (tables, partitioned tables,
+ * views, materialized views, and foreign tables), not just ordinary
+ * tables, so a privilege quietly granted on a future view or partitioned
+ * table cannot slip past as neither missing nor excess.
+ */
+async function scanRuntimeRolePrivileges(
+  sql: postgres.Sql,
+  roleName: string,
+): Promise<RuntimePrivilegeScanResult> {
+  const tableRows = await sql<
+    Array<{
+      name: string;
+      hasSelect: boolean;
+      hasInsert: boolean;
+      hasUpdate: boolean;
+      hasDelete: boolean;
+      hasTruncate: boolean;
+      hasTrigger: boolean;
+      hasReferences: boolean;
+    }>
+  >`
+    -- runtime role table privilege scan
+    SELECT
+      relation.relname AS name,
+      has_table_privilege(${roleName}, relation.oid, 'SELECT') AS "hasSelect",
+      has_table_privilege(${roleName}, relation.oid, 'INSERT') AS "hasInsert",
+      has_table_privilege(${roleName}, relation.oid, 'UPDATE') AS "hasUpdate",
+      has_table_privilege(${roleName}, relation.oid, 'DELETE') AS "hasDelete",
+      has_table_privilege(${roleName}, relation.oid, 'TRUNCATE') AS "hasTruncate",
+      has_table_privilege(${roleName}, relation.oid, 'TRIGGER') AS "hasTrigger",
+      has_table_privilege(${roleName}, relation.oid, 'REFERENCES') AS "hasReferences"
+    FROM pg_class AS relation
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'krypto'
+      AND relation.relkind = ANY(${sql.array([
+        ...RUNTIME_SCANNED_TABLE_RELKINDS,
+      ])})
+    ORDER BY name
+  `;
+  const sequenceRows = await sql<
+    Array<{
+      name: string;
+      hasUsage: boolean;
+      hasSelect: boolean;
+      hasUpdate: boolean;
+    }>
+  >`
+    -- runtime role sequence privilege scan
+    SELECT
+      relation.relname AS name,
+      has_sequence_privilege(${roleName}, relation.oid, 'USAGE') AS "hasUsage",
+      has_sequence_privilege(${roleName}, relation.oid, 'SELECT') AS "hasSelect",
+      has_sequence_privilege(${roleName}, relation.oid, 'UPDATE') AS "hasUpdate"
+    FROM pg_class AS relation
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'krypto' AND relation.relkind = 'S'
+    ORDER BY name
+  `;
+
+  const missingTablePrivileges: string[] = [];
+  const excessTablePrivileges: string[] = [];
+  for (const row of tableRows) {
+    const expected = RUNTIME_TABLE_PRIVILEGE_MATRIX[row.name] ?? [];
+    const granted: Record<(typeof RUNTIME_TABLE_PRIVILEGE_KINDS)[number], boolean> = {
+      SELECT: row.hasSelect,
+      INSERT: row.hasInsert,
+      UPDATE: row.hasUpdate,
+      DELETE: row.hasDelete,
+      TRUNCATE: row.hasTruncate,
+      TRIGGER: row.hasTrigger,
+      REFERENCES: row.hasReferences,
+    };
+    for (const kind of RUNTIME_TABLE_PRIVILEGE_KINDS) {
+      const isExpected = (expected as readonly string[]).includes(kind);
+      const isGranted = granted[kind];
+      if (isExpected && !isGranted) {
+        missingTablePrivileges.push(`${row.name}:${kind}`);
+      } else if (!isExpected && isGranted) {
+        excessTablePrivileges.push(`${row.name}:${kind}`);
+      }
+    }
+  }
+
+  const missingSequencePrivileges: string[] = [];
+  const excessSequencePrivileges: string[] = [];
+  for (const row of sequenceRows) {
+    const expected = RUNTIME_SEQUENCE_PRIVILEGE_MATRIX[row.name] ?? [];
+    const granted: Record<(typeof RUNTIME_SEQUENCE_PRIVILEGE_KINDS)[number], boolean> = {
+      USAGE: row.hasUsage,
+      SELECT: row.hasSelect,
+      UPDATE: row.hasUpdate,
+    };
+    for (const kind of RUNTIME_SEQUENCE_PRIVILEGE_KINDS) {
+      const isExpected = (expected as readonly string[]).includes(kind);
+      const isGranted = granted[kind];
+      if (isExpected && !isGranted) {
+        missingSequencePrivileges.push(`${row.name}:${kind}`);
+      } else if (!isExpected && isGranted) {
+        excessSequencePrivileges.push(`${row.name}:${kind}`);
+      }
+    }
+  }
+
+  return {
+    missingTablePrivileges,
+    missingSequencePrivileges,
+    excessTablePrivileges,
+    excessSequencePrivileges,
+  };
+}
 const EXPECTED_FUNCTION_HASHES = {
   invoke_agent_run:
     "6b4d47233622db9cbdc453735f8287f665fe9b4552fa1e68bc1dfbf31891a69b",
@@ -258,6 +546,8 @@ function baseInventory(): DeploymentInventory {
     serverVersion: null,
     directSystemIdentifier: null,
     runtimeSystemIdentifier: null,
+    directCurrentUser: null,
+    runtimeCurrentUser: null,
     applicationTables: [],
     protectedSchemas: [],
     protectedRelations: [],
@@ -277,6 +567,8 @@ function baseInventory(): DeploymentInventory {
     legacyArbitraryFunction: false,
     restrictedRolePrivileges: [],
     vaultSecretNames: [],
+    runtimeRole: null,
+    runtimeLoginRole: null,
   };
 }
 
@@ -297,6 +589,7 @@ export async function runDeploymentPreflight(
   input: DeploymentPreflightInput,
 ): Promise<DeploymentPreflightReport> {
   const now = input.now ?? new Date();
+  const provider = input.provider;
   const checks: PreflightCheck[] = [];
   const inventory = baseInventory();
   const directUrl = input.directUrl?.trim();
@@ -327,16 +620,22 @@ export async function runDeploymentPreflight(
     try {
       await withReadOnlyTransaction(runtime, async () => {
         const [identity] = await runtime<
-          Array<{ database: string; systemIdentifier: string }>
+          Array<{
+            database: string;
+            systemIdentifier: string;
+            currentUser: string;
+          }>
         >`
           SELECT
             current_database() AS database,
-            system_identifier::text AS "systemIdentifier"
+            system_identifier::text AS "systemIdentifier",
+            current_user AS "currentUser"
           FROM pg_control_system()
         `;
         inventory.runtimeDatabase = identity?.database ?? null;
         inventory.runtimeSystemIdentifier =
           identity?.systemIdentifier ?? null;
+        inventory.runtimeCurrentUser = identity?.currentUser ?? null;
       });
       checks.push({
         id: "runtime-connectivity",
@@ -374,18 +673,21 @@ export async function runDeploymentPreflight(
             database: string;
             serverVersion: string;
             systemIdentifier: string;
+            currentUser: string;
           }>
         >`
           SELECT
             current_database() AS database,
             current_setting('server_version') AS "serverVersion",
-            system_identifier::text AS "systemIdentifier"
+            system_identifier::text AS "systemIdentifier",
+            current_user AS "currentUser"
           FROM pg_control_system()
         `;
         inventory.database = server?.database ?? null;
         inventory.serverVersion = server?.serverVersion ?? null;
         inventory.directSystemIdentifier =
           server?.systemIdentifier ?? null;
+        inventory.directCurrentUser = server?.currentUser ?? null;
         checks.push({
           id: "direct-connectivity",
           status: "pass",
@@ -942,10 +1244,10 @@ export async function runDeploymentPreflight(
           functionByName.get("invoke_daily_summary");
         const expectedFunctionHashes =
           inventory.drizzleMigrationCount ===
-          EXPECTED_DRIZZLE_MIGRATIONS.length
+          NULL_SAFE_CRON_FUNCTIONS_MIGRATION_COUNT
             ? EXPECTED_FUNCTION_HASHES
             : inventory.drizzleMigrationCount ===
-                EXPECTED_DRIZZLE_MIGRATIONS.length - 1
+                MODE_BOUND_NULLABLE_CRON_FUNCTIONS_MIGRATION_COUNT
               ? NULLABLE_MODE_BOUND_FUNCTION_HASHES
               : LEGACY_FUNCTION_HASHES;
         inventory.fixedFunctions = {
@@ -975,21 +1277,32 @@ export async function runDeploymentPreflight(
         inventory.legacyArbitraryFunction =
           legacyFunction?.present ?? false;
         const installedFunctionCount = functions.length;
+        const cronFunctionsRetired =
+          inventory.drizzleMigrationCount !== null &&
+          inventory.drizzleMigrationCount >=
+            CRON_FUNCTIONS_RETIRED_MIGRATION_COUNT;
         const fixedFunctionsExpected =
           inventory.drizzleMigrationCount !== null &&
-          inventory.drizzleMigrationCount >= 3;
+          inventory.drizzleMigrationCount >= 3 &&
+          !cronFunctionsRetired;
         checks.push({
           id: "fixed-cron-functions",
-          status:
-            inventory.fixedFunctions.agentRun &&
-            inventory.fixedFunctions.dailySummary
+          status: cronFunctionsRetired
+            ? installedFunctionCount === 0
+              ? "pass"
+              : "block"
+            : inventory.fixedFunctions.agentRun &&
+                inventory.fixedFunctions.dailySummary
               ? "pass"
               : fixedFunctionsExpected
                 ? "block"
                 : "warn",
-          summary:
-            inventory.fixedFunctions.agentRun &&
-            inventory.fixedFunctions.dailySummary
+          summary: cronFunctionsRetired
+            ? installedFunctionCount === 0
+              ? "Obsolete Supabase HTTP cron functions were retired by the reviewed migration (0007)."
+              : "Applied migration history requires the obsolete Supabase HTTP cron functions to be retired, but at least one is still installed."
+            : inventory.fixedFunctions.agentRun &&
+                inventory.fixedFunctions.dailySummary
               ? "Fixed parameterless Krypto cron functions are installed."
               : fixedFunctionsExpected
                 ? "Applied migration history requires both fixed Krypto cron functions."
@@ -998,16 +1311,22 @@ export async function runDeploymentPreflight(
         });
         checks.push({
           id: "fixed-cron-function-integrity",
-          status:
-            installedFunctionCount === 0
+          status: cronFunctionsRetired
+            ? installedFunctionCount === 0
+              ? "pass"
+              : "block"
+            : installedFunctionCount === 0
               ? fixedFunctionsExpected
                 ? "block"
                 : "warn"
               : inventory.fixedFunctions.integrityVerified
                 ? "pass"
                 : "block",
-          summary:
-            installedFunctionCount === 0
+          summary: cronFunctionsRetired
+            ? installedFunctionCount === 0
+              ? "Fixed cron functions were retired by the reviewed migration; no legacy definition remains to verify."
+              : "A retired fixed cron function is still installed after the migration that should have dropped it."
+            : installedFunctionCount === 0
               ? fixedFunctionsExpected
                 ? "Applied migration history requires canonical fixed cron functions."
                 : "Fixed cron function integrity is pending migration."
@@ -1018,8 +1337,9 @@ export async function runDeploymentPreflight(
             installedFunctionCount,
             integrityVerified:
               inventory.fixedFunctions.integrityVerified,
-            definitionProfile:
-              expectedFunctionHashes === EXPECTED_FUNCTION_HASHES
+            definitionProfile: cronFunctionsRetired
+              ? "retired"
+              : expectedFunctionHashes === EXPECTED_FUNCTION_HASHES
                 ? "mode-bound-null-safe"
                 : expectedFunctionHashes ===
                     NULLABLE_MODE_BOUND_FUNCTION_HASHES
@@ -1034,6 +1354,36 @@ export async function runDeploymentPreflight(
             ? "Unsafe legacy arbitrary-path invocation function is still installed."
             : "Unsafe legacy arbitrary-path invocation function is absent.",
         });
+        if (provider === "azure") {
+          const azureFunctionsAbsent =
+            !inventory.fixedFunctions.agentRun &&
+            !inventory.fixedFunctions.dailySummary;
+          checks.push({
+            id: "azure-legacy-cron-functions-retired",
+            status:
+              inventory.drizzleMigrationCount === null
+                ? "warn"
+                : !cronFunctionsRetired
+                  ? "warn"
+                  : azureFunctionsAbsent
+                    ? "pass"
+                    : "block",
+            summary:
+              inventory.drizzleMigrationCount === null
+                ? "Migration history could not be determined for this Azure target."
+                : !cronFunctionsRetired
+                  ? "Azure target migration history predates the obsolete Supabase HTTP cron function retirement (0007); apply pending migrations."
+                  : azureFunctionsAbsent
+                    ? "Obsolete Supabase HTTP cron functions are absent, as required for a fully current Azure migration history."
+                    : "A fully current Azure migration history must not retain the obsolete Supabase HTTP cron functions.",
+            evidence: {
+              migrationCount: inventory.drizzleMigrationCount,
+              agentRunPresent: inventory.fixedFunctions.agentRun,
+              dailySummaryPresent: inventory.fixedFunctions.dailySummary,
+            },
+          });
+        }
+
 
         const roles = await sql<Array<{ role: string }>>`
           SELECT rolname AS role
@@ -1463,6 +1813,174 @@ export async function runDeploymentPreflight(
           },
         });
 
+        const [runtimeRoleRow] = await sql<
+          Array<{ present: boolean; isGroupRole: boolean; schemaUsage: boolean }>
+        >`
+          -- krypto_runtime role inventory
+          SELECT
+            EXISTS (
+              SELECT 1 FROM pg_roles WHERE rolname = ${RUNTIME_ROLE_NAME}
+            ) AS present,
+            COALESCE(
+              (
+                SELECT NOT rolcanlogin
+                FROM pg_roles
+                WHERE rolname = ${RUNTIME_ROLE_NAME}
+              ),
+              false
+            ) AS "isGroupRole",
+            CASE
+              WHEN EXISTS (
+                SELECT 1 FROM pg_roles WHERE rolname = ${RUNTIME_ROLE_NAME}
+              ) AND to_regnamespace('krypto') IS NOT NULL
+                THEN has_schema_privilege(
+                  ${RUNTIME_ROLE_NAME},
+                  'krypto',
+                  'USAGE'
+                )
+              ELSE false
+            END AS "schemaUsage"
+        `;
+        const runtimeRolePresent = runtimeRoleRow?.present ?? false;
+        const runtimeRoleScan: RuntimePrivilegeScanResult = runtimeRolePresent
+          ? await scanRuntimeRolePrivileges(sql, RUNTIME_ROLE_NAME)
+          : {
+              missingTablePrivileges: [],
+              missingSequencePrivileges: [],
+              excessTablePrivileges: [],
+              excessSequencePrivileges: [],
+            };
+        inventory.runtimeRole = {
+          name: RUNTIME_ROLE_NAME,
+          present: runtimeRolePresent,
+          isGroupRole: runtimeRoleRow?.isGroupRole ?? false,
+          schemaUsage: runtimeRoleRow?.schemaUsage ?? false,
+          ...runtimeRoleScan,
+        };
+        const runtimeRoleExpected =
+          inventory.drizzleMigrationCount !== null &&
+          inventory.drizzleMigrationCount >=
+            CRON_FUNCTIONS_RETIRED_MIGRATION_COUNT;
+        const runtimeRoleCorrect =
+          runtimeRolePresent &&
+          inventory.runtimeRole.isGroupRole &&
+          inventory.runtimeRole.schemaUsage &&
+          runtimeRoleScan.missingTablePrivileges.length === 0 &&
+          runtimeRoleScan.missingSequencePrivileges.length === 0 &&
+          runtimeRoleScan.excessTablePrivileges.length === 0 &&
+          runtimeRoleScan.excessSequencePrivileges.length === 0;
+        const runtimeRoleHasExcess =
+          runtimeRoleScan.excessTablePrivileges.length > 0 ||
+          runtimeRoleScan.excessSequencePrivileges.length > 0;
+        checks.push({
+          id: "runtime-role",
+          status: runtimeRoleCorrect
+            ? "pass"
+            // Excess privilege always blocks — it is a live security
+            // exposure regardless of the current environment's migration
+            // history. Missing-only privileges only block once the
+            // environment's own applied migration history requires
+            // krypto_runtime to exist (mid-rollout / not-yet-migrated
+            // targets legitimately have no grants yet, and warn instead —
+            // this also avoids false blocks when krypto_runtime happens to
+            // be visible cluster-wide from a sibling database/environment
+            // that shares the same PostgreSQL server but has not itself
+            // been granted anything).
+            : runtimeRoleHasExcess || runtimeRoleExpected
+              ? "block"
+              : "warn",
+          summary: runtimeRoleCorrect
+            ? "Least-privilege krypto_runtime group role has exactly the required NOLOGIN, schema, and per-table privilege matrix — nothing missing, nothing excess."
+            : runtimeRolePresent
+              ? runtimeRoleHasExcess
+                ? "krypto_runtime holds one or more privileges beyond the exact fail-closed matrix (excess privilege); this blocks regardless of whether required privileges are also present."
+                : "krypto_runtime is present but is missing an expected NOLOGIN, schema-usage, or per-table privilege."
+              : runtimeRoleExpected
+                ? "Applied migration history requires the least-privilege krypto_runtime group role."
+                : "The least-privilege krypto_runtime group role is not yet installed.",
+          evidence: { ...inventory.runtimeRole },
+        });
+
+        // Requirement #3: prove the *actual* Azure application login role
+        // (current_user on DATABASE_URL) — not merely the krypto_runtime
+        // group role itself — is a member of krypto_runtime and inherits
+        // exactly the matrix's privileges, no more and no less. Both
+        // current_user values are captured unconditionally above; the
+        // pass/warn/block severity of these proof checks is provider-
+        // gated so legacy (non-Azure) targets remain warn-only.
+        const runtimeCurrentUser = inventory.runtimeCurrentUser;
+        const directCurrentUser = inventory.directCurrentUser;
+        const connectionRolesDistinct =
+          runtimeCurrentUser !== null &&
+          directCurrentUser !== null &&
+          runtimeCurrentUser !== directCurrentUser;
+        checks.push({
+          id: "connection-roles-distinct",
+          status: connectionRolesDistinct
+            ? "pass"
+            : provider === "azure"
+              ? "block"
+              : "warn",
+          summary: connectionRolesDistinct
+            ? "DATABASE_URL and DIRECT_URL authenticate as distinct database roles."
+            : runtimeCurrentUser === null || directCurrentUser === null
+              ? "Could not capture current_user on one or both connections."
+              : "DATABASE_URL and DIRECT_URL authenticate as the same database role; the application runtime should use a least-privilege role distinct from the migration/admin role.",
+          evidence: { directCurrentUser, runtimeCurrentUser },
+        });
+
+        let runtimeLoginRoleScan: RuntimePrivilegeScanResult | null = null;
+        let isMemberOfRuntimeRole = false;
+        // pg_has_role() raises an error (not false) when its role argument
+        // does not exist, so this membership/privilege proof is only
+        // meaningful — and only attempted — once krypto_runtime itself is
+        // present. On a legacy/pre-Azure-transition database (krypto_runtime
+        // not yet installed) this must fall through to the "not proven"
+        // warn/block branch below rather than throw and abort the entire
+        // inventory.
+        if (runtimeCurrentUser !== null && runtimeRolePresent) {
+          const [membershipRow] = await sql<Array<{ isMember: boolean }>>`
+            -- runtime login role membership check
+            SELECT pg_has_role(${runtimeCurrentUser}, ${RUNTIME_ROLE_NAME}, 'MEMBER')
+              AS "isMember"
+          `;
+          isMemberOfRuntimeRole = membershipRow?.isMember ?? false;
+          runtimeLoginRoleScan = await scanRuntimeRolePrivileges(
+            sql,
+            runtimeCurrentUser,
+          );
+          inventory.runtimeLoginRole = {
+            currentUser: runtimeCurrentUser,
+            isMemberOfRuntimeRole,
+            ...runtimeLoginRoleScan,
+          };
+        }
+        const runtimeLoginRoleBoundaryProven =
+          runtimeLoginRoleScan !== null &&
+          isMemberOfRuntimeRole &&
+          runtimeLoginRoleScan.missingTablePrivileges.length === 0 &&
+          runtimeLoginRoleScan.missingSequencePrivileges.length === 0 &&
+          runtimeLoginRoleScan.excessTablePrivileges.length === 0 &&
+          runtimeLoginRoleScan.excessSequencePrivileges.length === 0;
+        checks.push({
+          id: "runtime-login-role-boundary",
+          status: runtimeLoginRoleBoundaryProven
+            ? "pass"
+            : provider === "azure"
+              ? "block"
+              : "warn",
+          summary: runtimeLoginRoleBoundaryProven
+            ? `DATABASE_URL's current_user (${runtimeCurrentUser}) is a member of krypto_runtime and inherits exactly the intended per-table privilege matrix, with no excess privilege.`
+            : runtimeCurrentUser === null
+              ? "Could not capture current_user on DATABASE_URL to prove runtime login role privilege boundaries."
+              : !isMemberOfRuntimeRole
+                ? `DATABASE_URL's current_user (${runtimeCurrentUser}) is not a member of krypto_runtime.`
+                : "DATABASE_URL's current_user has a missing or excess privilege relative to the exact per-table matrix.",
+          evidence: (inventory.runtimeLoginRole ?? {
+            currentUser: runtimeCurrentUser,
+          }) as Record<string, unknown>,
+        });
+
         const [vaultRelation] = await sql<
           Array<{ relation: string | null }>
         >`SELECT to_regclass('vault.secrets')::text AS relation`;
@@ -1479,16 +1997,25 @@ export async function runDeploymentPreflight(
           `;
           inventory.vaultSecretNames = secrets.map((secret) => secret.name);
         }
+        const azureVaultAbsenceExpected =
+          provider === "azure" &&
+          !vaultRelation?.relation &&
+          inventory.vaultSecretNames.length === 0;
         checks.push({
           id: "vault-secrets",
           status:
-            inventory.vaultSecretNames.length === 3 ? "pass" : "warn",
-          summary:
-            inventory.vaultSecretNames.length === 3
+            inventory.vaultSecretNames.length === 3 ||
+            azureVaultAbsenceExpected
+              ? "pass"
+              : "warn",
+          summary: azureVaultAbsenceExpected
+            ? "Supabase Vault is not part of the Azure target; its absence is expected, not missing configuration."
+            : inventory.vaultSecretNames.length === 3
               ? "Required Krypto Vault secret names are present."
               : "Required Krypto Vault secrets are not yet fully configured.",
           evidence: {
             configuredNames: inventory.vaultSecretNames,
+            vaultPresent: Boolean(vaultRelation?.relation),
           },
         });
       });
@@ -1521,6 +2048,7 @@ export async function runDeploymentPreflight(
   return {
     schemaVersion: DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION,
     generatedAt: now.toISOString(),
+    provider: provider ?? null,
     target: {
       directUrl: redactPostgresUrl(directUrl),
       runtimeUrl: redactPostgresUrl(runtimeUrl),

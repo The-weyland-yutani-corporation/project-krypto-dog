@@ -1,0 +1,375 @@
+name: Azure platform deploy
+
+# Protected, manual lifecycle for the dedicated Foundry account and the pinned
+# dev/prod GPT-5.6 Luna deployments. Account and model applies are separate
+# GitHub Environment deployments so the reviewer can inspect each what-if
+# artifact before approving the corresponding mutation.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: azure-platform-${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PLATFORM_RESOURCE_GROUP_NAME: ${{ vars.PLATFORM_RESOURCE_GROUP_NAME }}
+  FOUNDRY_RESOURCE_NAME: ${{ vars.FOUNDRY_RESOURCE_NAME }}
+  LOCATION: westus3
+  MODEL_FORMAT: OpenAI
+  MODEL_NAME: gpt-5.6-luna
+  MODEL_VERSION: "2026-07-09"
+  MODEL_SKU: GlobalStandard
+  DEV_DEPLOYMENT_NAME: krypto-dev-luna
+  PROD_DEPLOYMENT_NAME: krypto-prod-luna
+  DEV_CAPACITY: "10"
+  PROD_CAPACITY: "10"
+
+jobs:
+  account-plan:
+    name: Plan dedicated Foundry account
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: platform
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Require registered Azure providers
+        run: .github/scripts/azure/register-providers.sh --check-only
+
+      - name: What-if platform-account.bicep
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "${PLATFORM_RESOURCE_GROUP_NAME}" \
+            --template-file infra/platform-account.bicep \
+            --parameters infra/params/platform-account.bicepparam \
+            --result-format FullResourcePayloads \
+            --no-pretty-print \
+            --output json > /tmp/whatif-platform-account.json
+          if [ "$(jq '[.changes[]? | select(.changeType == "Delete")] | length' /tmp/whatif-platform-account.json)" -ne 0 ]; then
+            echo "Foundry account what-if contains a Delete change; refusing to continue." >&2
+            exit 1
+          fi
+
+      - name: Publish account what-if
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-platform-account-whatif-${{ github.sha }}
+          path: /tmp/whatif-platform-account.json
+          if-no-files-found: error
+          retention-days: 30
+
+  account-apply:
+    name: Apply dedicated Foundry account
+    needs: account-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: platform
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy platform-account.bicep
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${PLATFORM_RESOURCE_GROUP_NAME}" \
+            --name "platform-account-${GITHUB_SHA}" \
+            --template-file infra/platform-account.bicep \
+            --parameters infra/params/platform-account.bicepparam \
+            --output none
+
+      - name: Verify account security state
+        run: |
+          set -euo pipefail
+          state="$(az cognitiveservices account show \
+            --name "${FOUNDRY_RESOURCE_NAME}" \
+            --resource-group "${PLATFORM_RESOURCE_GROUP_NAME}" \
+            --query "{provisioning:properties.provisioningState,localAuthDisabled:properties.disableLocalAuth,publicNetworkAccess:properties.publicNetworkAccess,location:location,kind:kind,sku:sku.name}" \
+            --output json)"
+          printf '%s\n' "${state}"
+          jq -e \
+            --arg location "${LOCATION}" \
+            '.provisioning == "Succeeded"
+             and .localAuthDisabled == true
+             and .publicNetworkAccess == "Enabled"
+             and .location == $location
+             and .kind == "AIServices"
+             and .sku == "S0"' <<<"${state}" >/dev/null
+          lock_level="$(az lock show \
+            --name protect-foundry-account \
+            --resource-group "${PLATFORM_RESOURCE_GROUP_NAME}" \
+            --resource-name "${FOUNDRY_RESOURCE_NAME}" \
+            --resource-type Microsoft.CognitiveServices/accounts \
+            --query level \
+            --output tsv)"
+          test "${lock_level}" = "CanNotDelete"
+
+  models-plan:
+    name: Validate quota and plan Luna deployments
+    needs: account-apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: platform
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Validate exact model catalog mapping and aggregate quota
+        run: |
+          set -euo pipefail
+          .github/scripts/azure/validate-model-quota.sh \
+            --account-name "${FOUNDRY_RESOURCE_NAME}" \
+            --resource-group "${PLATFORM_RESOURCE_GROUP_NAME}" \
+            --location "${LOCATION}" \
+            --model-format "${MODEL_FORMAT}" \
+            --model-name "${MODEL_NAME}" \
+            --model-version "${MODEL_VERSION}" \
+            --sku-name "${MODEL_SKU}" \
+            --deployment-name "${DEV_DEPLOYMENT_NAME}" \
+            --capacity "${DEV_CAPACITY}" \
+            --deployment-name "${PROD_DEPLOYMENT_NAME}" \
+            --capacity "${PROD_CAPACITY}"
+
+      - name: Render pinned model parameters
+        run: |
+          set -euo pipefail
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/platform.bicepparam \
+            --out /tmp/platform.resolved.bicepparam \
+            --set REPLACE_WITH_PLATFORM_SMOKE_PRINCIPAL_ID="${{ vars.PLATFORM_IDENTITY_PRINCIPAL_ID }}"
+
+      - name: What-if platform.bicep
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "${PLATFORM_RESOURCE_GROUP_NAME}" \
+            --template-file infra/platform.bicep \
+            --parameters /tmp/platform.resolved.bicepparam \
+            --result-format FullResourcePayloads \
+            --no-pretty-print \
+            --output json > /tmp/whatif-platform-models.json
+          if [ "$(jq '[.changes[]? | select(.changeType == "Delete")] | length' /tmp/whatif-platform-models.json)" -ne 0 ]; then
+            echo "Foundry model what-if contains a Delete change; refusing to continue." >&2
+            exit 1
+          fi
+
+      - name: Publish model what-if
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-platform-models-whatif-${{ github.sha }}
+          path: /tmp/whatif-platform-models.json
+          if-no-files-found: error
+          retention-days: 30
+
+  models-apply:
+    name: Apply pinned Luna deployments
+    needs: models-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: platform
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Render pinned model parameters
+        run: |
+          set -euo pipefail
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/platform.bicepparam \
+            --out /tmp/platform.resolved.bicepparam \
+            --set REPLACE_WITH_PLATFORM_SMOKE_PRINCIPAL_ID="${{ vars.PLATFORM_IDENTITY_PRINCIPAL_ID }}"
+
+      - name: Deploy platform.bicep
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${PLATFORM_RESOURCE_GROUP_NAME}" \
+            --name "platform-models-${GITHUB_SHA}" \
+            --template-file infra/platform.bicep \
+            --parameters /tmp/platform.resolved.bicepparam \
+            --output none
+
+      - name: Verify pinned deployments
+        run: |
+          set -euo pipefail
+          for deployment in "${DEV_DEPLOYMENT_NAME}" "${PROD_DEPLOYMENT_NAME}"; do
+            state="$(az cognitiveservices account deployment show \
+              --name "${FOUNDRY_RESOURCE_NAME}" \
+              --resource-group "${PLATFORM_RESOURCE_GROUP_NAME}" \
+              --deployment-name "${deployment}" \
+              --query "{provisioning:properties.provisioningState,format:properties.model.format,model:properties.model.name,version:properties.model.version,sku:sku.name,capacity:sku.capacity}" \
+              --output json)"
+            printf '%s\n' "${state}"
+            jq -e \
+              --arg format "${MODEL_FORMAT}" \
+              --arg model "${MODEL_NAME}" \
+              --arg version "${MODEL_VERSION}" \
+              --arg sku "${MODEL_SKU}" \
+              --argjson capacity 10 \
+              '.provisioning == "Succeeded"
+               and .format == $format
+               and .model == $model
+               and .version == $version
+               and .sku == $sku
+               and .capacity == $capacity' <<<"${state}" >/dev/null
+          done
+
+  no-trade-smoke:
+    name: Managed-identity plain and structured Luna smoke
+    needs: models-apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: platform
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Acquire Foundry bearer token
+        id: token
+        run: |
+          set -euo pipefail
+          token="$(az account get-access-token \
+            --scope https://ai.azure.com/.default \
+            --query accessToken \
+            --output tsv)"
+          test -n "${token}"
+          echo "::add-mask::${token}"
+          echo "value=${token}" >> "$GITHUB_OUTPUT"
+
+      - name: Plain no-trade invocation
+        env:
+          ACCESS_TOKEN: ${{ steps.token.outputs.value }}
+        run: |
+          set -euo pipefail
+          status=""
+          for attempt in $(seq 1 30); do
+            status="$(curl --silent --show-error \
+              --output /tmp/plain-smoke.json \
+              --write-out '%{http_code}' \
+              --request POST \
+              --url "https://${FOUNDRY_RESOURCE_NAME}.openai.azure.com/openai/v1/chat/completions" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header 'Content-Type: application/json' \
+              --data "$(jq -nc \
+                --arg model "${DEV_DEPLOYMENT_NAME}" \
+                '{model:$model,messages:[{role:"user",content:"Reply with exactly OK."}],max_completion_tokens:32}')")"
+            if [ "${status}" = "200" ]; then
+              break
+            fi
+            if [ "${status}" != "401" ] && [ "${status}" != "403" ]; then
+              echo "Plain Luna smoke returned non-retryable HTTP ${status}." >&2
+              exit 1
+            fi
+            echo "Foundry RBAC has not propagated yet (HTTP ${status}, attempt ${attempt}/30)."
+            sleep 10
+          done
+          test "${status}" = "200"
+          jq -e '.choices[0].message.content | type == "string" and length > 0' /tmp/plain-smoke.json >/dev/null
+
+      - name: Structured no-trade invocation
+        env:
+          ACCESS_TOKEN: ${{ steps.token.outputs.value }}
+        run: |
+          set -euo pipefail
+          payload="$(jq -nc \
+            --arg model "${DEV_DEPLOYMENT_NAME}" \
+            '{
+              model:$model,
+              messages:[
+                {role:"system",content:"Return a read-only paper-trading smoke decision. You cannot execute a trade."},
+                {role:"user",content:"Return HOLD with a short reason."}
+              ],
+              max_completion_tokens:128,
+              response_format:{
+                type:"json_schema",
+                json_schema:{
+                  name:"trade_decision_smoke",
+                  strict:true,
+                  schema:{
+                    type:"object",
+                    properties:{
+                      action:{type:"string",enum:["HOLD"]},
+                      reasoning:{type:"string"}
+                    },
+                    required:["action","reasoning"],
+                    additionalProperties:false
+                  }
+                }
+              }
+            }')"
+          status="$(curl --silent --show-error \
+            --output /tmp/structured-smoke.json \
+            --write-out '%{http_code}' \
+            --request POST \
+            --url "https://${FOUNDRY_RESOURCE_NAME}.openai.azure.com/openai/v1/chat/completions" \
+            --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+            --header 'Content-Type: application/json' \
+            --data "${payload}")"
+          test "${status}" = "200"
+          jq -er '.choices[0].message.content | fromjson | select(.action == "HOLD" and (.reasoning | length > 0))' \
+            /tmp/structured-smoke.json >/dev/null
+
+      - name: Write smoke summary
+        run: |
+          {
+            echo "## Foundry Luna smoke"
+            echo
+            echo "- Account: \`${FOUNDRY_RESOURCE_NAME}\`"
+            echo "- Model: \`${MODEL_NAME}\` \`${MODEL_VERSION}\`"
+            echo "- SKU/capacity: \`${MODEL_SKU}\`, dev ${DEV_CAPACITY}, prod ${PROD_CAPACITY}"
+            echo "- Authentication: protected platform OIDC / Entra bearer token"
+            echo "- Plain invocation: passed"
+            echo "- Structured HOLD invocation: passed"
+          } >> "$GITHUB_STEP_SUMMARY"

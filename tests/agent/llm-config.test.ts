@@ -1,247 +1,271 @@
 /**
- * Tests for Foundry Anthropic config validation and LLM construction.
+ * Azure OpenAI v1, managed-identity, and Luna structured-smoke coverage.
+ * All provider calls are mocked; this suite never requests an Azure token.
  */
 
-// Do NOT import setup.ts here — we manage env ourselves per test.
-
 import { jest } from "@jest/globals";
+import {
+  DefaultAzureCredential,
+  ManagedIdentityCredential,
+  getBearerTokenProvider,
+} from "@azure/identity";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { ChatOpenAI } from "@langchain/openai";
+import OpenAI from "openai";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+jest.mock("@azure/identity", () => ({
+  DefaultAzureCredential: jest.fn(),
+  ManagedIdentityCredential: jest.fn(),
+  getBearerTokenProvider: jest.fn(),
+}));
 
-function withEnv(vars: Record<string, string | undefined>, fn: () => void) {
-  const saved: Record<string, string | undefined> = {};
-  const ALL_KEYS = [
-    "ANTHROPIC_FOUNDRY_BASE_URL",
-    "ANTHROPIC_FOUNDRY_API_KEY",
-    "ANTHROPIC_FOUNDRY_DEPLOYMENT",
-    "ANTHROPIC_FOUNDRY_API_VERSION",
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_DEPLOYMENT_NAME",
-    "AZURE_OPENAI_API_VERSION",
-    "CDP_API_KEY_NAME",
-    "CDP_API_KEY_PRIVATE_KEY",
-    "DATABASE_URL",
-    "POSTHOG_API_KEY",
-    "CRON_SECRET",
-    "ADMIN_PASSWORD",
-    "ADMIN_SESSION_SECRET",
-    "AGENT_HARNESS_MODE",
-    "AGENT_HARNESS_SCENARIO",
-    "AGENT_HARNESS_DECISION",
-    "NODE_ENV",
-  ];
+import {
+  AZURE_OPENAI_TOKEN_SCOPE,
+  buildLLM,
+} from "@/agent/llm";
+import { configuredModelVersion } from "@/agent/run-flow";
+import { smokeLunaStructuredOutput } from "@/deployment/provider-smoke";
+import {
+  resolveAzureOpenAIConfig,
+  validateEnv,
+} from "@/lib/config";
+import { tradeDecisionSchema } from "@/trading/types";
 
-  for (const key of ALL_KEYS) saved[key] = process.env[key];
-  // Set a sensible baseline for non-LLM required vars
-  process.env.DATABASE_URL = "postgres://localhost:5432/test";
-  process.env.POSTHOG_API_KEY = "phc_test";
-  process.env.CRON_SECRET = "test-secret";
-  process.env.ADMIN_PASSWORD = "test-password";
-  process.env.ADMIN_SESSION_SECRET = "test-admin-session-secret";
-  // Clear CDP (should not be required)
-  delete process.env.CDP_API_KEY_NAME;
-  delete process.env.CDP_API_KEY_PRIVATE_KEY;
-  // Clear all LLM vars
-  for (const k of ALL_KEYS.filter(k => k.includes("FOUNDRY") || k.includes("AZURE_OPENAI"))) {
-    delete process.env[k];
+const TEST_CLIENT_ID = "11111111-1111-4111-8111-111111111111";
+const ALL_ENV_KEYS = [
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_DEPLOYMENT",
+  "ANTHROPIC_FOUNDRY_API_VERSION",
+  "AZURE_OPENAI_ENDPOINT",
+  "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_API_VERSION",
+  "OPENAI_API_KEY",
+  "AZURE_OPENAI_BASE_URL",
+  "AZURE_OPENAI_DEPLOYMENT_NAME",
+  "AZURE_CLIENT_ID",
+  "DATABASE_URL",
+  "POSTHOG_API_KEY",
+  "POSTHOG_ENVIRONMENT",
+  "CRON_SECRET",
+  "APP_ORIGIN",
+  "ADMIN_PASSWORD",
+  "ADMIN_SESSION_SECRET",
+  "AZURE_COMMUNICATION_CONNECTION_STRING",
+  "AZURE_COMMUNICATION_EMAIL_SENDER",
+  "ALERT_EMAIL_TO",
+  "NODE_ENV",
+] as const;
+
+function withEnv(
+  overrides: Record<string, string | undefined>,
+  callback: () => void,
+): void {
+  const saved = Object.fromEntries(
+    ALL_ENV_KEYS.map((key) => [key, process.env[key]]),
+  );
+
+  for (const key of ALL_ENV_KEYS) {
+    delete process.env[key];
   }
-  // Apply requested vars
-  for (const [k, v] of Object.entries(vars)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+  Object.assign(process.env, {
+    NODE_ENV: "test",
+    AZURE_OPENAI_BASE_URL:
+      "https://test-resource.openai.azure.com/openai/v1",
+    AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-test-luna",
+    DATABASE_URL: "postgres://localhost:5432/test",
+    POSTHOG_API_KEY: "phc_test",
+    POSTHOG_ENVIRONMENT: "dev",
+    CRON_SECRET: "test-secret",
+    APP_ORIGIN: "https://krypto.example.com",
+    ADMIN_PASSWORD: "test-password",
+    ADMIN_SESSION_SECRET: "test-admin-session-secret",
+    AZURE_COMMUNICATION_CONNECTION_STRING:
+      "endpoint=https://test.communication.azure.com/;accesskey=test-key",
+    AZURE_COMMUNICATION_EMAIL_SENDER: "DoNotReply@test.azurecomm.net",
+    ALERT_EMAIL_TO: "operator@example.com",
+  });
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
   }
 
   try {
-    fn();
+    callback();
   } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
+    for (const key of ALL_ENV_KEYS) {
+      const value = saved[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   }
 }
 
-// ---------------------------------------------------------------------------
-// resolveFoundryBaseURL
-// ---------------------------------------------------------------------------
-
-describe("resolveFoundryBaseURL", () => {
-  let resolveFoundryBaseURL: (env: Record<string, string | undefined>) => string | undefined;
-
-  beforeAll(async () => {
-    const mod = await import("@/lib/config");
-    resolveFoundryBaseURL = mod.resolveFoundryBaseURL;
-  });
-
-  it("returns ANTHROPIC_FOUNDRY_BASE_URL when set", () => {
-    const url = resolveFoundryBaseURL({
-      ANTHROPIC_FOUNDRY_BASE_URL: "https://my-res.services.ai.azure.com/anthropic",
+describe("resolveAzureOpenAIConfig", () => {
+  it("resolves and normalizes the explicit Azure OpenAI v1 configuration", () => {
+    expect(
+      resolveAzureOpenAIConfig({
+        AZURE_OPENAI_BASE_URL:
+          "https://resource.openai.azure.com/openai/v1/",
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-dev-luna",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+      }),
+    ).toEqual({
+      baseURL: "https://resource.openai.azure.com/openai/v1",
+      deployment: "krypto-dev-luna",
+      clientId: TEST_CLIENT_ID,
     });
-    expect(url).toBe("https://my-res.services.ai.azure.com/anthropic");
   });
 
-  it("derives base URL from AZURE_OPENAI_ENDPOINT by appending /anthropic", () => {
-    const url = resolveFoundryBaseURL({
-      AZURE_OPENAI_ENDPOINT: "https://my-res.openai.azure.com/",
+  it("accepts the Foundry services host with Azure OpenAI v1 semantics", () => {
+    expect(
+      resolveAzureOpenAIConfig({
+        AZURE_OPENAI_BASE_URL:
+          "https://resource.services.ai.azure.com/openai/v1",
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-prod-luna",
+      }),
+    ).toEqual({
+      baseURL: "https://resource.services.ai.azure.com/openai/v1",
+      deployment: "krypto-prod-luna",
+      clientId: undefined,
     });
-    expect(url).toBe("https://my-res.openai.azure.com/anthropic");
   });
 
-  it("strips trailing slash from AZURE_OPENAI_ENDPOINT before appending", () => {
-    const url = resolveFoundryBaseURL({
-      AZURE_OPENAI_ENDPOINT: "https://my-res.openai.azure.com",
-    });
-    expect(url).toBe("https://my-res.openai.azure.com/anthropic");
-  });
-
-  it("does not append /anthropic twice for a legacy endpoint", () => {
-    const url = resolveFoundryBaseURL({
-      AZURE_OPENAI_ENDPOINT:
-        "https://my-res.openai.azure.com/anthropic/",
-    });
-    expect(url).toBe("https://my-res.openai.azure.com/anthropic");
-  });
-
-  it("prefers ANTHROPIC_FOUNDRY_BASE_URL over AZURE_OPENAI_ENDPOINT", () => {
-    const url = resolveFoundryBaseURL({
-      ANTHROPIC_FOUNDRY_BASE_URL: "https://new.services.ai.azure.com/anthropic",
-      AZURE_OPENAI_ENDPOINT: "https://old.openai.azure.com/",
-    });
-    expect(url).toBe("https://new.services.ai.azure.com/anthropic");
-  });
-
-  it("returns undefined when neither variable is set", () => {
-    const url = resolveFoundryBaseURL({});
-    expect(url).toBeUndefined();
+  it.each([
+    [
+      "a missing deployment",
+      {
+        AZURE_OPENAI_BASE_URL:
+          "https://resource.openai.azure.com/openai/v1",
+      },
+    ],
+    [
+      "a raw resource endpoint",
+      {
+        AZURE_OPENAI_BASE_URL: "https://resource.openai.azure.com",
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-dev-luna",
+      },
+    ],
+    [
+      "the public OpenAI API",
+      {
+        AZURE_OPENAI_BASE_URL: "https://api.openai.com/v1",
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-dev-luna",
+      },
+    ],
+    [
+      "deprecated Anthropic configuration",
+      {
+        ANTHROPIC_FOUNDRY_BASE_URL:
+          "https://resource.services.ai.azure.com/anthropic",
+        ANTHROPIC_FOUNDRY_API_KEY: "deprecated-key",
+        ANTHROPIC_FOUNDRY_DEPLOYMENT: "deprecated-claude",
+      },
+    ],
+    [
+      "an old Azure endpoint and API key",
+      {
+        AZURE_OPENAI_ENDPOINT: "https://resource.openai.azure.com",
+        AZURE_OPENAI_API_KEY: "deprecated-key",
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-dev-luna",
+      },
+    ],
+  ])("does not resolve %s", (_label, env) => {
+    expect(resolveAzureOpenAIConfig(env)).toBeUndefined();
   });
 });
 
-// ---------------------------------------------------------------------------
-// validateEnv
-// ---------------------------------------------------------------------------
+describe("configuredModelVersion", () => {
+  it("records the configured environment-specific Luna deployment", () => {
+    expect(
+      configuredModelVersion({
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-prod-luna",
+      }),
+    ).toBe("krypto-prod-luna");
+  });
+
+  it("does not record a deprecated Anthropic deployment", () => {
+    expect(
+      configuredModelVersion({
+        ANTHROPIC_FOUNDRY_DEPLOYMENT: "deprecated-claude",
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("validateEnv", () => {
-  let validateEnv: () => ReturnType<typeof import("@/lib/config")["validateEnv"]>;
+  let consoleError: jest.SpiedFunction<typeof console.error>;
 
-  beforeAll(async () => {
-    const mod = await import("@/lib/config");
-    validateEnv = mod.validateEnv;
+  beforeEach(() => {
+    consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
   });
 
-  it("passes with preferred ANTHROPIC_FOUNDRY_* vars", () => {
-    withEnv(
-      {
-        ANTHROPIC_FOUNDRY_BASE_URL: "https://res.services.ai.azure.com/anthropic",
-        ANTHROPIC_FOUNDRY_API_KEY: "key",
-        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude-3-7",
-      },
-      () => {
-        expect(() => validateEnv()).not.toThrow();
-      },
-    );
+  afterEach(() => {
+    consoleError.mockRestore();
   });
 
-  it("passes with legacy AZURE_OPENAI_* vars", () => {
-    withEnv(
-      {
-        AZURE_OPENAI_ENDPOINT: "https://res.openai.azure.com/",
-        AZURE_OPENAI_API_KEY: "key",
-        AZURE_OPENAI_DEPLOYMENT_NAME: "claude-stub",
-      },
-      () => {
-        expect(() => validateEnv()).not.toThrow();
-      },
-    );
-  });
-
-  it("throws when no LLM credentials are provided", () => {
+  it("accepts local attended authentication without a managed identity ID", () => {
     withEnv({}, () => {
+      expect(() => validateEnv()).not.toThrow();
+    });
+  });
+
+  it("accepts production with a selected user-assigned managed identity", () => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-prod-luna",
+      },
+      () => {
+        expect(() => validateEnv()).not.toThrow();
+      },
+    );
+  });
+
+  it.each([
+    [
+      "the deployment is missing",
+      { AZURE_OPENAI_DEPLOYMENT_NAME: undefined },
+    ],
+    [
+      "the base URL omits /openai/v1",
+      {
+        AZURE_OPENAI_BASE_URL:
+          "https://resource.openai.azure.com/openai",
+      },
+    ],
+    [
+      "the endpoint is not HTTPS",
+      {
+        AZURE_OPENAI_BASE_URL:
+          "http://resource.openai.azure.com/openai/v1",
+      },
+    ],
+    [
+      "the endpoint contains a dated API-version query",
+      {
+        AZURE_OPENAI_BASE_URL:
+          "https://resource.openai.azure.com/openai/v1?api-version=2026-07-09",
+      },
+    ],
+  ])("rejects configuration when %s", (_label, overrides) => {
+    withEnv(overrides, () => {
       expect(() => validateEnv()).toThrow("Invalid environment variables");
     });
   });
 
-  it("permits a mock harness without LLM or PostHog credentials", () => {
-    withEnv(
-      {
-        NODE_ENV: "development",
-        AGENT_HARNESS_MODE: "mock",
-        POSTHOG_API_KEY: undefined,
-      },
-      () => {
-        expect(() => validateEnv()).not.toThrow();
-      },
-    );
-  });
-
-  it("throws when the preferred base URL is not a Foundry Anthropic endpoint", () => {
-    withEnv(
-      {
-        ANTHROPIC_FOUNDRY_BASE_URL:
-          "https://res.openai.azure.com/anthropic",
-        ANTHROPIC_FOUNDRY_API_KEY: "key",
-        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude-stub",
-      },
-      () => {
-        expect(() => validateEnv()).toThrow("Invalid environment variables");
-      },
-    );
-  });
-
-  it("throws when preferred credentials omit the base URL", () => {
-    withEnv(
-      {
-        ANTHROPIC_FOUNDRY_API_KEY: "key",
-        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude-stub",
-      },
-      () => {
-        expect(() => validateEnv()).toThrow("Invalid environment variables");
-      },
-    );
-  });
-
-  it("does not mix partial preferred credentials with legacy credentials", () => {
-    withEnv(
-      {
-        ANTHROPIC_FOUNDRY_API_KEY: "preferred-key",
-        AZURE_OPENAI_ENDPOINT: "https://res.openai.azure.com/",
-        AZURE_OPENAI_API_KEY: "legacy-key",
-        AZURE_OPENAI_DEPLOYMENT_NAME: "legacy-deployment",
-      },
-      () => {
-        expect(() => validateEnv()).toThrow("Invalid environment variables");
-      },
-    );
-  });
-
-  it("does NOT require CDP credentials", () => {
-    withEnv(
-      {
-        ANTHROPIC_FOUNDRY_BASE_URL:
-          "https://res.services.ai.azure.com/anthropic",
-        ANTHROPIC_FOUNDRY_API_KEY: "key",
-        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude-stub",
-        CDP_API_KEY_NAME: undefined,
-        CDP_API_KEY_PRIVATE_KEY: undefined,
-      },
-      () => {
-        expect(() => validateEnv()).not.toThrow();
-      },
-    );
-  });
-
-  it("requires a dedicated admin session secret in production", () => {
+  it("requires AZURE_CLIENT_ID in production", () => {
     withEnv(
       {
         NODE_ENV: "production",
-        ADMIN_SESSION_SECRET: undefined,
-        ANTHROPIC_FOUNDRY_BASE_URL:
-          "https://res.services.ai.azure.com/anthropic",
-        ANTHROPIC_FOUNDRY_API_KEY: "key",
-        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude-stub",
+        AZURE_CLIENT_ID: undefined,
       },
       () => {
         expect(() => validateEnv()).toThrow("Invalid environment variables");
@@ -249,15 +273,12 @@ describe("validateEnv", () => {
     );
   });
 
-  it("forbids harness provider modes in production", () => {
+  it("does not let an API key replace managed identity configuration", () => {
     withEnv(
       {
         NODE_ENV: "production",
-        AGENT_HARNESS_MODE: "mock",
-        ANTHROPIC_FOUNDRY_BASE_URL:
-          "https://res.services.ai.azure.com/anthropic",
-        ANTHROPIC_FOUNDRY_API_KEY: "key",
-        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude-stub",
+        AZURE_CLIENT_ID: undefined,
+        AZURE_OPENAI_API_KEY: "must-not-be-used",
       },
       () => {
         expect(() => validateEnv()).toThrow("Invalid environment variables");
@@ -265,15 +286,35 @@ describe("validateEnv", () => {
     );
   });
 
-  it("requires PostHog in production", () => {
+  it.each([
+    "AZURE_COMMUNICATION_CONNECTION_STRING",
+    "AZURE_COMMUNICATION_EMAIL_SENDER",
+    "ALERT_EMAIL_TO",
+    "POSTHOG_ENVIRONMENT",
+    "APP_ORIGIN",
+  ])("requires %s in production", (name) => {
     withEnv(
       {
         NODE_ENV: "production",
-        POSTHOG_API_KEY: undefined,
-        ANTHROPIC_FOUNDRY_BASE_URL:
-          "https://res.services.ai.azure.com/anthropic",
-        ANTHROPIC_FOUNDRY_API_KEY: "key",
-        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude-stub",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+        [name]: undefined,
+      },
+      () => {
+        expect(() => validateEnv()).toThrow("Invalid environment variables");
+      },
+    );
+  });
+
+  it.each([
+    "http://krypto.example.com",
+    "https://krypto.example.com/admin",
+    "https://user:password@krypto.example.com",
+  ])("rejects unsafe production APP_ORIGIN %s", (appOrigin) => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+        APP_ORIGIN: appOrigin,
       },
       () => {
         expect(() => validateEnv()).toThrow("Invalid environment variables");
@@ -282,65 +323,204 @@ describe("validateEnv", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// buildLLM
-// ---------------------------------------------------------------------------
+type InspectableChatOpenAI = BaseChatModel & {
+  model: string;
+  modelKwargs?: Record<string, unknown>;
+  temperature?: number;
+  useResponsesApi: boolean;
+  caller: { maxRetries: number };
+  invocationParams(options?: Record<string, unknown>): {
+    model: string;
+    reasoning?: { effort?: string };
+    temperature?: number;
+  };
+  clientConfig: {
+    apiKey?: unknown;
+    baseURL?: string;
+    maxRetries?: number;
+  };
+};
 
 describe("buildLLM", () => {
+  const tokenProvider = jest.fn(async () => "test-entra-token");
+  const mockedDefaultCredential = jest.mocked(DefaultAzureCredential);
+  const mockedManagedIdentityCredential = jest.mocked(
+    ManagedIdentityCredential,
+  );
+  const mockedGetBearerTokenProvider = jest.mocked(getBearerTokenProvider);
+
   beforeEach(() => {
-    jest.resetModules();
+    jest.clearAllMocks();
+    mockedGetBearerTokenProvider.mockReturnValue(tokenProvider);
   });
 
-  it("throws when no credentials are set", async () => {
-    const savedKeys = [
-      "ANTHROPIC_FOUNDRY_BASE_URL", "ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_DEPLOYMENT",
-      "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_DEPLOYMENT_NAME",
-    ];
-    const saved: Record<string, string | undefined> = {};
-    for (const k of savedKeys) { saved[k] = process.env[k]; delete process.env[k]; }
+  it("openai v1 awaits the async token setter before building Authorization", async () => {
+    const fetchImpl = jest.fn(async (_input: unknown, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe("Bearer test-entra-token");
+      return Response.json({ object: "list", data: [], has_more: false });
+    });
+    const client = new OpenAI({
+      apiKey: tokenProvider,
+      baseURL: "https://test-resource.openai.azure.com/openai/v1",
+      fetch: fetchImpl as typeof fetch,
+    });
 
-    try {
-      const { buildLLM } = await import("@/agent/llm");
-      expect(() => buildLLM()).toThrow(/LLM credentials missing or incomplete/);
-    } finally {
-      for (const [k, v] of Object.entries(saved)) {
-        if (v === undefined) delete process.env[k]; else process.env[k] = v;
-      }
-    }
+    await client.models.list();
+
+    expect(tokenProvider).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("constructs a ChatAnthropic instance with preferred env vars", async () => {
-    process.env.ANTHROPIC_FOUNDRY_BASE_URL = "https://res.services.ai.azure.com/anthropic";
-    process.env.ANTHROPIC_FOUNDRY_API_KEY = "test-key";
-    process.env.ANTHROPIC_FOUNDRY_DEPLOYMENT = "claude-stub";
+  it("builds a BaseChatModel-compatible GPT-5.6 Luna client for Azure OpenAI v1", () => {
+    withEnv(
+      {
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-dev-luna",
+        AZURE_OPENAI_API_KEY: "must-not-be-used",
+        OPENAI_API_KEY: "also-must-not-be-used",
+      },
+      () => {
+        const model = buildLLM() as InspectableChatOpenAI;
 
-    try {
-      const { buildLLM } = await import("@/agent/llm");
-      const llm = buildLLM() as BaseChatModel & { model?: string };
-      expect(llm).toBeDefined();
-      // Should be a ChatAnthropic instance (has model property)
-      expect(typeof llm.invoke).toBe("function");
-    } finally {
-      delete process.env.ANTHROPIC_FOUNDRY_BASE_URL;
-      delete process.env.ANTHROPIC_FOUNDRY_API_KEY;
-      delete process.env.ANTHROPIC_FOUNDRY_DEPLOYMENT;
-    }
+        expect(model).toBeInstanceOf(ChatOpenAI);
+        expect(typeof model.invoke).toBe("function");
+        expect(typeof model.withStructuredOutput).toBe("function");
+        expect(model.model).toBe("krypto-dev-luna");
+        expect(model.clientConfig.baseURL).toBe(
+          "https://test-resource.openai.azure.com/openai/v1",
+        );
+        expect(model.clientConfig.apiKey).toBe(tokenProvider);
+        expect(model.clientConfig.apiKey).not.toBe("must-not-be-used");
+        expect(model.useResponsesApi).toBe(true);
+        expect(model.modelKwargs).toEqual({
+          reasoning: { effort: "low" },
+        });
+        expect(model.temperature).toBeUndefined();
+        expect(model.invocationParams({})).toMatchObject({
+          model: "krypto-dev-luna",
+          reasoning: { effort: "low" },
+          temperature: undefined,
+        });
+        expect(() =>
+          model.withStructuredOutput(tradeDecisionSchema, {
+            name: "trade_decision",
+            includeRaw: true,
+          }),
+        ).not.toThrow();
+        expect(model.caller.maxRetries).toBe(0);
+        expect(model.clientConfig.maxRetries).toBe(0);
+      },
+    );
+
+    expect(mockedDefaultCredential).toHaveBeenCalledWith();
+    expect(mockedManagedIdentityCredential).not.toHaveBeenCalled();
+    expect(mockedGetBearerTokenProvider).toHaveBeenCalledWith(
+      expect.anything(),
+      AZURE_OPENAI_TOKEN_SCOPE,
+    );
+    expect(tokenProvider).not.toHaveBeenCalled();
   });
 
-  it("falls back to AZURE_OPENAI_* legacy vars", async () => {
-    process.env.AZURE_OPENAI_ENDPOINT = "https://res.openai.azure.com/";
-    process.env.AZURE_OPENAI_API_KEY = "legacy-key";
-    process.env.AZURE_OPENAI_DEPLOYMENT_NAME = "claude-legacy";
+  it("uses the selected user-assigned managed identity in production", () => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-prod-luna",
+      },
+      () => {
+        const model = buildLLM() as InspectableChatOpenAI;
+        expect(model.model).toBe("krypto-prod-luna");
+      },
+    );
 
-    try {
-      const { buildLLM } = await import("@/agent/llm");
-      const llm = buildLLM();
-      expect(llm).toBeDefined();
-      expect(typeof llm.invoke).toBe("function");
-    } finally {
-      delete process.env.AZURE_OPENAI_ENDPOINT;
-      delete process.env.AZURE_OPENAI_API_KEY;
-      delete process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-    }
+    expect(mockedManagedIdentityCredential).toHaveBeenCalledWith(
+      TEST_CLIENT_ID,
+    );
+    expect(mockedDefaultCredential).not.toHaveBeenCalled();
+  });
+
+  it("passes AZURE_CLIENT_ID through DefaultAzureCredential for local smoke", () => {
+    withEnv({ AZURE_CLIENT_ID: TEST_CLIENT_ID }, () => {
+      buildLLM();
+    });
+
+    expect(mockedDefaultCredential).toHaveBeenCalledWith({
+      managedIdentityClientId: TEST_CLIENT_ID,
+    });
+    expect(mockedManagedIdentityCredential).not.toHaveBeenCalled();
+  });
+
+  it("rejects incomplete or non-v1 provider configuration", () => {
+    withEnv({ AZURE_OPENAI_BASE_URL: undefined }, () => {
+      expect(() => buildLLM()).toThrow(
+        /Azure OpenAI configuration missing or incomplete/,
+      );
+    });
+  });
+
+  it("rejects production without the user-assigned identity selector", () => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        AZURE_CLIENT_ID: undefined,
+      },
+      () => {
+        expect(() => buildLLM()).toThrow(/AZURE_CLIENT_ID is required/);
+      },
+    );
+  });
+});
+
+describe("smokeLunaStructuredOutput", () => {
+  it("proves production-like no-trade JSON-schema parsing without Azure calls", async () => {
+    const invoke = jest.fn(
+      async (
+        _messages: Array<{ content: unknown }>,
+        _options: { signal: AbortSignal },
+      ) => ({
+        action: "HOLD" as const,
+        notionalUSD: null,
+        reasoning: "Provider validation only.",
+      }),
+    );
+    const withStructuredOutput = jest.fn(() => ({ invoke }));
+    const model = { withStructuredOutput } as unknown as BaseChatModel;
+
+    const result = await smokeLunaStructuredOutput(1234, model);
+
+    expect(result).toEqual({
+      latencyMs: expect.any(Number),
+      action: "HOLD",
+      notionalUSD: null,
+    });
+    expect(withStructuredOutput).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        name: "no_trade_smoke",
+        method: "jsonSchema",
+        strict: true,
+      },
+    );
+    const [messages, options] = invoke.mock.calls[0]!;
+    expect(String(messages[0].content)).toMatch(/read-only provider validation/i);
+    expect(String(messages[0].content)).toMatch(/do not propose or execute/i);
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("rejects any parsed smoke response that is not HOLD", async () => {
+    const model = {
+      withStructuredOutput: jest.fn(() => ({
+        invoke: jest.fn(async () => ({
+          action: "BUY",
+          notionalUSD: 10,
+          reasoning: "Invalid smoke response.",
+        })),
+      })),
+    } as unknown as BaseChatModel;
+
+    await expect(
+      smokeLunaStructuredOutput(1234, model),
+    ).rejects.toThrow();
   });
 });

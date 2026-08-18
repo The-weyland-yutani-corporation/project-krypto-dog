@@ -1,111 +1,154 @@
-# Release Readiness
+# Deployment and trading readiness
 
-This document records the current evidence baseline and gate disposition. The
-normative production-paper controls, authorization rules, and gate thresholds
-are defined in
-[`specs/production-readiness-prd.v1.md`](./production-readiness-prd.v1.md).
-This document does not contain secrets or credentials.
+> **State snapshot: 2026-08-15 — AZURE RELEASES DEPLOYED.** Dev is
+> shadow/scheduled and production is disabled/manual. Exact-SHA migration,
+> target smoke, activation, scheduled-run, alert-delivery, and restore-verified
+> backup evidence passed.
+>
+> **Paper/live boundary:** the implemented rollout modes are `disabled`,
+> `shadow`, and `paper`. No current workflow, readiness decision, or deployment
+> authorizes live-money execution.
 
-For metric definitions see `specs/evaluation.md`.
-For the proposed architecture changes see `specs/rfcs/0002-evidence-grade-paper-trading.md`.
+The historical hosted baseline is not the Azure release candidate. Its
+observations remain historical only; its archived procedure is
+[`archive/deployment.vercel-supabase.md`](./archive/deployment.vercel-supabase.md).
 
----
+## 1. Readiness decision
 
-## 1. Current evidence baseline
+| Scope | Current decision | Blocking reason |
+|---|---|---|
+| Azure platform | **Operational fallback ready** | Dev/prod Luna deployments on the established account passed Entra plain and structured `HOLD` smokes; the dedicated account remains model-empty |
+| Azure dev | **Deployment-ready in shadow** | First scheduled run passed with zero trades; paper promotion still requires its separate evidence window |
+| Azure prod | **Deployment-ready, disabled/manual** | Backup and target smoke passed; no promotion workflow is shipped |
+| v2.2 paper rollout | **Not ready** | No 30-day qualifying paper evidence window, separate PostHog projects, or approved production promotion design |
+| v3 live execution | **Not authorized** | Live execution is outside the current implementation and requires its own approval gates |
 
-### Test suite
+Source implementation, local tests, or a historical provider observation do
+not satisfy a live Azure gate.
 
-- `npm run test:coverage` passes with global and critical-module thresholds.
-- Critical safety modules are collected explicitly for deployment preflight,
-  runtime configuration, admin-route authentication, decision, market data,
-  accounting, policy, and shared execution code.
-- All 8 synthetic fixture scenarios pass: the deterministic execution layer
-  produces the correct trade sequences and equity curves given known inputs.
-- The fixture runner is aligned to production policy, fixed-point accounting,
-  and the shared paper-execution calculator. It defaults to 30 bps fees and
-  15 bps adverse slippage and emits report schema `1.0.0`.
+## 2. Approved target contract
 
-### Synthetic scenario results vs. benchmarks
-
-| Result | Count |
+| Control | Required value |
 |---|---|
-| Beat cash baseline | 3 of 8 |
-| Beat buy-and-hold baseline | 2 of 8 |
-| Beat both cash and buy-and-hold | 0 of 8 |
+| Runtime-selected subscription | **Visual Studio Enterprise Subscription**; never publish its ID/internal identifiers |
+| Region | `westus3` |
+| Resource groups | `rg-krypto-platform`, `rg-krypto-dev`, `rg-krypto-prod` |
+| Operational Foundry account | `ghcp-foundry-eastus2` until the dedicated account is unblocked |
+| Model | OpenAI `gpt-5.6-luna` version `2026-07-09` |
+| Deployment SKU/capacity | `GlobalStandard`; desired dev 10 + prod 10, with deployment-pair-aware incremental validation against the exact quota dimension |
+| Deployment names | `krypto-dev-luna`, `krypto-prod-luna` |
+| Foundry auth | Project Krypto mounts no model API key; runtime and ops UAMIs receive only **Cognitive Services OpenAI User** |
+| Deployment mutation scope | All mutation roles are resource-group-scoped; prod-deploy and platform Locks Contributor remain in their respective resource groups |
+| Deployment subscription reads | One-action Project Krypto Provider Registration Reader on platform/dev/prod-deploy; Cognitive Services Usages Reader additionally on platform; no broad Reader |
+| Runtime model config | `AZURE_OPENAI_BASE_URL` ending `/openai/v1`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_CLIENT_ID` |
+| Email | Separate dev/prod Azure Communication Services Email resources with Azure-managed domains |
+| Analytics | Mandatory `deployment_environment` property now; distinct PostHog projects remain a production-promotion prerequisite |
 
-These are engineering fixture results, not financial evidence. Passing all 8
-scenarios does not imply positive expected value in live or paper markets.
-See `specs/evaluation.md` §3 for the distinction.
+`eastus2` was rejected because the selected subscription is restricted from
+PostgreSQL provisioning there. It is a historical constraint, not a valid
+deployment option.
 
-### Out-of-sample paper trading evidence
+## 3. Implemented workflow surfaces
 
-None verified. The replacement database is intentionally fresh and the hosted
-deployment still runs the historical application build. No production paper
-record currently qualifies as financial evidence.
+Six Azure workflow surfaces implement or validate the target:
 
-### Production infrastructure inventory
+| Workflow | Responsibility | Current live status |
+|---|---|---|
+| `azure-infra-validate.yml` | Source validation for Bicep, parameters, workflow contracts, and Azure helper tests | Validation-only; cannot produce live deployment evidence |
+| `azure-platform.yml` | Dedicated Foundry account/model plan, apply, exact catalog/quota check, and no-trade smoke | Dedicated account/model attempt failed after account/catalog/quota; operational fallback models and smokes were completed separately |
+| `azure-platform-access.yml` | Separate plan/apply for four runtime/ops account-role bindings | Applied; dev/prod runtime and ops each have Cognitive Services OpenAI User |
+| `azure-deploy-dev.yml` | Dev `foundation` or `full` release and monitored shadow activation | Live equivalent operator path completed; dev shadow/scheduled |
+| `azure-deploy-prod.yml` | Prod `foundation` or `full` release ending disabled/manual | Live equivalent operator path completed; prod disabled/manual |
+| `azure-rotate-secrets.yml` | Safe prod secret rotation with current-release disable/backup controls | Not run; production release exists and is currently disabled/manual |
 
-Directly observed on 2026-07-15. No secrets, project IDs, database identities,
-or internal URLs are recorded here.
+Platform account/model mutation and platform access each use separate
+environment-scoped what-if and apply jobs. GitHub Environments, branch
+restrictions, and protected values are configured. Required-reviewer rules are unsupported by the private-repo
+billing plan, so mutation workflows are manual/paused behind configured branch,
+exact-SHA, and CI gates. GitHub-hosted jobs were blocked by the account Actions
+billing state during the first release, so the authenticated operator path used
+the same reviewed templates and evidence validators. Production deploy remains
+disabled manually; the proven dev automatic trigger is configured but cannot
+start while the billing block remains.
 
-**Vercel**
+No executable production promotion workflow is shipped or approved.
+`production-promotion` remains only as the environment-scoped forced-disable
+identity/environment used within prod deploy and rotation. Any future
+production promotion requires a new evidence-bound design and review.
 
-- Project exists; production deployment status: Ready, but the deployment is
-  approximately 115 days old and `/api/agent/status` returns 404. It is not the
-  current release candidate.
-- Project runtime is now configured for Node 22.
-- GitHub records no deployments; no GitHub Actions deployment workflow has fired.
-- Production environment variables -- present or staged: `DATABASE_URL`, `DIRECT_URL`,
-  Azure AI Foundry vars (`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`,
-  `AZURE_OPENAI_DEPLOYMENT_NAME`), `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY`,
-  `POSTHOG_API_KEY`, `CRON_SECRET`, `ROLLOUT_MODE=disabled`,
-  `ADMIN_PASSWORD`, and `ADMIN_SESSION_SECRET`.
-- Production environment variables -- absent: `RESEND_API_KEY`, `ALERT_EMAIL_TO`,
-  and `ALERT_EMAIL_FROM`.
-- Consequence: the next application build has database/admin/disabled-rollout
-  configuration staged, but target smoke cannot pass until real email delivery
-  is configured.
-- The current v2.1 source prefers `ANTHROPIC_FOUNDRY_*`, accepts the observed
-  `AZURE_OPENAI_*` names only as a compatibility path, and no longer requires
-  CDP variables for paper mode. These source changes have not been deployed.
+Azure Support API ticket creation for the dedicated-account `715-123420`
+failure was unavailable without an eligible support plan. The established
+account fallback preserves the exact model/version/SKU/capacity and Entra auth
+contract, so it is an approved operational workaround rather than a model or
+credential downgrade.
 
-**Supabase**
+## 4. Mandatory provisioning order
 
-- A clean replacement project is active and healthy on PostgreSQL 17.
-- Runtime and session/direct pooler connections succeed and report the same
-  database cluster.
-- A redacted fresh-target `deployment:preflight` report passed with zero
-  blockers. It found no application tables, Drizzle history, Krypto cron jobs,
-  queued Krypto HTTP requests, unsafe legacy function, exposed restricted role,
-  or configured Krypto Vault secret.
-- The inactive legacy project remains quarantined until the replacement passes
-  disabled target smoke.
+- [x] Select **Visual Studio Enterprise Subscription** at runtime by display
+  name; retain no subscription ID in public documentation.
+- [x] As an authorized subscription owner, run
+  `.github/scripts/azure/register-providers.sh` and wait for every required
+  namespace, including `Microsoft.Network`, to reach `Registered`. Deployment
+  workflows use `--check-only` and cannot perform this subscription mutation.
+- [x] Review and apply `bootstrap.bicep` in `westus3`.
+- [x] Verify the custom provider-state role contains only
+  `Microsoft.Resources/subscriptions/providers/read` and is assigned only to
+  platform/dev/prod-deploy; verify platform additionally has Cognitive Services
+  Usages Reader.
+- [x] Verify Locks Contributor is scoped to `rg-krypto-platform` for the
+  Foundry lock and `rg-krypto-prod` for the prod PostgreSQL, Key Vault, and
+  evidence-storage locks.
+- [x] Configure `platform`, `development`, `production-deploy`, and the
+  forced-disable-only `production-promotion` GitHub Environments, including
+  branch restrictions and the currently available protected values. Required
+  reviewers are unavailable on the current plan; keep mutation manual/paused.
+- [x] Stage a dev telemetry fallback with mandatory
+      `deployment_environment=dev`; do not count it as final project isolation.
+- [x] Run the Foundry account what-if/apply; verify local auth disabled and the
+  `CanNotDelete` lock.
+- [x] Prove the exact model catalog match and quota availability for the two
+  target deployment-name/capacity pairs. Subtract only exact existing target
+  capacity on the same format/model/version/SKU dimension.
+- [x] Deploy exact Luna dev/prod fallbacks on the established account after the
+      dedicated account returned `715-123420`.
+- [x] Pass Entra-authenticated plain-response and strict structured `HOLD`
+      smokes against both fallback deployments.
+- [x] Deploy the dev foundation.
+- [x] Deploy the prod foundation.
+- [x] Retain both foundation handoffs and bind the exact dev/prod runtime and
+  ops principal IDs through `azure-platform-access.yml`.
+- [x] Verify exactly one Cognitive Services OpenAI User assignment per
+  workload principal before any full release.
 
-**Classification: intentionally fresh replacement; no retained trading data.**
+Both foundations are mandatory before the access workflow because the four
+principal IDs are created by those foundations. A full release before access
+binding is not an approved shortcut.
 
-The following steps remain REQUIRED before the replacement can serve the
-current application:
+Any full dev run must remain a manual dispatch at the exact CI-passed 40-hex
+SHA while required-reviewer enforcement is unavailable. GitHub evaluates
+`workflow_run` with the workflow version on the default branch, but automatic
+mutation must remain paused regardless of that trigger behavior.
 
-- [x] **Fresh inventory:** read-only preflight passed and documented the empty
-      target before schema mutation.
-- [ ] **Corrective release:** merge the additive NULL-safe cron migration and
-      evidence/toolchain release through the protected `main` branch.
-- [ ] **Migrate and initialize:** apply the reviewed Drizzle history and
-      idempotently initialize `AgentState`.
-- [ ] **Baseline backup:** create and restore-verify a checksummed application
-      backup after initialization.
-- [ ] **Vault:** store the rotated cron secret, canonical Vercel origin, and
-      reviewed rollout mode.
-- [ ] **Disabled deployment and smoke:** deploy the exact release SHA with cron
-      unscheduled and pass automated plus manual target checks.
+## 5. Configuration readiness
 
-See `specs/deployment.md` for the ordered runbook.
+### GitHub release secrets
 
----
+Dev and prod require independent values for:
 
-## 2. Current v2.1 implementation progress
+```text
+POSTGRES_ADMIN_PASSWORD
+DATABASE_URL
+DIRECT_URL
+CRON_SECRET
+POSTHOG_API_KEY
+ADMIN_PASSWORD
+ADMIN_SESSION_SECRET
+RUNTIME_DATABASE_PASSWORD
+DEPLOYMENT_APPROVAL_SECRET
+```
 
-Verified locally; no production database mutation has occurred:
+Current state: runtime secret bindings passed both target smokes. The shared
+PostHog key remains environment-tagged deployment evidence only.
 
 - Coinbase pagination, complete UTC four-hour candle construction, freshness,
   gap, timeout, retry, and flat-RSI behavior are covered by focused tests.
@@ -186,138 +229,177 @@ Verified locally; no production database mutation has occurred:
   migration generation reports no drift; and the production dependency audit
   is clean. The 8-scenario aggregate reports 8 engineering assertion passes,
   3/8 beating cash, 2/8 beating buy-and-hold, and 0/8 beating both.
+Readiness requirements:
 
-Production remains blocked by corrective-release merge, target migrations and
-initialization, baseline backup/restore evidence, Vault and Resend configuration,
-disabled target smoke, controlled shadow/paper rollout, and evidence collection.
+- [x] `DATABASE_URL` uses the least-privilege `krypto_app` role.
+- [x] `DIRECT_URL` uses `krypto_owner`; both database URLs target the same
+  private PostgreSQL 17 database with `sslmode=require`.
+- [x] `DEPLOYMENT_APPROVAL_SECRET` differs from `CRON_SECRET`.
+- [x] Dev/prod events are query-isolated by mandatory deployment tags.
+- [ ] Move dev to a distinct PostHog project before production promotion.
+- [x] No long-lived Azure credential or Foundry API key is stored in GitHub.
 
-The current v2.2 preparation includes:
+ACS connection strings are not GitHub secrets or workflow inputs.
+`release.bicep` obtains each environment's Azure-generated value and writes it
+directly to that environment's Key Vault. Runtime configuration is
+`AZURE_COMMUNICATION_CONNECTION_STRING`,
+`AZURE_COMMUNICATION_EMAIL_SENDER`, and `ALERT_EMAIL_TO`.
 
-- read-only `deployment:preflight`, so verified credentials can immediately
-  prove runtime/direct cluster identity and produce redacted schema,
-  canonical-function, pending-HTTP-request, privilege, and blocker evidence
-  without mutating the target;
-- `deployment:backup`, which creates non-overwriting, checksummed custom-format
-  application archives, binds runtime/direct URLs to one database and
-  PostgreSQL system identifier, and can prove them by restoring into a
-  disposable loopback database and comparing critical row counts. Legacy
-  public backups include the required enum bootstrap and are restore-tested
-  before migration. Migration-only databases cannot produce a verified
-  application bundle, and queued Krypto HTTP work blocks backup.
-- `smoke:target`, which binds the deployed runtime to `DIRECT_URL`, enforces
-  disabled mode inside each run before lease acquisition, proves a mismatched
-  authenticated no-mutation mode probe creates no run/trade/lease mutation
-  even if its requested mode matches, rejects queued Krypto HTTP work, and
-  proves
-  target authentication, two persisted disabled runs, unchanged trades, lease
-  release, admin login/logout, sent email audit, and no-trade
-  Foundry/Coinbase/PostHog access. A successful report persists the target
-  origin/cron-secret-fingerprint approval required by cron activation.
+## 6. Dev release and activation gate
 
----
+Dev completed this sequence for release
+`0b717c96d9a63dc58c1b9ac13ecdf1e3347898c7`. The first scheduled execution,
+`caj-dev-agent-run-29779500`, succeeded at `2026-08-15T05:00:00Z`; the
+post-run snapshot remained reconciled, position-free, lease-free, and at zero
+trades.
 
-## 3. Known issues in the v2 code baseline
+The approved dev sequence is indivisible:
 
-The following issues were identified during the plan review at commit cda2bca.
-They are tracked in GitHub issues and draft PR #43. Issues marked [BLOCKS PROD]
-must be resolved in v2.1 before any production deployment.
+1. Deploy the exact CI-passed release in `disabled` mode with both jobs
+   `Manual`.
+2. Run and independently validate immutable `migrate-init`, `preflight`, and
+   `target-smoke` evidence.
+3. Stage `shadow` while both jobs remain `Manual`.
+4. Capture a UTC boundary and unique `manual-shadow:` key, then start exactly
+   one Manual hourly execution carrying that key.
+5. Run activation-check afterward and require immutable proof that the exact
+   new SHADOW `AgentRun` started after the boundary, reached a safe terminal
+   outcome, created zero `TradeExecution`, and released the lease.
+6. Capture the current schedule-activation timestamp; what-if, deploy, and
+   validate `schedule-monitoring.bicep` with the fail-closed
+   missing-hourly-success alert enabled; only then use `rollout.bicep` to
+   switch both jobs to `Schedule` with the exact image digest and activation
+   generation in the hourly idempotency namespace.
+7. Observe a successful unmarked hourly execution from the first scheduled
+   window; old same-hour executions from another image/generation cannot
+   qualify.
+8. Verify live mode, schedules, alert boundary, exact SHA, image digests, and
+   observed execution.
 
-| # | Category | Issue | Blocks |
-|---|---|---|---|
-| 1 | Security | Resolved locally: unused live-execution packages are removed, reachable direct packages are upgraded, and a same-major PostCSS override removes the vulnerable nested dependency. `npm audit --omit=dev` reports zero vulnerabilities. | [CI/PROD SMOKE PENDING] |
-| 2 | Data integrity | The destructive v2 Supabase seed has been removed. The replacement target is intentionally fresh and passed read-only inventory; reviewed migration, initialization, and post-migration backup remain. (ADR 0006) | [BLOCKS PROD: MIGRATION/BACKUP] |
-| 3 | Risk enforcement | Resolved locally: pure policy and in-transaction reauthorization enforce cold start, stop-loss, DCA, thresholds, cooldown, sizing, balances, dust, exposure, pause, lock, and drawdown. | [PROD SMOKE PENDING] |
-| 4 | Atomicity | Resolved locally: immutable trade insert, account transition, reconciliation fields, and `AgentRun` execution outcome commit in one locked transaction. Injected post-insert failure rolls back. | [PROD MIGRATION PENDING] |
-| 5 | Idempotency | Resolved locally: unique idempotency key and unique `TradeExecution.agentRunId`; parallel same-run execution produces one trade and one idempotent result. | [PROD SMOKE PENDING] |
-| 6 | PnL accuracy | Resolved locally: fixed-point weighted cost basis supports multiple buys, partial sells, realized PnL, and full-exit reset. | [PROD MIGRATION PENDING] |
-| 7 | Money representation | Resolved for new execution: numeric columns are authoritative; legacy float columns remain only during rollback compatibility. | [CONTRACT MIGRATION PENDING] |
-| 8 | Lease recovery | Resolved locally: owner/expiry lease acquisition, active-owner conflict, automatic expired recovery, owner-checked execution/release, and active-lease admin refusal are tested. | [PROD SMOKE PENDING] |
-| 9 | Retry visibility | Resolved locally: model calls have a 20-second attempt timeout, at most two attempts, typed auth/rate/timeout/model failures, and persisted/emitted attempt count plus latency. | [FOUNDRY SMOKE PENDING] |
-| 10 | Market data | Resolved locally: paginated retrieval, UTC alignment, complete-bucket filtering, freshness/gap validation, bounded retries, and timeouts are implemented and tested. Production smoke remains pending. | [BLOCKS PROD: SMOKE] |
-| 11 | Observability | Mostly resolved locally: per-request PostHog flush, typed/escaped daily-summary delivery, persisted delivery status, expiring admin sessions/logout, correct EMA rendering, AgentRun-backed health, atomic operator-action audits, and explicit safety-lock override are implemented and tested. The structured run path persists drawdown locks and emits guardrail telemetry but does not invoke the legacy guardrail-email helper; the PostHog drawdown alert remains required. | [BLOCKS PROD: TARGET SMOKE] |
+Any failure or cancellation from shadow staging onward must automatically
+restore `disabled`/`Manual`, verify both jobs are Manual with no schedule, then
+disable and verify the missing-success boundary at `0`. The deployment remains
+failed; successful rollback does not make a failed activation successful.
 
----
+## 7. Prod release gate
 
-## 4. Release gates
+Production release `ce7acc872f05899691ae44d4d826c9c8c94355c7` is deployed
+**disabled/manual**. Migration, restore verification, and all 15 target-smoke
+checks passed. No executable production promotion workflow is shipped or
+approved.
 
-> This section records current gate disposition. PR-G0 through PR-G4 ordering,
-> authorization, durations, and completeness thresholds in
-> [`production-readiness-prd.v1.md`](./production-readiness-prd.v1.md) are
-> authoritative.
+Before any prod environment mutation:
 
-### v2.1 -- Safety and Correctness
+- [x] Detect either a complete current release or a proven-fresh environment;
+  partial state fails closed.
+- [x] Verify the first environment was release-free; later final-image updates
+  started from an already disabled/manual release and did not mutate the
+  foundation.
+- [x] Resolve and verify the live SHA, image digests, and config.
+- [x] Create the fresh baseline restore-verified backup. Future replacement
+  releases must run current-release preflight and backup and require its
+  `JOB_EXECUTION_ID` to end `-current` so same-SHA current/new-release evidence
+  paths cannot collide.
+- [x] Only then apply environment mutation.
+- [x] Deploy the new release disabled/manual and validate migration,
+  baseline backup, target smoke, and immutable live state.
 
-Status: Locally complete. Hosted CI and target-environment evidence remain
-required before production deployment.
+Prod deploy and rotation share the `azure-production-mutation` concurrency
+lock and queue rather than cancel one another. The
+`production-promotion` identity/environment has no activation workflow; any
+future promotion requires a new evidence-bound design and review.
 
-All criteria must be met before any production deployment:
+## 8. Mandatory provider and evidence gates
 
-- [x] Seed migration replaced with idempotent `INSERT ... ON CONFLICT DO NOTHING`
-      script (issue #2, ADR 0006).
-- [x] No unresolved critical advisory and no reachable high-severity direct
-      advisory without documented ownership, reachability analysis, and an
-      expiry condition (issue #1).
-- [x] One reviewed Drizzle history supports fresh and existing-v2 databases,
-      uses `DIRECT_URL`, preserves rows, and moves application data into the
-      private `krypto` schema with restricted fixed cron functions.
-- [x] All risk rules (stop-loss, DCA count, trade size bounds, trigger thresholds)
-      enforced in `authorizeTradeIntent` (deterministic TypeScript, not prompt)
-      (issue #3, ADR 0005).
-- [x] Trade execution wrapped in a single DB transaction (issue #4).
-- [x] Execution path idempotent: idempotency key per run, retry-safe (issue #5).
-- [x] PnL uses weighted-average cost basis, not latest-BUY anchor (issue #6).
-- [x] New execution uses Drizzle numeric/fixed-point values; legacy float columns
-      are compatibility-only until the post-deployment contract migration
-      (issue #7).
-- [x] Run concurrency uses an owned expiring lease with owner-checked release
-      and expired-lease recovery (issue #8).
-- [x] LLM retry count and latency captured in `AgentRun` and PostHog
-      `llm_token_usage` events
-      (issue #9).
-- [x] Coinbase market-data error handling returns a structured error with HTTP
-      status code and prevents candle misalignment (issue #10).
-- [x] PostHog event schema, daily-summary email path, and admin dashboard are
-      consistent and covered by tests; drawdown alerting uses the required
-      PostHog monitoring rule (issue #11).
-- [x] The coverage-gated Jest suite and the real-PostgreSQL migration,
-      privilege, transaction, accounting, lease, and orchestration suites pass.
+No provider is ready until retained live evidence proves all applicable rows:
 
-### v2.2 -- Evidence-Grade Paper Trading
+| Gate | Required evidence | Current state |
+|---|---|---|
+| Azure resource providers | Owner registration completed; applicable deployment workflow `--check-only` checks passed | **Passed** |
+| Foundry | Exact account/model/version/SKU/capacity and Entra plain + structured `HOLD` smokes | **Passed on operational fallback:** both deployments live; no model API key used |
+| Quota | One exact catalog `usageName`, one exact quota dimension, and sufficient incremental capacity after subtracting only exact replaceable target deployments | **Passed** in the failed platform run |
+| Coinbase | Authenticated provider smoke from the deployed target | **Passed in dev and prod target smoke** |
+| ACS Email | Environment-specific sender; actual `sent` result and persisted delivery audit | **Passed in dev and prod** |
+| PostHog | Mandatory environment tagging now; distinct projects before promotion | **Tagged ingestion passed; separate projects pending** |
+| Database | Migration/init report, private target validation, app/owner role separation | **Passed in dev and prod** |
+| Backup | Restore-verified backup bound to exact target SHA/digest | **Passed in dev proof and production baseline** |
+| Admin/auth | Target-smoke proof without disclosing credentials | **Passed in dev and prod** |
+| Scheduler | Unique manual-shadow proof, post-run activation report, digest/generation-namespaced scheduled success, and cross-mode replay rejection | **Passed in dev; production intentionally Manual** |
+| Monitoring | Terminal job-failure alerts and activation-bound missing-hourly-success alert | **Passed; both Action Group tests dispatched successfully** |
+| Rollback | Verified restoration to disabled/manual, followed by monitoring disablement, after an induced or actual failed dev activation | Pending |
 
-Status: Draft deployment/evidence phase. The local preflight, backup, target
-smoke, and evaluation tooling is implemented; target inventory, controlled
-shadow/paper rollout, and the evidence window remain incomplete. See RFC 0002
-Gates 2 and 3.
+Evidence must be bound to the exact release SHA and immutable web/ops image
+digests. Job execution must use the full live template via `--yaml`, always
+inject `JOB_EXECUTION_ID`, and accept only the three validated attended-proof
+overrides: `SCHEDULED_IDEMPOTENCY_KEY`,
+`EXPECTED_SHADOW_IDEMPOTENCY_KEY`, and
+`EXPECTED_SHADOW_STARTED_AFTER`. A reconstructed approximation or arbitrary
+environment override does not qualify. Immutable evidence storage and
+independent download validation remain mandatory.
 
-- [ ] All v2.1 gates satisfied.
-- [ ] Schema reconciliation: confirm the production Supabase DB schema matches
-      `src/db/schema.ts` before first deploy (ADR 0006).
-- [ ] Shadow-mode run, authorization, rejection, alert, and journal evidence is
-      reviewed and contains no unexplained route or accounting errors.
-- [ ] Guardrails (drawdown, cooldown, operator pause) fire as expected under real
-      cron traffic in shadow mode.
-- [ ] Operator approval to promote to `paper` mode.
-- [ ] Paper mode running for >= 30 calendar days.
-- [ ] At least one evaluation window completed and results documented (per
-      `specs/evaluation.md` §4 and §6).
-- [ ] Results beat the cash baseline for the evaluation window.
-- [ ] Manual journal review: coherent LLM reasoning observed; no prompt gaming
-      detected.
+The execution helper must reject any template volume or container/init-container
+volume mount because Azure `JobExecutionTemplate` cannot preserve them through
+this override path. Current Project Krypto jobs use none.
 
-### v3 -- Live Trading
+## 9. Monitoring readiness
 
-Status: RFC stub only. See `specs/rfcs/0001-v3-live-trading.md`.
+- [x] Azure Monitor terminal-failure alerts exist for scheduler jobs.
+- [x] Schedule activation records the current UTC epoch and enables the
+  fail-closed missing-hourly-success alert through
+  `schedule-monitoring.bicep` before `rollout.bicep` switches to `Schedule`.
+- [x] A successful hourly execution must be newer than that activation
+  boundary; old executions cannot satisfy the alert.
+- [x] Alert Action Group delivery is verified.
+- [ ] PostHog events appear in the correct environment-specific project.
+- [x] ACS guardrail/daily delivery evidence is persisted and queryable.
+- [x] No schedule is considered healthy until an unmarked scheduled execution
+  succeeds after activation.
+- [ ] Disable, rollback, and rotation paths first verify both jobs are Manual
+  with no schedule, then disable monitoring and reset its boundary to `0`.
 
-All criteria must be met before the v3 RFC can advance from Draft to Accepted:
+See [`monitoring.md`](./monitoring.md) for signals and thresholds.
 
-- [ ] All v2.2 gates satisfied.
-- [ ] At least two non-overlapping 30-day evaluation windows show positive net PnL,
-      positive Sharpe ratio, and final equity beating both cash and buy-and-hold
-      baselines (per `specs/evaluation.md` §5).
-- [ ] `ExecutionAdapter` interface defined, reviewed, and in use (RFC 0001 revised).
-- [ ] `authorizeTradeIntent` deterministic authorization layer (ADR 0005) in
-      production use for >= 30 days without false-accept or false-reject incidents.
-- [ ] MPC wallet provisioning and recovery plan reviewed and approved.
-- [ ] Live trading risk register: maximum-loss scenarios identified and mitigations
-      agreed.
-- [ ] All preconditions in `specs/rfcs/0001-v3-live-trading.md` satisfied.
+## 10. v2.2 paper-trading evidence gate
+
+Azure deployment readiness proves infrastructure, not strategy readiness.
+Paper promotion additionally requires:
+
+- [ ] disabled and shadow evidence with no order mutation in either mode;
+- [ ] an explicitly approved paper-mode transition;
+- [ ] at least 30 consecutive days of complete scheduled paper evidence;
+- [ ] zero guardrail breaches and zero duplicate overlapping runs;
+- [ ] recorded turnover, fees, spread/slippage assumptions, drawdown, exposure,
+  and benchmark-relative performance;
+- [ ] complete decision, execution, email, analytics, and backup audit trails;
+- [ ] reviewer sign-off on immutable evidence bound to the deployed release.
+
+Imported, simulated, or historical reports are engineering-only and cannot
+satisfy the production evidence window.
+
+Passing these gates would support a future review; it does not activate
+production. A new evidence-bound promotion design and executable workflow must
+be reviewed and approved separately.
+
+## 11. v3 live-money boundary
+
+Live execution remains prohibited unless a future reviewed implementation and
+explicit approval establish, at minimum:
+
+- at least 60 consecutive days of qualifying paper evidence;
+- a broker sandbox/certification pass;
+- an independent execution adapter with idempotency controls;
+- a tested kill switch and incident runbook;
+- explicit human approval for every live rollout boundary; and
+- a separate ADR and readiness sign-off.
+
+Model output never directly mutates an execution venue. Deterministic
+validation, guardrails, transaction semantics, and audit persistence remain
+mandatory.
+
+## 12. Exit criteria
+
+Azure deployment exit criteria are met for dev shadow and production
+disabled/manual. The public origins are recorded in
+[`architecture.md`](./architecture.md). Paper promotion, a locked production
+immutability policy, separate PostHog projects, and live-money execution remain
+separate decisions and are not authorized.

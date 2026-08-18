@@ -128,12 +128,9 @@ async function createOpenPosition(now: Date): Promise<void> {
 
 async function main(): Promise<void> {
   delete process.env.POSTHOG_API_KEY;
-  delete process.env.ANTHROPIC_FOUNDRY_BASE_URL;
-  delete process.env.ANTHROPIC_FOUNDRY_API_KEY;
-  delete process.env.ANTHROPIC_FOUNDRY_DEPLOYMENT;
-  delete process.env.AZURE_OPENAI_ENDPOINT;
-  delete process.env.AZURE_OPENAI_API_KEY;
+  delete process.env.AZURE_OPENAI_BASE_URL;
   delete process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
+  delete process.env.AZURE_CLIENT_ID;
 
   await resetAccount();
   process.env.ROLLOUT_MODE = "paper";
@@ -242,7 +239,7 @@ async function main(): Promise<void> {
   assert.equal((await db.select().from(tradeExecution)).length, 1);
 
   await resetAccount();
-  process.env.ROLLOUT_MODE = "paper";
+  process.env.ROLLOUT_MODE = "disabled";
   await db
     .update(agentState)
     .set({
@@ -304,7 +301,7 @@ async function main(): Promise<void> {
     id: "stale-running-run",
     idempotencyKey: "run-flow-stale-running",
     triggerSource: "cron",
-    tradingMode: "PAPER",
+    tradingMode: "DISABLED",
     outcome: "RUNNING",
     strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
   });

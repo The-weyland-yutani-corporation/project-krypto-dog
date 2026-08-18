@@ -1,0 +1,445 @@
+import {
+  buildIdempotencyKey,
+  resolveScheduledTriggerConfig,
+  runScheduledTrigger,
+  ScheduledTriggerConfigError,
+  ScheduledTriggerRequestError,
+  validateCronSecret,
+  validateRolloutMode,
+  validateScheduledIdempotencyKey,
+  validateScheduledIdempotencyNamespace,
+  validateScheduledRoute,
+  validateTargetBaseUrl,
+} from "@/deployment/scheduled-trigger";
+
+const VALID_ENV = {
+  TARGET_BASE_URL: "https://krypto.example.com",
+  SCHEDULED_ROUTE: "/api/agent/run",
+  CRON_SECRET: "trigger-secret",
+  ROLLOUT_MODE: "disabled",
+};
+
+describe("validateTargetBaseUrl", () => {
+  it("accepts an HTTPS base URL", () => {
+    const url = validateTargetBaseUrl("https://krypto.example.com");
+    expect(url.toString()).toBe("https://krypto.example.com/");
+  });
+
+  it("accepts an HTTP loopback target", () => {
+    expect(() => validateTargetBaseUrl("http://localhost:3000")).not.toThrow();
+    expect(() => validateTargetBaseUrl("http://127.0.0.1:3000")).not.toThrow();
+    expect(() => validateTargetBaseUrl("http://[::1]:3000")).not.toThrow();
+  });
+
+  it("rejects a missing value", () => {
+    expect(() => validateTargetBaseUrl(undefined)).toThrow(
+      ScheduledTriggerConfigError,
+    );
+    expect(() => validateTargetBaseUrl("")).toThrow(
+      ScheduledTriggerConfigError,
+    );
+  });
+
+  it("rejects a malformed URL", () => {
+    expect(() => validateTargetBaseUrl("not-a-url")).toThrow(
+      ScheduledTriggerConfigError,
+    );
+  });
+
+  it("rejects a non-HTTP(S) protocol", () => {
+    expect(() => validateTargetBaseUrl("ftp://krypto.example.com")).toThrow(
+      ScheduledTriggerConfigError,
+    );
+  });
+
+  it("rejects plain HTTP against a non-loopback host", () => {
+    expect(() => validateTargetBaseUrl("http://krypto.example.com")).toThrow(
+      /HTTPS/,
+    );
+  });
+
+  it("rejects embedded credentials, query, or fragment", () => {
+    expect(() =>
+      validateTargetBaseUrl("https://user:pass@krypto.example.com"),
+    ).toThrow(ScheduledTriggerConfigError);
+    expect(() =>
+      validateTargetBaseUrl("https://krypto.example.com/?x=1"),
+    ).toThrow(ScheduledTriggerConfigError);
+    expect(() =>
+      validateTargetBaseUrl("https://krypto.example.com/#frag"),
+    ).toThrow(ScheduledTriggerConfigError);
+  });
+
+  it("rejects a non-root pathname (must be a bare origin; SCHEDULED_ROUTE supplies the path)", () => {
+    expect(() =>
+      validateTargetBaseUrl("https://krypto.example.com/api/agent/run"),
+    ).toThrow(ScheduledTriggerConfigError);
+    expect(() =>
+      validateTargetBaseUrl("https://krypto.example.com/some/sub/path"),
+    ).toThrow(/bare origin/);
+  });
+
+  it("accepts an explicit trailing-slash root pathname", () => {
+    expect(() =>
+      validateTargetBaseUrl("https://krypto.example.com/"),
+    ).not.toThrow();
+  });
+});
+
+describe("validateScheduledRoute", () => {
+  it("accepts the two allowed routes", () => {
+    expect(validateScheduledRoute("/api/agent/run")).toBe("/api/agent/run");
+    expect(validateScheduledRoute("/api/agent/daily-summary")).toBe(
+      "/api/agent/daily-summary",
+    );
+  });
+
+  it("rejects any other route", () => {
+    expect(() => validateScheduledRoute("/api/admin/run-agent")).toThrow(
+      ScheduledTriggerConfigError,
+    );
+    expect(() => validateScheduledRoute(undefined)).toThrow(
+      ScheduledTriggerConfigError,
+    );
+    expect(() => validateScheduledRoute("")).toThrow(
+      ScheduledTriggerConfigError,
+    );
+    expect(() => validateScheduledRoute("/api/agent/run/")).toThrow(
+      ScheduledTriggerConfigError,
+    );
+  });
+});
+
+describe("validateCronSecret", () => {
+  it("accepts a non-empty string", () => {
+    expect(validateCronSecret("s3cret")).toBe("s3cret");
+  });
+
+  it("rejects missing or blank values", () => {
+    expect(() => validateCronSecret(undefined)).toThrow(
+      ScheduledTriggerConfigError,
+    );
+    expect(() => validateCronSecret("")).toThrow(ScheduledTriggerConfigError);
+    expect(() => validateCronSecret("   ")).toThrow(
+      ScheduledTriggerConfigError,
+    );
+  });
+});
+
+describe("validateRolloutMode", () => {
+  it("accepts and normalizes the three trading modes", () => {
+    expect(validateRolloutMode("disabled")).toBe("disabled");
+    expect(validateRolloutMode("Shadow")).toBe("shadow");
+    expect(validateRolloutMode("PAPER")).toBe("paper");
+  });
+
+  describe("validateScheduledIdempotencyKey", () => {
+    it("accepts a bounded manual shadow proof key", () => {
+      expect(
+        validateScheduledIdempotencyKey(
+          "manual-shadow:run123-a1",
+          "/api/agent/run",
+          "shadow",
+        ),
+      ).toBe("manual-shadow:run123-a1");
+    });
+
+    describe("validateScheduledIdempotencyNamespace", () => {
+      const digest = `sha256:${"a".repeat(64)}-1776081600`;
+
+      it("accepts an image-and-activation namespace for agent runs", () => {
+        expect(
+          validateScheduledIdempotencyNamespace(digest, "/api/agent/run"),
+        ).toBe(digest);
+      });
+
+      it("rejects malformed and daily-summary namespaces", () => {
+        expect(() =>
+          validateScheduledIdempotencyNamespace("release-main", "/api/agent/run"),
+        ).toThrow(ScheduledTriggerConfigError);
+        expect(() =>
+          validateScheduledIdempotencyNamespace(
+            digest,
+            "/api/agent/daily-summary",
+          ),
+        ).toThrow(ScheduledTriggerConfigError);
+      });
+    });
+
+    it("rejects unsafe keys and daily-summary overrides", () => {
+      expect(() =>
+        validateScheduledIdempotencyKey(
+          "cron:2026-08-13T12",
+          "/api/agent/run",
+          "shadow",
+        ),
+      ).toThrow(ScheduledTriggerConfigError);
+      expect(() =>
+        validateScheduledIdempotencyKey(
+          "manual-shadow:run123",
+          "/api/agent/daily-summary",
+          "shadow",
+        ),
+      ).toThrow(ScheduledTriggerConfigError);
+      expect(() =>
+        validateScheduledIdempotencyKey(
+          "manual-shadow:run123",
+          "/api/agent/run",
+          "paper",
+        ),
+      ).toThrow(/requires ROLLOUT_MODE=shadow/);
+    });
+  });
+
+  it("rejects invalid or missing values", () => {
+    expect(() => validateRolloutMode("live")).toThrow(
+      ScheduledTriggerConfigError,
+    );
+    expect(() => validateRolloutMode(undefined)).toThrow(
+      ScheduledTriggerConfigError,
+    );
+    expect(() => validateRolloutMode("")).toThrow(ScheduledTriggerConfigError);
+  });
+});
+
+describe("resolveScheduledTriggerConfig", () => {
+  it("resolves a fully valid environment", () => {
+    const config = resolveScheduledTriggerConfig(VALID_ENV);
+    expect(config.route).toBe("/api/agent/run");
+    expect(config.cronSecret).toBe("trigger-secret");
+    expect(config.rolloutMode).toBe("disabled");
+    expect(config.targetUrl.toString()).toBe("https://krypto.example.com/");
+    expect(config.explicitIdempotencyKey).toBeUndefined();
+    expect(config.idempotencyNamespace).toBeUndefined();
+  });
+
+  it("throws on the first invalid field", () => {
+    expect(() =>
+      resolveScheduledTriggerConfig({ ...VALID_ENV, CRON_SECRET: "" }),
+    ).toThrow(ScheduledTriggerConfigError);
+  });
+});
+
+describe("buildIdempotencyKey", () => {
+  it("is stable within the same UTC hour for agent runs", () => {
+    const a = buildIdempotencyKey(
+      "/api/agent/run",
+      new Date("2026-08-12T16:00:00.000Z"),
+    );
+    const b = buildIdempotencyKey(
+      "/api/agent/run",
+      new Date("2026-08-12T16:59:59.999Z"),
+    );
+    expect(a).toBe(b);
+    expect(a).toBe("cron:2026-08-12T16");
+  });
+
+  it("changes across a UTC hour boundary", () => {
+    const a = buildIdempotencyKey(
+      "/api/agent/run",
+      new Date("2026-08-12T16:59:59.999Z"),
+    );
+    const b = buildIdempotencyKey(
+      "/api/agent/run",
+      new Date("2026-08-12T17:00:00.000Z"),
+    );
+    expect(a).not.toBe(b);
+  });
+
+  it("is undefined for daily-summary", () => {
+    expect(
+      buildIdempotencyKey("/api/agent/daily-summary", new Date()),
+    ).toBeUndefined();
+  });
+
+  it("uses an explicit manual-shadow key instead of the hourly key", () => {
+    expect(
+      buildIdempotencyKey(
+        "/api/agent/run",
+        new Date("2026-08-12T16:30:00.000Z"),
+        "manual-shadow:run123-a1",
+      ),
+    ).toBe("manual-shadow:run123-a1");
+  });
+
+  it("namespaces scheduled keys by image and activation generation", () => {
+    const namespace = `sha256:${"b".repeat(64)}-1776081600`;
+    expect(
+      buildIdempotencyKey(
+        "/api/agent/run",
+        new Date("2026-08-12T16:30:00.000Z"),
+        undefined,
+        namespace,
+      ),
+    ).toBe(`cron:${namespace}:2026-08-12T16`);
+  });
+});
+
+describe("runScheduledTrigger", () => {
+  it("sends the expected headers, method, and idempotency key for agent runs", async () => {
+    const fetchImpl = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () =>
+      Response.json({ ok: true }),
+    );
+
+    const outcome = await runScheduledTrigger({
+      env: VALID_ENV,
+      now: new Date("2026-08-12T16:30:00.000Z"),
+      fetchImpl,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [requestUrl, init] = fetchImpl.mock.calls[0];
+    expect(String(requestUrl)).toBe("https://krypto.example.com/api/agent/run");
+    expect(init?.method).toBe("POST");
+    const headers = new Headers(init?.headers as HeadersInit);
+    expect(headers.get("x-cron-secret")).toBe("trigger-secret");
+    expect(headers.get("x-required-rollout-mode")).toBe("disabled");
+    expect(headers.get("x-idempotency-key")).toBe("cron:2026-08-12T16");
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+
+    expect(outcome.status).toBe(200);
+    expect(outcome.route).toBe("/api/agent/run");
+    expect(outcome.idempotencyKey).toBe("cron:2026-08-12T16");
+    expect(outcome.requestUrl).toBe(
+      "https://krypto.example.com/api/agent/run",
+    );
+    expect(typeof outcome.durationMs).toBe("number");
+  });
+
+  it("omits the idempotency key header for daily-summary", async () => {
+    const fetchImpl = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () =>
+      Response.json({ ok: true }),
+    );
+
+    await runScheduledTrigger({
+      env: { ...VALID_ENV, SCHEDULED_ROUTE: "/api/agent/daily-summary" },
+      fetchImpl,
+    });
+
+    const [, init] = fetchImpl.mock.calls[0];
+    const headers = new Headers(init?.headers as HeadersInit);
+    expect(headers.has("x-idempotency-key")).toBe(false);
+  });
+
+  it("sends the explicit manual shadow idempotency key", async () => {
+    const fetchImpl = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >(async () => Response.json({ ok: true }));
+
+    await runScheduledTrigger({
+      env: {
+        ...VALID_ENV,
+        ROLLOUT_MODE: "shadow",
+        SCHEDULED_IDEMPOTENCY_KEY: "manual-shadow:run123-a1",
+      },
+      fetchImpl,
+    });
+
+    const [, init] = fetchImpl.mock.calls[0];
+    const headers = new Headers(init?.headers as HeadersInit);
+    expect(headers.get("x-idempotency-key")).toBe("manual-shadow:run123-a1");
+  });
+
+  it("sends an image-and-activation namespaced scheduled key", async () => {
+    const namespace = `sha256:${"c".repeat(64)}-1776081600`;
+    const fetchImpl = jest.fn<
+      ReturnType<typeof fetch>,
+      Parameters<typeof fetch>
+    >(async () => Response.json({ ok: true }));
+
+    await runScheduledTrigger({
+      env: {
+        ...VALID_ENV,
+        ROLLOUT_MODE: "shadow",
+        SCHEDULED_IDEMPOTENCY_NAMESPACE: namespace,
+      },
+      now: new Date("2026-08-12T16:30:00.000Z"),
+      fetchImpl,
+    });
+
+    const [, init] = fetchImpl.mock.calls[0];
+    const headers = new Headers(init?.headers as HeadersInit);
+    expect(headers.get("x-idempotency-key")).toBe(
+      `cron:${namespace}:2026-08-12T16`,
+    );
+  });
+
+  it("treats a non-2xx response as a failure", async () => {
+    const fetchImpl = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
+      async () => new Response("unauthorized", { status: 401 }),
+    );
+
+    await expect(
+      runScheduledTrigger({
+        env: VALID_ENV,
+        fetchImpl,
+      }),
+    ).rejects.toThrow(ScheduledTriggerRequestError);
+  });
+
+  it("includes the response status on request failure", async () => {
+    const fetchImpl = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
+      async () => new Response("boom", { status: 500 }),
+    );
+
+    await expect(
+      runScheduledTrigger({
+        env: VALID_ENV,
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ status: 500 });
+  });
+
+  it("wraps a network failure without leaking the cron secret", async () => {
+    const fetchImpl = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () => {
+      throw new TypeError("fetch failed");
+    });
+
+    await expect(
+      runScheduledTrigger({
+        env: VALID_ENV,
+        fetchImpl,
+      }),
+    ).rejects.toThrow(ScheduledTriggerRequestError);
+
+    try {
+      await runScheduledTrigger({
+        env: VALID_ENV,
+        fetchImpl,
+      });
+      throw new Error("expected runScheduledTrigger to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ScheduledTriggerRequestError);
+      expect((error as Error).message).not.toContain(VALID_ENV.CRON_SECRET);
+    }
+  });
+
+  it("bounds the request with an abort signal derived from timeoutMs", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const fetchImpl = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async (_url, init) => {
+      capturedSignal = init?.signal as AbortSignal;
+      return Response.json({ ok: true });
+    });
+
+    await runScheduledTrigger({
+      env: VALID_ENV,
+      fetchImpl,
+      timeoutMs: 5,
+    });
+
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("propagates configuration errors before making any request", async () => {
+    const fetchImpl = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>();
+
+    await expect(
+      runScheduledTrigger({
+        env: { ...VALID_ENV, SCHEDULED_ROUTE: "/api/admin/run-agent" },
+        fetchImpl,
+      }),
+    ).rejects.toThrow(ScheduledTriggerConfigError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});

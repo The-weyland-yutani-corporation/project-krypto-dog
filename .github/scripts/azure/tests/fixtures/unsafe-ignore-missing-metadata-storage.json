@@ -1,0 +1,20 @@
+{
+  "changes": [
+    {
+      "changeType": "Ignore",
+      "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-krypto-dev/providers/Microsoft.Storage/storageAccounts/stkryptodevevid",
+      "before": {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-krypto-dev/providers/Microsoft.Storage/storageAccounts/stkryptodevevid",
+        "name": "stkryptodevevid",
+        "type": "Microsoft.Storage/storageAccounts",
+        "location": "westus3"
+      },
+      "after": {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-krypto-dev/providers/Microsoft.Storage/storageAccounts/stkryptodevevid",
+        "name": "stkryptodevevid",
+        "type": "Microsoft.Storage/storageAccounts",
+        "location": "westus3"
+      }
+    }
+  ]
+}

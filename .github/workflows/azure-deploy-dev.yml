@@ -1,0 +1,1483 @@
+name: Azure deploy dev
+
+# Automatic dev deploy after a successful CI run on the exact `develop/azure`
+# branch (a push-triggered CI run, never a pull_request-triggered run,
+# so this never deploys from an unmerged PR head), plus a manual
+# workflow_dispatch escape hatch. Always checks out the exact commit SHA
+# the triggering CI run validated -- never a re-resolved/moving `develop`
+# ref -- so what gets deployed is provably the same commit CI passed.
+#
+# Manual runs may stop at the `foundation` stage after environment.bicep.
+# Full runs continue: build immutable web/ops images -> release.bicep
+# (disabled/Manual) -> migrate-init -> preflight -> target-smoke -> stage
+# shadow with both jobs still Manual -> activation-check -> exactly one
+# successful manual hourly execution -> Schedule -> observe a successful
+# hourly execution from the scheduled window -> verify the live
+# shadow/Schedule/SHA/digest state. Any failure after shadow staging invokes
+# a fail-closed rollback to disabled/Manual. Automatic workflow_run events
+# always use the full path.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Exact 40-hex commit SHA to deploy. Required for manual dispatch."
+        required: true
+        type: string
+      deployment_stage:
+        description: "foundation deploys environment.bicep only; full performs the complete disabled-to-shadow rollout."
+        required: true
+        default: full
+        type: choice
+        options:
+          - foundation
+          - full
+
+concurrency:
+  group: azure-deploy-dev-development
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DEV_RESOURCE_GROUP_NAME: ${{ vars.DEV_RESOURCE_GROUP_NAME }}
+  DEV_IDENTITY_NAME: ${{ vars.DEV_IDENTITY_NAME }}
+  OPS_JOB_TIMEOUT_SECONDS: "1800"
+  SCHEDULE_OBSERVATION_TIMEOUT_SECONDS: "4800"
+  DEV_WEB_APP_NAME: ca-dev-web
+  DEV_HOURLY_JOB_NAME: caj-dev-agent-run
+  DEV_DAILY_JOB_NAME: caj-dev-daily-summary
+
+jobs:
+  gate:
+    name: Determine and validate the commit to deploy
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'develop/azure')
+    permissions:
+      contents: read
+      actions: read
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
+      INPUT_DEPLOYMENT_STAGE: ${{ inputs.deployment_stage }}
+      WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      deployment_stage: ${{ steps.resolve.outputs.deployment_stage }}
+    steps:
+      # fetch-depth: 0 is required so verify-deploy-sha.sh's
+      # `git merge-base --is-ancestor` (manual-dispatch path only) can
+      # walk the FULL commit history, not just a shallow tip -- a
+      # shallow clone would make an otherwise-valid ancestor commit look
+      # unreachable and either false-fail or silently short-circuit the
+      # check, neither of which is acceptable for a safety gate.
+      - name: Checkout (full history, for lib/common.sh and SHA verification)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and format-validate the exact commit SHA to deploy
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            candidate="${INPUT_COMMIT_SHA}"
+          else
+            candidate="${WORKFLOW_RUN_HEAD_SHA}"
+          fi
+          source .github/scripts/azure/lib/common.sh
+          validated="$(azure_validate_release_sha "${candidate}")"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            deployment_stage="${INPUT_DEPLOYMENT_STAGE}"
+          else
+            deployment_stage="full"
+          fi
+          if [ "${deployment_stage}" != "foundation" ] && [ "${deployment_stage}" != "full" ]; then
+            echo "deployment_stage must be exactly 'foundation' or 'full'." >&2
+            exit 1
+          fi
+          echo "sha=${validated}" >> "$GITHUB_OUTPUT"
+          echo "deployment_stage=${deployment_stage}" >> "$GITHUB_OUTPUT"
+          echo "Resolved candidate commit ${validated} (event=${EVENT_NAME}, deployment_stage=${deployment_stage})."
+
+      # The automatic workflow_run path is already provably safe by
+      # construction (this job's own `if:` condition above only lets a
+      # workflow_run event through when CI's own event/conclusion/branch
+      # match `push`/`success`/`develop` -- GitHub computes those fields
+      # itself from the real completed run, so they cannot be spoofed by
+      # an operator). A manually-dispatched SHA carries no such
+      # guarantee -- it is arbitrary operator input -- so it alone must
+      # additionally be proven to be a real ancestor of origin/develop/azure
+      # AND to have its own successful, push-triggered CI run before it
+      # is allowed to reach any deploy step. This is a hard, non-format
+      # check: a syntactically valid 40-hex SHA that fails either
+      # condition is rejected exactly like a malformed one.
+      - name: Verify manually-dispatched SHA is an ancestor of develop with a successful push CI run
+        if: env.EVENT_NAME == 'workflow_dispatch'
+        env:
+          RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
+          TARGET_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          .github/scripts/azure/verify-deploy-sha.sh \
+            --sha "${RESOLVED_SHA}" \
+            --branch develop/azure \
+            --repo "${TARGET_REPO}" \
+            --ci-workflow ci.yml
+
+  deploy-environment:
+    name: Deploy infra/environment.bicep (dev)
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+    outputs:
+      acr_name: ${{ steps.outputs.outputs.acr_name }}
+      acr_login_server: ${{ steps.outputs.outputs.acr_login_server }}
+      container_apps_environment_id: ${{ steps.outputs.outputs.container_apps_environment_id }}
+      runtime_identity_id: ${{ steps.outputs.outputs.runtime_identity_id }}
+      runtime_identity_client_id: ${{ steps.outputs.outputs.runtime_identity_client_id }}
+      runtime_identity_principal_id: ${{ steps.outputs.outputs.runtime_identity_principal_id }}
+      scheduler_identity_id: ${{ steps.outputs.outputs.scheduler_identity_id }}
+      scheduler_identity_client_id: ${{ steps.outputs.outputs.scheduler_identity_client_id }}
+      scheduler_identity_principal_id: ${{ steps.outputs.outputs.scheduler_identity_principal_id }}
+      ops_identity_id: ${{ steps.outputs.outputs.ops_identity_id }}
+      ops_identity_principal_id: ${{ steps.outputs.outputs.ops_identity_principal_id }}
+      ops_identity_client_id: ${{ steps.outputs.outputs.ops_identity_client_id }}
+      evidence_storage_account_name: ${{ steps.outputs.outputs.evidence_storage_account_name }}
+      evidence_container_name: ${{ steps.outputs.outputs.evidence_container_name }}
+      evidence_container_url: ${{ steps.outputs.outputs.evidence_container_url }}
+      evidence_immutability_retention_days: ${{ steps.outputs.outputs.evidence_immutability_retention_days }}
+      communication_service_name: ${{ steps.outputs.outputs.communication_service_name }}
+      communication_email_sender: ${{ steps.outputs.outputs.communication_email_sender }}
+      log_analytics_workspace_id: ${{ steps.outputs.outputs.log_analytics_workspace_id }}
+      action_group_id: ${{ steps.outputs.outputs.action_group_id }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Require registered Azure providers
+        run: .github/scripts/azure/register-providers.sh --check-only
+
+      - name: Resolve the dev OIDC identity's principal ID
+        id: identity
+        run: |
+          set -euo pipefail
+          principal_id="$(az identity show \
+            --name "${DEV_IDENTITY_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --query principalId \
+            --output tsv)"
+          if [ -z "${principal_id}" ]; then
+            echo "Could not resolve a principal ID for identity '${DEV_IDENTITY_NAME}'." >&2
+            exit 1
+          fi
+          echo "::add-mask::${principal_id}"
+          echo "principal_id=${principal_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Render environment.dev.bicepparam
+        run: |
+          set -euo pipefail
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/environment.dev.bicepparam \
+            --out /tmp/environment.dev.resolved.bicepparam \
+            --set REPLACE_WITH_BOOTSTRAP_DEV_IDENTITY_PRINCIPAL_ID="${{ steps.identity.outputs.principal_id }}"
+
+      - name: What-if infra/environment.bicep
+        env:
+          POSTGRES_ADMIN_PASSWORD_DEV: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --template-file infra/environment.bicep \
+            --parameters /tmp/environment.dev.resolved.bicepparam \
+            --result-format FullResourcePayloads \
+            --no-pretty-print \
+            --output json > /tmp/whatif-environment.json
+
+      - name: Reject unsafe what-if deletes
+        run: node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-environment.json
+
+      - name: Deploy infra/environment.bicep
+        id: deploy
+        env:
+          POSTGRES_ADMIN_PASSWORD_DEV: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --name "env-dev-${RESOLVED_SHA}" \
+            --template-file infra/environment.bicep \
+            --parameters /tmp/environment.dev.resolved.bicepparam \
+            --query properties.outputs \
+            --output json > /tmp/environment-outputs.json
+          cat /tmp/environment-outputs.json
+
+      - name: Extract environment.bicep outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          for name in \
+            acrName \
+            acrLoginServer \
+            containerAppsEnvironmentId \
+            runtimeIdentityId \
+            runtimeIdentityClientId \
+            runtimeIdentityPrincipalId \
+            schedulerIdentityId \
+            schedulerIdentityClientId \
+            schedulerIdentityPrincipalId \
+            opsIdentityId \
+            opsIdentityPrincipalId \
+            opsIdentityClientId \
+            evidenceStorageAccountName \
+            evidenceContainerName \
+            evidenceContainerUrl \
+            evidenceImmutabilityRetentionDays \
+            communicationServiceName \
+            communicationEmailSender \
+            logAnalyticsWorkspaceId \
+            actionGroupId; do
+            value="$(jq -r --arg n "${name}" '.[$n].value // empty' /tmp/environment-outputs.json)"
+            if [ -z "${value}" ]; then
+              echo "Deployment output '${name}' was missing or empty -- failing closed." >&2
+              exit 1
+            fi
+            snake="$(printf '%s' "${name}" | sed -E 's/([A-Z])/_\1/g' | tr '[:upper:]' '[:lower:]')"
+            echo "${snake}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Create the nonsecret foundation handoff
+        env:
+          DEPLOYMENT_STAGE: ${{ needs.gate.outputs.deployment_stage }}
+          RUNTIME_IDENTITY_ID: ${{ steps.outputs.outputs.runtime_identity_id }}
+          RUNTIME_IDENTITY_CLIENT_ID: ${{ steps.outputs.outputs.runtime_identity_client_id }}
+          RUNTIME_IDENTITY_PRINCIPAL_ID: ${{ steps.outputs.outputs.runtime_identity_principal_id }}
+          SCHEDULER_IDENTITY_ID: ${{ steps.outputs.outputs.scheduler_identity_id }}
+          SCHEDULER_IDENTITY_CLIENT_ID: ${{ steps.outputs.outputs.scheduler_identity_client_id }}
+          SCHEDULER_IDENTITY_PRINCIPAL_ID: ${{ steps.outputs.outputs.scheduler_identity_principal_id }}
+          OPS_IDENTITY_ID: ${{ steps.outputs.outputs.ops_identity_id }}
+          OPS_IDENTITY_CLIENT_ID: ${{ steps.outputs.outputs.ops_identity_client_id }}
+          OPS_IDENTITY_PRINCIPAL_ID: ${{ steps.outputs.outputs.ops_identity_principal_id }}
+          EVIDENCE_STORAGE_ACCOUNT_NAME: ${{ steps.outputs.outputs.evidence_storage_account_name }}
+          EVIDENCE_CONTAINER_NAME: ${{ steps.outputs.outputs.evidence_container_name }}
+          EVIDENCE_CONTAINER_URL: ${{ steps.outputs.outputs.evidence_container_url }}
+          EVIDENCE_IMMUTABILITY_RETENTION_DAYS: ${{ steps.outputs.outputs.evidence_immutability_retention_days }}
+          COMMUNICATION_SERVICE_NAME: ${{ steps.outputs.outputs.communication_service_name }}
+          COMMUNICATION_EMAIL_SENDER: ${{ steps.outputs.outputs.communication_email_sender }}
+          LOG_ANALYTICS_WORKSPACE_ID: ${{ steps.outputs.outputs.log_analytics_workspace_id }}
+          ACTION_GROUP_ID: ${{ steps.outputs.outputs.action_group_id }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg environment dev \
+            --arg deploymentStage "${DEPLOYMENT_STAGE}" \
+            --arg releaseSha "${RESOLVED_SHA}" \
+            --arg runtimeIdentityId "${RUNTIME_IDENTITY_ID}" \
+            --arg runtimeIdentityClientId "${RUNTIME_IDENTITY_CLIENT_ID}" \
+            --arg runtimeIdentityPrincipalId "${RUNTIME_IDENTITY_PRINCIPAL_ID}" \
+            --arg schedulerIdentityId "${SCHEDULER_IDENTITY_ID}" \
+            --arg schedulerIdentityClientId "${SCHEDULER_IDENTITY_CLIENT_ID}" \
+            --arg schedulerIdentityPrincipalId "${SCHEDULER_IDENTITY_PRINCIPAL_ID}" \
+            --arg opsIdentityId "${OPS_IDENTITY_ID}" \
+            --arg opsIdentityClientId "${OPS_IDENTITY_CLIENT_ID}" \
+            --arg opsIdentityPrincipalId "${OPS_IDENTITY_PRINCIPAL_ID}" \
+            --arg evidenceStorageAccountName "${EVIDENCE_STORAGE_ACCOUNT_NAME}" \
+            --arg evidenceContainerName "${EVIDENCE_CONTAINER_NAME}" \
+            --arg evidenceContainerUrl "${EVIDENCE_CONTAINER_URL}" \
+            --arg evidenceImmutabilityRetentionDays "${EVIDENCE_IMMUTABILITY_RETENTION_DAYS}" \
+            --arg communicationServiceName "${COMMUNICATION_SERVICE_NAME}" \
+            --arg communicationEmailSender "${COMMUNICATION_EMAIL_SENDER}" \
+            --arg logAnalyticsWorkspaceId "${LOG_ANALYTICS_WORKSPACE_ID}" \
+            --arg actionGroupId "${ACTION_GROUP_ID}" \
+            '{
+              schemaVersion: "1.0.0",
+              environment: $environment,
+              deploymentStage: $deploymentStage,
+              releaseSha: $releaseSha,
+              identities: {
+                runtime: {resourceId: $runtimeIdentityId, clientId: $runtimeIdentityClientId, principalId: $runtimeIdentityPrincipalId},
+                scheduler: {resourceId: $schedulerIdentityId, clientId: $schedulerIdentityClientId, principalId: $schedulerIdentityPrincipalId},
+                ops: {resourceId: $opsIdentityId, clientId: $opsIdentityClientId, principalId: $opsIdentityPrincipalId}
+              },
+              evidence: {
+                storageAccountName: $evidenceStorageAccountName,
+                containerName: $evidenceContainerName,
+                containerUrl: $evidenceContainerUrl,
+                immutabilityRetentionDays: ($evidenceImmutabilityRetentionDays | tonumber)
+              },
+              communication: {
+                serviceName: $communicationServiceName,
+                emailSender: $communicationEmailSender
+              },
+              monitoring: {
+                logAnalyticsWorkspaceId: $logAnalyticsWorkspaceId,
+                actionGroupId: $actionGroupId
+              }
+            }' > foundation-outputs.dev.json
+          {
+            echo "### Dev environment foundation outputs"
+            echo ""
+            echo "Use the runtime/ops principal IDs in the separately protected Foundry workload-access workflow."
+            echo '```json'
+            jq . foundation-outputs.dev.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish environment foundation outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-dev-foundation-${{ needs.gate.outputs.sha }}
+          path: foundation-outputs.dev.json
+          if-no-files-found: error
+          retention-days: 90
+
+  build-images:
+    name: Build web/ops images and resolve digests (dev)
+    needs: [gate, deploy-environment]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      ACR_NAME: ${{ needs.deploy-environment.outputs.acr_name }}
+    outputs:
+      web_digest_hex: ${{ steps.web.outputs.digest_hex }}
+      ops_digest_hex: ${{ steps.ops.outputs.digest_hex }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build web image and resolve digest
+        id: web
+        run: |
+          set -euo pipefail
+          out="$(.github/scripts/azure/build-and-resolve-digest.sh \
+            --registry "${ACR_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --repository krypto-web \
+            --target web \
+            --tag "${RESOLVED_SHA}")"
+          echo "${out}"
+          digest="$(printf '%s' "${out}" | grep '^digest=' | cut -d= -f2)"
+          echo "digest_hex=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+      - name: Build ops image and resolve digest
+        id: ops
+        run: |
+          set -euo pipefail
+          out="$(.github/scripts/azure/build-and-resolve-digest.sh \
+            --registry "${ACR_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --repository krypto-ops \
+            --target ops \
+            --tag "${RESOLVED_SHA}")"
+          echo "${out}"
+          digest="$(printf '%s' "${out}" | grep '^digest=' | cut -d= -f2)"
+          echo "digest_hex=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+
+  deploy-release:
+    name: Deploy infra/release.bicep (dev, disabled/manual)
+    needs: [gate, deploy-environment, build-images]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+    outputs:
+      migrate_init_job_name: ${{ steps.outputs.outputs.migrate_init_job_name }}
+      preflight_job_name: ${{ steps.outputs.outputs.preflight_job_name }}
+      verified_backup_job_name: ${{ steps.outputs.outputs.verified_backup_job_name }}
+      target_smoke_job_name: ${{ steps.outputs.outputs.target_smoke_job_name }}
+      activation_check_job_name: ${{ steps.outputs.outputs.activation_check_job_name }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Render release.dev.bicepparam
+        env:
+          ENV_CONTAINER_APPS_ENVIRONMENT_ID: ${{ needs.deploy-environment.outputs.container_apps_environment_id }}
+          ENV_ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+          ENV_RUNTIME_IDENTITY_ID: ${{ needs.deploy-environment.outputs.runtime_identity_id }}
+          ENV_RUNTIME_IDENTITY_CLIENT_ID: ${{ needs.deploy-environment.outputs.runtime_identity_client_id }}
+          ENV_RUNTIME_IDENTITY_PRINCIPAL_ID: ${{ needs.deploy-environment.outputs.runtime_identity_principal_id }}
+          ENV_SCHEDULER_IDENTITY_ID: ${{ needs.deploy-environment.outputs.scheduler_identity_id }}
+          ENV_SCHEDULER_IDENTITY_PRINCIPAL_ID: ${{ needs.deploy-environment.outputs.scheduler_identity_principal_id }}
+          ENV_OPS_IDENTITY_ID: ${{ needs.deploy-environment.outputs.ops_identity_id }}
+          ENV_OPS_IDENTITY_PRINCIPAL_ID: ${{ needs.deploy-environment.outputs.ops_identity_principal_id }}
+          ENV_OPS_IDENTITY_CLIENT_ID: ${{ needs.deploy-environment.outputs.ops_identity_client_id }}
+          ENV_EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+          ENV_COMMUNICATION_SERVICE_NAME: ${{ needs.deploy-environment.outputs.communication_service_name }}
+          ENV_COMMUNICATION_EMAIL_SENDER: ${{ needs.deploy-environment.outputs.communication_email_sender }}
+          BUILD_WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+          BUILD_OPS_DIGEST_HEX: ${{ needs.build-images.outputs.ops_digest_hex }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/release.dev.bicepparam \
+            --out /tmp/release.dev.resolved.bicepparam \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId="${ENV_CONTAINER_APPS_ENVIRONMENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer="${ENV_ACR_LOGIN_SERVER}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId="${ENV_RUNTIME_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId="${ENV_RUNTIME_IDENTITY_CLIENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityPrincipalId="${ENV_RUNTIME_IDENTITY_PRINCIPAL_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${ENV_SCHEDULER_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityPrincipalId="${ENV_SCHEDULER_IDENTITY_PRINCIPAL_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityId="${ENV_OPS_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityPrincipalId="${ENV_OPS_IDENTITY_PRINCIPAL_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_opsIdentityClientId="${ENV_OPS_IDENTITY_CLIENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_evidenceContainerUrl="${ENV_EVIDENCE_CONTAINER_URL}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationServiceName="${ENV_COMMUNICATION_SERVICE_NAME}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${ENV_COMMUNICATION_EMAIL_SENDER}" \
+            --set REPLACE_WITH_PUSHED_WEB_DIGEST="${BUILD_WEB_DIGEST_HEX}" \
+            --set REPLACE_WITH_PUSHED_OPS_DIGEST="${BUILD_OPS_DIGEST_HEX}" \
+            --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${RESOLVED_SHA}"
+
+      - name: Deploy infra/release.bicep
+        id: deploy
+        env:
+          DATABASE_URL_DEV: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL_DEV: ${{ secrets.DIRECT_URL }}
+          CRON_SECRET_DEV: ${{ secrets.CRON_SECRET }}
+          POSTHOG_API_KEY_DEV: ${{ secrets.POSTHOG_API_KEY }}
+          ADMIN_PASSWORD_DEV: ${{ secrets.ADMIN_PASSWORD }}
+          ADMIN_SESSION_SECRET_DEV: ${{ secrets.ADMIN_SESSION_SECRET }}
+          RUNTIME_DATABASE_PASSWORD_DEV: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+          DEPLOYMENT_APPROVAL_SECRET_DEV: ${{ secrets.DEPLOYMENT_APPROVAL_SECRET }}
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --name "rel-dev-${RESOLVED_SHA}" \
+            --template-file infra/release.bicep \
+            --parameters /tmp/release.dev.resolved.bicepparam \
+            --query properties.outputs \
+            --output json > /tmp/release-outputs.json
+          cat /tmp/release-outputs.json
+
+      - name: Extract release.bicep job name outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          for name in migrateInitJobName preflightJobName verifiedBackupJobName targetSmokeJobName activationCheckJobName; do
+            value="$(jq -r --arg n "${name}" '.[$n].value // empty' /tmp/release-outputs.json)"
+            if [ -z "${value}" ]; then
+              echo "Deployment output '${name}' was missing or empty -- failing closed." >&2
+              exit 1
+            fi
+            snake="$(printf '%s' "${name}" | sed -E 's/([A-Z])/_\1/g' | tr '[:upper:]' '[:lower:]')"
+            echo "${snake}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+  ops-validate:
+    name: Run migrate-init / preflight / target-smoke while disabled (dev)
+    needs: [gate, deploy-environment, deploy-release, build-images]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.deploy-release.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+      PREFLIGHT_JOB_NAME: ${{ needs.deploy-release.outputs.preflight_job_name }}
+      MIGRATE_INIT_JOB_NAME: ${{ needs.deploy-release.outputs.migrate_init_job_name }}
+      TARGET_SMOKE_JOB_NAME: ${{ needs.deploy-release.outputs.target_smoke_job_name }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Require a full-template Container Apps execution helper
+        run: |
+          set -euo pipefail
+          if ! grep -Eq '^[[:space:]]*--yaml([[:space:]]|$)' .github/scripts/azure/run-ops-job.sh; then
+            echo "The current run-ops-job.sh uses an env-only job start override. Azure replaces the execution template when any override is supplied." >&2
+            echo "Missing helper: fetch the complete live properties.template, merge JOB_EXECUTION_ID into its env list, and start the execution with az containerapp job start --yaml." >&2
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run migrate-init
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id migrate-init)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${MIGRATE_INIT_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name dev \
+            --release-sha "${RESOLVED_SHA}" \
+            --operation migrate-init \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence/dev/${RESOLVED_SHA}/migrate-init/${job_execution_id}/report.json" \
+            --operation migrate-init \
+            --release-sha "${RESOLVED_SHA}"
+
+      - name: Run preflight
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id preflight)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${PREFLIGHT_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name dev \
+            --release-sha "${RESOLVED_SHA}" \
+            --operation preflight \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence/dev/${RESOLVED_SHA}/preflight/${job_execution_id}/report.json" \
+            --operation preflight \
+            --release-sha "${RESOLVED_SHA}"
+
+      - name: Run target-smoke
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id target-smoke)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${TARGET_SMOKE_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name dev \
+            --release-sha "${RESOLVED_SHA}" \
+            --operation target-smoke \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence/dev/${RESOLVED_SHA}/target-smoke/${job_execution_id}/report.json" \
+            --operation target-smoke \
+            --release-sha "${RESOLVED_SHA}" \
+            --image-digest "sha256:${WEB_DIGEST_HEX}"
+
+      - name: Publish downloaded evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-dev-evidence-${{ needs.gate.outputs.sha }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 90
+
+  stage-shadow:
+    name: Stage dev shadow with scheduler jobs still Manual
+    needs: [gate, deploy-environment, build-images, ops-validate]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.ops-validate.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Render rollout.dev.bicepparam (shadow, scheduler jobs Manual)
+        env:
+          ENV_CONTAINER_APPS_ENVIRONMENT_ID: ${{ needs.deploy-environment.outputs.container_apps_environment_id }}
+          ENV_RUNTIME_IDENTITY_ID: ${{ needs.deploy-environment.outputs.runtime_identity_id }}
+          ENV_RUNTIME_IDENTITY_CLIENT_ID: ${{ needs.deploy-environment.outputs.runtime_identity_client_id }}
+          ENV_SCHEDULER_IDENTITY_ID: ${{ needs.deploy-environment.outputs.scheduler_identity_id }}
+          ENV_COMMUNICATION_EMAIL_SENDER: ${{ needs.deploy-environment.outputs.communication_email_sender }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/rollout.dev.bicepparam \
+            --out /tmp/rollout.dev.shadow-manual.bicepparam \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId="${ENV_CONTAINER_APPS_ENVIRONMENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer="${ACR_LOGIN_SERVER}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId="${ENV_RUNTIME_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId="${ENV_RUNTIME_IDENTITY_CLIENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${ENV_SCHEDULER_IDENTITY_ID}" \
+            --set REPLACE_WITH_CURRENTLY_RELEASED_DIGEST="${WEB_DIGEST_HEX}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${ENV_COMMUNICATION_EMAIL_SENDER}" \
+            --set-string-param rolloutMode=shadow
+
+      - name: What-if infra/rollout.bicep (shadow, Manual)
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --template-file infra/rollout.bicep \
+            --parameters /tmp/rollout.dev.shadow-manual.bicepparam \
+            --result-format FullResourcePayloads \
+            --no-pretty-print \
+            --output json > /tmp/whatif-rollout-shadow-manual.json
+
+      - name: Reject unsafe what-if deletes
+        run: node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-rollout-shadow-manual.json
+
+      - name: Deploy infra/rollout.bicep (shadow, Manual)
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --name "roll-dev-shadow-${RESOLVED_SHA}" \
+            --template-file infra/rollout.bicep \
+            --parameters /tmp/rollout.dev.shadow-manual.bicepparam \
+            --query properties.outputs \
+            --output json > /tmp/rollout-shadow-manual-outputs.json
+
+      - name: Verify shadow/Manual deployment outputs and live state
+        env:
+          EXPECTED_RUNTIME_CLIENT_ID: ${{ needs.deploy-environment.outputs.runtime_identity_client_id }}
+          EXPECTED_COMMUNICATION_EMAIL_SENDER: ${{ needs.deploy-environment.outputs.communication_email_sender }}
+        run: |
+          set -euo pipefail
+          rollout_mode="$(jq -r '.rolloutMode.value // empty' /tmp/rollout-shadow-manual-outputs.json)"
+          hourly_trigger="$(jq -r '.hourlyTriggerType.value // empty' /tmp/rollout-shadow-manual-outputs.json)"
+          daily_trigger="$(jq -r '.dailyTriggerType.value // empty' /tmp/rollout-shadow-manual-outputs.json)"
+          if [ "${rollout_mode}" != "shadow" ] ||
+             [ "${hourly_trigger}" != "Manual" ] ||
+             [ "${daily_trigger}" != "Manual" ]; then
+            echo "Shadow staging outputs were not exactly shadow/Manual/Manual." >&2
+            exit 1
+          fi
+
+          web_json="$(az containerapp show \
+            --name "${DEV_WEB_APP_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          hourly_json="$(az containerapp job show \
+            --name "${DEV_HOURLY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          daily_json="$(az containerapp job show \
+            --name "${DEV_DAILY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          expected_image="${ACR_LOGIN_SERVER}/krypto-web@sha256:${WEB_DIGEST_HEX}"
+
+          printf '%s' "${web_json}" | jq -e \
+            --arg image "${expected_image}" \
+            --arg client_id "${EXPECTED_RUNTIME_CLIENT_ID}" \
+            --arg sender "${EXPECTED_COMMUNICATION_EMAIL_SENDER}" \
+            '(.properties.template.containers[0].image == $image) and
+             (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow")) and
+             (any(.properties.template.containers[0].env[]?; .name == "AZURE_CLIENT_ID" and .value == $client_id)) and
+             (any(.properties.template.containers[0].env[]?; .name == "AZURE_COMMUNICATION_EMAIL_SENDER" and .value == $sender))' >/dev/null
+          for job_json in "${hourly_json}" "${daily_json}"; do
+            printf '%s' "${job_json}" | jq -e \
+              --arg image "${expected_image}" \
+              '(.properties.configuration.triggerType == "Manual") and
+               ((.properties.configuration.scheduleTriggerConfig // null) == null) and
+               (.properties.template.containers[0].image == $image) and
+               (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow"))' >/dev/null
+          done
+
+      - name: Disable missing-success monitoring after Manual jobs are verified
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --name "monitor-dev-manual-${RESOLVED_SHA}" \
+            --template-file infra/schedule-monitoring.bicep \
+            --parameters infra/params/schedule-monitoring.dev.bicepparam \
+            --query properties.outputs \
+            --output json > /tmp/monitoring-shadow-manual-outputs.json
+          enabled="$(jq -r '.missingHourlySuccessAlertEnabled.value | tostring' /tmp/monitoring-shadow-manual-outputs.json)"
+          boundary="$(jq -r '.scheduleEnabledAtUnixSeconds.value // empty' /tmp/monitoring-shadow-manual-outputs.json)"
+          if [ "${enabled}" != "false" ] || [ "${boundary}" != "0" ]; then
+            echo "Manual shadow staging did not leave missing-success monitoring disabled at boundary 0." >&2
+            exit 1
+          fi
+
+  validate-shadow:
+    name: Validate shadow and exactly one manual hourly execution
+    needs:
+      [gate, deploy-environment, deploy-release, build-images, stage-shadow]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.deploy-release.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.stage-shadow.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+      ACTIVATION_CHECK_JOB_NAME: ${{ needs.deploy-release.outputs.activation_check_job_name }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+    outputs:
+      manual_hourly_execution_name: ${{ steps.manual.outputs.execution_name }}
+      manual_shadow_idempotency_key: ${{ steps.manual.outputs.idempotency_key }}
+      manual_shadow_started_after: ${{ steps.manual.outputs.started_after }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Trigger exactly one manual hourly execution and prove it succeeded
+        id: manual
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          expected_image="${ACR_LOGIN_SERVER}/krypto-web@sha256:${WEB_DIGEST_HEX}"
+          hourly_json="$(az containerapp job show \
+            --name "${DEV_HOURLY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          printf '%s' "${hourly_json}" | jq -e \
+            --arg image "${expected_image}" \
+            '(.properties.configuration.triggerType == "Manual") and
+             ((.properties.configuration.scheduleTriggerConfig // null) == null) and
+             (.properties.template.containers[0].image == $image) and
+             (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow"))' >/dev/null
+
+          job_execution_id="$(azure_validate_job_execution_id "run${GITHUB_RUN_ID}-a${GITHUB_RUN_ATTEMPT}-manual-hourly")"
+          manual_shadow_idempotency_key="manual-shadow:${job_execution_id}"
+          manual_shadow_started_after="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          before_count="$(az containerapp job execution list \
+            --name "${DEV_HOURLY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json |
+            jq --arg id "${job_execution_id}" \
+              '[.[] | select(any(.properties.template.containers[]?.env[]?; .name == "JOB_EXECUTION_ID" and .value == $id))] | length')"
+          if [ "${before_count}" -ne 0 ]; then
+            echo "The manual hourly execution marker '${job_execution_id}' already exists; refusing to start a duplicate." >&2
+            exit 1
+          fi
+
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${DEV_HOURLY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --scheduled-idempotency-key "${manual_shadow_idempotency_key}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+
+          executions_json="$(az containerapp job execution list \
+            --name "${DEV_HOURLY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          match_count="$(printf '%s' "${executions_json}" | jq --arg id "${job_execution_id}" \
+            '[.[] | select(any(.properties.template.containers[]?.env[]?; .name == "JOB_EXECUTION_ID" and .value == $id))] | length')"
+          if [ "${match_count}" -ne 1 ]; then
+            echo "Expected exactly one hourly execution carrying marker '${job_execution_id}', found ${match_count}." >&2
+            exit 1
+          fi
+          execution_name="$(printf '%s' "${executions_json}" | jq -r --arg id "${job_execution_id}" \
+            '.[] | select(any(.properties.template.containers[]?.env[]?; .name == "JOB_EXECUTION_ID" and .value == $id)) | select((.properties.status // .status) == "Succeeded") | .name')"
+          if [ -z "${execution_name}" ]; then
+            echo "The single marked manual hourly execution was not Succeeded." >&2
+            exit 1
+          fi
+          echo "execution_name=${execution_name}" >> "$GITHUB_OUTPUT"
+          echo "idempotency_key=${manual_shadow_idempotency_key}" >> "$GITHUB_OUTPUT"
+          echo "started_after=${manual_shadow_started_after}" >> "$GITHUB_OUTPUT"
+
+      - name: Bind activation evidence to the exact manual shadow AgentRun
+        env:
+          MANUAL_SHADOW_IDEMPOTENCY_KEY: ${{ steps.manual.outputs.idempotency_key }}
+          MANUAL_SHADOW_STARTED_AFTER: ${{ steps.manual.outputs.started_after }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id activation-check)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${ACTIVATION_CHECK_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --expected-shadow-idempotency-key "${MANUAL_SHADOW_IDEMPOTENCY_KEY}" \
+            --expected-shadow-started-after "${MANUAL_SHADOW_STARTED_AFTER}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name dev \
+            --release-sha "${RESOLVED_SHA}" \
+            --operation activation-check \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence-shadow
+          node .github/scripts/azure/validate-report.mjs \
+            --report "evidence-shadow/dev/${RESOLVED_SHA}/activation-check/${job_execution_id}/report.json" \
+            --operation activation-check \
+            --release-sha "${RESOLVED_SHA}" \
+            --image-digest "sha256:${WEB_DIGEST_HEX}"
+
+      - name: Publish shadow activation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-dev-shadow-evidence-${{ needs.gate.outputs.sha }}
+          path: evidence-shadow/
+          if-no-files-found: warn
+          retention-days: 90
+
+  promote-schedule:
+    name: Promote validated dev shadow jobs to Schedule
+    needs: [gate, deploy-environment, build-images, validate-shadow]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.validate-shadow.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+    outputs:
+      schedule_deployed_at: ${{ steps.verify.outputs.schedule_deployed_at }}
+      expected_first_schedule_at: ${{ steps.verify.outputs.expected_first_schedule_at }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Render rollout.dev.bicepparam (shadow, Schedule)
+        id: render
+        env:
+          ENV_CONTAINER_APPS_ENVIRONMENT_ID: ${{ needs.deploy-environment.outputs.container_apps_environment_id }}
+          ENV_RUNTIME_IDENTITY_ID: ${{ needs.deploy-environment.outputs.runtime_identity_id }}
+          ENV_RUNTIME_IDENTITY_CLIENT_ID: ${{ needs.deploy-environment.outputs.runtime_identity_client_id }}
+          ENV_SCHEDULER_IDENTITY_ID: ${{ needs.deploy-environment.outputs.scheduler_identity_id }}
+          ENV_COMMUNICATION_EMAIL_SENDER: ${{ needs.deploy-environment.outputs.communication_email_sender }}
+        run: |
+          set -euo pipefail
+          schedule_enabled_at="$(date -u +%s)"
+          if ! [[ "${schedule_enabled_at}" =~ ^[0-9]{10}$ ]]; then
+            echo "Could not derive a ten-digit UTC Unix epoch for schedule monitoring." >&2
+            exit 1
+          fi
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/rollout.dev.bicepparam \
+            --out /tmp/rollout.dev.shadow-schedule.bicepparam \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId="${ENV_CONTAINER_APPS_ENVIRONMENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer="${ACR_LOGIN_SERVER}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId="${ENV_RUNTIME_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId="${ENV_RUNTIME_IDENTITY_CLIENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${ENV_SCHEDULER_IDENTITY_ID}" \
+            --set REPLACE_WITH_CURRENTLY_RELEASED_DIGEST="${WEB_DIGEST_HEX}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${ENV_COMMUNICATION_EMAIL_SENDER}" \
+            --set-string-param rolloutMode=shadow \
+            --set-string-param hourlyTriggerType=Schedule \
+            --set-string-param dailyTriggerType=Schedule \
+            --set-string-param scheduleGenerationUnixSeconds="${schedule_enabled_at}"
+          echo "schedule_enabled_at=${schedule_enabled_at}" >> "$GITHUB_OUTPUT"
+
+      - name: Enable and validate missing-success monitoring before Schedule
+        env:
+          SCHEDULE_ENABLED_AT: ${{ steps.render.outputs.schedule_enabled_at }}
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --template-file infra/schedule-monitoring.bicep \
+            --parameters infra/params/schedule-monitoring.dev.bicepparam \
+            --parameters enabled=true scheduleEnabledAtUnixSeconds="${SCHEDULE_ENABLED_AT}" \
+            --result-format FullResourcePayloads \
+            --no-pretty-print \
+            --output json > /tmp/whatif-monitoring-shadow-schedule.json
+          az deployment group create \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --name "monitor-dev-schedule-${RESOLVED_SHA}" \
+            --template-file infra/schedule-monitoring.bicep \
+            --parameters infra/params/schedule-monitoring.dev.bicepparam \
+            --parameters enabled=true scheduleEnabledAtUnixSeconds="${SCHEDULE_ENABLED_AT}" \
+            --query properties.outputs \
+            --output json > /tmp/monitoring-shadow-schedule-outputs.json
+          enabled="$(jq -r '.missingHourlySuccessAlertEnabled.value | tostring' /tmp/monitoring-shadow-schedule-outputs.json)"
+          boundary="$(jq -r '.scheduleEnabledAtUnixSeconds.value // empty' /tmp/monitoring-shadow-schedule-outputs.json)"
+          if [ "${enabled}" != "true" ] || [ "${boundary}" != "${SCHEDULE_ENABLED_AT}" ]; then
+            echo "Missing-success monitoring did not activate for the current schedule window." >&2
+            exit 1
+          fi
+
+      - name: What-if infra/rollout.bicep (shadow, Schedule)
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --template-file infra/rollout.bicep \
+            --parameters /tmp/rollout.dev.shadow-schedule.bicepparam \
+            --result-format FullResourcePayloads \
+            --no-pretty-print \
+            --output json > /tmp/whatif-rollout-shadow-schedule.json
+
+      - name: Reject unsafe what-if deletes
+        run: node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-rollout-shadow-schedule.json
+
+      - name: Deploy infra/rollout.bicep (shadow, Schedule)
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --name "roll-dev-schedule-${RESOLVED_SHA}" \
+            --template-file infra/rollout.bicep \
+            --parameters /tmp/rollout.dev.shadow-schedule.bicepparam \
+            --query properties.outputs \
+            --output json > /tmp/rollout-shadow-schedule-outputs.json
+
+      - name: Verify Schedule deployment outputs and live configuration
+        id: verify
+        env:
+          SCHEDULE_ENABLED_AT: ${{ steps.render.outputs.schedule_enabled_at }}
+        run: |
+          set -euo pipefail
+          rollout_mode="$(jq -r '.rolloutMode.value // empty' /tmp/rollout-shadow-schedule-outputs.json)"
+          hourly_trigger="$(jq -r '.hourlyTriggerType.value // empty' /tmp/rollout-shadow-schedule-outputs.json)"
+          daily_trigger="$(jq -r '.dailyTriggerType.value // empty' /tmp/rollout-shadow-schedule-outputs.json)"
+          schedule_generation="$(jq -r '.scheduleGenerationUnixSeconds.value // empty' /tmp/rollout-shadow-schedule-outputs.json)"
+          if [ "${rollout_mode}" != "shadow" ] ||
+             [ "${hourly_trigger}" != "Schedule" ] ||
+             [ "${daily_trigger}" != "Schedule" ] ||
+             [ "${schedule_generation}" != "${SCHEDULE_ENABLED_AT}" ]; then
+            echo "Schedule rollout outputs did not match shadow/Schedule/Schedule and the current idempotency generation." >&2
+            exit 1
+          fi
+
+          hourly_json="$(az containerapp job show \
+            --name "${DEV_HOURLY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          daily_json="$(az containerapp job show \
+            --name "${DEV_DAILY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          printf '%s' "${hourly_json}" | jq -e \
+            --arg namespace "sha256:${WEB_DIGEST_HEX}-${SCHEDULE_ENABLED_AT}" \
+            '(.properties.configuration.triggerType == "Schedule") and
+             (.properties.configuration.scheduleTriggerConfig.cronExpression == "0 * * * *") and
+             ((.properties.configuration.manualTriggerConfig // null) == null) and
+             (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow")) and
+             (any(.properties.template.containers[0].env[]?; .name == "SCHEDULED_IDEMPOTENCY_NAMESPACE" and .value == $namespace))' >/dev/null
+          printf '%s' "${daily_json}" | jq -e \
+            '(.properties.configuration.triggerType == "Schedule") and
+             (.properties.configuration.scheduleTriggerConfig.cronExpression == "5 0 * * *") and
+             ((.properties.configuration.manualTriggerConfig // null) == null) and
+             (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow"))' >/dev/null
+
+          schedule_deployed_at="$(date -u +%s)"
+          expected_first_schedule_at="$(( (schedule_deployed_at / 3600 + 1) * 3600 ))"
+          echo "schedule_deployed_at=${schedule_deployed_at}" >> "$GITHUB_OUTPUT"
+          echo "expected_first_schedule_at=${expected_first_schedule_at}" >> "$GITHUB_OUTPUT"
+
+  observe-scheduled-execution:
+    name: Observe a successful dev hourly scheduled execution
+    needs: [gate, promote-schedule]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.promote-schedule.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SCHEDULE_DEPLOYED_AT: ${{ needs.promote-schedule.outputs.schedule_deployed_at }}
+      EXPECTED_FIRST_SCHEDULE_AT: ${{ needs.promote-schedule.outputs.expected_first_schedule_at }}
+    outputs:
+      scheduled_execution_name: ${{ steps.observe.outputs.execution_name }}
+      scheduled_execution_start_time: ${{ steps.observe.outputs.execution_start_time }}
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait for a successful execution from the first scheduled window
+        id: observe
+        run: |
+          set -euo pipefail
+          for value_name in SCHEDULE_DEPLOYED_AT EXPECTED_FIRST_SCHEDULE_AT SCHEDULE_OBSERVATION_TIMEOUT_SECONDS; do
+            value="${!value_name}"
+            if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+              echo "${value_name} must be a nonnegative integer epoch/timeout." >&2
+              exit 1
+            fi
+          done
+          if [ "${EXPECTED_FIRST_SCHEDULE_AT}" -le "${SCHEDULE_DEPLOYED_AT}" ]; then
+            echo "The expected first schedule boundary must be after the verified deployment time." >&2
+            exit 1
+          fi
+
+          deadline="$((SCHEDULE_DEPLOYED_AT + SCHEDULE_OBSERVATION_TIMEOUT_SECONDS))"
+          while true; do
+            now="$(date -u +%s)"
+            if [ "${now}" -ge "${deadline}" ]; then
+              echo "Timed out waiting for a successful hourly scheduled execution after ${SCHEDULE_OBSERVATION_TIMEOUT_SECONDS}s." >&2
+              exit 1
+            fi
+
+            hourly_json="$(az containerapp job show \
+              --name "${DEV_HOURLY_JOB_NAME}" \
+              --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+              --output json)"
+            printf '%s' "${hourly_json}" | jq -e \
+              '(.properties.configuration.triggerType == "Schedule") and
+               (.properties.configuration.scheduleTriggerConfig.cronExpression == "0 * * * *") and
+               ((.properties.configuration.manualTriggerConfig // null) == null)' >/dev/null
+
+            executions_json="$(az containerapp job execution list \
+              --name "${DEV_HOURLY_JOB_NAME}" \
+              --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+              --output json)"
+            candidates="$(printf '%s' "${executions_json}" | jq \
+              --argjson first "${EXPECTED_FIRST_SCHEDULE_AT}" \
+              '[
+                .[] |
+                (try ((.properties.startTime // "") | sub("\\+00:00$"; "Z") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch 0) as $start |
+                select($start >= $first and $start <= ($first + 900)) |
+                select(([.properties.template.containers[]?.env[]? | select(.name == "JOB_EXECUTION_ID")] | length) == 0) |
+                {
+                  name: .name,
+                  status: (.properties.status // .status // ""),
+                  startTime: .properties.startTime,
+                  startEpoch: $start
+                }
+              ]')"
+            failed_name="$(printf '%s' "${candidates}" | jq -r '[.[] | select(.status == "Failed")] | sort_by(.startEpoch) | .[0].name // empty')"
+            if [ -n "${failed_name}" ]; then
+              echo "Hourly execution '${failed_name}' from the first scheduled window failed." >&2
+              exit 1
+            fi
+            execution_name="$(printf '%s' "${candidates}" | jq -r '[.[] | select(.status == "Succeeded")] | sort_by(.startEpoch) | .[0].name // empty')"
+            if [ -n "${execution_name}" ]; then
+              execution_start_time="$(printf '%s' "${candidates}" | jq -r --arg name "${execution_name}" '.[] | select(.name == $name) | .startTime')"
+              echo "Observed successful scheduled execution '${execution_name}' started at '${execution_start_time}'."
+              echo "execution_name=${execution_name}" >> "$GITHUB_OUTPUT"
+              echo "execution_start_time=${execution_start_time}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "No terminal execution from the first scheduled window is visible yet; retrying."
+            sleep 30
+          done
+
+  verify-final-state:
+    name: Verify live dev shadow/Schedule and exact SHA/digests
+    needs:
+      [
+        gate,
+        deploy-environment,
+        deploy-release,
+        build-images,
+        promote-schedule,
+        observe-scheduled-execution,
+      ]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.deploy-release.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.promote-schedule.result == 'success' &&
+      needs.observe-scheduled-execution.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      ACR_NAME: ${{ needs.deploy-environment.outputs.acr_name }}
+      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+      OPS_DIGEST_HEX: ${{ needs.build-images.outputs.ops_digest_hex }}
+      MIGRATE_INIT_JOB_NAME: ${{ needs.deploy-release.outputs.migrate_init_job_name }}
+      PREFLIGHT_JOB_NAME: ${{ needs.deploy-release.outputs.preflight_job_name }}
+      VERIFIED_BACKUP_JOB_NAME: ${{ needs.deploy-release.outputs.verified_backup_job_name }}
+      TARGET_SMOKE_JOB_NAME: ${{ needs.deploy-release.outputs.target_smoke_job_name }}
+      ACTIVATION_CHECK_JOB_NAME: ${{ needs.deploy-release.outputs.activation_check_job_name }}
+      SCHEDULE_DEPLOYED_AT: ${{ needs.promote-schedule.outputs.schedule_deployed_at }}
+      SCHEDULED_EXECUTION_NAME: ${{ needs.observe-scheduled-execution.outputs.scheduled_execution_name }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify live state and immutable image binding
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          release_sha="$(azure_validate_release_sha "${RESOLVED_SHA}")"
+          web_digest="$(azure_validate_image_digest "sha256:${WEB_DIGEST_HEX}")"
+          ops_digest="$(azure_validate_image_digest "sha256:${OPS_DIGEST_HEX}")"
+          expected_web_image="${ACR_LOGIN_SERVER}/krypto-web@${web_digest}"
+          expected_ops_image="${ACR_LOGIN_SERVER}/krypto-ops@${ops_digest}"
+
+          web_json="$(az containerapp show \
+            --name "${DEV_WEB_APP_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          hourly_json="$(az containerapp job show \
+            --name "${DEV_HOURLY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          daily_json="$(az containerapp job show \
+            --name "${DEV_DAILY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+
+          printf '%s' "${web_json}" | jq -e --arg image "${expected_web_image}" \
+            '(.properties.template.containers[0].image == $image) and
+             (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow"))' >/dev/null
+          printf '%s' "${hourly_json}" | jq -e --arg image "${expected_web_image}" \
+            '(.properties.configuration.triggerType == "Schedule") and
+             (.properties.configuration.scheduleTriggerConfig.cronExpression == "0 * * * *") and
+             ((.properties.configuration.manualTriggerConfig // null) == null) and
+             (.properties.template.containers[0].image == $image) and
+             (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow"))' >/dev/null
+          printf '%s' "${daily_json}" | jq -e --arg image "${expected_web_image}" \
+            '(.properties.configuration.triggerType == "Schedule") and
+             (.properties.configuration.scheduleTriggerConfig.cronExpression == "5 0 * * *") and
+             ((.properties.configuration.manualTriggerConfig // null) == null) and
+             (.properties.template.containers[0].image == $image) and
+             (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow"))' >/dev/null
+          for ops_job_name in \
+            "${MIGRATE_INIT_JOB_NAME}" \
+            "${PREFLIGHT_JOB_NAME}" \
+            "${VERIFIED_BACKUP_JOB_NAME}" \
+            "${TARGET_SMOKE_JOB_NAME}" \
+            "${ACTIVATION_CHECK_JOB_NAME}"; do
+            ops_json="$(az containerapp job show \
+              --name "${ops_job_name}" \
+              --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+              --output json)"
+            printf '%s' "${ops_json}" | jq -e \
+              --arg image "${expected_ops_image}" \
+              --arg sha "${release_sha}" \
+              '(.properties.configuration.triggerType == "Manual") and
+               ((.properties.configuration.scheduleTriggerConfig // null) == null) and
+               (.properties.template.containers[0].image == $image) and
+               (any(.properties.template.containers[0].env[]?; .name == "RELEASE_SHA" and .value == $sha))' >/dev/null
+          done
+          for digest_bound_job_name in "${TARGET_SMOKE_JOB_NAME}" "${ACTIVATION_CHECK_JOB_NAME}"; do
+            digest_bound_json="$(az containerapp job show \
+              --name "${digest_bound_job_name}" \
+              --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+              --output json)"
+            printf '%s' "${digest_bound_json}" | jq -e --arg digest "${web_digest}" \
+              'any(.properties.template.containers[0].env[]?; .name == "IMAGE_DIGEST" and .value == $digest)' >/dev/null
+          done
+
+          web_tag_digest="$(az acr repository show \
+            --name "${ACR_NAME}" \
+            --image "krypto-web:${release_sha}" \
+            --query digest \
+            --output tsv)"
+          ops_tag_digest="$(az acr repository show \
+            --name "${ACR_NAME}" \
+            --image "krypto-ops:${release_sha}" \
+            --query digest \
+            --output tsv)"
+          if [ "${web_tag_digest}" != "${web_digest}" ] || [ "${ops_tag_digest}" != "${ops_digest}" ]; then
+            echo "The commit-SHA image tags no longer resolve to the exact deployed immutable digests." >&2
+            exit 1
+          fi
+
+          scheduled_json="$(az containerapp job execution show \
+            --name "${DEV_HOURLY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --job-execution-name "${SCHEDULED_EXECUTION_NAME}" \
+            --output json)"
+          printf '%s' "${scheduled_json}" | jq -e \
+            --argjson deployed_at "${SCHEDULE_DEPLOYED_AT}" \
+            --arg image "${expected_web_image}" \
+            '((.properties.status // .status) == "Succeeded") and
+             ((try ((.properties.startTime // "") | sub("\\+00:00$"; "Z") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch 0) >= $deployed_at) and
+             (.properties.template.containers[0].image == $image) and
+             (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow")) and
+             (([.properties.template.containers[]?.env[]? | select(.name == "JOB_EXECUTION_ID")] | length) == 0)' >/dev/null
+          echo "Verified live dev state: shadow, both jobs Schedule, release ${release_sha}, web ${web_digest}, ops ${ops_digest}, scheduled execution ${SCHEDULED_EXECUTION_NAME} succeeded."
+
+  rollback-disabled:
+    name: Roll back dev to disabled/Manual after promotion failure
+    needs:
+      - gate
+      - deploy-environment
+      - build-images
+      - deploy-release
+      - ops-validate
+      - stage-shadow
+      - validate-shadow
+      - promote-schedule
+      - observe-scheduled-execution
+      - verify-final-state
+    if: >-
+      always() &&
+      (failure() || cancelled()) &&
+      needs.gate.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.deploy-release.result == 'success' &&
+      (needs.stage-shadow.result == 'failure' ||
+       needs.stage-shadow.result == 'cancelled' ||
+       needs.validate-shadow.result == 'failure' ||
+       needs.validate-shadow.result == 'cancelled' ||
+       needs.promote-schedule.result == 'failure' ||
+       needs.promote-schedule.result == 'cancelled' ||
+       needs.observe-scheduled-execution.result == 'failure' ||
+       needs.observe-scheduled-execution.result == 'cancelled' ||
+       needs.verify-final-state.result == 'failure' ||
+       needs.verify-final-state.result == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Render rollback rollout parameters (disabled/Manual)
+        env:
+          ENV_CONTAINER_APPS_ENVIRONMENT_ID: ${{ needs.deploy-environment.outputs.container_apps_environment_id }}
+          ENV_RUNTIME_IDENTITY_ID: ${{ needs.deploy-environment.outputs.runtime_identity_id }}
+          ENV_RUNTIME_IDENTITY_CLIENT_ID: ${{ needs.deploy-environment.outputs.runtime_identity_client_id }}
+          ENV_SCHEDULER_IDENTITY_ID: ${{ needs.deploy-environment.outputs.scheduler_identity_id }}
+          ENV_COMMUNICATION_EMAIL_SENDER: ${{ needs.deploy-environment.outputs.communication_email_sender }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/azure/render-bicepparam.mjs \
+            --template infra/params/rollout.dev.bicepparam \
+            --out /tmp/rollout.dev.rollback-disabled.bicepparam \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId="${ENV_CONTAINER_APPS_ENVIRONMENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer="${ACR_LOGIN_SERVER}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId="${ENV_RUNTIME_IDENTITY_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId="${ENV_RUNTIME_IDENTITY_CLIENT_ID}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${ENV_SCHEDULER_IDENTITY_ID}" \
+            --set REPLACE_WITH_CURRENTLY_RELEASED_DIGEST="${WEB_DIGEST_HEX}" \
+            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${ENV_COMMUNICATION_EMAIL_SENDER}"
+
+      - name: What-if rollback to disabled/Manual
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --template-file infra/rollout.bicep \
+            --parameters /tmp/rollout.dev.rollback-disabled.bicepparam \
+            --result-format FullResourcePayloads \
+            --no-pretty-print \
+            --output json > /tmp/whatif-rollout-rollback.json
+          node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-rollout-rollback.json
+
+      - name: Deploy and verify rollback to disabled/Manual
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --name "roll-dev-rollback-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --template-file infra/rollout.bicep \
+            --parameters /tmp/rollout.dev.rollback-disabled.bicepparam \
+            --query properties.outputs \
+            --output json > /tmp/rollout-rollback-outputs.json
+          rollout_mode="$(jq -r '.rolloutMode.value // empty' /tmp/rollout-rollback-outputs.json)"
+          hourly_trigger="$(jq -r '.hourlyTriggerType.value // empty' /tmp/rollout-rollback-outputs.json)"
+          daily_trigger="$(jq -r '.dailyTriggerType.value // empty' /tmp/rollout-rollback-outputs.json)"
+          if [ "${rollout_mode}" != "disabled" ] ||
+             [ "${hourly_trigger}" != "Manual" ] ||
+             [ "${daily_trigger}" != "Manual" ]; then
+            echo "Rollback deployment did not report disabled/Manual/Manual." >&2
+            exit 1
+          fi
+          web_mode="$(az containerapp show \
+            --name "${DEV_WEB_APP_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --query "properties.template.containers[0].env[?name=='ROLLOUT_MODE'].value | [0]" \
+            --output tsv)"
+          hourly_json="$(az containerapp job show \
+            --name "${DEV_HOURLY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          daily_json="$(az containerapp job show \
+            --name "${DEV_DAILY_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --output json)"
+          if [ "${web_mode}" != "disabled" ]; then
+            echo "Rollback left the live web app in mode '${web_mode}', not disabled." >&2
+            exit 1
+          fi
+          for job_json in "${hourly_json}" "${daily_json}"; do
+            printf '%s' "${job_json}" | jq -e \
+              '(.properties.configuration.triggerType == "Manual") and
+               ((.properties.configuration.scheduleTriggerConfig // null) == null) and
+               (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "disabled"))' >/dev/null
+          done
+
+      - name: Disable missing-success monitoring after rollback jobs are Manual
+        run: |
+          set -euo pipefail
+          az deployment group create \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --name "monitor-dev-rollback-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --template-file infra/schedule-monitoring.bicep \
+            --parameters infra/params/schedule-monitoring.dev.bicepparam \
+            --query properties.outputs \
+            --output json > /tmp/monitoring-rollback-outputs.json
+          enabled="$(jq -r '.missingHourlySuccessAlertEnabled.value | tostring' /tmp/monitoring-rollback-outputs.json)"
+          boundary="$(jq -r '.scheduleEnabledAtUnixSeconds.value // empty' /tmp/monitoring-rollback-outputs.json)"
+          if [ "${enabled}" != "false" ] || [ "${boundary}" != "0" ]; then
+            echo "Rollback could not disable missing-success monitoring." >&2
+            exit 1
+          fi
+          echo "::error::Dev promotion failed; rollback restored rolloutMode=disabled and both scheduler jobs to Manual."

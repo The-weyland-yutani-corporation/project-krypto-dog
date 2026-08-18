@@ -5,10 +5,12 @@ on:
   push:
     branches:
       - main
+      - develop
       - 'develop/**'
   pull_request:
     branches:
       - main
+      - develop
       - 'develop/**'
 
 # Newer pushes to the same branch cancel in-progress runs.
@@ -52,12 +54,17 @@ jobs:
         # Stub env vars so config/Zod schemas resolve without real secrets;
         # build does not call validateEnv() at runtime.
         env:
-          ANTHROPIC_FOUNDRY_BASE_URL: https://stub.services.ai.azure.com/anthropic
-          ANTHROPIC_FOUNDRY_API_KEY: stub
-          ANTHROPIC_FOUNDRY_DEPLOYMENT: claude-sonnet-stub
+          AZURE_OPENAI_BASE_URL: https://stub.openai.azure.com/openai/v1/
+          AZURE_OPENAI_DEPLOYMENT_NAME: krypto-test-luna
+          AZURE_CLIENT_ID: 00000000-0000-0000-0000-000000000000
+          AZURE_COMMUNICATION_CONNECTION_STRING: endpoint=https://stub.communication.azure.com/;accesskey=stub
+          AZURE_COMMUNICATION_EMAIL_SENDER: DoNotReply@stub.azurecomm.net
+          ALERT_EMAIL_TO: operator@example.com
           DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
           POSTHOG_API_KEY: phc_stub
+          POSTHOG_ENVIRONMENT: dev
           CRON_SECRET: stub
+          APP_ORIGIN: https://stub.example.com
           ADMIN_PASSWORD: stub
           ADMIN_SESSION_SECRET: stub
         run: npm run build
@@ -195,3 +202,58 @@ jobs:
 
       - name: Check harness integrity
         run: npm run harness:check
+
+  docker-validate:
+    name: Docker image target validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the docs-only check below can diff against the
+          # actual merge-base/previous commit rather than a shallow clone's
+          # single commit.
+          fetch-depth: 0
+
+      - name: Determine whether this change is docs-only
+        id: changed
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            head_sha="${{ github.event.pull_request.head.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+            head_sha="${GITHUB_SHA}"
+          fi
+
+          # A zero SHA (new branch's first push) or an unknown base commit
+          # means there is no meaningful diff to inspect -- treat as "not
+          # docs-only" so the Docker targets are always validated at least
+          # once rather than silently skipped by a diffing edge case.
+          docs_only=false
+          if [ -n "${base_sha}" ] \
+            && [ "${base_sha}" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            changed_files="$(git diff --name-only "${base_sha}" "${head_sha}")"
+            if [ -n "${changed_files}" ] && ! printf '%s\n' "${changed_files}" \
+              | grep -vqE '^(docs/|specs/|infra/README\.md|README\.md|.*\.md)$'; then
+              docs_only=true
+            fi
+          fi
+          echo "docs_only=${docs_only}" >> "$GITHUB_OUTPUT"
+          echo "Docs-only change: ${docs_only}"
+
+      - name: Build the web image target
+        if: steps.changed.outputs.docs_only != 'true'
+        run: docker build --target web -t ci-validate-web:${{ github.sha }} .
+
+      - name: Build the ops image target
+        if: steps.changed.outputs.docs_only != 'true'
+        run: docker build --target ops -t ci-validate-ops:${{ github.sha }} .
+
+      - name: Skip notice for docs-only change
+        if: steps.changed.outputs.docs_only == 'true'
+        run: echo "Skipping Docker target validation -- this change only touches documentation."

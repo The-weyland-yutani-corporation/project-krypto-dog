@@ -21,22 +21,26 @@
 ```
 
 > **Autonomous LLM-driven swing-trading agent for ETH/USDC.**
-> v2.1 safety core is implemented and locally verified. **NOT production-ready**
-> until the clean target is migrated, initialized, backed up, deployed in
-> disabled mode, and passes target smoke, controlled rollout, and evidence gates.
+> The Azure dev and production releases are deployed.
+> Dev is `shadow` with monitored schedules; production is deliberately
+> `disabled` with every job `Manual`. **Paper promotion and live-money
+> execution are not authorized.**
 
 | | |
 |---|---|
-| **Status** | v2.1 safety core verified; clean PostgreSQL 17 target inventory passed -- migration and release gates remain |
-| **Hosting** | Vercel + Supabase + Azure AI Foundry-hosted Anthropic + PostHog + Resend |
-| **Stack** | Next.js 16 (App Router) · TypeScript · structured Anthropic output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
-| **Trigger** | Restricted fixed Supabase `pg_cron` + `pg_net` functions; scheduling remains disabled until production smoke checks pass |
+| **Status** | **Azure releases deployed.** Dev passed migration, target smoke, manual-shadow activation, alert delivery, and its first scheduled run. Production passed migration, restore-verified backup, and target smoke, and remains disabled/manual. |
+| **Hosted today** | [Azure dev](https://ca-dev-web.wonderfulmoss-0222e5e1.westus3.azurecontainerapps.io/) · [Azure production](https://ca-prod-web.ambitioussea-a305198e.westus3.azurecontainerapps.io/) |
+| **Azure state (2026-08-15)** | Application/data resources run in `westus3`. Operational dev/prod `gpt-5.6-luna` deployments run on `ghcp-foundry-eastus2` with Entra authentication. The dedicated `ai-krypto-westus3` account remains model-empty after `715-123420`. |
+| **Current blockers** | A separate PostHog project and a new evidence-bound promotion design remain mandatory before production may leave `disabled`. The 90-day production evidence policy remains `Unlocked` pending separate irreversible approval. |
+| **Stack** | Next.js 16 (App Router) · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
+| **Scheduling state** | Dev hourly/daily jobs are monitored `Schedule` jobs in `shadow`; production jobs are all `Manual` and production has no promotion workflow. |
+| **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
+| **Architecture and live links** | [`specs/architecture.md`](./specs/architecture.md) — hosted baseline, target diagrams, planned resources, live endpoint register, rollout safety, and operator consoles |
 | **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
-| **Deploy** | [`specs/deployment.md`](./specs/deployment.md) |
+| **Deploy** | [`specs/deployment.md`](./specs/deployment.md) (Azure runbook) · [`infra/README.md`](./infra/README.md) (Bicep infrastructure design) |
 | **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |
 | **Monitoring** | [`specs/monitoring.md`](./specs/monitoring.md) |
 | **Readiness** | [`specs/readiness.md`](./specs/readiness.md) |
-| **Production readiness contract** | [`specs/production-readiness-prd.v1.md`](./specs/production-readiness-prd.v1.md) — paper-only controls, ownership, authorization, and gate thresholds |
 | **Evaluation** | [`specs/evaluation.md`](./specs/evaluation.md) |
 | **Design** | [`DESIGN.md`](./DESIGN.md) |
 | **Decisions** | [`specs/decisions/`](./specs/decisions/) (ADRs) |
@@ -44,7 +48,7 @@
 
 ## What it does
 
-Every hour, a cron job hits `POST /api/agent/run`. The route:
+When scheduling is enabled, an hourly job hits `POST /api/agent/run`. The route:
 
 1. Creates or idempotently recovers an `AgentRun`, then claims an owned,
    expiring account lease.
@@ -54,14 +58,16 @@ Every hour, a cron job hits `POST /api/agent/run`. The route:
    exposure, and take-profit eligibility.
 4. Executes mandatory safety exits without the model. For optional actions,
    requests exactly one structured `HOLD`, `BUY`, or `SELL` proposal from the
-   Foundry-hosted Anthropic model with bounded timeout/retry behavior.
+   dedicated Foundry-hosted OpenAI `gpt-5.6-luna` deployment with bounded
+   timeout/retry behavior and Microsoft Entra authentication.
 5. Re-authorizes every invariant against a freshly locked database row. In
    paper mode, the trade, fixed-point accounting transition, run outcome, and
    reconciliation state commit atomically and idempotently.
 6. Persists the journal/run result, emits and flushes telemetry, and releases
    only the lease owned by that invocation.
 
-A separate daily-summary cron emails the previous 24h of trades + PnL.
+A separate daily-summary job emails the previous 24h of trades + PnL through
+the environment's Azure Communication Services Email resource.
 
 ## Local quick-start
 
@@ -75,9 +81,12 @@ docker compose up -d
 
 # 3. Configure env
 cp .env.example .env
-# Fill in ANTHROPIC_FOUNDRY_* (or legacy AZURE_OPENAI_*), POSTHOG_API_KEY,
-# CRON_SECRET, ADMIN_PASSWORD, ADMIN_SESSION_SECRET.
-# Resend vars are optional — emails fall back to console logs.
+# For attended model calls, run `az login` and fill in AZURE_OPENAI_BASE_URL
+# (ending /openai/v1) plus AZURE_OPENAI_DEPLOYMENT_NAME. Azure runtime also
+# requires AZURE_CLIENT_ID. Fill in POSTHOG_API_KEY, CRON_SECRET,
+# ADMIN_PASSWORD, and ADMIN_SESSION_SECRET.
+# ACS Email vars may be omitted locally; non-production delivery then reports
+# an explicit console-only skipped result.
 
 # 4. Apply reviewed schema migrations + initialize singleton
 npm run db:migrate
@@ -115,9 +124,9 @@ open http://localhost:3000/admin/login
 | `npm run test:migrations` | Real-PostgreSQL migration, privilege/tamper, decimal, transaction, lease, run-flow, preflight, and backup tests |
 | `npm run db:studio` | Drizzle Studio (browse the DB) |
 | `npm run smoke:llm` | Verify Foundry model access without tools or trading |
-| `npm run deployment:preflight` | Prove runtime/direct DB identity and exact schema/migration, lease, cron/queued HTTP, function-integrity, table/column, and Vault privilege state |
-| `npm run deployment:backup -- --out <dir>` | Bind `DATABASE_URL`/`DIRECT_URL`, refuse active cron/queued HTTP and migration-only targets, create checksummed archives, and optionally prove a local restore |
-| `npm run smoke:target -- --base-url <url> --confirm-host <host>` | Bind runtime/direct DB and cron configuration, prove mismatched-mode rejection plus disabled runs, auth, postconditions, email, Foundry, Coinbase, and PostHog |
+| `npm run deployment:preflight -- --provider azure` | Prove runtime/direct DB identity, exact schema/migration state, leases, ACLs, and retirement of legacy scheduler/Vault objects |
+| `npm run deployment:backup -- --out <dir>` | Bind `DATABASE_URL`/`DIRECT_URL`, refuse active legacy scheduler/queued HTTP state and migration-only targets, create checksummed archives, and optionally prove a local restore |
+| `npm run smoke:target -- --base-url <url> --confirm-host <host>` | Bind runtime/direct DB and scheduler auth, prove mismatched-mode rejection plus disabled runs, admin/postconditions, ACS Email, Luna/Entra, Coinbase, and PostHog |
 | `npm run backtest -- --scenario scenarios/dip-recovery.json` | Run deterministic paper scenario evaluation |
 | `npm run backtest:all` | Emit aggregate JSON for every engineering scenario |
 | `npm run evidence:import -- --input <dataset.json> --out <materialized.json>` | Strictly validate and hash a versioned JSON evidence dataset |
@@ -157,7 +166,10 @@ src/
   lib/                    # Indicators, analytics, email, config, types
   proxy.ts                # Admin route protection
 drizzle/                  # Generated migrations
-supabase/operations/      # Separate reviewed cron enable/disable operations
+infra/                     # Bicep platform account/model/access, dev/prod foundation,
+                           # release, rollout, and schedule monitoring
+.github/workflows/azure-* # OIDC platform/access, validation, deploy, and rotation flows
+supabase/operations/      # Historical Vercel/Supabase cron operations
 specs/                    # Product spec, ADRs, RFCs, deployment runbook
 scripts/                  # One-shot scripts (seed, etc.)
 tests/                    # Jest unit + integration tests
@@ -165,17 +177,59 @@ tests/                    # Jest unit + integration tests
 
 ## Deploying
 
-> **WARNING:** Do not promote the current source to production paper mode yet.
-> The local safety core is verified and the clean replacement database passed
-> fresh-target inventory, but migration, initialization, baseline backup,
-> Vault/email configuration, target smoke, and controlled disabled/shadow/paper
-> rollout remain. See
+> **WARNING:** No executable production promotion workflow is shipped or
+> approved.
+> Azure foundations and operational Luna deployments are provisioned, but every
+> full release/evidence/rollout gate remains. No Container App or job exists. See
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
-Don't `vercel --prod` blind -- there are ordered steps including backup,
-schema reconciliation, reviewed Drizzle migrations, Vault secrets, smoke
-tests, and cron enablement. Follow
-[`specs/deployment.md`](./specs/deployment.md).
+> **Target platform: Azure-native; dev and production releases deployed.**
+> The approved deployment plan supersedes Vercel/Supabase with a fully
+> Azure-native target (ADR
+> [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
+> The Bicep templates, GitHub Actions workflows, and application-side
+> deployment code for that target all exist in this repo — see
+> [`infra/README.md`](./infra/README.md) and
+> [`specs/deployment.md`](./specs/deployment.md). Required providers,
+> bootstrap/OIDC, operational Luna, workload access, both foundations, and both
+> releases are live. Dev is shadow/scheduled; production is disabled/manual.
+> See [`specs/architecture.md`](./specs/architecture.md) for diagrams,
+> live/planned resource names, the exact current-vs-target state, and safe
+> operator links. The selected runtime subscription is **Visual Studio
+> Enterprise Subscription**; do not publish its subscription ID.
+
+Observed live runs:
+
+- [Dedicated account succeeded; model deployment failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
+- [Dev foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
+- [Prod foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
+
+GitHub Environments, branch restrictions, and protected values are configured.
+Required-reviewer rules are unavailable on the private repository's billing
+plan. GitHub-hosted jobs were also blocked at startup by the account's Actions
+billing state, so the first releases used the authenticated operator path with
+the same reviewed templates, exact source trees, immutable digests, and
+fail-closed evidence checks. Branch protection was restored after each reviewed
+merge. Shared-key PostHog telemetry is environment-tagged but cannot qualify as
+final project isolation for production promotion.
+
+Dev completed the staged
+disabled/manual → shadow/manual → unique manual shadow run → post-run
+activation proof → monitored schedule sequence with automatic fail-closed
+rollback. Missing-success monitoring was
+enabled and validated before a Schedule rollout; disable, rollback, and
+rotation paths first verify both jobs are Manual and only then disable
+monitoring. Production landed disabled/manual and its fresh baseline backup was
+restore-verified before target smoke. The
+`production-promotion` identity/environment exists only for forced-disable
+steps in prod deploy and rotation. Any future production promotion requires a
+new evidence-bound design and trading-safety review. Follow
+[`specs/deployment.md`](./specs/deployment.md) (the implemented Azure
+runbook). The prior Vercel/Supabase runbook is preserved, unmodified
+except for its archive banner, at
+[`specs/archive/deployment.vercel-supabase.md`](./specs/archive/deployment.vercel-supabase.md)
+for historical/safety reference only -- do not follow it to start a new
+Vercel/Supabase production deployment.
 
 ## Local testing
 
