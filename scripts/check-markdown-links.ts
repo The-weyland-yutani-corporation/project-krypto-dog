@@ -61,6 +61,28 @@ function discoverDocs(): string[] {
   return [...docs].sort((a, b) => a.localeCompare(b, "en"));
 }
 
+/** Discover source files that can persist operator-facing runbook references. */
+function discoverRunbookSources(): string[] {
+  const sources: string[] = [];
+  const addTree = (relDir: string): void => {
+    const abs = path.join(REPO_ROOT, relDir);
+    if (!fs.existsSync(abs)) return;
+    for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+      const rel = path.join(relDir, entry.name);
+      if (entry.isDirectory()) {
+        addTree(rel);
+      } else if (
+        entry.isFile() &&
+        (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))
+      ) {
+        sources.push(rel);
+      }
+    }
+  };
+  addTree("src");
+  return sources.sort((a, b) => a.localeCompare(b, "en"));
+}
+
 /** Strip fenced code blocks so sample snippets don't register as links. */
 function stripCodeFences(markdown: string): string {
   return markdown.replace(/```[\s\S]*?```/g, (block) =>
@@ -124,6 +146,22 @@ function extractLinks(markdown: string): LinkRef[] {
       refs.push({ target, anchor, line: index + 1 });
     }
   });
+  return refs;
+}
+
+function extractRunbookLinks(source: string): LinkRef[] {
+  const refs: LinkRef[] = [];
+  const runbookRe = /runbook:\s*(?:"([^"]+)"|'([^']+)')/g;
+  let match: RegExpExecArray | null;
+  while ((match = runbookRe.exec(source)) !== null) {
+    const raw = match[1] ?? match[2];
+    const hashIndex = raw.indexOf("#");
+    refs.push({
+      target: hashIndex === -1 ? raw : raw.slice(0, hashIndex),
+      anchor: hashIndex === -1 ? null : raw.slice(hashIndex + 1),
+      line: source.slice(0, match.index).split(/\r?\n/).length,
+    });
+  }
   return refs;
 }
 
@@ -192,6 +230,37 @@ function main(): void {
     }
   }
 
+  for (const source of discoverRunbookSources()) {
+    const content = fs.readFileSync(path.join(REPO_ROOT, source), "utf8");
+    for (const ref of extractRunbookLinks(content)) {
+      const absTarget = path.resolve(REPO_ROOT, ref.target);
+      const relFromRoot = path.relative(REPO_ROOT, absTarget);
+      if (
+        relFromRoot.startsWith("..") ||
+        path.isAbsolute(relFromRoot) ||
+        !fs.existsSync(absTarget)
+      ) {
+        problems.push({
+          doc: source,
+          line: ref.line,
+          message: `missing runbook file reference: ${ref.target}`,
+        });
+        continue;
+      }
+      if (
+        ref.anchor &&
+        absTarget.endsWith(".md") &&
+        !slugsFor(absTarget).has(ref.anchor)
+      ) {
+        problems.push({
+          doc: source,
+          line: ref.line,
+          message: `runbook anchor #${ref.anchor} not found in ${ref.target}`,
+        });
+      }
+    }
+  }
+
   if (problems.length > 0) {
     process.stderr.write("✗ Broken local Markdown references:\n");
     for (const problem of problems) {
@@ -204,7 +273,7 @@ function main(): void {
   }
 
   process.stdout.write(
-    `✓ Local Markdown references valid across ${discoverDocs().length} documentation surfaces\n`,
+    `✓ Local Markdown and persisted runbook references valid across ${discoverDocs().length} documentation surfaces\n`,
   );
 }
 

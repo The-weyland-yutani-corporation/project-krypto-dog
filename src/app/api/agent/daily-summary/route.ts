@@ -340,6 +340,20 @@ export async function POST(request: NextRequest) {
       totalPnlUSD: totalPnl,
     });
   } catch (error) {
+    if (error instanceof AdmissionCapacityError) {
+      console.error(
+        JSON.stringify({
+          eventType: "readiness_capacity_failure",
+          requestId: correlation.requestId,
+          route: "/api/agent/daily-summary",
+          failureCode: error.code,
+        }),
+      );
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 503, headers: { "Retry-After": "1" } },
+      );
+    }
     return failureResponse(
       error,
       correlation,

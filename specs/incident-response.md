@@ -166,6 +166,48 @@ never committed.
 | Readiness or capacity loss | Prevent activation/admission, correlate opaque readiness reasons with protected target evidence, and use the normative readiness SLO to determine critical escalation. |
 | Recovery-objective concern | Keep the target disabled/manual, restore into a clean isolated target, verify ledger/incident/outbox completeness and disabled scheduling, and treat an objective breach as critical. |
 
+### Daily delivery failure
+
+Preserve the delivery obligation, provider receipt or failure code, journal audit,
+and correlated request/release/deployment identifiers. Retry only within the
+bounded provider and execution budgets; a later success appends recovery
+evidence and never rewrites the failed attempt.
+
+### Post-commit journal or telemetry failure
+
+Preserve the committed paper execution and immutable ledger, persist the
+post-commit obligation or failure incident, and block re-execution. Reconcile
+the missing projection from ledger truth before any reviewed re-entry.
+
+### Drawdown lock
+
+Keep the lock engaged, stop new work, preserve the equity and execution
+evidence, and require a separately reviewed unlock reason and resume action.
+
+### Telemetry or alert-provider failure
+
+Keep durable outbox evidence pending, preserve failed delivery attempts and the
+independent external signal, and use the alternate protected evidence path.
+Monitoring loss is not converted into a success-shaped result.
+
+### Response procedures
+
+Follow the append-only lifecycle above: detect and preserve, acknowledge,
+contain, investigate, recover and re-prove, then resolve explicitly with the
+required complementary-role evidence.
+
+### Provider or credential concern
+
+Stop affected schedules and access, preserve only redacted audit evidence, and
+rotate or revoke through an approved operator path. Never copy credentials into
+an incident, issue, log, or responder handoff.
+
+### Stale or overlapping lease
+
+Stop new work and preserve owner, expiry, transaction, and correlation evidence.
+Recover only an expired lease through the audited path; direct SQL clearing is
+prohibited.
+
 ## Recovery and preserved truth
 
 Recovery uses the RPO and RTO in the normative SLI/SLO table. Restore into a

@@ -5,6 +5,11 @@ import {
   sendDailySummary,
 } from "@/lib/email";
 import { flushPostHog } from "@/lib/posthog";
+import {
+  resetRunAdmissionForTest,
+  tryAcquireRunAdmission,
+} from "@/lib/run-admission";
+import { safetyIncidentRepository } from "@/lib/safety-incidents";
 
 jest.mock("@/lib/email", () => ({
   EmailDeliveryError: class EmailDeliveryError extends Error {},
@@ -58,6 +63,7 @@ function request(
 
 beforeEach(() => {
   jest.clearAllMocks();
+  resetRunAdmissionForTest();
   process.env.ROLLOUT_MODE = "disabled";
   mockDb.select.mockReturnValue(mockDb._selectChain);
   mockDb.insert.mockReturnValue(mockDb._insertChain);
@@ -193,5 +199,24 @@ describe("POST /api/agent/daily-summary", () => {
     expect(mismatched.status).toBe(409);
     expect(mockDb.select).not.toHaveBeenCalled();
     expect(mockedSendDailySummary).not.toHaveBeenCalled();
+  });
+
+  it("returns retryable backpressure without opening a critical incident", async () => {
+    const release = tryAcquireRunAdmission();
+    try {
+      const response = await POST(request());
+      const body = await response.json();
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBe("1");
+      expect(body).toMatchObject({
+        error: "Process run admission capacity is exhausted",
+        code: "admission-capacity-exhausted",
+      });
+      expect(safetyIncidentRepository.createOrGet).not.toHaveBeenCalled();
+      expect(mockDb.select).not.toHaveBeenCalled();
+    } finally {
+      release();
+    }
   });
 });
