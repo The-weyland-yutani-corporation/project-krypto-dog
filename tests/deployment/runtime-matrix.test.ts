@@ -54,7 +54,10 @@ describe("Node 22 / PostgreSQL 17 runtime matrix", () => {
     expect(compose).not.toContain("postgres:16");
     expect(postgresModule).toContain("version: '17'");
 
-    expect(ci.match(/node-version-file: '\.nvmrc'/g)).toHaveLength(2);
+    const setupNodeSteps = ci.match(/uses: actions\/setup-node@v4/g) ?? [];
+    const nvmrcSteps = ci.match(/node-version-file: '\.nvmrc'/g) ?? [];
+    expect(setupNodeSteps.length).toBeGreaterThanOrEqual(2);
+    expect(nvmrcSteps).toHaveLength(setupNodeSteps.length);
     expect(ci).toContain("image: postgres:17");
     expect(ci).toContain("postgresql-client-17");
     expect(ci).not.toContain("postgres:16");
