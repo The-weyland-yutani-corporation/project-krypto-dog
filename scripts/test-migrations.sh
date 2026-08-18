@@ -52,6 +52,7 @@ upgrade_url="$url_prefix/upgrade"
 quarantine_url="$url_prefix/quarantine"
 executor_url="$url_prefix/executor"
 orchestration_url="$url_prefix/orchestration"
+incident_listing_url="$url_prefix/incident_listing"
 operations_url="$url_prefix/operations"
 current_routes_url="$url_prefix/current_routes"
 migration_only_url="$url_prefix/migration_only"
@@ -1902,6 +1903,10 @@ create_database orchestration
 bootstrap_and_migrate "$orchestration_url" "krypto-migrator-test-pw-$(random_test_password)"
 DIRECT_URL="$orchestration_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$orchestration_url" npx tsx scripts/test-run-flow.ts
+
+create_database incident_listing
+bootstrap_and_migrate "$incident_listing_url" "krypto-migrator-test-pw-$(random_test_password)"
+DATABASE_URL="$incident_listing_url" npx tsx scripts/test-safety-incident-listing.ts
 
 create_database operations
 # Pinned to 0006 (see through_0006_config above): this database exercises

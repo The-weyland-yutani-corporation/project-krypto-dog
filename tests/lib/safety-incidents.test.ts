@@ -50,6 +50,34 @@ function createFakeDatabase() {
     );
   }
 
+  function latestProjectedRows(selection?: Record<string, unknown>) {
+    const latest = new Map<string, SafetyIncidentOutbox>();
+    for (const row of [...rows].sort(
+      (left, right) =>
+        right.eventSequence - left.eventSequence ||
+        right.persistedAt.getTime() - left.persistedAt.getTime() ||
+        right.eventId.localeCompare(left.eventId),
+    )) {
+      if (!latest.has(row.incidentId)) latest.set(row.incidentId, row);
+    }
+    const sorted = [...latest.values()].sort(
+      (left, right) =>
+        right.persistedAt.getTime() - left.persistedAt.getTime() ||
+        right.occurredAt.getTime() - left.occurredAt.getTime() ||
+        left.incidentId.localeCompare(right.incidentId) ||
+        left.eventId.localeCompare(right.eventId),
+    );
+    if (!selection) return sorted;
+    return sorted.map((row) =>
+      Object.fromEntries(
+        Object.keys(selection).map((key) => [
+          key,
+          row[key as keyof SafetyIncidentOutbox],
+        ]),
+      ),
+    );
+  }
+
   const transaction = {
     execute: jest.fn().mockResolvedValue([]),
     insert: jest.fn(() => ({
@@ -93,14 +121,64 @@ function createFakeDatabase() {
       return chain;
     }),
   };
+  const listLimit = jest.fn(async (limit: number) =>
+    latestProjectedRows().slice(0, limit),
+  );
+  const selectDistinctOn = jest.fn(
+    (
+      _columns: unknown[],
+      selection: Record<string, unknown>,
+    ) => {
+      const chain = {
+        from: jest.fn(),
+        orderBy: jest.fn(),
+        as: jest.fn(),
+      };
+      chain.from.mockReturnValue(chain);
+      chain.orderBy.mockReturnValue(chain);
+      chain.as.mockReturnValue(selection);
+      return chain;
+    },
+  );
+  const listSelect = jest.fn(
+    (selection?: Record<string, unknown>) => {
+      let effectiveSelection = selection;
+      const chain = {
+        from: jest.fn(),
+        where: jest.fn(),
+        orderBy: jest.fn(),
+        limit: listLimit,
+      };
+      chain.from.mockImplementation(
+        (source: Record<string, unknown>) => {
+          effectiveSelection ??= source;
+          listLimit.mockImplementation(async (limit: number) =>
+            latestProjectedRows(effectiveSelection).slice(0, limit),
+          );
+          return chain;
+        },
+      );
+      chain.where.mockReturnValue(chain);
+      chain.orderBy.mockReturnValue(chain);
+      return chain;
+    },
+  );
   const database = {
     transaction: jest.fn(
       async (callback: (tx: typeof transaction) => Promise<unknown>) =>
         callback(transaction),
     ),
-    select: transaction.select,
+    select: listSelect,
+    selectDistinctOn,
   };
-  return { database, transaction, rows };
+  return {
+    database,
+    transaction,
+    rows,
+    listLimit,
+    listSelect,
+    selectDistinctOn,
+  };
 }
 
 function createdInput() {
@@ -403,6 +481,8 @@ describe("safety incident repository", () => {
       status: "ACKNOWLEDGED",
     });
     expect(listed[0]).not.toHaveProperty("redactedContext");
+    expect(fake.selectDistinctOn).toHaveBeenCalledTimes(1);
+    expect(fake.listLimit).toHaveBeenCalledWith(50);
 
     const logger = { warn: jest.fn(), error: jest.fn() };
     emitSafetyIncidentLog(

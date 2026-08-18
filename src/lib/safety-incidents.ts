@@ -965,41 +965,78 @@ export function createSafetyIncidentRepository(
         );
       }
 
-      const rows = options.includeContext
-        ? await database
-            .select({
+      if (options.includeContext) {
+        const latestEvents = database
+          .selectDistinctOn(
+            [safetyIncidentOutbox.incidentId],
+            {
               ...LIST_PROJECTION,
               redactedContext: safetyIncidentOutbox.redactedContext,
-            })
-            .from(safetyIncidentOutbox)
-            .orderBy(
-              desc(safetyIncidentOutbox.persistedAt),
-              desc(safetyIncidentOutbox.eventSequence),
-            )
-        : await database
-            .select(LIST_PROJECTION)
-            .from(safetyIncidentOutbox)
-            .orderBy(
-              desc(safetyIncidentOutbox.persistedAt),
-              desc(safetyIncidentOutbox.eventSequence),
-            );
-
-      const latestByIncident = new Map<string, SafetyIncidentListItem>();
-      for (const row of rows) {
-        if (!latestByIncident.has(row.incidentId)) {
-          latestByIncident.set(
-            row.incidentId,
-            row as SafetyIncidentListItem,
-          );
-        }
+            },
+          )
+          .from(safetyIncidentOutbox)
+          .orderBy(
+            asc(safetyIncidentOutbox.incidentId),
+            desc(safetyIncidentOutbox.eventSequence),
+            desc(safetyIncidentOutbox.persistedAt),
+            desc(safetyIncidentOutbox.eventId),
+          )
+          .as("latest_safety_incident_event_with_context");
+        return database
+          .select()
+          .from(latestEvents)
+          .where(
+            and(
+              options.severity
+                ? eq(latestEvents.severity, options.severity)
+                : undefined,
+              options.status
+                ? eq(latestEvents.status, options.status)
+                : undefined,
+            ),
+          )
+          .orderBy(
+            desc(latestEvents.persistedAt),
+            desc(latestEvents.occurredAt),
+            asc(latestEvents.incidentId),
+            asc(latestEvents.eventId),
+          )
+          .limit(limit);
       }
-      return [...latestByIncident.values()]
-        .filter(
-          (row) =>
-            (!options.severity || row.severity === options.severity) &&
-            (!options.status || row.status === options.status),
+
+      const latestEvents = database
+        .selectDistinctOn(
+          [safetyIncidentOutbox.incidentId],
+          LIST_PROJECTION,
         )
-        .slice(0, limit);
+        .from(safetyIncidentOutbox)
+        .orderBy(
+          asc(safetyIncidentOutbox.incidentId),
+          desc(safetyIncidentOutbox.eventSequence),
+          desc(safetyIncidentOutbox.persistedAt),
+          desc(safetyIncidentOutbox.eventId),
+        )
+        .as("latest_safety_incident_event");
+      return database
+        .select()
+        .from(latestEvents)
+        .where(
+          and(
+            options.severity
+              ? eq(latestEvents.severity, options.severity)
+              : undefined,
+            options.status
+              ? eq(latestEvents.status, options.status)
+              : undefined,
+          ),
+        )
+        .orderBy(
+          desc(latestEvents.persistedAt),
+          desc(latestEvents.occurredAt),
+          asc(latestEvents.incidentId),
+          asc(latestEvents.eventId),
+        )
+        .limit(limit);
     },
   };
 }
