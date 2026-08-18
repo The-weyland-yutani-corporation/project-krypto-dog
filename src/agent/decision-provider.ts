@@ -12,7 +12,10 @@ import {
 export type AgentHarnessMode = "mock" | "smoke";
 
 export interface DecisionProvider {
-  generate(input: DecisionInput): Promise<DecisionResult>;
+  generate(
+    input: DecisionInput,
+    options?: GenerateDecisionOptions,
+  ): Promise<DecisionResult>;
 }
 
 function assertInferenceAllowed(input: DecisionInput): void {
@@ -27,8 +30,11 @@ export function createModelDecisionProvider(
   options: GenerateDecisionOptions = {},
 ): DecisionProvider {
   return {
-    generate(input) {
-      return generateTradeDecision(input, options);
+    generate(input, runOptions) {
+      return generateTradeDecision(input, {
+        ...options,
+        ...runOptions,
+      });
     },
   };
 }

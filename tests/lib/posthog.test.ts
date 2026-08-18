@@ -8,7 +8,13 @@ jest.mock("posthog-node", () => ({
   })),
 }));
 
-import { capturePostHog, shutdownPostHog } from "@/lib/posthog";
+import {
+  capturePostHog,
+  flushPostHog,
+  reservePostHogBudget,
+  shutdownPostHog,
+} from "@/lib/posthog";
+import { createExecutionDeadline } from "@/lib/execution-envelope";
 
 describe("PostHog deployment environment", () => {
   const originalNodeEnv = process.env.NODE_ENV;
@@ -58,5 +64,22 @@ describe("PostHog deployment environment", () => {
       }),
     ).toThrow("POSTHOG_ENVIRONMENT must be dev or prod");
     expect(mockCapture).not.toHaveBeenCalled();
+  });
+
+  it("reserves one request budget before capture and reuses it at flush", async () => {
+    const deadline = createExecutionDeadline();
+    const store = {
+      consume: jest.fn().mockResolvedValue(1),
+    };
+    await expect(
+      reservePostHogBudget({ deadline, budgetStore: store }),
+    ).resolves.toBe(true);
+    capturePostHog({
+      distinctId: "krypto-agent",
+      event: "bounded_run",
+    });
+    await flushPostHog({ deadline, budgetStore: store });
+    expect(store.consume).toHaveBeenCalledTimes(1);
+    deadline.dispose();
   });
 });

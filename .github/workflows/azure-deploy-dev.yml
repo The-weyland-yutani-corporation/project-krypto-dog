@@ -702,6 +702,7 @@ jobs:
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId="${ENV_RUNTIME_IDENTITY_CLIENT_ID}" \
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${ENV_SCHEDULER_IDENTITY_ID}" \
             --set REPLACE_WITH_CURRENTLY_RELEASED_DIGEST="${WEB_DIGEST_HEX}" \
+            --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${RESOLVED_SHA}" \
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${ENV_COMMUNICATION_EMAIL_SENDER}" \
             --set-string-param rolloutMode=shadow
 
@@ -1041,6 +1042,7 @@ jobs:
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId="${ENV_RUNTIME_IDENTITY_CLIENT_ID}" \
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${ENV_SCHEDULER_IDENTITY_ID}" \
             --set REPLACE_WITH_CURRENTLY_RELEASED_DIGEST="${WEB_DIGEST_HEX}" \
+            --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${RESOLVED_SHA}" \
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${ENV_COMMUNICATION_EMAIL_SENDER}" \
             --set-string-param rolloutMode=shadow \
             --set-string-param hourlyTriggerType=Schedule \
@@ -1473,6 +1475,7 @@ jobs:
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId="${ENV_RUNTIME_IDENTITY_CLIENT_ID}" \
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${ENV_SCHEDULER_IDENTITY_ID}" \
             --set REPLACE_WITH_CURRENTLY_RELEASED_DIGEST="${WEB_DIGEST_HEX}" \
+            --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${RESOLVED_SHA}" \
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${ENV_COMMUNICATION_EMAIL_SENDER}"
 
       - name: What-if rollback to disabled/Manual

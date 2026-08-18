@@ -51,12 +51,14 @@ async function prepareRun(
     triggerSource: "database-test",
     tradingMode: "PAPER",
     strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+    startedAt: now,
+    deadlineAt: new Date(now.getTime() + 180_000),
   });
   await adminDb
     .update(agentState)
     .set({
       leaseOwner: owner,
-      leaseExpiresAt: new Date(now.getTime() + 60 * 60 * 1000),
+      leaseExpiresAt: new Date(now.getTime() + 300_000),
       isRunning: true,
     })
     .where(eq(agentState.id, "singleton"));
@@ -254,6 +256,114 @@ async function main() {
     .where(eq(tradeExecution.agentRunId, "executor-run-5"));
   assert.equal(ownerMismatchTrades.length, 0);
 
+  const deadlineFenceTime = new Date(
+    start.getTime() + 15 * 60 * 60 * 1000,
+  );
+  const deadlineAt = new Date(deadlineFenceTime.getTime() + 180_000);
+  await prepareRun(
+    "executor-run-deadline",
+    "lease-deadline",
+    deadlineFenceTime,
+  );
+  const beforeDeadlineRollback = await stateSnapshot();
+  let deadlineClock = deadlineFenceTime;
+  await assert.rejects(
+    firstExecutor({
+      ...firstRequest,
+      agentRunId: "executor-run-deadline",
+      leaseOwner: "lease-deadline",
+      now: deadlineFenceTime,
+      nowFn: () => deadlineClock,
+      deadlineAt,
+      market: {
+        ...firstRequest.market,
+        spotPriceUSD: 1900,
+        observedAt: deadlineFenceTime,
+      },
+      hooks: {
+        afterTradeInsert: () => {
+          deadlineClock = deadlineAt;
+        },
+      },
+    }),
+    /deadline/i,
+  );
+  const deadlineTrades = await adminDb
+    .select({ id: tradeExecution.id })
+    .from(tradeExecution)
+    .where(eq(tradeExecution.agentRunId, "executor-run-deadline"));
+  assert.equal(deadlineTrades.length, 0);
+  assert.deepEqual(await stateSnapshot(), beforeDeadlineRollback);
+
+  await adminDb
+    .update(agentState)
+    .set({
+      currentPositionETH: 0.01,
+      currentPositionUSDC: 180,
+      portfolioValueUSD: 190,
+      currentPositionETHDecimal: "0.010000000000000000",
+      currentPositionUSDCDecimal: "180.00000000",
+      portfolioValueUSDDecimal: "190.00000000",
+      weightedCostBasisUSD: "2000.00000000",
+      referencePriceUSD: "2000.00000000",
+      lastBuyPriceUSD: "2000.00000000",
+      dcaCount: 1,
+      peakPortfolioValueUSD: "200.00000000",
+      drawdownPct: "5.00000000",
+    })
+    .where(eq(agentState.id, "singleton"));
+  const databaseFenceStartedAt = new Date(Date.now() - 179_700);
+  const databaseFenceDeadlineAt = new Date(
+    databaseFenceStartedAt.getTime() + 180_000,
+  );
+  await prepareRun(
+    "executor-run-database-deadline",
+    "lease-database-deadline",
+    databaseFenceStartedAt,
+  );
+  const beforeDatabaseFenceRollback = await stateSnapshot();
+  await assert.rejects(
+    firstExecutor({
+      ...firstRequest,
+      agentRunId: "executor-run-database-deadline",
+      leaseOwner: "lease-database-deadline",
+      decision: {
+        action: "HOLD",
+        notionalUSD: null,
+        reasoning: "database commit deadline fence",
+      },
+      now: new Date(),
+      nowFn: () => databaseFenceStartedAt,
+      deadlineAt: databaseFenceDeadlineAt,
+      market: {
+        ...firstRequest.market,
+        spotPriceUSD: 1000,
+        observedAt: databaseFenceStartedAt,
+      },
+      hooks: {
+        afterTradeInsert: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        },
+      },
+    }),
+    (error: unknown) =>
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "57014",
+  );
+  const databaseDeadlineTrades = await adminDb
+    .select({ id: tradeExecution.id })
+    .from(tradeExecution)
+    .where(
+      eq(
+        tradeExecution.agentRunId,
+        "executor-run-database-deadline",
+      ),
+    );
+  assert.equal(databaseDeadlineTrades.length, 0);
+  assert.deepEqual(await stateSnapshot(), beforeDatabaseFenceRollback);
+
   const allTrades = await adminDb.select().from(tradeExecution);
   assert.equal(allTrades.length, 4);
   assert.equal(
@@ -262,7 +372,7 @@ async function main() {
   );
 
   console.log(
-    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, weighted accounting, partial sell, and full exit.",
+    "Paper executor tests passed for concurrency, idempotency, rollback, application and database deadline fencing, lease ownership, weighted accounting, partial sell, and full exit.",
   );
 }
 

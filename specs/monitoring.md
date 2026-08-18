@@ -29,11 +29,35 @@ Release thresholds and authorization are in
 | Guardrail event | `guardrail_triggered` + persisted account/journal state | Explain cooldown, drawdown, lease, and policy blocks |
 | Paper trade | Immutable DB ledger; PostHog secondary | Confirm exact authorized paper execution |
 | Model usage | `AgentRun` + `llm_token_usage` | Attempts, latency, and token anomalies |
+| Execution envelope | `AgentRun.deadlineAt`, terminal outcome/error code, job duration | Prove deadline/cancellation produces a terminal no-trade result inside the owned lease |
+| Provider daily usage | `ProviderDailyUsage` + typed budget outcome | Prove fail-closed Coinbase/Foundry/PostHog/ACS ceiling enforcement |
+| Readiness | ACA probe status + opaque reason codes | Detect unsafe release/config/runtime-role/schema/lease/mode/admission state without provider calls |
 | Daily delivery | `AgentJournal` event `daily-summary-delivery` | Persisted ACS `sent`/`skipped`/`failed` health |
 | Job execution | Container Apps Job history + Log Analytics | Prove scheduler process started and completed |
 | Idempotency proof | Job execution env + exact `AgentRun.idempotencyKey` + activation-check report | Bind attended shadow and scheduled observation to the current proof generation |
 | App/job logs | Per-environment Log Analytics workspace | Diagnose route, model, market, database, email, and process failures |
 | Immutable deployment evidence | Evidence blob report | Bind checks to environment, release SHA, image digest, operation, and execution ID |
+
+## Bounded execution and provider ceilings
+
+The monitored PAPER execution ordering is:
+
+```text
+providers 125s (Coinbase 20 + version-pinned Foundry 80 + ACS 20 + PostHog 5)
+< app deadline 180s
+< scheduler HTTP 210s
+< ACA ingress platform bound 240s
+< job replica 270s
+< owned lease 300s
+```
+
+The app partitions its window into providers 125 seconds, database policy/execution 20, terminal persistence/owned-lease release 15, cancellation/response 10, and slack 10. Both scheduler jobs have `replicaRetryLimit=0`; idempotency is defense in depth, not a retry policy. Manual ops jobs remain outside this chain and retain their longer operation-specific timeouts.
+
+The runtime records no-trade deadline, cancellation, admission, and daily-provider-budget failures as typed terminal outcomes. Operators correlate the persisted run, `deadlineAt`, lease release/expiry, Container Apps execution duration, and provider daily count. No alert or dashboard should display database URLs, release secrets, lease owners, role details, or provider payloads.
+
+Operator safety ceilings per UTC day are Coinbase `1,000`, version-pinned Foundry `200`, PostHog `2,000`, and ACS `100`. They must be reconciled against contracted provider quotas, rate-limit policy, and costs before rollout; they are not evidence of plan entitlement. Engineering owns the application/runtime implementation, release/operator owns plan/quota/cost reconciliation, and operator owns deadline/budget/capacity alert response.
+
+Liveness is dependency-free. Readiness is four-second bounded, non-mutating, provider-free, and uses runtime `DATABASE_URL` only. Alert and platform-probe handling may use only its `ready`/`not_ready` status and opaque reason codes. A readiness reason must be diagnosed through protected target evidence rather than by expanding the public response with identities, versions, digests, or state values.
 
 ## PostHog isolation
 
@@ -254,7 +278,10 @@ a successful HTTP response without the persisted delivery audit.
 | Stale lease | Expired owner or repeated conflict after expiry | Use only audited expired-lease recovery |
 | Reconciliation failure | `accountingStatus != RECONCILED` | Keep trading blocked until immutable history reconciles |
 | ACS delivery | Failed/skipped or no success for 36h | Repair provider/config and prove a new sent audit |
-| Model retry/latency | Attempts >1 or material latency increase | Inspect Luna deployment health, quota, and timeout frequency |
+| Model retry/latency | Attempts >1 or material latency increase | Inspect Luna deployment health, quota, `Retry-After`, remaining deadline, and timeout frequency |
+| Execution deadline/cancellation | Any deadline or cancellation terminal outcome | Keep no-trade; confirm one terminal run and owned-lease release/expiry; operator responds |
+| Provider daily ceiling | Any fail-closed ceiling exhaustion | Keep no-trade; operator reconciles usage with contracted quota/cost before reactivation |
+| Admission/readiness | Capacity rejection or readiness `503` | Stop activation; inspect local admission, pool, runtime role/schema, lease, and rollout-mode reason code |
 | Token spike | Material increase over recent baseline | Inspect prompt/context growth |
 
 ## Daily and weekly review
@@ -385,6 +412,4 @@ complete monitoring, no unexplained errors, expected guardrail behavior,
 positive net results under the evaluation methodology, and manual journal
 review.
 
-Current Azure baseline: **2 provisioned environment foundations, 0 releases,
-0 Container Apps Jobs, and 0 scheduled production days**. Foundation workflow
-evidence exists; release, ops-job, and schedule evidence does not.
+Current verified Azure baseline remains: dev is shadow/scheduled and production is disabled/manual; both foundations, releases, and jobs exist, while production has zero scheduled days. Those records predate the issue #132 release. They do not prove the new deadline, readiness, capacity, database-timeout, provider-ceiling, or budget-exhaustion contract. No live #132 target evidence is claimed; source/CI and future exact-release evidence must be classified separately and indexed in issue #76.

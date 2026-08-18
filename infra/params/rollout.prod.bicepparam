@@ -35,6 +35,7 @@ param dailyJobName = 'caj-prod-daily-summary'
 // (Dockerfile `web` target contains scripts/scheduled-trigger.mjs).
 param webImageName = 'krypto-web'
 param imageDigest = 'sha256:REPLACE_WITH_CURRENTLY_RELEASED_DIGEST'
+param releaseSha = 'REPLACE_WITH_REAL_COMMIT_SHA000000000000'
 
 param azureFoundryProjectEndpoint = 'https://ghcp-foundry-eastus2.services.ai.azure.com/api/projects/krypto-prod-agents'
 param azureFoundryAgentName = 'krypto-prod-decision'

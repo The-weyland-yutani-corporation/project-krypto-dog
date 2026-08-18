@@ -71,6 +71,35 @@ describe("harness decision provider", () => {
     });
   });
 
+  it("forwards per-run generation options through the provider boundary", async () => {
+    const configuredModel = {
+      withStructuredOutput: jest.fn(() => {
+        throw new Error("configured model must be overridden");
+      }),
+    } as unknown as BaseChatModel;
+    const runModel = {
+      withStructuredOutput: jest.fn(() =>
+        RunnableLambda.from(async () => ({
+          parsed: {
+            action: "HOLD",
+            notionalUSD: null,
+            reasoning: "Run-scoped model hold",
+          },
+          raw: new AIMessage({ content: "" }),
+        })),
+      ),
+    } as unknown as BaseChatModel;
+    const provider = createModelDecisionProvider({ model: configuredModel });
+
+    await expect(provider.generate(input, { model: runModel })).resolves.toMatchObject({
+      decision: {
+        reasoning: "Run-scoped model hold",
+      },
+    });
+    expect(configuredModel.withStructuredOutput).not.toHaveBeenCalled();
+    expect(runModel.withStructuredOutput).toHaveBeenCalledTimes(1);
+  });
+
   it("returns a deterministic read-only fixture decision", async () => {
     const provider = createFixtureDecisionProvider({
       action: "BUY",

@@ -107,7 +107,9 @@ describe("POST /api/admin/run-agent", () => {
       makeReq("http://localhost:3000/api/admin/run-agent"),
     );
 
-    expect(mockedExecuteAgentRun).toHaveBeenCalledWith({ triggerSource: "admin" });
+    expect(mockedExecuteAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({ triggerSource: "admin" }),
+    );
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("skipped");
@@ -139,10 +141,10 @@ describe("POST /api/admin/run-agent", () => {
       }),
     );
     expect(accepted.status).toBe(200);
-    expect(mockedExecuteAgentRun).toHaveBeenCalledWith({
+    expect(mockedExecuteAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       triggerSource: "admin",
       requiredMode: "disabled",
-    });
+    }));
 
     mockedExecuteAgentRun.mockClear();
     const invalid = await runAgent(

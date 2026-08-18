@@ -5,12 +5,20 @@ import { flushPostHog } from "@/lib/posthog";
 import { readRequiredRolloutMode } from "@/lib/required-rollout-mode";
 import { RequiredRolloutModeError } from "@/trading/errors";
 import { resolveTradingMode } from "@/trading/strategy-config";
+import {
+  AdmissionCapacityError,
+  createExecutionDeadline,
+  type ExecutionDeadline,
+} from "@/lib/execution-envelope";
+import { tryAcquireRunAdmission } from "@/lib/run-admission";
 
 export async function POST(request: NextRequest) {
   if (!isValidCronSecret(request.headers.get("x-cron-secret"))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  let deadline: ExecutionDeadline | undefined;
+  let releaseAdmission: (() => void) | undefined;
   try {
     let requiredMode: ReturnType<typeof readRequiredRolloutMode>;
     try {
@@ -38,11 +46,15 @@ export async function POST(request: NextRequest) {
         actualMode,
       });
     }
+    deadline = createExecutionDeadline({ signal: request.signal });
+    releaseAdmission = tryAcquireRunAdmission(deadline);
     const outcome = await executeAgentRun({
       triggerSource: "cron",
       idempotencyKey:
         request.headers.get("x-idempotency-key") ?? undefined,
       requiredMode,
+      signal: request.signal,
+      deadline,
     });
 
     switch (outcome.kind) {
@@ -59,6 +71,12 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(outcome.result, { status: 200 });
     }
   } catch (error) {
+    if (error instanceof AdmissionCapacityError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 503, headers: { "Retry-After": "1" } },
+      );
+    }
     if (error instanceof RequiredRolloutModeError) {
       return NextResponse.json(
         {
@@ -75,10 +93,14 @@ export async function POST(request: NextRequest) {
       { status: 500 },
     );
   } finally {
-    try {
-      await flushPostHog();
-    } catch (error) {
-      console.error("[api/agent/run] Failed to flush analytics:", error);
+    if (deadline && deadline.remainingMs() > 0) {
+      try {
+        await flushPostHog({ deadline });
+      } catch (error) {
+        console.error("[api/agent/run] Failed to flush analytics:", error);
+      }
     }
+    releaseAdmission?.();
+    deadline?.dispose();
   }
 }

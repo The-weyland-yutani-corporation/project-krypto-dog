@@ -355,6 +355,7 @@ jobs:
            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityClientId="${{ steps.live.outputs.runtime_identity_client_id }}" \
            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_schedulerIdentityId="${{ steps.live.outputs.scheduler_identity_id }}" \
            --set REPLACE_WITH_CURRENTLY_RELEASED_DIGEST="${{ steps.current.outputs.digest }}" \
+           --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${{ steps.current.outputs.sha }}" \
            --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${{ steps.live.outputs.communication_email_sender }}"
           # Committed rollout.prod.bicepparam already defaults rolloutMode
           # to 'disabled' and both trigger types to 'Manual' -- no

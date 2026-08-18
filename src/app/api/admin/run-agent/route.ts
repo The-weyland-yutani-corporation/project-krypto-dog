@@ -5,6 +5,12 @@ import { requireAdminSession } from "@/lib/admin-route-auth";
 import { flushPostHog } from "@/lib/posthog";
 import { readRequiredRolloutMode } from "@/lib/required-rollout-mode";
 import { RequiredRolloutModeError } from "@/trading/errors";
+import {
+  AdmissionCapacityError,
+  createExecutionDeadline,
+  type ExecutionDeadline,
+} from "@/lib/execution-envelope";
+import { tryAcquireRunAdmission } from "@/lib/run-admission";
 
 // We intentionally do *not* accept the cron secret here. If `CRON_SECRET` ever
 // leaks, an attacker still cannot drive the agent through the admin surface.
@@ -14,6 +20,8 @@ export async function POST(request: NextRequest) {
   const auth = await requireAdminSession(request);
   if (auth) return auth;
 
+  let deadline: ExecutionDeadline | undefined;
+  let releaseAdmission: (() => void) | undefined;
   try {
     let requiredMode: ReturnType<typeof readRequiredRolloutMode>;
     try {
@@ -24,11 +32,15 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+    deadline = createExecutionDeadline({ signal: request.signal });
+    releaseAdmission = tryAcquireRunAdmission(deadline);
     const outcome = await executeAgentRun({
       triggerSource: "admin",
       idempotencyKey:
         request.headers.get("x-idempotency-key") ?? undefined,
       ...(requiredMode ? { requiredMode } : {}),
+      signal: request.signal,
+      deadline,
     });
 
     switch (outcome.kind) {
@@ -45,6 +57,12 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(outcome.result, { status: 200 });
     }
   } catch (error) {
+    if (error instanceof AdmissionCapacityError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 503, headers: { "Retry-After": "1" } },
+      );
+    }
     if (error instanceof RequiredRolloutModeError) {
       return NextResponse.json(
         {
@@ -64,13 +82,17 @@ export async function POST(request: NextRequest) {
       { status: 500 },
     );
   } finally {
-    try {
-      await flushPostHog();
-    } catch (error) {
-      console.error(
-        "[api/admin/run-agent] Failed to flush analytics:",
-        error,
-      );
+    if (deadline && deadline.remainingMs() > 0) {
+      try {
+        await flushPostHog({ deadline });
+      } catch (error) {
+        console.error(
+          "[api/admin/run-agent] Failed to flush analytics:",
+          error,
+        );
+      }
     }
+    releaseAdmission?.();
+    deadline?.dispose();
   }
 }
