@@ -337,6 +337,31 @@ The operating procedure is
 prove target migration state, relay, Azure rules, Action Group delivery, roster,
 drills, or target behavior.
 
+### ACCT-01 deterministic ledger and anchor attestation
+
+ACCT-01 MUST satisfy
+[ADR 0014](./decisions/0014-deterministic-ledger-attestation.md):
+
+- replay is bounded, ordered, deterministic, PostgreSQL `READ ONLY`, and uses
+  only approved fixed-point rounding;
+- every transition, fee, cost basis, realized PnL, DCA count, portfolio input,
+  retained legacy value, and modern run/journal/incident correlation matches
+  exactly;
+- legacy rows are explicitly classified; orphan, duplicate, out-of-order,
+  corrupted, or unexplained rows fail;
+- flat state has zero ETH/DCA and no weighted-cost or last-buy residue;
+- reference, last-buy, peak, and portfolio observations carry time, source,
+  fixed maximum age, release, and configuration attribution;
+- target smoke signs the checksum-addressed attestation, and the immediate
+  pre-PAPER check reruns it with an explicit `RETAIN` or blocking decision; and
+- failure never repairs state. A separate protected operation sets/retains
+  `QUARANTINED` and appends critical incident evidence.
+
+Source/CI fixtures and PostgreSQL tests do not complete ACCT-01 target proof.
+The exact release MUST retain disabled-target and immediate pre-PAPER reports,
+prove no database mutation by replay, and index quarantine containment evidence
+in issue #76. No PAPER activation is authorized by this implementation.
+
 The existing release issues own the gate records:
 
 | Gate record | Issue |

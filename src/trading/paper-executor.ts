@@ -34,6 +34,7 @@ import {
   type ExecutionDeadline,
 } from "@/lib/execution-envelope";
 import { insertCreatedSafetyIncident } from "@/lib/safety-incidents";
+import { createPriceAnchorMetadata } from "./anchors";
 
 const ACCOUNT_ID = "singleton";
 
@@ -154,10 +155,14 @@ function snapshotState(state: AgentState): Record<string, unknown> {
     usdcBalance: state.currentPositionUSDCDecimal,
     weightedCostBasisUSD: state.weightedCostBasisUSD,
     referencePriceUSD: state.referencePriceUSD,
+    referencePriceAnchor: state.referencePriceAnchor,
     lastBuyPriceUSD: state.lastBuyPriceUSD,
+    lastBuyPriceAnchor: state.lastBuyPriceAnchor,
     dcaCount: state.dcaCount,
     portfolioValueUSD: state.portfolioValueUSDDecimal,
     peakPortfolioValueUSD: state.peakPortfolioValueUSD,
+    peakPortfolioValueAnchor: state.peakPortfolioValueAnchor,
+    portfolioValueObservation: state.portfolioValueObservation,
     drawdownPct: state.drawdownPct,
     accountingStatus: state.accountingStatus,
   };
@@ -545,12 +550,52 @@ export function createPaperExecutor(database: typeof db) {
       authorization.intent.fullExit
         ? executionPriceText
         : state.referencePriceUSD;
+    const tradeAnchorSource =
+      authorization.intent.action === "BUY"
+        ? "paper-buy"
+        : authorization.intent.fullExit
+          ? "paper-full-exit"
+          : "paper-sell";
+    const portfolioObservation = createPriceAnchorMetadata({
+      observedAt: request.market.observedAt,
+      source: tradeAnchorSource,
+      releaseId: run.releaseId,
+      configVersion: request.strategy.version,
+      observedPriceUSD,
+      observedPortfolioValueUSD: portfolioValueUSD,
+    });
+    const peakObservation = createPriceAnchorMetadata({
+      observedAt: request.market.observedAt,
+      source: tradeAnchorSource,
+      releaseId: run.releaseId,
+      configVersion: request.strategy.version,
+      observedPriceUSD,
+      observedPortfolioValueUSD: peakPortfolioValueUSD,
+    });
+    const executionAnchor = createPriceAnchorMetadata({
+      observedAt: now,
+      source: tradeAnchorSource,
+      releaseId: run.releaseId,
+      configVersion: request.strategy.version,
+      observedPriceUSD: executionPriceUSD,
+    });
+    const referencePriceAnchorAfter =
+      authorization.intent.action === "SELL" &&
+      authorization.intent.fullExit
+        ? executionAnchor
+        : state.referencePriceAnchor;
     const lastBuyPriceAfter =
       authorization.intent.action === "BUY"
         ? executionPriceText
         : authorization.intent.fullExit
           ? null
           : state.lastBuyPriceUSD;
+    const lastBuyPriceAnchorAfter =
+      authorization.intent.action === "BUY"
+        ? executionAnchor
+        : authorization.intent.fullExit
+          ? null
+          : state.lastBuyPriceAnchor;
 
     const [updatedState] = await tx
       .update(agentState)
@@ -565,9 +610,13 @@ export function createPaperExecutor(database: typeof db) {
         portfolioValueUSDDecimal: portfolioText,
         weightedCostBasisUSD: weightedCostAfterText,
         referencePriceUSD: referencePriceAfter,
+        referencePriceAnchor: referencePriceAnchorAfter,
         lastBuyPriceUSD: lastBuyPriceAfter,
+        lastBuyPriceAnchor: lastBuyPriceAnchorAfter,
         dcaCount: transition.after.dcaCount,
         peakPortfolioValueUSD: peakText,
+        peakPortfolioValueAnchor: peakObservation,
+        portfolioValueObservation: portfolioObservation,
         drawdownPct: drawdownText,
         strategyVersion: request.strategy.version,
         strategySnapshot: request.strategy,

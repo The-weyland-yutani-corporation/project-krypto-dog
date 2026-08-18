@@ -65,8 +65,10 @@ and do not define the Azure release.
 | `portfolioValueUSDDecimal` | `numeric(20,8)` | marked-to-market account value |
 | `weightedCostBasisUSD` | `numeric(20,8)` | weighted open-position cost basis |
 | `referencePriceUSD`, `lastBuyPriceUSD` | `numeric(20,8)` | cold-start/entry and DCA anchors |
+| `referencePriceAnchor`, `lastBuyPriceAnchor` | `jsonb` | observation time/source/max age/release/config/fixed-point provenance; paired with the price |
 | `dcaCount` | `integer` | BUY executions since the last full exit |
 | `peakPortfolioValueUSD`, `drawdownPct` | `numeric` | deterministic drawdown state |
+| `peakPortfolioValueAnchor`, `portfolioValueObservation` | `jsonb` | exact valuation input and observation provenance |
 | `isLocked` | `boolean` | set true when drawdown breach occurs; manual reset only |
 | `lockReason`, `lockedAt` | `text`, `timestamptz` | persisted cause and time of the first active safety lock |
 | `isOperatorPaused` | `boolean` | operator-controlled pause switch; can be toggled from admin without clearing drawdown lock |
@@ -96,9 +98,10 @@ Atomic `(usageDate, provider)` counters enforce fail-closed UTC-day request ceil
 ### `RuntimeContract`
 
 A runtime-readable singleton publishes current schema fingerprint
-`0010_safety_incidents_v1` and contract version `2` for readiness, retaining the
-bounded-execution contract and adding append-only incident evidence. The runtime
-remains denied access to the Drizzle migration ledger.
+`0011_ledger_attestation_anchors_v1` and contract version `3` for readiness,
+retaining bounded execution and append-only incidents while adding explicit
+anchor provenance. The runtime remains denied access to the Drizzle migration
+ledger.
 
 ### `TradeExecution`
 
@@ -112,6 +115,12 @@ remains denied access to the Drizzle migration ledger.
 | strategy fields | `text`, `jsonb` | strategy version and signal snapshot |
 | `agentReasoning` | `text` | reasoning on the authorized intent; model-supplied for optional trades and deterministic for mandatory safety exits |
 | `createdAt` | `timestamp(3)` | indexed |
+
+The bounded read-only attestation in
+[`ledger-attestation.ts`](../src/trading/ledger-attestation.ts) replays these
+rows with bigint fixed-point accounting and exact legacy-field comparison. It
+does not repair either table. Failure is consumed only by the separate protected
+quarantine operation.
 
 ### `AgentJournal`
 

@@ -7,6 +7,31 @@ import {
   validateTargetBaseUrl,
 } from "@/deployment/target-smoke";
 
+jest.mock("@/deployment/ledger-attestation", () => ({
+  runLedgerAttestation: jest.fn(async (options: {
+    releaseSha: string;
+    imageDigest: string;
+    configVersion: string;
+    purpose: string;
+    asOf: Date;
+  }) => ({
+    status: "PASS",
+    checksum: `sha256:${"a".repeat(64)}`,
+    binding: {
+      releaseSha: options.releaseSha,
+      imageDigest: options.imageDigest,
+      configVersion: options.configVersion,
+      databaseIdentityHash: `sha256:${"b".repeat(64)}`,
+      runtimeRole: "krypto_runtime",
+      purpose: options.purpose,
+      asOf: options.asOf.toISOString(),
+    },
+    bounds: { observedTrades: 0, maximumTrades: 10_000 },
+    anchorDecision: "RESET_REQUIRED",
+    paperPromotionEligible: false,
+  })),
+}));
+
 const TEST_RELEASE_SHA = "c0e4ed2724a9880d5a5dfcdf954490f2d86e8e2f";
 const TEST_IMAGE_DIGEST =
   "sha256:d32ebcff1be028d183b8ba7ce4e1506b0adf3a7a90b02d5c6a202fabceaf1e68";
@@ -268,8 +293,8 @@ describe("target deployment smoke", () => {
     );
 
     expect(report.passed).toBe(true);
-    expect(report.schemaVersion).toBe("1.6.0");
-    expect(report.checks).toHaveLength(17);
+    expect(report.schemaVersion).toBe("1.7.0");
+    expect(report.checks).toHaveLength(18);
     expect(report.checks.every((check) => check.status === "pass")).toBe(
       true,
     );
@@ -302,6 +327,7 @@ describe("target deployment smoke", () => {
       targetOrigin: "https://krypto.example.com",
       releaseSha: TEST_RELEASE_SHA,
       imageDigest: TEST_IMAGE_DIGEST,
+      ledgerAttestationChecksum: `sha256:${"a".repeat(64)}`,
       rolloutMode: "disabled",
       cronSecretBinding: expectedCronSecretBinding,
       approvedAt: "2026-07-14T22:00:00.000Z",
@@ -510,6 +536,56 @@ describe("target deployment smoke", () => {
     expect(report.releaseSha).toBe(TEST_RELEASE_SHA);
     expect(report.imageDigest).toBe(TEST_IMAGE_DIGEST);
     expect(createApproval).not.toHaveBeenCalled();
+  });
+
+  it("blocks before any binding mutation when ledger attestation fails", async () => {
+    const createBinding = jest.fn();
+    const report = await runTargetSmoke(
+      {
+        baseUrl: "https://krypto.example.com",
+        expectedHost: "krypto.example.com",
+        databaseUrl: "******db.example.com/postgres",
+        cronSecret: "cron-secret",
+        adminPassword: "admin-password",
+        releaseSha: TEST_RELEASE_SHA,
+        imageDigest: TEST_IMAGE_DIGEST,
+        approvalSecret: TEST_APPROVAL_SECRET,
+      },
+      {
+        fetchImpl: successfulFetch,
+        inspectBefore: async () => ({
+          tradeCount: 0,
+          activeKryptoCronJobs: 0,
+          pendingKryptoHttpRequests: 0,
+          state: {
+            present: true,
+            accountingStatus: "RECONCILED",
+            openPosition: false,
+            activeLease: false,
+          },
+        }),
+        runAttestation: jest.fn(async () => ({
+          status: "FAIL",
+          checksum: `sha256:${"f".repeat(64)}`,
+          binding: {
+            databaseIdentityHash: `sha256:${"b".repeat(64)}`,
+            runtimeRole: "krypto_runtime",
+          },
+          bounds: { observedTrades: 1 },
+          anchorDecision: "BLOCK",
+        })) as never,
+        createBinding,
+      },
+    );
+
+    expect(report.passed).toBe(false);
+    expect(report.binding).toBeNull();
+    expect(createBinding).not.toHaveBeenCalled();
+    expect(
+      report.checks.find(
+        (check) => check.id === "immutable-ledger-attestation",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
   });
 
   it("does not invoke the agent when the target is not disabled", async () => {

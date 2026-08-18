@@ -64,6 +64,7 @@ async function main(): Promise<void> {
       cronSecret: "test-cron-secret",
       releaseSha,
       imageDigest,
+      ledgerAttestationChecksum: `sha256:${"a".repeat(64)}`,
       approvalSecret: TEST_APPROVAL_SECRET,
       approvedAt,
     });

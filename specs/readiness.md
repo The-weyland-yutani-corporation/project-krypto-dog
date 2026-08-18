@@ -387,6 +387,23 @@ contradictory, or stale primary on-call, backup on-call, release owner,
 trading-safety approver, evidence custodian, or rollback owner blocks issue #75
 / PR-G2.
 
+### ACCT-01 evidence contract (issue #130 / ADR 0014)
+
+**Source/CI evidence to index in #76:** frozen source ref and merge SHA; migration
+`0011` inventory/hash/drift result; flat, one-entry, multi-DCA, partial-exit,
+full-exit, and legacy-compatible golden fixtures; generated valid chains with
+single-field corruption rejection; exact fee/anchor/orphan/stale/migration
+coverage; repeated identical read-only reports; PostgreSQL 17 fresh/upgrade
+proof; and idempotent protected quarantine/incident containment.
+
+**Future exact-release target evidence to index in #76:** the disabled-target
+and immediate pre-PAPER reports, each bound to exact SHA/image/config/database
+identity/runtime role and checksum; before/after table digests proving no replay
+mutation; explicit anchor `RETAIN` or blocking reset decision; migration
+compatibility classification; protected quarantine incident evidence for a
+controlled mismatch; zero unexpected trade delta; and distinct release and
+trading-safety review. No live #130 report or PAPER activation is claimed here.
+
 #### Exact canonical issue #76 requirements
 
 The following release-evidence matrix remains mandatory:
@@ -395,6 +412,9 @@ The following release-evidence matrix remains mandatory:
 - Explicit distinction between AI/check authorization, human source approval, target-mutation approval, shadow approval, and PAPER approval.
 - Node/npm/PostgreSQL server/client version proof.
 - Migration inventory, hashes, drift result, database role/ownership matrix, and runtime/migrator separation.
+- Checksum-addressed disabled-target and immediate pre-PAPER immutable-ledger
+  attestations, exact anchor decision, read-only proof, and any protected
+  quarantine incident.
 - Target identity, immutable deployment ID, configuration digest, readiness result, and preflight.
 - Provider/application backup checksums, RPO/RTO restore proof, and retention policy.
 - Admin and cron authentication control evidence.

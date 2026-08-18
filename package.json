@@ -34,7 +34,9 @@
     "smoke:target": "npx tsx scripts/target-smoke.ts",
     "azure:ops-job": "npx tsx scripts/azure/ops-job.ts",
     "incident:respond": "npx tsx scripts/resolve-safety-incident.ts",
-    "incident:resolve": "npx tsx scripts/resolve-safety-incident.ts"
+    "incident:resolve": "npx tsx scripts/resolve-safety-incident.ts",
+    "ledger:attest": "npx tsx scripts/ledger-attestation.ts",
+    "ledger:quarantine": "npx tsx scripts/quarantine-ledger-attestation.ts"
   },
   "repository": {
     "type": "git",

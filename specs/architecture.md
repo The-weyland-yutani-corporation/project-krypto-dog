@@ -183,11 +183,23 @@ Inside the 180-second application window, providers receive 125 seconds, databas
 
 The web app has at most three replicas, `DATABASE_POOL_MAX=1` and one admitted run per replica, while the private PostgreSQL 17 `krypto_app` login has `CONNECTION LIMIT 20`. Runtime connections use connect/statement/lock/idle-in-transaction timeouts of 5/10/2/15 seconds.
 
-Liveness is dependency-free. Readiness is a four-second, non-mutating, provider-free query using only runtime `DATABASE_URL`. It proves release SHA/image digest, bounded runtime configuration, PostgreSQL 17 and current login/membership/denials/connection limit, current schema fingerprint `0010_safety_incidents_v1`/contract `2`, singleton reconciliation, unresolved-critical incident state, lease sanity, rollout mode, roster, and local admission. It returns only `ready`/`not_ready` plus opaque reason codes.
+Liveness is dependency-free. Readiness is a four-second, non-mutating, provider-free query using only runtime `DATABASE_URL`. It proves release SHA/image digest, bounded runtime configuration, PostgreSQL 17 and current login/membership/denials/connection limit, current schema fingerprint `0011_ledger_attestation_anchors_v1`/contract `3`, singleton reconciliation, unresolved-critical incident state, lease sanity, rollout mode, roster, and local admission. It returns only `ready`/`not_ready` plus opaque reason codes.
 
 Daily operator safety ceilings are Coinbase 1,000, version-pinned Foundry 200, PostHog 2,000, and ACS 100 requests per UTC day. Engineering owns the application/runtime contract; release/operator owns provider-plan, quota, and cost reconciliation before rollout; operator owns alert response. The ceilings must be reconciled against contracted provider quotas and costs and lowered when required.
 
 **Evidence status:** this contract is implemented in the issue #132 source change but has not been released to Azure. The verified live platform facts above remain valid; they do not constitute timing, readiness, capacity, quota, or deadline evidence for #132. Source/CI and future exact-release target evidence must be separately indexed in issue #76. Nothing in this contract authorizes live-money execution.
+
+### Immutable-ledger attestation boundary
+
+[ADR 0014](./decisions/0014-deterministic-ledger-attestation.md) keeps the
+immutable ledger authoritative over materialized account state. A bounded
+repeatable-read/READ ONLY operation replays ordered trades with bigint
+fixed-point accounting, verifies run/journal/incident correlation and explicit
+legacy classification, validates anchor provenance/freshness, and emits a
+redacted checksum-bound report. Disabled preflight/target smoke consume it, and
+the activation check reruns it immediately before PAPER. Failure never repairs
+history; only the separate protected migrator/owner operation can quarantine
+and append incident evidence.
 
 ### Durable incident and independent-alert contract
 

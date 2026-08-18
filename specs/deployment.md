@@ -185,8 +185,9 @@ reviewer so routine dev delivery can proceed through the remaining gates.
   `deployment-smoke-approved` journal row is a separate machine attestation.
 - That attestation binds approval ID; database-binding, mode-mismatch, cron-run,
   and admin-run evidence IDs; target origin; release SHA; image digest;
-  disabled rollout mode; keyed cron-secret binding; and canonical approval
-  timestamp. It expires exactly 24 hours after
+  immutable-ledger attestation checksum; disabled rollout mode; keyed
+  cron-secret binding; and canonical approval timestamp. It expires exactly 24
+  hours after
   `approvedAt`; missing or malformed identifiers/fields, future timestamps,
   row mismatches, changes, copies, or concurrently ambiguous evidence are
   rejected. The dev shadow schedule path reruns activation-check in its mutation
@@ -744,6 +745,32 @@ This documentation/source change does not claim that the incident schema,
 relay, Azure rules, Action Group delivery, roster, drills, or game day are live.
 Production remains disabled/manual, and no live-money procedure exists.
 
+## 16. ACCT-01 immutable-ledger attestation procedure
+
+1. Keep the exact target disabled/manual. Run `ledger:attest --purpose
+   preflight` through the ops image or the integrated deployment preflight.
+   Retain the redacted report; do not pass credentials in arguments.
+2. Require schema `1.0.0`, status `PASS`, the 10,000-row bound, runtime role
+   `krypto_runtime`, and exact release SHA/image/config/database identity
+   binding. Compare the report checksum with the signed target-smoke approval.
+3. After the declared shadow observation and immediately before any PAPER
+   decision, rerun through activation-check with purpose `pre-paper`. Only
+   `anchorDecision=RETAIN` and `paperPromotionEligible=true` pass. A missing,
+   stale, future, malformed, or config-mismatched anchor blocks.
+4. Do not reset, reseed, edit, delete, or fabricate ledger/anchor history. If a
+   failed report must be contained, a separately approved operator may run
+   `ledger:quarantine --report <failed-report>` through `MIGRATION_URL`. Verify
+   the checksum against a fresh read-only replay of the bound `DIRECT_URL`; the
+   operation must set/retain `QUARANTINED` and append one deduplicated critical
+   incident.
+5. Re-run attestation after investigation only as recovery evidence. A later
+   pass does not auto-resolve the incident or authorize promotion.
+6. Index the exact source/CI and future target artifacts listed in
+   `readiness.md` under ACCT-01 in issue #76.
+
+This procedure performs no Azure mutation by itself, does not activate PAPER,
+and provides no live-money path.
+
 ## Further reading
 
 - [`../infra/README.md`](../infra/README.md) — template, identity, secret,
@@ -760,3 +787,5 @@ Production remains disabled/manual, and no live-money procedure exists.
   — PostgreSQL owner/schema-owner/migrator/scheduler/runtime trust boundary.
 - [`decisions/0013-durable-safety-incidents-and-independent-alerts.md`](./decisions/0013-durable-safety-incidents-and-independent-alerts.md)
   — append-only incidents/outbox and independent external alerts.
+- [`decisions/0014-deterministic-ledger-attestation.md`](./decisions/0014-deterministic-ledger-attestation.md)
+  — exact read-only replay, anchor decision, and protected quarantine.
