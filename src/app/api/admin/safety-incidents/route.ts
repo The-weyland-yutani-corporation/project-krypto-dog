@@ -102,7 +102,7 @@ export async function POST(request: NextRequest) {
     operator: auth.operator,
     action: "CHANGE_SAFETY_INCIDENT",
     requestHeaders: request.headers,
-    outcome: "NO_CHANGE",
+    outcome: "REQUESTED",
   });
   return NextResponse.json(
     {

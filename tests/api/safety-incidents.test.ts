@@ -241,6 +241,13 @@ describe("admin safety incident routes", () => {
       }),
     );
     expect(response.status).toBe(503);
+    expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "CHANGE_SAFETY_INCIDENT",
+        operatorId: TEST_OPERATOR.operatorId,
+        outcome: "REQUESTED",
+      }),
+    );
     await expect(response.json()).resolves.toEqual({
       error:
         "Human lifecycle changes remain unavailable through the web runtime; use the protected signed owner/migrator operation.",
