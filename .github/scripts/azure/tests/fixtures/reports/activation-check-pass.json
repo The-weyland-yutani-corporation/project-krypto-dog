@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.1.0",
+  "schemaVersion": "1.2.0",
   "generatedAt": "2026-08-14T01:00:00.000Z",
   "releaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
@@ -10,8 +10,23 @@
     "modeMismatchEvidenceId": "deployment-smoke-mode-mismatch-123e4567-e89b-42d3-a456-426614174002",
     "cronEvidenceId": "deployment-smoke-cron-123e4567-e89b-42d3-a456-426614174003",
     "adminEvidenceId": "deployment-smoke-admin-123e4567-e89b-42d3-a456-426614174004",
+    "ledgerAttestationChecksum": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "approvedAt": "2026-08-14T00:00:00.000Z",
     "expiresAt": "2026-08-15T00:00:00.000Z"
+  },
+  "ledgerAttestation": {
+    "schemaVersion": "1.0.0",
+    "status": "PASS",
+    "checksum": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "paperPromotionEligible": true,
+    "anchorDecision": "RETAIN",
+    "binding": {
+      "releaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "databaseIdentityHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "runtimeRole": "krypto_runtime",
+      "purpose": "pre-paper"
+    }
   },
   "checks": [
     { "id": "manual-shadow-run-present", "status": "pass" },
@@ -19,6 +34,7 @@
     { "id": "manual-shadow-run-mode", "status": "pass" },
     { "id": "manual-shadow-run-terminal", "status": "pass" },
     { "id": "manual-shadow-run-no-trade", "status": "pass" },
+    { "id": "pre-paper-ledger-attestation", "status": "pass" },
     { "id": "latest-approval-present", "status": "pass" },
     { "id": "approval-order-unambiguous", "status": "pass" },
     { "id": "approval-identifiers-valid", "status": "pass" },
@@ -34,6 +50,7 @@
     { "id": "release-sha-match", "status": "pass" },
     { "id": "image-digest-match", "status": "pass" },
     { "id": "smoke-rollout-mode-disabled", "status": "pass" },
+    { "id": "target-smoke-ledger-attestation-addressed", "status": "pass" },
     { "id": "no-active-lease", "status": "pass" },
     { "id": "accounting-reconciled", "status": "pass" },
     { "id": "no-open-paper-position", "status": "pass" }

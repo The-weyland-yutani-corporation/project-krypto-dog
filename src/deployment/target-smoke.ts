@@ -3,6 +3,9 @@ import postgres from "postgres";
 
 import type { ProviderSmokeResult } from "@/deployment/provider-smoke";
 import { runProviderSmoke } from "@/deployment/provider-smoke";
+import { runLedgerAttestation } from "@/deployment/ledger-attestation";
+import type { LedgerAttestationReport } from "@/trading/ledger-attestation";
+import { DEFAULT_STRATEGY_CONFIG } from "@/trading/strategy-config";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -22,6 +25,7 @@ export type TargetSmokeBinding = {
   targetOrigin: string;
   releaseSha: string;
   imageDigest: string;
+  ledgerAttestationChecksum: string;
   rolloutMode: "disabled";
   /** Canonical UTC timestamp signed into the approval and persisted as the journal row's createdAt. */
   approvedAt: string;
@@ -46,7 +50,7 @@ export type TargetSmokeBinding = {
 };
 
 export type TargetSmokeReport = {
-  schemaVersion: "1.6.0";
+  schemaVersion: "1.7.0";
   generatedAt: string;
   target: string;
   releaseSha: string;
@@ -64,6 +68,7 @@ export type TargetSmokeReport = {
   passed: boolean;
   manualGatesRemaining: string[];
   binding: TargetSmokeBinding | null;
+  ledgerAttestation: LedgerAttestationReport | null;
 };
 
 export type TargetSmokeOptions = {
@@ -130,9 +135,11 @@ export type TargetSmokeDependencies = {
     cronSecret: string;
     releaseSha: string;
     imageDigest: string;
+    ledgerAttestationChecksum: string;
     approvalSecret: string;
     approvedAt: Date;
   }) => Promise<void>;
+  runAttestation?: typeof runLedgerAttestation;
   now?: () => Date;
   randomUuid?: () => string;
 };
@@ -281,7 +288,7 @@ export function validateApprovalSecret(value: string): string {
   return value;
 }
 
-const APPROVAL_PAYLOAD_VERSION = "2";
+const APPROVAL_PAYLOAD_VERSION = "3";
 
 function lengthPrefixed(value: string): string {
   return `${Buffer.byteLength(value, "utf8")}:${value}`;
@@ -302,6 +309,7 @@ export function canonicalApprovalPayload(fields: {
   targetOrigin: string;
   releaseSha: string;
   imageDigest: string;
+  ledgerAttestationChecksum: string;
   /**
    * The write path (`createTargetApproval`) only ever signs the literal
    * "disabled". This is typed as `string` (not the literal) so
@@ -324,6 +332,7 @@ export function canonicalApprovalPayload(fields: {
     lengthPrefixed(fields.targetOrigin),
     lengthPrefixed(fields.releaseSha),
     lengthPrefixed(fields.imageDigest),
+    lengthPrefixed(fields.ledgerAttestationChecksum),
     lengthPrefixed(fields.rolloutMode),
     lengthPrefixed(fields.cronSecretBinding),
     lengthPrefixed(fields.approvedAt),
@@ -615,6 +624,7 @@ export async function createTargetApproval(input: {
   cronSecret: string;
   releaseSha: string;
   imageDigest: string;
+  ledgerAttestationChecksum: string;
   approvalSecret: string;
   approvedAt: Date;
 }): Promise<void> {
@@ -631,6 +641,9 @@ export async function createTargetApproval(input: {
   }
   if (Number.isNaN(input.approvedAt.getTime())) {
     throw new Error("Approval timestamp must be a valid Date.");
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(input.ledgerAttestationChecksum)) {
+    throw new Error("Ledger attestation checksum is malformed.");
   }
   const sql = postgres(input.databaseUrl, {
     max: 1,
@@ -650,6 +663,7 @@ export async function createTargetApproval(input: {
         targetOrigin: input.targetOrigin,
         releaseSha: input.releaseSha,
         imageDigest: input.imageDigest,
+        ledgerAttestationChecksum: input.ledgerAttestationChecksum,
         rolloutMode: "disabled",
         cronSecretBinding: binding,
         approvedAt,
@@ -675,6 +689,7 @@ export async function createTargetApproval(input: {
           cronSecretBinding: binding,
           releaseSha: input.releaseSha,
           imageDigest: input.imageDigest,
+          ledgerAttestationChecksum: input.ledgerAttestationChecksum,
           rolloutMode: "disabled",
           approvalSignature: signature,
           approvedAt,
@@ -757,7 +772,9 @@ export async function runTargetSmoke(
   const createApproval =
     dependencies.createApproval ?? createTargetApproval;
   const providerSmoke = dependencies.runProviders ?? runProviderSmoke;
+  const attest = dependencies.runAttestation ?? runLedgerAttestation;
   const startedAt = now();
+  let ledgerAttestation: LedgerAttestationReport | null = null;
   const evidenceIds = {
     databaseBinding: `deployment-smoke-binding-${randomUuid()}`,
     approval: `deployment-smoke-approved-${randomUuid()}`,
@@ -806,7 +823,7 @@ export async function runTargetSmoke(
 
   function blockedReport(manualGate: string): TargetSmokeReport {
     return {
-      schemaVersion: "1.6.0",
+      schemaVersion: "1.7.0",
       generatedAt: now().toISOString(),
       target: sanitizedTarget(options.baseUrl),
       releaseSha,
@@ -818,6 +835,7 @@ export async function runTargetSmoke(
       passed: false,
       manualGatesRemaining: [manualGate],
       binding: null,
+      ledgerAttestation,
     };
   }
 
@@ -890,6 +908,37 @@ export async function runTargetSmoke(
   if (!before.passed || !before.value) {
     return blockedReport(
       "Resolve database safety blockers before any target smoke mutation.",
+    );
+  }
+
+  const attestation = await check(
+    "immutable-ledger-attestation",
+    "Immutable ledger, fixed-point state, correlations, and anchors attest read-only",
+    async () => {
+      ledgerAttestation = await attest({
+        databaseUrl: options.databaseUrl,
+        releaseSha,
+        imageDigest,
+        configVersion: DEFAULT_STRATEGY_CONFIG.version,
+        purpose: "target-smoke",
+        asOf: startedAt,
+      });
+      if (ledgerAttestation.status !== "PASS") {
+        throw new Error("Ledger attestation failed.");
+      }
+      return ledgerAttestation;
+    },
+    (value) => ({
+      checksum: value.checksum,
+      databaseIdentityHash: value.binding.databaseIdentityHash,
+      runtimeRole: value.binding.runtimeRole,
+      observedTrades: value.bounds.observedTrades,
+      anchorDecision: value.anchorDecision,
+    }),
+  );
+  if (!attestation.passed || !ledgerAttestation) {
+    return blockedReport(
+      "Quarantine and investigate ledger attestation failures before target smoke approval.",
     );
   }
 
@@ -1416,6 +1465,7 @@ export async function runTargetSmoke(
           targetOrigin: baseUrl.origin,
           releaseSha,
           imageDigest,
+          ledgerAttestationChecksum: ledgerAttestation!.checksum,
           rolloutMode: "disabled",
           cronSecretBinding: cronBinding,
           approvedAt,
@@ -1433,6 +1483,7 @@ export async function runTargetSmoke(
         cronSecret: options.cronSecret,
         releaseSha,
         imageDigest,
+        ledgerAttestationChecksum: ledgerAttestation!.checksum,
         approvalSecret,
         approvedAt: approvedAtDate,
       });
@@ -1445,6 +1496,7 @@ export async function runTargetSmoke(
         targetOrigin: baseUrl.origin,
         releaseSha,
         imageDigest,
+        ledgerAttestationChecksum: ledgerAttestation!.checksum,
         rolloutMode: "disabled",
         cronSecretBinding: cronBinding,
         approvedAt,
@@ -1461,7 +1513,7 @@ export async function runTargetSmoke(
   }
 
   return {
-    schemaVersion: "1.6.0",
+    schemaVersion: "1.7.0",
     generatedAt: targetApproval.value.approvedAt,
     target: sanitizedTarget(options.baseUrl),
     releaseSha,
@@ -1478,5 +1530,6 @@ export async function runTargetSmoke(
       "Run attended non-trading warning and critical delivery/acknowledgment/escalation drills and index immutable evidence in issue #76 before #75.",
     ],
     binding: targetApproval.value,
+    ledgerAttestation,
   };
 }

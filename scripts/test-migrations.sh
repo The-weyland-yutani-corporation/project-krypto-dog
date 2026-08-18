@@ -59,6 +59,8 @@ azure_target_url="$url_prefix/azure_target"
 azure_upgrade_url="$url_prefix/azure_upgrade"
 trust_boundary_denial_url="$url_prefix/trust_boundary_denial"
 safety_upgrade_url="$url_prefix/safety_upgrade"
+ledger_attestation_url="$url_prefix/ledger_attestation"
+current_routes_url="$url_prefix/current_routes"
 
 create_database() {
   psql "$admin_url" -v ON_ERROR_STOP=1 \
@@ -739,6 +741,7 @@ azure_0007_hash="fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e7
 azure_0008_hash="0f28fce3409b92986be1fe58a82b02a90dcbb48a0cab75a1bbfb6681e200638e"
 azure_0009_hash="289f3a32bdc4c47cd3c9d8c2c354226962fadc4ff5be80e9864574f8eebd42a5"
 azure_0010_hash="e81e8e38bcf2e32855a4d98dd3c76950c26d0e9aeecba536adb0f12278920095"
+azure_0011_hash="7c06289622f560a11de41e48acc37fafbdb1776a76436fffc17e739881fda0e8"
 
 create_database azure_target
 azure_migrator_password="krypto-migrator-test-pw-$(random_test_password)"
@@ -822,14 +825,14 @@ azure_fresh_result="$(psql "$azure_target_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."RuntimeContract"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."RuntimeContract"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           has_schema_privilege('\''krypto_runtime'\'', '\''drizzle'\'', '\''USAGE'\'')::text || '\''|'\'' ||
-          (SELECT ("schemaFingerprint" = '\''0010_safety_incidents_v1'\'')::text
+          (SELECT ("schemaFingerprint" = '\''0011_ledger_attestation_anchors_v1'\'')::text
              FROM "krypto"."RuntimeContract" WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
           (SELECT (count(*) = 2)::text FROM pg_constraint
             WHERE conrelid = '\''krypto."AgentRun"'\''::regclass
               AND conname IN ('\''AgentRun_deadline_after_start_check'\'', '\''AgentRun_deadline_exact_check'\'')) || '\''|'\'' ||
           (SELECT (condeferrable AND condeferred)::text FROM pg_constraint
             WHERE conname = '\''TradeExecution_commit_deadline_fence'\'');')"
-if [[ "$azure_fresh_result" != "11|$azure_0010_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false|true|true|true|false|true|false|false|false|true|true|true" ]]; then
+if [[ "$azure_fresh_result" != "12|$azure_0011_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false|true|true|true|false|true|false|false|false|true|true|true" ]]; then
   echo "Fresh Azure migration did not retire obsolete cron functions or establish the exact krypto_runtime privilege matrix: $azure_fresh_result" >&2
   exit 1
 fi
@@ -872,7 +875,7 @@ safety_fresh_result="$(psql "$azure_target_url" -Atc \
             WHERE table_schema = '\''krypto'\''
               AND table_name = '\''AgentRun'\''
               AND column_name = '\''providerAttemptId'\'')::text || '\''|'\'' ||
-          (SELECT ("schemaFingerprint" = '\''0010_safety_incidents_v1'\'' AND "contractVersion" = 2)::text
+          (SELECT ("schemaFingerprint" = '\''0011_ledger_attestation_anchors_v1'\'' AND "contractVersion" = 3)::text
              FROM "krypto"."RuntimeContract"
             WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
           (SELECT count(*) = 1
@@ -1147,6 +1150,8 @@ azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
           (SELECT count(*) FROM "krypto"."AgentJournal") || '\''|'\'' ||
           (SELECT "currentPositionETHDecimal"::text FROM "krypto"."AgentState"
             WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
+          (SELECT "peakPortfolioValueAnchor" ->> '\''source'\'' FROM "krypto"."AgentState"
+            WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
           (to_regprocedure('\''krypto.invoke_agent_run()'\'') IS NULL)::text || '\''|'\'' ||
           (to_regprocedure('\''krypto.invoke_daily_summary()'\'') IS NULL)::text || '\''|'\'' ||
           (SELECT NOT rolcanlogin FROM pg_roles
@@ -1156,12 +1161,12 @@ azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           (SELECT count(*)::text FROM "krypto"."RuntimeContract"
-            WHERE "id" = '\''singleton'\'' AND "schemaFingerprint" = '\''0010_safety_incidents_v1'\''
-              AND "contractVersion" = 2) || '\''|'\'' ||
+            WHERE "id" = '\''singleton'\'' AND "schemaFingerprint" = '\''0011_ledger_attestation_anchors_v1'\''
+              AND "contractVersion" = 3) || '\''|'\'' ||
           (SELECT count(*)::text FROM "krypto"."ProviderDailyUsage") || '\''|'\'' ||
           (SELECT count(*)::text FROM "krypto"."AgentRun"
             WHERE "deadlineAt" = "startedAt" + interval '\''180 seconds'\'');')"
-if [[ "$azure_upgrade_result" != "11|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true|1|0|1" ]]; then
+if [[ "$azure_upgrade_result" != "12|1|1|1|1|0.123456789012345678|legacy-migration-0011|true|true|true|false|false|false|true|1|0|1" ]]; then
   echo "0006-to-0007 upgrade did not preserve rows, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
   exit 1
 fi
@@ -1253,7 +1258,7 @@ safety_upgrade_result="$(psql "$safety_upgrade_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''DELETE'\'')::text;')"
-if [[ "$safety_upgrade_result" != "11|$azure_0010_hash|1|1|1|legacy-agent-run:safety-upgrade-run|legacy-pre-0010|legacy-pre-0010|true|0|0010_safety_incidents_v1:2|true|true|false|false" ]]; then
+if [[ "$safety_upgrade_result" != "12|$azure_0011_hash|1|1|1|legacy-agent-run:safety-upgrade-run|legacy-pre-0010|legacy-pre-0010|true|0|0011_ledger_attestation_anchors_v1:3|true|true|false|false" ]]; then
   echo "0009-to-0010 upgrade did not preserve rows, backfill safe correlations, or establish the exact safety outbox contract: $safety_upgrade_result" >&2
   exit 1
 fi
@@ -1809,7 +1814,7 @@ node - "$pass_report" <<'NODE'
 const fs = require("node:fs");
 const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 if (!report.databasePreflightPassed) {
-  throw new Error(`Preflight did not pass with a correct MIGRATION_URL: ${JSON.stringify(report.blockers)}`);
+  throw new Error(`Preflight did not pass with a correct MIGRATION_URL: ${JSON.stringify(report.checks.filter((check) => check.status === "block"))}`);
 }
 const trustBoundaryBlockers = report.blockers.filter(
   (id) => id.startsWith("trust-boundary") || id.startsWith("migration-"),
@@ -1910,7 +1915,39 @@ create_database operations
 # permanently retires.
 DIRECT_URL="$operations_url" \
   npx drizzle-kit migrate --config "$through_0006_config" >/dev/null
-DIRECT_URL="$operations_url" npx tsx scripts/seed.ts >/dev/null
+psql "$operations_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+INSERT INTO "krypto"."AgentState" (
+  id,
+  "currentPositionETH",
+  "currentPositionUSDC",
+  "portfolioValueUSD",
+  "initialCapitalUSD",
+  "currentPositionETHDecimal",
+  "currentPositionUSDCDecimal",
+  "portfolioValueUSDDecimal",
+  "peakPortfolioValueUSD",
+  "drawdownPct",
+  "strategyVersion",
+  "strategySnapshot",
+  "accountingStatus",
+  "updatedAt"
+) VALUES (
+  'singleton',
+  0,
+  200,
+  200,
+  200,
+  0,
+  200,
+  200,
+  200,
+  0,
+  'v2.1-default',
+  '{"source":"historical-migration-test"}'::jsonb,
+  'RECONCILED',
+  now()
+);
+SQL
 
 # Current application routes require the durable 0010 safety outbox. Keep the
 # legacy 0006 database above only for retired Supabase function/preflight
@@ -2132,4 +2169,24 @@ if (
 }
 NODE
 
-echo "Migration tests passed for PostgreSQL 17 fresh install and upgrades, schema security, transactional paper execution, run orchestration, operations, preflight, backup restoration, the PostgreSQL trust boundary, bounded execution 0009, and append-only safety incidents 0010 (0009 row preservation, safe AgentRun correlation backfills, CREATED deduplication, immutable evidence triggers, contract v2 fingerprint, and exact runtime grants/denials)."
+# --- Read-only immutable ledger attestation and explicit protected quarantine ---
+create_database ledger_attestation
+ledger_attestation_migrator_password="krypto-migrator-test-pw-$(random_test_password)"
+bootstrap_and_migrate \
+  "$ledger_attestation_url" \
+  "$ledger_attestation_migrator_password"
+ledger_attestation_migration_url="$(
+  with_role_credentials \
+    "$ledger_attestation_url" \
+    krypto_migrator \
+    "$ledger_attestation_migrator_password"
+)"
+DIRECT_URL="$ledger_attestation_url" \
+MIGRATION_URL="$ledger_attestation_migration_url" \
+RELEASE_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  npx tsx scripts/seed.ts >/dev/null
+DIRECT_URL="$ledger_attestation_url" \
+MIGRATION_URL="$ledger_attestation_migration_url" \
+  npx tsx scripts/test-ledger-attestation.ts
+
+echo "Migration tests passed for PostgreSQL 17 fresh install and upgrades, schema security, transactional paper execution, run orchestration, operations, preflight, backup restoration, the PostgreSQL trust boundary, bounded execution 0009, append-only safety incidents 0010, and read-only immutable-ledger attestation 0011 with idempotent protected quarantine containment."

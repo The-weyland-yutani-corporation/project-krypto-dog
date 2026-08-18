@@ -1,0 +1,22 @@
+{
+  "flat": [],
+  "one-entry": [
+    { "direction": "BUY", "notionalUSD": "20.00000000", "observedPriceUSD": "2000.00000000" }
+  ],
+  "multiple-dca": [
+    { "direction": "BUY", "notionalUSD": "20.00000000", "observedPriceUSD": "2000.00000000" },
+    { "direction": "BUY", "notionalUSD": "15.00000000", "observedPriceUSD": "1900.00000000" },
+    { "direction": "BUY", "notionalUSD": "10.00000000", "observedPriceUSD": "1800.00000000" }
+  ],
+  "partial-exit": [
+    { "direction": "BUY", "notionalUSD": "40.00000000", "observedPriceUSD": "2000.00000000" },
+    { "direction": "SELL", "notionalUSD": "10.00000000", "observedPriceUSD": "2100.00000000" }
+  ],
+  "full-exit": [
+    { "direction": "BUY", "notionalUSD": "40.00000000", "observedPriceUSD": "2000.00000000" },
+    { "direction": "SELL", "notionalUSD": "40.00000000", "observedPriceUSD": "2100.00000000", "fullExit": true }
+  ],
+  "legacy-compatible": [
+    { "direction": "BUY", "notionalUSD": "20.00000000", "observedPriceUSD": "2000.00000000", "legacy": true }
+  ]
+}

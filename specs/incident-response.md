@@ -166,6 +166,27 @@ never committed.
 | Readiness or capacity loss | Prevent activation/admission, correlate opaque readiness reasons with protected target evidence, and use the normative readiness SLO to determine critical escalation. |
 | Recovery-objective concern | Keep the target disabled/manual, restore into a clean isolated target, verify ledger/incident/outbox completeness and disabled scheduling, and treat an objective breach as critical. |
 
+### Ledger attestation quarantine
+
+1. Preserve the failed checksum-addressed report and its exact
+   SHA/image/config/database/runtime-role binding. Do not rerun with relaxed
+   bounds, floating tolerance, omitted legacy rows, or a different as-of time to
+   manufacture a pass.
+2. Confirm the attestation operation itself made no database change. Keep
+   rollout disabled/manual and block PAPER promotion/execution.
+3. Through a separately approved protected operation, run
+   `ledger:quarantine --report <failed-report>` with `MIGRATION_URL`. The
+   operation must verify the checksum against a fresh read-only replay of the
+   bound database, set or retain `QUARANTINED`, and append one deduplicated
+   critical `RECONCILIATION_QUARANTINE` origin.
+4. Investigate the exact failed fields, ordering, correlation, legacy
+   classification, and anchor attribution. Never edit/delete a
+   `TradeExecution`, silently reset an anchor, or flatten a position to make
+   replay pass.
+5. A later clean replay is recovery evidence only. Use the normal
+   acknowledgment/escalation/resolution procedure with distinct roles; no retry
+   auto-resolves or authorizes re-entry.
+
 ## Recovery and preserved truth
 
 Recovery uses the RPO and RTO in the normative SLI/SLO table. Restore into a

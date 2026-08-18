@@ -7,14 +7,40 @@ import {
   runDeploymentPreflight,
   summarizeAgentState,
 } from "@/deployment/preflight";
+import { runLedgerAttestation } from "@/deployment/ledger-attestation";
 import postgres from "postgres";
 
 jest.mock("postgres", () => ({
   __esModule: true,
   default: jest.fn(),
 }));
+jest.mock("@/deployment/ledger-attestation", () => ({
+  runLedgerAttestation: jest.fn(async (options: {
+    releaseSha: string;
+    imageDigest: string;
+    configVersion: string;
+    purpose: string;
+    asOf: Date;
+  }) => ({
+    status: "PASS",
+    checksum: `sha256:${"a".repeat(64)}`,
+    binding: {
+      releaseSha: options.releaseSha,
+      imageDigest: options.imageDigest,
+      configVersion: options.configVersion,
+      databaseIdentityHash: `sha256:${"b".repeat(64)}`,
+      runtimeRole: "krypto_runtime",
+      purpose: options.purpose,
+      asOf: options.asOf.toISOString(),
+    },
+    bounds: { observedTrades: 0, maximumTrades: 10_000 },
+  })),
+}));
 
 const mockedPostgres = jest.mocked(postgres);
+const mockedLedgerAttestation = jest.mocked(runLedgerAttestation);
+process.env.RELEASE_SHA = "a".repeat(40);
+process.env.IMAGE_DIGEST = `sha256:${"b".repeat(64)}`;
 const secureSchemaMigration = readFileSync(
   "drizzle/0002_secure_private_schema.sql",
   "utf8",
@@ -71,6 +97,17 @@ const safetyIncidentMigrationRow = {
     .digest("hex"),
   createdAt: "1786993492359",
 };
+const ledgerAttestationMigrationRow = {
+  hash: createHash("sha256")
+    .update(
+      readFileSync(
+        "drizzle/0011_ledger_attestation_anchors.sql",
+        "utf8",
+      ),
+    )
+    .digest("hex"),
+  createdAt: "1787009045958",
+};
 // drizzleMigrationCount reaches TRUST_BOUNDARY_MIGRATION_COUNT (9) only
 // once migration 0008 (drizzle/0008_postgresql_trust_boundaries.sql) has
 // been applied.
@@ -82,6 +119,7 @@ const safetyIncidentCompleteMigrationRows = [
   ...trustBoundaryCompleteMigrationRows,
   boundedExecutionMigrationRow,
   safetyIncidentMigrationRow,
+  ledgerAttestationMigrationRow,
 ];
 
 function installedFunctionSource(
@@ -922,6 +960,16 @@ function createSqlMock(
 describe("deployment preflight helpers", () => {
   beforeEach(() => {
     mockedPostgres.mockReset();
+    mockedLedgerAttestation.mockReset();
+    mockedLedgerAttestation.mockResolvedValue({
+      status: "PASS",
+      checksum: `sha256:${"a".repeat(64)}`,
+      binding: {
+        databaseIdentityHash: `sha256:${"b".repeat(64)}`,
+        runtimeRole: "krypto_runtime",
+      },
+      bounds: { observedTrades: 0, maximumTrades: 10_000 },
+    } as never);
     process.env.SAFETY_PRIMARY_ON_CALL = "primary-person";
     process.env.SAFETY_BACKUP_ON_CALL = "backup-person";
     process.env.SAFETY_RELEASE_OWNER = "release-person";
@@ -1406,8 +1454,8 @@ describe("deployment preflight helpers", () => {
       provider: "azure",
     });
 
-    expect(report.schemaVersion).toBe("1.6.0");
-    expect(report.inventory.drizzleMigrationCount).toBe(11);
+    expect(report.schemaVersion).toBe("1.7.0");
+    expect(report.inventory.drizzleMigrationCount).toBe(12);
     expect(report.inventory.unresolvedCriticalSafetyIncidentCount).toBe(0);
     expect(
       report.checks.find(
@@ -1422,6 +1470,75 @@ describe("deployment preflight helpers", () => {
     expect(report.inventory.runtimeRole?.missingTablePrivileges).toEqual([]);
     expect(report.inventory.runtimeRole?.excessTablePrivileges).toEqual([]);
     expect(report.blockers).toEqual([]);
+  });
+
+  it.each(["failed-report", "operation-error"] as const)(
+    "blocks Azure preflight for ledger attestation %s",
+    async (scenario) => {
+      mockedPostgres
+        .mockReturnValueOnce(
+          createSqlMock("safety-incidents-current") as never,
+        )
+        .mockReturnValueOnce(
+          createSqlMock("safety-incidents-current") as never,
+        )
+        .mockReturnValueOnce(
+          createSqlMock("safety-incidents-current") as never,
+        );
+      if (scenario === "failed-report") {
+        mockedLedgerAttestation.mockResolvedValueOnce({
+          status: "FAIL",
+          checksum: `sha256:${"f".repeat(64)}`,
+          binding: {
+            databaseIdentityHash: `sha256:${"b".repeat(64)}`,
+            runtimeRole: "krypto_runtime",
+          },
+          bounds: { observedTrades: 1, maximumTrades: 10_000 },
+        } as never);
+      } else {
+        mockedLedgerAttestation.mockRejectedValueOnce(
+          new Error("attestation unavailable"),
+        );
+      }
+
+      const report = await runDeploymentPreflight({
+        directUrl: "postgresql://postgres@db.example.com:5432/postgres",
+        runtimeUrl:
+          "postgresql://azure_app_identity@pooler.example.com:6543/postgres",
+        migrationUrl:
+          "postgresql://krypto_migrator@migrator.example.com:5432/postgres",
+        provider: "azure",
+      });
+
+      expect(report.databasePreflightPassed).toBe(false);
+      expect(report.blockers).toContain("immutable-ledger-attestation");
+      expect(
+        report.checks.find(
+          (check) => check.id === "immutable-ledger-attestation",
+        ),
+      ).toEqual(expect.objectContaining({ status: "block" }));
+    },
+  );
+
+  it("blocks missing attestation bindings on Azure and warns on Supabase", async () => {
+    const azure = await runDeploymentPreflight({
+      provider: "azure",
+      env: { RELEASE_SHA: "", IMAGE_DIGEST: "" },
+    });
+    const supabase = await runDeploymentPreflight({
+      provider: "supabase",
+      env: { RELEASE_SHA: "", IMAGE_DIGEST: "" },
+    });
+    expect(
+      azure.checks.find(
+        (check) => check.id === "immutable-ledger-attestation",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+    expect(
+      supabase.checks.find(
+        (check) => check.id === "immutable-ledger-attestation",
+      ),
+    ).toEqual(expect.objectContaining({ status: "warn" }));
   });
 
   it("blocks on unresolved critical incidents without exposing incident context", async () => {

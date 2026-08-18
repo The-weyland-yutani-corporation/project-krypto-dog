@@ -184,6 +184,73 @@ function requirePassingCheck(reportObject, id) {
   }
 }
 
+function requireLedgerAttestation(
+    container,
+    purpose,
+    expectedReleaseSha,
+    expectedImageDigest,
+    requirePromotionEligibility = false,
+  ) {
+    const attestation = requireField(container, "ledgerAttestation", "object");
+    requireMatch(attestation, "schemaVersion", "1.0.0", "ledger attestation");
+    requireMatch(attestation, "status", "PASS", "ledger attestation");
+    const checksum = requirePattern(
+      attestation,
+      "checksum",
+      /^sha256:[0-9a-f]{64}$/,
+      "ledger attestation",
+    );
+    const binding = requireField(attestation, "binding", "object");
+    requireMatch(
+      binding,
+      "releaseSha",
+      expectedReleaseSha,
+      "ledger attestation binding",
+    );
+    if (expectedImageDigest) {
+      requireMatch(
+        binding,
+        "imageDigest",
+        expectedImageDigest,
+        "ledger attestation binding",
+      );
+    } else {
+      requirePattern(
+        binding,
+        "imageDigest",
+        IMAGE_DIGEST_PATTERN,
+        "ledger attestation binding",
+      );
+    }
+    requireMatch(binding, "purpose", purpose, "ledger attestation binding");
+    requireMatch(
+      binding,
+      "runtimeRole",
+      "krypto_runtime",
+      "ledger attestation binding",
+    );
+    requirePattern(
+      binding,
+      "databaseIdentityHash",
+      /^sha256:[0-9a-f]{64}$/,
+      "ledger attestation binding",
+    );
+    if (requirePromotionEligibility) {
+      requireTrue(
+        attestation,
+        "paperPromotionEligible",
+        "ledger attestation",
+      );
+      requireMatch(
+        attestation,
+        "anchorDecision",
+        "RETAIN",
+        "ledger attestation",
+      );
+    }
+    return { checksum };
+}
+
 switch (operation) {
   case "migrate-init": {
     requireTrue(report, "success", "migrate-init report");
@@ -198,6 +265,12 @@ switch (operation) {
     const preflight = requireField(report, "preflight", "object");
     requireTrue(preflight, "databasePreflightPassed", "preflight report");
     requireMatch(report, "releaseSha", expectedReleaseSha, "preflight report");
+    requireLedgerAttestation(
+      preflight,
+      "preflight",
+      expectedReleaseSha,
+      null,
+    );
     break;
   }
   case "verified-backup": {
@@ -212,7 +285,7 @@ switch (operation) {
     break;
   }
   case "target-smoke": {
-    requireMatch(report, "schemaVersion", "1.6.0", "target-smoke report");
+    requireMatch(report, "schemaVersion", "1.7.0", "target-smoke report");
     const generatedAt = canonicalTimestamp(
       report,
       "generatedAt",
@@ -244,6 +317,12 @@ switch (operation) {
     requireMatch(report, "rolloutMode", "disabled", "target-smoke report");
     const evidenceIds = requireField(report, "evidenceIds", "object");
     const binding = requireField(report, "binding", "object");
+    const targetAttestation = requireLedgerAttestation(
+      report,
+      "target-smoke",
+      expectedReleaseSha,
+      expectedImageDigest,
+    );
     const approvalId = requirePattern(
       binding,
       "approvalId",
@@ -334,6 +413,12 @@ switch (operation) {
       HEX_64_PATTERN,
       "target-smoke report binding",
     );
+    requireMatch(
+      binding,
+      "ledgerAttestationChecksum",
+      targetAttestation.checksum,
+      "target-smoke report binding",
+    );
     const approvedAt = canonicalTimestamp(
       binding,
       "approvedAt",
@@ -350,7 +435,7 @@ switch (operation) {
     requireMatch(
       report,
       "schemaVersion",
-      "1.1.0",
+      "1.2.0",
       "activation-check report",
     );
     const generatedAt = canonicalTimestamp(
@@ -364,6 +449,13 @@ switch (operation) {
       requireMatch(report, "imageDigest", expectedImageDigest, "activation-check report");
     }
     const approval = requireField(report, "approval", "object");
+    requireLedgerAttestation(
+      report,
+      "pre-paper",
+      expectedReleaseSha,
+      expectedImageDigest,
+      true,
+    );
     requirePattern(
       approval,
       "id",
@@ -392,6 +484,12 @@ switch (operation) {
       approval,
       "adminEvidenceId",
       ADMIN_EVIDENCE_ID_PATTERN,
+      "activation-check approval",
+    );
+    requirePattern(
+      approval,
+      "ledgerAttestationChecksum",
+      /^sha256:[0-9a-f]{64}$/,
       "activation-check approval",
     );
     const approvedAt = canonicalTimestamp(
@@ -424,6 +522,7 @@ switch (operation) {
       "manual-shadow-run-mode",
       "manual-shadow-run-terminal",
       "manual-shadow-run-no-trade",
+      "pre-paper-ledger-attestation",
       "latest-approval-present",
       "approval-order-unambiguous",
       "approval-identifiers-valid",
@@ -439,6 +538,7 @@ switch (operation) {
       "release-sha-match",
       "image-digest-match",
       "smoke-rollout-mode-disabled",
+      "target-smoke-ledger-attestation-addressed",
       "no-active-lease",
       "accounting-reconciled",
       "no-open-paper-position",

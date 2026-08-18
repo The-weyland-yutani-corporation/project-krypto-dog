@@ -37,6 +37,7 @@ const ADMIN_EVIDENCE_ID =
   "deployment-smoke-admin-123e4567-e89b-42d3-a456-426614174004";
 const APPROVED_AT = "2026-08-14T00:00:00.000Z";
 const CHECKED_AT = new Date("2026-08-14T01:00:00.000Z");
+const LEDGER_ATTESTATION_CHECKSUM = `sha256:${"a".repeat(64)}`;
 
 const BASE_OPTIONS: ActivationCheckOptions = {
   databaseUrl: "******db.example.com/postgres",
@@ -64,6 +65,7 @@ type ApprovalRowOverrides = Partial<{
   rolloutMode: string | null;
   approvedAt: string | null;
   approvalSignature: string | null;
+  ledgerAttestationChecksum: string | null;
 }>;
 
 type AgentStateOverrides = Partial<{
@@ -126,6 +128,10 @@ function buildApprovalRow(
       : overrides.cronSecretBinding;
   const approvedAt =
     overrides.approvedAt === undefined ? APPROVED_AT : overrides.approvedAt;
+  const ledgerAttestationChecksum =
+    overrides.ledgerAttestationChecksum === undefined
+      ? LEDGER_ATTESTATION_CHECKSUM
+      : overrides.ledgerAttestationChecksum;
   const approvalSignatureValue =
     overrides.approvalSignature === undefined
       ? computeApprovalSignature(
@@ -138,6 +144,8 @@ function buildApprovalRow(
             targetOrigin: targetOrigin ?? "",
             releaseSha: releaseSha ?? "",
             imageDigest: imageDigest ?? "",
+            ledgerAttestationChecksum:
+              ledgerAttestationChecksum ?? "",
             rolloutMode: rolloutMode ?? "",
             cronSecretBinding: cronSecretBindingValue ?? "",
             approvedAt: approvedAt ?? "",
@@ -158,6 +166,7 @@ function buildApprovalRow(
     cronSecretBinding: cronSecretBindingValue,
     releaseSha,
     imageDigest,
+    ledgerAttestationChecksum,
     rolloutMode,
     approvedAt,
     approvalSignature: approvalSignatureValue,
@@ -262,6 +271,11 @@ function runCheck(
 ) {
   return runActivationCheck(options, {
     now: () => new Date(checkedAt),
+    runAttestation: jest.fn(async () => ({
+      status: "PASS",
+      paperPromotionEligible: true,
+      checksum: LEDGER_ATTESTATION_CHECKSUM,
+    })) as never,
   });
 }
 
@@ -291,11 +305,13 @@ describe("schedule-activation verifier", () => {
       modeMismatchEvidenceId: MODE_MISMATCH_EVIDENCE_ID,
       cronEvidenceId: CRON_EVIDENCE_ID,
       adminEvidenceId: ADMIN_EVIDENCE_ID,
+      ledgerAttestationChecksum: LEDGER_ATTESTATION_CHECKSUM,
       approvedAt: APPROVED_AT,
       expiresAt: new Date(
         new Date(APPROVED_AT).getTime() + MAX_APPROVAL_AGE_MS,
       ).toISOString(),
     });
+
     expect(sql.__calls[0]).toBe(
       "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
     );
@@ -303,6 +319,26 @@ describe("schedule-activation verifier", () => {
     expect(sql.__calls).toContain("SET LOCAL TIME ZONE DEFAULT");
     expect(sql.__calls).not.toContain("COMMIT");
     expect(sql.__calls[sql.__calls.length - 1]).toBe("ROLLBACK");
+  });
+
+  it("blocks promotion when the immediate read-only ledger attestation fails", async () => {
+    const sql = createSqlMock({});
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runActivationCheck(BASE_OPTIONS, {
+      now: () => new Date(CHECKED_AT),
+      runAttestation: jest.fn(async () => ({
+        status: "FAIL",
+        paperPromotionEligible: false,
+      })) as never,
+    });
+
+    expect(report.approved).toBe(false);
+    expect(
+      report.checks.find(
+        (check) => check.id === "pre-paper-ledger-attestation",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
   });
 
   it("accepts an approval at the exact 24-hour boundary", async () => {
@@ -793,6 +829,7 @@ describe("schedule-activation verifier", () => {
     ["cron-secret binding", { cronSecretBinding: null }],
     ["approval timestamp", { approvedAt: null }],
     ["approval signature", { approvalSignature: null }],
+    ["ledger attestation checksum", { ledgerAttestationChecksum: null }],
   ] as Array<[string, ApprovalRowOverrides]>)(
     "rejects a missing attributed %s",
     async (_field, override) => {
@@ -821,6 +858,7 @@ describe("schedule-activation verifier", () => {
         targetOrigin: TARGET_ORIGIN,
         releaseSha: RELEASE_SHA,
         imageDigest: IMAGE_DIGEST,
+        ledgerAttestationChecksum: LEDGER_ATTESTATION_CHECKSUM,
         rolloutMode: "disabled",
         cronSecretBinding: cronBinding,
         approvedAt: APPROVED_AT,

@@ -202,7 +202,7 @@ describe("production migration safety", () => {
     ).toBe(
       "e81e8e38bcf2e32855a4d98dd3c76950c26d0e9aeecba536adb0f12278920095",
     );
-    expect(journal.entries.at(-1)).toEqual(
+    expect(journal.entries.at(-2)).toEqual(
       expect.objectContaining({
         idx: 10,
         when: 1786993492359,
@@ -270,6 +270,37 @@ describe("production migration safety", () => {
     expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);
     expect(migration).not.toMatch(/\bTRUNCATE\b/i);
     expect(migration).not.toMatch(/\bDROP\s+TABLE\b/i);
+  });
+
+  it("adds anchor provenance without resetting ledger or position history", () => {
+    const migration = read("drizzle/0011_ledger_attestation_anchors.sql");
+    const journal = JSON.parse(
+      read("drizzle/meta/_journal.json"),
+    ) as {
+      entries: Array<{ idx: number; when: number; tag: string }>;
+    };
+    expect(journal.entries.at(-1)).toEqual(
+      expect.objectContaining({
+        idx: 11,
+        when: 1787009045958,
+        tag: "0011_ledger_attestation_anchors",
+      }),
+    );
+    expect(migration).toContain(
+      'ADD COLUMN "referencePriceAnchor" jsonb',
+    );
+    expect(migration).toContain("'legacy-migration-0011'");
+    expect(migration).toContain("'maxAgeSeconds', 3600");
+    expect(migration).toContain(
+      `"schemaFingerprint" = '0011_ledger_attestation_anchors_v1'`,
+    );
+    expect(migration).toContain('"contractVersion" = 3');
+    expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);
+    expect(migration).not.toMatch(/\bTRUNCATE\b/i);
+    expect(migration).not.toMatch(/\bDROP\s+TABLE\b/i);
+    expect(migration).not.toMatch(
+      /UPDATE\s+"krypto"\."TradeExecution"/i,
+    );
   });
 
   it("does not expose an evidence-reset override after incident evidence exists", () => {

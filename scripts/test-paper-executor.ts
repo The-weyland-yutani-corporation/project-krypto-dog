@@ -11,6 +11,8 @@ import {
 } from "../src/db/schema";
 import { createPaperExecutor } from "../src/trading/paper-executor";
 import { DEFAULT_STRATEGY_CONFIG } from "../src/trading/strategy-config";
+import { createPriceAnchorMetadata } from "../src/trading/anchors";
+import { parseDecimal, USD_SCALE } from "../src/trading/accounting";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -83,6 +85,13 @@ async function main() {
     .update(agentState)
     .set({
       referencePriceUSD: "2000.00000000",
+      referencePriceAnchor: createPriceAnchorMetadata({
+        observedAt: start,
+        source: "shadow-reference",
+        releaseId: "database-test-release",
+        configVersion: DEFAULT_STRATEGY_CONFIG.version,
+        observedPriceUSD: parseDecimal("2000.00000000", USD_SCALE),
+      }),
       strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
       strategySnapshot: DEFAULT_STRATEGY_CONFIG,
       accountingStatus: "RECONCILED",
@@ -331,7 +340,21 @@ async function main() {
       portfolioValueUSDDecimal: "190.00000000",
       weightedCostBasisUSD: "2000.00000000",
       referencePriceUSD: "2000.00000000",
+      referencePriceAnchor: createPriceAnchorMetadata({
+        observedAt: start,
+        source: "shadow-reference",
+        releaseId: "database-test-release",
+        configVersion: DEFAULT_STRATEGY_CONFIG.version,
+        observedPriceUSD: parseDecimal("2000.00000000", USD_SCALE),
+      }),
       lastBuyPriceUSD: "2000.00000000",
+      lastBuyPriceAnchor: createPriceAnchorMetadata({
+        observedAt: start,
+        source: "paper-buy",
+        releaseId: "database-test-release",
+        configVersion: DEFAULT_STRATEGY_CONFIG.version,
+        observedPriceUSD: parseDecimal("2000.00000000", USD_SCALE),
+      }),
       dcaCount: 1,
       peakPortfolioValueUSD: "200.00000000",
       drawdownPct: "5.00000000",

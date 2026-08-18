@@ -91,8 +91,10 @@ export const safetyIncidentStatusEnum = kryptoSchema.enum(
   ["OPEN", "ACKNOWLEDGED", "ESCALATED", "RESOLVED"],
 );
 
-export const agentState = kryptoSchema.table("AgentState", {
-  id: text("id").primaryKey().default("singleton"),
+export const agentState = kryptoSchema.table(
+  "AgentState",
+  {
+    id: text("id").primaryKey().default("singleton"),
   lastTradePrice: doublePrecision("lastTradePrice"),
   currentPositionETH: doublePrecision("currentPositionETH")
     .notNull()
@@ -137,16 +139,24 @@ export const agentState = kryptoSchema.table("AgentState", {
     precision: 20,
     scale: 8,
   }),
+  referencePriceAnchor: jsonb("referencePriceAnchor"),
   lastBuyPriceUSD: numeric("lastBuyPriceUSD", {
     precision: 20,
     scale: 8,
   }),
+  lastBuyPriceAnchor: jsonb("lastBuyPriceAnchor"),
   // Counts BUY executions since the last full exit; partial sells do not reset it.
   dcaCount: integer("dcaCount").notNull().default(0),
   peakPortfolioValueUSD: numeric("peakPortfolioValueUSD", {
     precision: 20,
     scale: 8,
   }),
+  peakPortfolioValueAnchor: jsonb("peakPortfolioValueAnchor")
+    .notNull()
+    .default(sql`'{}'::jsonb`),
+  portfolioValueObservation: jsonb("portfolioValueObservation")
+    .notNull()
+    .default(sql`'{}'::jsonb`),
   drawdownPct: numeric("drawdownPct", {
     precision: 12,
     scale: 8,
@@ -170,10 +180,31 @@ export const agentState = kryptoSchema.table("AgentState", {
     precision: 3,
     withTimezone: true,
   }),
-  updatedAt: timestamp("updatedAt", { precision: 3 })
-    .notNull()
-    .$onUpdate(() => new Date()),
-});
+    updatedAt: timestamp("updatedAt", { precision: 3 })
+      .notNull()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    check(
+      "AgentState_reference_anchor_pair_check",
+      sql`(${table.referencePriceUSD} IS NULL AND ${table.referencePriceAnchor} IS NULL)
+        OR (${table.referencePriceUSD} IS NOT NULL AND jsonb_typeof(${table.referencePriceAnchor}) = 'object')`,
+    ),
+    check(
+      "AgentState_last_buy_anchor_pair_check",
+      sql`(${table.lastBuyPriceUSD} IS NULL AND ${table.lastBuyPriceAnchor} IS NULL)
+        OR (${table.lastBuyPriceUSD} IS NOT NULL AND jsonb_typeof(${table.lastBuyPriceAnchor}) = 'object')`,
+    ),
+    check(
+      "AgentState_peak_anchor_object_check",
+      sql`jsonb_typeof(${table.peakPortfolioValueAnchor}) = 'object'`,
+    ),
+    check(
+      "AgentState_portfolio_observation_object_check",
+      sql`jsonb_typeof(${table.portfolioValueObservation}) = 'object'`,
+    ),
+  ],
+);
 
 export const agentRun = kryptoSchema.table(
   "AgentRun",

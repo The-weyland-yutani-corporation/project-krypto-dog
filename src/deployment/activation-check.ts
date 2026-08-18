@@ -11,6 +11,9 @@ import {
   validateReleaseSha,
   validTargetSmokeEvidenceIds,
 } from "@/deployment/target-smoke";
+import { runLedgerAttestation } from "@/deployment/ledger-attestation";
+import type { LedgerAttestationReport } from "@/trading/ledger-attestation";
+import { DEFAULT_STRATEGY_CONFIG } from "@/trading/strategy-config";
 
 /**
  * Read-only schedule-activation verifier.
@@ -40,7 +43,7 @@ import {
  * grandfathered in.
  */
 
-export const ACTIVATION_CHECK_SCHEMA_VERSION = "1.1.0";
+export const ACTIVATION_CHECK_SCHEMA_VERSION = "1.2.0";
 export const MAX_APPROVAL_AGE_MS = 24 * 60 * 60 * 1_000;
 
 export type ActivationCheckOptions = {
@@ -67,7 +70,7 @@ export type ActivationCheckResult = {
 };
 
 export type ActivationCheckReport = {
-  schemaVersion: "1.1.0";
+  schemaVersion: "1.2.0";
   generatedAt: string;
   targetOrigin: string;
   releaseSha: string;
@@ -81,6 +84,7 @@ export type ActivationCheckReport = {
     modeMismatchEvidenceId: string;
     cronEvidenceId: string;
     adminEvidenceId: string;
+    ledgerAttestationChecksum: string;
     approvedAt: string;
     expiresAt: string;
   };
@@ -92,10 +96,12 @@ export type ActivationCheckReport = {
     completedAt: string | null;
     tradeCount: number;
   };
+  ledgerAttestation?: LedgerAttestationReport;
 };
 
 export type ActivationCheckDependencies = {
   now?: () => Date;
+  runAttestation?: typeof runLedgerAttestation;
 };
 
 type LatestApprovalRow = {
@@ -113,6 +119,7 @@ type LatestApprovalRow = {
   rolloutMode: string | null;
   approvedAt: string | null;
   approvalSignature: string | null;
+  ledgerAttestationChecksum: string | null;
 };
 
 type BindingRow = {
@@ -222,6 +229,8 @@ async function loadLatestApproval(
       "marketConditions" ->> 'rolloutMode' AS "rolloutMode",
       "marketConditions" ->> 'approvedAt' AS "approvedAt",
       "marketConditions" ->> 'approvalSignature' AS "approvalSignature"
+      , "marketConditions" ->> 'ledgerAttestationChecksum'
+        AS "ledgerAttestationChecksum"
     FROM "krypto"."AgentJournal"
     WHERE "marketConditions" ->> 'event' = 'deployment-smoke-approved'
     ORDER BY "createdAt" DESC, id DESC
@@ -321,6 +330,7 @@ export async function runActivationCheck(
   const imageDigest = validateImageDigest(options.imageDigest);
   const targetOrigin = sanitizedOrigin(options.targetOrigin);
   const approvalSecret = validateApprovalSecret(options.approvalSecret);
+  const attest = dependencies.runAttestation ?? runLedgerAttestation;
   const expectedCronSecretBinding = cronSecretBinding(
     options.cronSecret,
     approvalSecret,
@@ -367,6 +377,9 @@ export async function runActivationCheck(
   let bindingRow: BindingRow | undefined;
   let state: AgentStateRow | undefined;
   let shadowRun: ShadowRunRow | undefined;
+  let ledgerAttestation: LedgerAttestationReport | undefined;
+
+  const checkedAt = checkedClock(now);
 
   try {
     await readOnly(options.databaseUrl, async (sql) => {
@@ -401,7 +414,31 @@ export async function runActivationCheck(
     };
   }
 
-  const checkedAt = checkedClock(now);
+  try {
+    ledgerAttestation = await attest({
+      databaseUrl: options.databaseUrl,
+      releaseSha,
+      imageDigest,
+      configVersion: DEFAULT_STRATEGY_CONFIG.version,
+      purpose: "pre-paper",
+      asOf: checkedAt,
+    });
+    record(
+      "pre-paper-ledger-attestation",
+      ledgerAttestation.status === "PASS" &&
+        ledgerAttestation.paperPromotionEligible,
+      ledgerAttestation.status === "PASS" &&
+        ledgerAttestation.paperPromotionEligible
+        ? "Immutable ledger and fresh anchor state attest for PAPER promotion."
+        : "Immutable ledger or anchor state does not attest for PAPER promotion.",
+    );
+  } catch (error) {
+    record(
+      "pre-paper-ledger-attestation",
+      false,
+      `Pre-PAPER ledger attestation could not run: ${errorCode(error)}.`,
+    );
+  }
 
   if (expectsShadowProof) {
     record(
@@ -537,7 +574,8 @@ export async function runActivationCheck(
     approval.rolloutMode !== null &&
     approval.cronSecretBinding !== null &&
     approval.approvedAt !== null &&
-    approval.approvalSignature !== null;
+    approval.approvalSignature !== null &&
+    approval.ledgerAttestationChecksum !== null;
 
   record(
     "approval-binding-complete",
@@ -558,6 +596,8 @@ export async function runActivationCheck(
           targetOrigin: approval!.targetOrigin!,
           releaseSha: approval!.releaseSha!,
           imageDigest: approval!.imageDigest!,
+          ledgerAttestationChecksum:
+            approval!.ledgerAttestationChecksum!,
           rolloutMode: approval!.rolloutMode!,
           cronSecretBinding: approval!.cronSecretBinding!,
           approvedAt: approval!.approvedAt!,
@@ -642,6 +682,18 @@ export async function runActivationCheck(
       : "The approved smoke run was not recorded with rollout mode disabled.",
   );
 
+  const targetAttestationAddressed =
+    approval?.ledgerAttestationChecksum !== null &&
+    approval?.ledgerAttestationChecksum !== undefined &&
+    /^sha256:[0-9a-f]{64}$/.test(approval.ledgerAttestationChecksum);
+  record(
+    "target-smoke-ledger-attestation-addressed",
+    targetAttestationAddressed,
+    targetAttestationAddressed
+      ? "The signed target-smoke approval addresses its ledger attestation."
+      : "The signed target-smoke approval is missing a valid ledger attestation checksum.",
+  );
+
   const activeLease =
     state === undefined ||
     state.isRunning === true ||
@@ -704,6 +756,8 @@ export async function runActivationCheck(
             modeMismatchEvidenceId: approval.modeMismatchEvidenceId,
             cronEvidenceId: approval.cronEvidenceId,
             adminEvidenceId: approval.adminEvidenceId,
+            ledgerAttestationChecksum:
+              approval.ledgerAttestationChecksum!,
             approvedAt: parsedApprovedAt.toISOString(),
             expiresAt: new Date(
               parsedApprovedAt.getTime() + MAX_APPROVAL_AGE_MS,
@@ -720,5 +774,6 @@ export async function runActivationCheck(
           tradeCount: shadowRun.tradeCount,
         }
       : undefined,
+    ledgerAttestation,
   };
 }

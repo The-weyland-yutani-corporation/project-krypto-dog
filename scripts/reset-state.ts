@@ -10,6 +10,7 @@ import {
   safetyIncidentOutbox,
 } from "../src/db/schema";
 import { INITIAL_CAPITAL_USD } from "../src/lib/config";
+import { createPriceAnchorMetadata } from "../src/trading/anchors";
 
 async function main() {
   const url = process.env.DATABASE_URL;
@@ -41,6 +42,15 @@ async function main() {
   }
 
   console.log("🧹 Resetting agent state to fresh defaults…");
+  const resetAt = new Date();
+  const initialAnchor = createPriceAnchorMetadata({
+    observedAt: resetAt,
+    source: "account-initialization",
+    releaseId: "local-release",
+    configVersion: "v2.1-default",
+    observedPriceUSD: null,
+    observedPortfolioValueUSD: BigInt(INITIAL_CAPITAL_USD) * 100_000_000n,
+  });
 
   const journalsDeleted = await db.delete(agentJournal).returning({ id: agentJournal.id });
   const tradesDeleted = await db
@@ -62,9 +72,13 @@ async function main() {
       portfolioValueUSDDecimal: INITIAL_CAPITAL_USD.toFixed(8),
       weightedCostBasisUSD: null,
       referencePriceUSD: null,
+      referencePriceAnchor: null,
       lastBuyPriceUSD: null,
+      lastBuyPriceAnchor: null,
       dcaCount: 0,
       peakPortfolioValueUSD: INITIAL_CAPITAL_USD.toFixed(8),
+      peakPortfolioValueAnchor: initialAnchor,
+      portfolioValueObservation: initialAnchor,
       drawdownPct: "0.00000000",
       strategyVersion: "v2.1-default",
       strategySnapshot: { source: "local-reset" },

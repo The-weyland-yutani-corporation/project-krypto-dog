@@ -66,6 +66,15 @@ import {
   type TradingMode,
 } from "@/trading/strategy-config";
 import {
+  ETH_SCALE,
+  USD_SCALE,
+  formatDecimal,
+  notionalForQuantity,
+  parseDecimal,
+} from "@/trading/accounting";
+import { createPriceAnchorMetadata } from "@/trading/anchors";
+import { calculateDrawdownPct } from "@/trading/paper-execution";
+import {
   authorizeTradeIntent,
   evaluateTradePolicy,
 } from "@/trading/policy";
@@ -833,39 +842,77 @@ async function markAccountToMarket(
   deadline: ExecutionDeadline,
 ): Promise<string | null> {
   deadline.assertActive("mark account to market");
-  const portfolioValueUSD =
-    context.account.usdcBalance +
-    context.account.ethBalance * context.market.spotPriceUSD;
-  const peakPortfolioValueUSD = Math.max(
-    context.account.initialCapitalUSD,
-    context.account.peakPortfolioValueUSD,
-    portfolioValueUSD,
+  const observedPriceUSD = parseDecimal(
+    context.market.spotPriceUSD.toFixed(USD_SCALE),
+    USD_SCALE,
   );
-  const drawdownPct =
-    peakPortfolioValueUSD > 0
-      ? Math.max(
-          0,
-          ((peakPortfolioValueUSD - portfolioValueUSD) /
-            peakPortfolioValueUSD) *
-            100,
-        )
-      : 0;
+  const portfolioValueUSD =
+    parseDecimal(
+      context.state.currentPositionUSDCDecimal!,
+      USD_SCALE,
+    ) +
+    notionalForQuantity(
+      parseDecimal(context.state.currentPositionETHDecimal!, ETH_SCALE),
+      observedPriceUSD,
+    );
+  const initialCapitalUSD = parseDecimal(
+    context.state.initialCapitalUSD,
+    USD_SCALE,
+  );
+  const priorPeakPortfolioValueUSD = parseDecimal(
+    context.state.peakPortfolioValueUSD!,
+    USD_SCALE,
+  );
+  const peakPortfolioValueUSD = [
+    initialCapitalUSD,
+    priorPeakPortfolioValueUSD,
+    portfolioValueUSD,
+  ].reduce((maximum, value) => (value > maximum ? value : maximum));
+  const drawdownPct = calculateDrawdownPct(
+    peakPortfolioValueUSD,
+    portfolioValueUSD,
+    USD_SCALE,
+  );
+  const portfolioValueText = formatDecimal(portfolioValueUSD, USD_SCALE);
+  const peakPortfolioValueText = formatDecimal(
+    peakPortfolioValueUSD,
+    USD_SCALE,
+  );
+  const drawdownText = formatDecimal(drawdownPct, USD_SCALE);
+  const observationMetadata = createPriceAnchorMetadata({
+    observedAt: context.market.observedAt,
+    source: "mark-to-market",
+    releaseId: run.releaseId,
+    configVersion: DEFAULT_STRATEGY_CONFIG.version,
+    observedPriceUSD,
+    observedPortfolioValueUSD: portfolioValueUSD,
+  });
+  const peakObservationMetadata = createPriceAnchorMetadata({
+    observedAt: context.market.observedAt,
+    source: "mark-to-market",
+    releaseId: run.releaseId,
+    configVersion: DEFAULT_STRATEGY_CONFIG.version,
+    observedPriceUSD,
+    observedPortfolioValueUSD: peakPortfolioValueUSD,
+  });
   const shouldLock =
     context.account.isLocked ||
-    drawdownPct >= DEFAULT_STRATEGY_CONFIG.maximumDrawdownPct;
+    Number(drawdownText) >= DEFAULT_STRATEGY_CONFIG.maximumDrawdownPct;
   const newlyLocked = shouldLock && !context.account.isLocked;
   const lockReason = newlyLocked
-    ? `Maximum drawdown reached (${drawdownPct.toFixed(2)}%)`
+    ? `Maximum drawdown reached (${Number(drawdownText).toFixed(2)}%)`
     : context.state.lockReason;
 
   const transition = await db.transaction(async (tx) => {
     const [updated] = await tx
       .update(agentState)
       .set({
-        portfolioValueUSD,
-        portfolioValueUSDDecimal: portfolioValueUSD.toFixed(8),
-        peakPortfolioValueUSD: peakPortfolioValueUSD.toFixed(8),
-        drawdownPct: drawdownPct.toFixed(8),
+        portfolioValueUSD: Number(portfolioValueText),
+        portfolioValueUSDDecimal: portfolioValueText,
+        portfolioValueObservation: observationMetadata,
+        peakPortfolioValueUSD: peakPortfolioValueText,
+        peakPortfolioValueAnchor: peakObservationMetadata,
+        drawdownPct: drawdownText,
         isLocked: shouldLock,
         lockReason,
         lockedAt: newlyLocked ? new Date() : context.state.lockedAt,
@@ -909,7 +956,7 @@ async function markAccountToMarket(
     return { incident: incident.event };
   });
 
-  context.account.peakPortfolioValueUSD = peakPortfolioValueUSD;
+  context.account.peakPortfolioValueUSD = Number(peakPortfolioValueText);
   context.account.isLocked = shouldLock;
   if (transition.incident) emitSafetyIncidentLog(transition.incident);
   return transition.incident?.incidentId ?? null;
@@ -1416,11 +1463,21 @@ export async function executeAgentRun(
     );
 
     if (policy.referencePriceToInitialize !== undefined) {
+      const referencePriceUSD = parseDecimal(
+        policy.referencePriceToInitialize.toFixed(USD_SCALE),
+        USD_SCALE,
+      );
       await db
         .update(agentState)
         .set({
-          referencePriceUSD:
-            policy.referencePriceToInitialize.toFixed(8),
+          referencePriceUSD: formatDecimal(referencePriceUSD, USD_SCALE),
+          referencePriceAnchor: createPriceAnchorMetadata({
+            observedAt: context.market.observedAt,
+            source: "shadow-reference",
+            releaseId,
+            configVersion: DEFAULT_STRATEGY_CONFIG.version,
+            observedPriceUSD: referencePriceUSD,
+          }),
           strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
           strategySnapshot: DEFAULT_STRATEGY_CONFIG,
         })

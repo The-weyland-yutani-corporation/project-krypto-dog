@@ -4,6 +4,7 @@ import postgres from "postgres";
 import { agentState } from "../src/db/schema";
 import { classifyMigrationUrlSafety } from "../src/deployment/migration-url-safety";
 import { INITIAL_CAPITAL_USD } from "../src/lib/config";
+import { createPriceAnchorMetadata } from "../src/trading/anchors";
 
 async function main() {
   const migrationUrl = process.env.MIGRATION_URL;
@@ -38,6 +39,15 @@ async function main() {
   console.log("Initializing the AgentState singleton...");
 
   try {
+    const initializedAt = new Date();
+    const initialAnchor = createPriceAnchorMetadata({
+      observedAt: initializedAt,
+      source: "account-initialization",
+      releaseId: process.env.RELEASE_SHA ?? "local-release",
+      configVersion: "v2.1-default",
+      observedPriceUSD: null,
+      observedPortfolioValueUSD: BigInt(INITIAL_CAPITAL_USD) * 100_000_000n,
+    });
     if (migrationUrl) {
       // The migrator is NOINHERIT and must explicitly cross the reviewed
       // SET-ROLE boundary. The singleton remains schema-owner-owned; neither
@@ -56,6 +66,8 @@ async function main() {
         currentPositionUSDCDecimal: INITIAL_CAPITAL_USD.toFixed(8),
         portfolioValueUSDDecimal: INITIAL_CAPITAL_USD.toFixed(8),
         peakPortfolioValueUSD: INITIAL_CAPITAL_USD.toFixed(8),
+        peakPortfolioValueAnchor: initialAnchor,
+        portfolioValueObservation: initialAnchor,
         drawdownPct: "0.00000000",
         strategyVersion: "v2.1-default",
         strategySnapshot: { source: "account-initialization" },
@@ -63,7 +75,7 @@ async function main() {
         isLocked: false,
         isOperatorPaused: false,
         isRunning: false,
-        updatedAt: new Date(),
+        updatedAt: initializedAt,
       })
       .onConflictDoNothing();
 

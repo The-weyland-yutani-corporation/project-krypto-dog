@@ -18,6 +18,10 @@ import {
 import { executePaperTrade } from "../src/trading/paper-executor";
 import { RequiredRolloutModeError } from "../src/trading/errors";
 import { DEFAULT_STRATEGY_CONFIG } from "../src/trading/strategy-config";
+import {
+  createPriceAnchorMetadata,
+} from "../src/trading/anchors";
+import { parseDecimal, USD_SCALE } from "../src/trading/accounting";
 
 const ACCOUNT_ID = "singleton";
 
@@ -32,6 +36,15 @@ async function resetAccount(): Promise<void> {
       "krypto"."TradeExecution",
       "krypto"."AgentRun"
   `);
+  const resetAt = new Date();
+  const resetAnchor = createPriceAnchorMetadata({
+    observedAt: resetAt,
+    source: "account-initialization",
+    releaseId: "local-release",
+    configVersion: DEFAULT_STRATEGY_CONFIG.version,
+    observedPriceUSD: null,
+    observedPortfolioValueUSD: parseDecimal("200.00000000", USD_SCALE),
+  });
   await db
     .update(agentState)
     .set({
@@ -50,9 +63,13 @@ async function resetAccount(): Promise<void> {
       portfolioValueUSDDecimal: "200.00000000",
       weightedCostBasisUSD: null,
       referencePriceUSD: null,
+      referencePriceAnchor: null,
       lastBuyPriceUSD: null,
+      lastBuyPriceAnchor: null,
       dcaCount: 0,
       peakPortfolioValueUSD: "200.00000000",
+      peakPortfolioValueAnchor: resetAnchor,
+      portfolioValueObservation: resetAnchor,
       drawdownPct: "0.00000000",
       strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
       strategySnapshot: DEFAULT_STRATEGY_CONFIG,
@@ -96,6 +113,13 @@ async function createOpenPosition(now: Date): Promise<void> {
     .update(agentState)
     .set({
       referencePriceUSD: "2000.00000000",
+      referencePriceAnchor: createPriceAnchorMetadata({
+        observedAt: now,
+        source: "shadow-reference",
+        releaseId: "database-test-release",
+        configVersion: DEFAULT_STRATEGY_CONFIG.version,
+        observedPriceUSD: parseDecimal("2000.00000000", USD_SCALE),
+      }),
       leaseOwner: "setup-buy-owner",
       leaseExpiresAt: new Date(now.getTime() + 60_000),
       isRunning: true,

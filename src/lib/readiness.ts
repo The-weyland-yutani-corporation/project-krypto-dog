@@ -6,7 +6,8 @@ import {
   safetyActorPublicKeysConfigured,
 } from "@/lib/safety-roster";
 
-export const EXPECTED_SCHEMA_FINGERPRINT = "0010_safety_incidents_v1";
+export const EXPECTED_SCHEMA_FINGERPRINT =
+  "0011_ledger_attestation_anchors_v1";
 export const EXECUTION_CONTRACT_VERSION = "bounded-sync-v1";
 export const READINESS_TIMEOUT_MS = 4_000;
 
@@ -289,7 +290,7 @@ export async function evaluateReadiness(
       Boolean(
         row?.runtimeContractReadable &&
           row.schemaFingerprint === EXPECTED_SCHEMA_FINGERPRINT &&
-          row.contractVersion === 2,
+          row.contractVersion === 3,
       ),
     ],
     ["state-singleton", row?.singletonCount === 1],

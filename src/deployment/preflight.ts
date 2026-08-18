@@ -6,8 +6,13 @@ import {
   summarizeSafetyRoster,
 } from "@/lib/safety-roster";
 import { readSafetyActorPublicKeys } from "@/lib/safety-actor-auth";
+import {
+  runLedgerAttestation,
+} from "@/deployment/ledger-attestation";
+import type { LedgerAttestationReport } from "@/trading/ledger-attestation";
+import { DEFAULT_STRATEGY_CONFIG } from "@/trading/strategy-config";
 
-export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "1.6.0";
+export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "1.7.0";
 
 export type PreflightStatus = "pass" | "warn" | "block";
 
@@ -231,6 +236,7 @@ export interface DeploymentPreflightReport {
   inventory: DeploymentInventory;
   blockers: string[];
   databasePreflightPassed: boolean;
+  ledgerAttestation: LedgerAttestationReport | null;
   manualGatesRemaining: string[];
 }
 
@@ -330,6 +336,10 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
   {
     createdAt: "1786993492359",
     hash: "e81e8e38bcf2e32855a4d98dd3c76950c26d0e9aeecba536adb0f12278920095",
+  },
+  {
+    createdAt: "1787009045958",
+    hash: "7c06289622f560a11de41e48acc37fafbdb1776a76436fffc17e739881fda0e8",
   },
 ] as const;
 /**
@@ -739,6 +749,7 @@ export async function runDeploymentPreflight(
   const migrationUrl = input.migrationUrl?.trim();
   let runtimeSearchPath: string | null = null;
   let migrationSearchPath: string | null = null;
+  let ledgerAttestation: LedgerAttestationReport | null = null;
 
   if (!directUrl) {
     checks.push({
@@ -1392,19 +1403,23 @@ export async function runDeploymentPreflight(
             evidence: {
               migrationCount: inventory.drizzleMigrationCount,
               matchesKnownPrefix,
+              observedTail: migrations.slice(-2),
+              expectedTail: EXPECTED_DRIZZLE_MIGRATIONS.slice(-2),
             },
           });
           const migrationLayoutMatches =
             (exactCurrentPrivateLayout &&
-              inventory.drizzleMigrationCount ===
+              inventory.drizzleMigrationCount >=
+                EXPECTED_DRIZZLE_MIGRATIONS.length - 1 &&
+              inventory.drizzleMigrationCount <=
                 EXPECTED_DRIZZLE_MIGRATIONS.length) ||
             (exactBoundedPrivateLayout &&
               inventory.drizzleMigrationCount ===
-                EXPECTED_DRIZZLE_MIGRATIONS.length - 1) ||
+                EXPECTED_DRIZZLE_MIGRATIONS.length - 2) ||
             (exactPreBoundedPrivateLayout &&
               inventory.drizzleMigrationCount >= 4 &&
               inventory.drizzleMigrationCount <
-                EXPECTED_DRIZZLE_MIGRATIONS.length - 1) ||
+                EXPECTED_DRIZZLE_MIGRATIONS.length - 2) ||
             (exactLegacyLayout &&
               inventory.drizzleMigrationCount <= 2) ||
             (emptyLayout && inventory.drizzleMigrationCount === 0);
@@ -3098,6 +3113,51 @@ export async function runDeploymentPreflight(
     }
   }
 
+  const attestationEnvironment = { ...process.env, ...input.env };
+  const attestationReleaseSha = attestationEnvironment.RELEASE_SHA;
+  const attestationImageDigest = attestationEnvironment.IMAGE_DIGEST;
+  if (directUrl && attestationReleaseSha && attestationImageDigest) {
+    try {
+      ledgerAttestation = await runLedgerAttestation({
+        databaseUrl: directUrl,
+        releaseSha: attestationReleaseSha,
+        imageDigest: attestationImageDigest,
+        configVersion: DEFAULT_STRATEGY_CONFIG.version,
+        purpose: "preflight",
+        asOf: now,
+      });
+      checks.push({
+        id: "immutable-ledger-attestation",
+        status: ledgerAttestation.status === "PASS" ? "pass" : "block",
+        summary:
+          ledgerAttestation.status === "PASS"
+            ? "Immutable paper ledger and anchor state attest exactly."
+            : "Immutable paper ledger or anchor state failed deterministic attestation.",
+        evidence: {
+          checksum: ledgerAttestation.checksum,
+          databaseIdentityHash:
+            ledgerAttestation.binding.databaseIdentityHash,
+          runtimeRole: ledgerAttestation.binding.runtimeRole,
+          observedTrades: ledgerAttestation.bounds.observedTrades,
+        },
+      });
+    } catch (error) {
+      checks.push({
+        id: "immutable-ledger-attestation",
+        status: "block",
+        summary: "Immutable paper ledger attestation could not run.",
+        evidence: { errorCode: errorCode(error) },
+      });
+    }
+  } else {
+    checks.push({
+      id: "immutable-ledger-attestation",
+      status: provider === "azure" ? "block" : "warn",
+      summary:
+        "RELEASE_SHA and IMAGE_DIGEST are required to bind ledger attestation evidence.",
+    });
+  }
+
   const blockers = checks
     .filter((check) => check.status === "block")
     .map((check) => check.id);
@@ -3115,6 +3175,7 @@ export async function runDeploymentPreflight(
     inventory,
     blockers,
     databasePreflightPassed: !hasBlockingChecks(checks),
+    ledgerAttestation,
     manualGatesRemaining: [
       "Create and verify a point-in-time backup.",
       "Record operator approval for the observed state.",

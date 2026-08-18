@@ -57,3 +57,4 @@ What did we choose, in one or two paragraphs?
 | [0011](./0011-postgresql-trust-boundary-roles.md) | PostgreSQL trust-boundary roles: owner, schema owner, migrator, scheduler, runtime | Accepted; append-only incident grant amended by [0013](./0013-durable-safety-incidents-and-independent-alerts.md) |
 | [0012](./0012-bounded-synchronous-execution.md) | Bounded synchronous execution | Accepted |
 | [0013](./0013-durable-safety-incidents-and-independent-alerts.md) | Durable safety incidents and independent external alerts | Accepted |
+| [0014](./0014-deterministic-ledger-attestation.md) | Deterministic immutable-ledger attestation | Accepted |
