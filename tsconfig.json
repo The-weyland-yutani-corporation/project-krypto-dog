@@ -39,6 +39,8 @@
     "node_modules",
     "tests",
     "prisma",
-    "scripts"
+    "scripts",
+    "e2e",
+    "playwright.config.ts"
   ]
 }

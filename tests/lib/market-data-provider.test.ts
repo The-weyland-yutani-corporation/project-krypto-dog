@@ -1,6 +1,7 @@
 import {
   createCoinbaseMarketDataProvider,
   createFixtureMarketDataProvider,
+  getMarketDataProvider,
 } from "@/lib/market-data-provider";
 
 const NOW = new Date("2026-07-14T12:34:00.000Z");
@@ -58,6 +59,31 @@ describe("coinbase market data provider", () => {
     });
 
     await expect(provider.getEthSpotPrice()).resolves.toBe(2345.67);
+  });
+
+  describe("harness market data provider selection", () => {
+    it("uses deterministic fixture data in mock mode without calling fetch", async () => {
+      const fetchSpy = jest.spyOn(globalThis, "fetch");
+      const provider = getMarketDataProvider({
+        NODE_ENV: "development",
+        AGENT_HARNESS_MODE: "mock",
+        AGENT_HARNESS_SCENARIO: "dip",
+      });
+
+      await expect(provider.getEthSpotPrice()).resolves.toBe(1900);
+      await expect(provider.getEthClosingPrices(100)).resolves.toHaveLength(100);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
+    });
+
+    it("rejects mock provider selection in production", () => {
+      expect(() =>
+        getMarketDataProvider({
+          NODE_ENV: "production",
+          AGENT_HARNESS_MODE: "mock",
+        }),
+      ).toThrow(/forbidden in production/);
+    });
   });
 
   it("rejects a non-finite spot price", async () => {

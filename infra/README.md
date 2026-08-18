@@ -3,10 +3,10 @@
 This tree implements the Azure-native target accepted by
 [`specs/decisions/0008-azure-native-deployment-architecture.md`](../specs/decisions/0008-azure-native-deployment-architecture.md).
 
-> **Deployment state (2026-08-14): FOUNDATIONS + FALLBACK LUNA PROVISIONED;
-> RELEASES NOT DEPLOYED.** Bootstrap, both environment foundations, operational
-> Luna deployments, and workload access exist. No Container App, job, release
-> evidence report, schedule, or public Azure URL exists.
+> **Deployment state (2026-08-15): FOUNDATIONS + FALLBACK LUNA + RELEASES
+> DEPLOYED.** Bootstrap, both environment foundations, operational Luna
+> deployments, workload access, and dev/prod releases exist. Dev is
+> shadow/scheduled; production is disabled/manual.
 >
 > **Paper only.** Templates support `disabled`, `shadow`, and `paper`.
 > Nothing provisions or authorizes live-money execution.
@@ -43,7 +43,7 @@ provision PostgreSQL there. It is not a current target.
 | Foundry workload access | Dev/prod runtime and ops identities each have Cognitive Services OpenAI User on the operational account | Applied |
 | Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
 | Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
-| Releases | No web Container App, scheduler/ops job, image release, target smoke, schedule, or public URL exists in either environment | Not deployed |
+| Releases | Dev/prod web Container Apps and scheduler/ops jobs are deployed; dev completed target-smoke and scheduled-run evidence; production remains disabled/manual | Deployed with safety state |
 | Analytics | Shared ingestion key temporarily staged with mandatory dev/prod event tags; separate projects remain a promotion gate | Release-testable |
 
 Azure Support API ticket creation for the dedicated account failed because the
@@ -259,8 +259,8 @@ required.
 8. Full prod release, ending disabled/manual. No production promotion
    workflow is shipped or approved.
 
-Current checkpoint: steps 1 through 6 are complete. Steps 7 and 8 have not
-started.
+Current checkpoint: steps 1 through 8 are complete. Dev is shadow/scheduled
+with monitored activation evidence, and prod is deployed disabled/manual.
 
 Both foundation workflows publish a nonsecret handoff artifact containing
 identity IDs, evidence metadata, ACS sender, and monitoring IDs. The access

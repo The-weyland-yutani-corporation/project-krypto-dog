@@ -52,12 +52,11 @@ interface CheckRun {
   name: string;
   status: string;
   conclusion: string | null;
-}
-
-interface CommitStatus {
-  context: string;
-  state: string;
-  description: string;
+  details_url?: string;
+  output?: {
+    title: string;
+    summary: string;
+  };
 }
 
 interface ApiParams {
@@ -78,7 +77,6 @@ interface HarnessOptions {
   commitsByPull?: Record<number, Commit[]>;
   checksBySha?: Record<string, CheckRun[]>;
   runs?: Record<string, WorkflowRun[]>;
-  statusesBySha?: Record<string, CommitStatus[]>;
   fileErrors?: number[];
 }
 
@@ -172,7 +170,6 @@ function createHarness(options: HarnessOptions = {}) {
   const listFiles = jest.fn();
   const listReviews = jest.fn();
   const listCommits = jest.fn();
-  const listCommitStatusesForRef = jest.fn();
 
   const paginate = jest.fn(
     async (method: unknown, params: ApiParams): Promise<unknown[]> => {
@@ -198,9 +195,6 @@ function createHarness(options: HarnessOptions = {}) {
       }
       if (method === listCommits) {
         return options.commitsByPull?.[params.pull_number ?? -1] ?? [];
-      }
-      if (method === listCommitStatusesForRef) {
-        return options.statusesBySha?.[params.ref ?? ""] ?? [];
       }
       if (method === listForRef) {
         return options.checksBySha?.[params.ref ?? ""] ?? [
@@ -240,7 +234,7 @@ function createHarness(options: HarnessOptions = {}) {
   });
 
   const listForRef = jest.fn();
-  const createCommitStatus = jest.fn(async (_params: ApiParams) => ({}));
+  const createCheckRun = jest.fn(async (_params: ApiParams) => ({}));
   const createWorkflowDispatch = jest.fn(
     async (_params: ApiParams) => ({}),
   );
@@ -260,6 +254,7 @@ function createHarness(options: HarnessOptions = {}) {
         listWorkflowRuns,
       },
       checks: {
+        create: createCheckRun,
         listForRef,
       },
       issues: {
@@ -271,10 +266,7 @@ function createHarness(options: HarnessOptions = {}) {
         listFiles,
         listReviews,
       },
-      repos: {
-        createCommitStatus,
-        listCommitStatusesForRef,
-      },
+      repos: {},
     },
   };
 
@@ -284,7 +276,7 @@ function createHarness(options: HarnessOptions = {}) {
     mocks: {
       addLabels,
       approveWorkflowRun,
-      createCommitStatus,
+      createCheckRun,
       createWorkflowDispatch,
       listForRef,
       listWorkflowRuns,
@@ -320,34 +312,50 @@ function dispatchedWorkflow(
 }
 
 describe("agentic PR reconciler integration", () => {
-  it("creates the deterministic merge-policy commit status", async () => {
+  it("creates the deterministic merge-policy check run", async () => {
     const { mocks } = await reconcile();
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith({
+    expect(mocks.createCheckRun).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
       repo: "project-krypto-dog",
-      sha: "sha-1",
-      state: "success",
-      context: "Agentic merge policy",
-      description: "Current-head agent reviews approve this PR",
-      target_url: `https://github.com/${repository}/pull/1`,
+      name: "Agentic merge policy",
+      head_sha: "sha-1",
+      status: "completed",
+      conclusion: "success",
+      details_url: `https://github.com/${repository}/pull/1`,
+      output: {
+        title: "Agentic merge policy",
+        summary: "Current-head agent reviews approve this PR",
+      },
     });
   });
 
-  it("does not recreate an identical current merge-policy status", async () => {
+  it("does not recreate an identical current merge-policy check run", async () => {
     const { mocks } = await reconcile({
-      statusesBySha: {
+      checksBySha: {
         "sha-1": [
           {
-            context: "Agentic merge policy",
-            state: "success",
-            description: "Current-head agent reviews approve this PR",
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "Agentic merge policy",
+            status: "completed",
+            conclusion: "success",
+            details_url: `https://github.com/${repository}/pull/1`,
+            output: {
+              title: "Agentic merge policy",
+              summary: "Current-head agent reviews approve this PR",
+            },
           },
         ],
       },
     });
 
-    expect(mocks.createCommitStatus).not.toHaveBeenCalled();
+    expect(mocks.createCheckRun).not.toHaveBeenCalled();
   });
 
   it("dispatches missing CI and agentic review on the PR head", async () => {
@@ -396,10 +404,13 @@ describe("agentic PR reconciler integration", () => {
       },
     });
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+    expect(mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        state: "pending",
-        description: "Waiting for Security review",
+        status: "in_progress",
+        output: {
+          title: "Agentic merge policy",
+          summary: "Waiting for Security review",
+        },
       }),
     );
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
@@ -464,10 +475,14 @@ describe("agentic PR reconciler integration", () => {
       },
     });
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+    expect(mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        state: "success",
-        description: "Current-head agent reviews approve this PR",
+        status: "completed",
+        conclusion: "success",
+        output: {
+          title: "Agentic merge policy",
+          summary: "Current-head agent reviews approve this PR",
+        },
       }),
     );
     expect(
@@ -789,11 +804,11 @@ describe("agentic PR reconciler integration", () => {
     expect(core.warning).toHaveBeenCalledWith(
       "Failed to reconcile PR #1: file lookup failed for 1",
     );
-    expect(mocks.createCommitStatus).toHaveBeenCalledTimes(1);
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+    expect(mocks.createCheckRun).toHaveBeenCalledTimes(1);
+    expect(mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        sha: "sha-2",
-        context: "Agentic merge policy",
+        head_sha: "sha-2",
+        name: "Agentic merge policy",
       }),
     );
   });

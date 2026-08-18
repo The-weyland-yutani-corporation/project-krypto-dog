@@ -14,6 +14,12 @@ Local testing has two modes:
    market data. Start with `shadow`; use `paper` only when deliberate local
    execution is desired.
 
+For running the **full app** (Postgres + schema + seed + Next.js) in an
+isolated, worktree-safe way — including in parallel across multiple git
+worktrees — prefer the mock-first harness in
+[§0. Worktree-safe app harness](#0-worktree-safe-app-harness) below. See
+[ADR 0011](./decisions/0011-mock-first-worktree-harness.md) for the rationale.
+
 Neither mode proves the strategy can make money. Profitability requires the
 evaluation methodology described in [`specs/evaluation.md`](./evaluation.md) and
 the evidence gates in [`specs/readiness.md`](./readiness.md). The aligned
@@ -40,7 +46,68 @@ deterministic backtest/scenario harness is described in
   npm install
   ```
 
-## 1. Start local Postgres
+## 0. Worktree-safe app harness
+
+The harness (`scripts/agent-harness.ts`) boots the full app in an isolated
+Docker Compose project + database + app port per worktree, so multiple
+worktrees never collide. It is **mock-first**: the default `up` uses
+deterministic decision and market-data providers, `AGENT_HARNESS_MODE=mock`,
+`ROLLOUT_MODE=disabled`, and **no** Foundry / Coinbase / PostHog / email
+credentials or external network. It never enables paper or live trading.
+
+```bash
+# Deterministic mock boot (no external network, no real credentials):
+npm run harness:up
+
+# Deterministic shadow scenario (still mock providers, no trade mutation):
+npm run harness:up -- --shadow --scenario dip --decision BUY
+
+# Inspect the running harness (ports, health, pid ownership):
+npm run harness:status
+
+# Tear down exactly this worktree's project + volumes (logs/screenshots kept):
+npm run harness:down
+```
+
+`up` derives a stable id from the canonical worktree path, allocates free app
+and database ports, writes an ignored `.harness/<id>/` directory with a
+versioned, **secret-free** manifest and the Next dev log, runs the existing
+migrations and deterministic seed against the isolated database, and waits on the
+non-sensitive `GET /api/health` endpoint (`{ status, rolloutMode, harnessMode }`).
+`down` verifies the recorded pid still belongs to this worktree's Next process
+before signaling that exact pid, then runs `docker compose -p <project> down
+--volumes`; it never kills by process name and never deletes wildcard paths.
+
+### Real-provider smoke (opt-in, shadow, read-only)
+
+Real-provider confidence is available only behind an explicit flag and requires
+valid Azure OpenAI v1 configuration plus an attended Entra identity (`az login`).
+It stays `shadow`, runs a **read-only** Azure OpenAI + Coinbase check (no PostHog
+or email events, no trade execution), and refuses production-looking databases
+and `NODE_ENV=production`:
+
+```bash
+# Read-only provider smoke only (Azure OpenAI + Coinbase):
+npm run smoke:providers -- --allow-network-smoke
+
+# Provider smoke + boot the app in smoke/shadow mode:
+npm run harness:smoke -- --allow-network-smoke
+```
+
+### Operator-console browser validation
+
+Browser validation runs against an **already-running** harness and asserts the
+existing operator-console design surfaces the rollout mode and the
+locked/paused/destructive controls without changing any UI. It uses fixture
+credentials and writes artifacts under `.harness/`:
+
+```bash
+npm run harness:up        # start the mock harness first
+npm run harness:browser   # Playwright (pinned Chromium) against that harness
+npm run harness:down
+```
+
+## 1. Start local Postgres (single-worktree, manual)
 
 ```bash
 docker compose up -d
@@ -59,7 +126,7 @@ postgresql://krypto:krypto_local@localhost:5433/krypto
 Confirm it is reachable:
 
 ```bash
-docker exec -i krypto-postgres psql -U krypto -d krypto -c 'SELECT 1;'
+docker compose exec -T db psql -U krypto -d krypto -c 'SELECT 1;'
 ```
 
 ## 2. Create local environment
@@ -178,7 +245,7 @@ npm run test:migrations
 Verify the singleton:
 
 ```bash
-docker exec -i krypto-postgres psql -U krypto -d krypto -c \
+docker compose exec -T db psql -U krypto -d krypto -c \
   'SELECT id, "currentPositionETHDecimal", "currentPositionUSDCDecimal", "portfolioValueUSDDecimal", "isLocked", "isOperatorPaused", "leaseOwner", "leaseExpiresAt" FROM "krypto"."AgentState";'
 ```
 
@@ -222,7 +289,7 @@ Expected:
 Confirm the owned lease was released and `lastRunAt` advanced:
 
 ```bash
-docker exec -i krypto-postgres psql -U krypto -d krypto -c \
+docker compose exec -T db psql -U krypto -d krypto -c \
   'SELECT "leaseOwner", "leaseExpiresAt", "isRunning", "lastRunAt" FROM "krypto"."AgentState" WHERE id = '\''singleton'\'';'
 ```
 
@@ -310,9 +377,9 @@ Healthy outcomes:
 Verify side effects:
 
 ```bash
-docker exec -i krypto-postgres psql -U krypto -d krypto -c \
+docker compose exec -T db psql -U krypto -d krypto -c \
   'SELECT id, direction, "amountUSD", "executionPrice", "pnlUSD", "createdAt" FROM "krypto"."TradeExecution" ORDER BY "createdAt" DESC LIMIT 5;'
-docker exec -i krypto-postgres psql -U krypto -d krypto -c \
+docker compose exec -T db psql -U krypto -d krypto -c \
   'SELECT id, left("entryText", 160), "tradeExecutionId", "createdAt" FROM "krypto"."AgentJournal" ORDER BY "createdAt" DESC LIMIT 5;'
 ```
 

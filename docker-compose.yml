@@ -1,16 +1,24 @@
+# The Compose project name (set by the harness via `-p <project>` or the
+# COMPOSE_PROJECT_NAME env var) scopes the container, volume, and network so
+# multiple git worktrees never collide. There is deliberately no fixed
+# `container_name` here.
+#
+# Host-facing database connection settings are env-configurable with safe local
+# defaults so a plain `docker compose up -d` still works for single-worktree use.
 services:
   db:
     image: postgres:17-alpine
-    container_name: krypto-postgres
     restart: unless-stopped
     ports:
-      - "5433:5432"
+      # Host port is configurable per worktree; container port stays 5432.
+      - "${KRYPTO_DB_HOST_PORT:-5433}:5432"
     environment:
-      POSTGRES_USER: krypto
-      POSTGRES_PASSWORD: krypto_local
-      POSTGRES_DB: krypto
+      POSTGRES_USER: "${KRYPTO_DB_USER:-krypto}"
+      POSTGRES_PASSWORD: "${KRYPTO_DB_PASSWORD:-krypto_local}"
+      POSTGRES_DB: "${KRYPTO_DB_NAME:-krypto}"
     volumes:
       - pgdata17:/var/lib/postgresql/data
 
 volumes:
+  # Named relative to the Compose project, so each worktree gets its own volume.
   pgdata17:

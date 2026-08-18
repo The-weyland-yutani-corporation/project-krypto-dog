@@ -180,7 +180,7 @@ tests/                    # Jest unit + integration tests
 > **WARNING:** No executable production promotion workflow is shipped or
 > approved.
 > Azure foundations and operational Luna deployments are provisioned, but every
-> full release/evidence/rollout gate remains. No Container App or job exists. See
+> full release/evidence/rollout gate remains for future promotions. See
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
 > **Target platform: Azure-native; dev and production releases deployed.**

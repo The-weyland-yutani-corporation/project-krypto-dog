@@ -31,6 +31,16 @@ backtest-output/
 /artifacts/
 /coverage/
 
+# local application harness artifacts (logs, screenshots, manifests)
+/.harness/
+
+# playwright
+/playwright-report/
+/test-results/
+
+# local gh-aw CLI logs/cache
+/.github/aw/logs/
+
 # production preflight/backup evidence may contain infrastructure metadata
 /deployment-evidence/
 

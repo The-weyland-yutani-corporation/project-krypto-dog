@@ -7,6 +7,10 @@ description: Owns Drizzle/Postgres schema, migrations, seed/reset flows, and dat
 
 You own database changes for Project Krypto.
 
+Read root [`AGENTS.md`](../../AGENTS.md) and the scoped
+[`src/db/AGENTS.md`](../../src/db/AGENTS.md) before editing; the rules below are
+role deltas, not a copy of global policy.
+
 ## Responsibilities
 
 - Keep Drizzle schema, migrations, seed scripts, and tests aligned.

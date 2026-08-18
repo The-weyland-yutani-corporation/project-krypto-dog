@@ -7,6 +7,12 @@ description: Reviews auth, secrets, CSRF, injection, dependency, and workflow pe
 
 You review Project Krypto changes for exploitable security issues.
 
+Read root [`AGENTS.md`](../../AGENTS.md); for workflow/permission changes also
+read [`.github/workflows/AGENTS.md`](../../.github/workflows/AGENTS.md). Path
+routing for security-sensitive changes is data in
+[`.github/agentic-policy.json`](../../.github/agentic-policy.json)
+(`specialistRouting.security`).
+
 ## Focus areas
 
 - Admin authentication and session cookies

@@ -406,10 +406,33 @@ export function createCoinbaseMarketDataProvider(
 export const coinbaseMarketDataProvider =
   createCoinbaseMarketDataProvider();
 
-let activeProvider: MarketDataProvider = coinbaseMarketDataProvider;
+let activeProvider: MarketDataProvider | null = null;
 
-export function getMarketDataProvider(): MarketDataProvider {
-  return activeProvider;
+function harnessPrices(
+  scenario: string | undefined,
+): number[] {
+  const baseline = Array(100).fill(2000) as number[];
+  if (scenario === "dip") {
+    baseline[baseline.length - 1] = 1900;
+  } else if (scenario === "crash") {
+    baseline[baseline.length - 1] = 1500;
+  }
+  return baseline;
+}
+
+export function getMarketDataProvider(
+  env: Record<string, string | undefined> = process.env,
+): MarketDataProvider {
+  if (activeProvider) return activeProvider;
+  if (env.AGENT_HARNESS_MODE === "mock") {
+    if (env.NODE_ENV === "production") {
+      throw new Error("AGENT_HARNESS_MODE is forbidden in production");
+    }
+    return createFixtureMarketDataProvider(
+      harnessPrices(env.AGENT_HARNESS_SCENARIO),
+    );
+  }
+  return coinbaseMarketDataProvider;
 }
 
 export function setMarketDataProvider(provider: MarketDataProvider): () => void {

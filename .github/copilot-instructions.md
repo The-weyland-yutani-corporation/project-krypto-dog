@@ -1,8 +1,27 @@
 # Copilot instructions for Project Krypto
 
-Project Krypto is an autonomous ETH/USDC paper-trading app. Preserve trading
+<!-- safety-kernel:start -->
+Project Krypto is an autonomous ETH/USDC **paper-trading** app. Preserve trading
 safety first: do not weaken guardrails, mutex behavior, admin auth, journaling,
-or paper/live boundaries.
+or paper/live boundaries. The model is read-only (one structured
+`HOLD`/`BUY`/`SELL` proposal, no mutating trade tool). Production deployment,
+live-trading enablement, secrets, and architecture acceptance are human-only.
+<!-- safety-kernel:end -->
+
+## Read the shared instructions first
+
+This is a thin platform shim. Copilot does not reliably auto-load nested
+`AGENTS.md`, so **explicitly** read the shared map and the scoped file for your
+area before editing:
+
+- Root map, task router, merge policy, and stop conditions:
+  [`../AGENTS.md`](../AGENTS.md).
+- Scoped deltas: [`../src/agent/AGENTS.md`](../src/agent/AGENTS.md),
+  [`../src/trading/AGENTS.md`](../src/trading/AGENTS.md),
+  [`../src/db/AGENTS.md`](../src/db/AGENTS.md), and
+  [`workflows/AGENTS.md`](./workflows/AGENTS.md).
+- Canonical policy data: [`agentic-policy.json`](./agentic-policy.json) — do not
+  duplicate its lists.
 
 ## Design system
 

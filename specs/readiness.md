@@ -150,6 +150,85 @@ DEPLOYMENT_APPROVAL_SECRET
 Current state: runtime secret bindings passed both target smokes. The shared
 PostHog key remains environment-tagged deployment evidence only.
 
+- Coinbase pagination, complete UTC four-hour candle construction, freshness,
+  gap, timeout, retry, and flat-RSI behavior are covered by focused tests.
+- Drizzle is the only application migration history. Fresh install,
+  existing-v2 adoption, row preservation, and idempotent singleton
+  initialization pass against temporary real PostgreSQL clusters.
+- Application tables and the enum move into the private `krypto` schema.
+  `PUBLIC`/anonymous/authenticated table, column, schema, sequence, Krypto
+  routine, and Vault schema/relation/routine privileges are denied in real
+  migration tests and inventoried across every protected relation by preflight.
+  Protected public views and every executable public `SECURITY DEFINER`
+  routine are also blocked. The migration removes the unsafe legacy
+  arbitrary-path helper. Cron scheduling is a separate
+  transactional reviewed operation that rejects canonical-function drift and
+  verifies the latest passing smoke approval against decrypted Vault URL/secret
+  values, rejects unexpected jobs or queued endpoint requests, and verifies
+  both final job definitions before commit. Every cron request carries its
+  Vault-selected shadow/paper mode, so delayed requests fail across promotion
+  boundaries.
+- Unused AgentKit/OpenAI packages and CDP requirements are removed. A same-major
+  PostCSS override removes Next.js's vulnerable nested copy; `npm audit
+  --omit=dev` reports zero production vulnerabilities.
+- Foundry uses explicit Anthropic endpoint configuration with a no-trade smoke
+  command and temporary legacy environment compatibility.
+- The mutating ReAct trade tool has been removed. One structured model proposal
+  is evaluated by deterministic policy, while mandatory stop-loss exits bypass
+  model discretion. Mandatory exits still require fresh validated market data,
+  a `RECONCILED` account, and `paper` mode; shadow records but does not execute
+  them.
+- New paper execution is fixed-point/numeric, locked-row transactional,
+  idempotent by `AgentRun`, weighted-cost-basis aware, and reconciled to the
+  immutable trade ledger.
+- Backtests now reuse production policy and the pure execution calculation used
+  by the transactional executor; post-action equity drives same-step drawdown.
+  Sharpe, Sortino, Calmar, turnover, fee efficiency, win rate, profit factor,
+  benchmark alpha, modeled slippage, optional LLM-cost-adjusted PnL, and version
+  metadata are reported with unavailable ratios represented as `null`.
+- Run orchestration now persists `AgentRun` outcomes, uses owned expiring
+  leases, supports disabled/shadow/paper modes, bounds model calls to two
+  attempts with 20-second attempt timeouts, records attempt count/latency, and
+  flushes PostHog per request.
+- Real PostgreSQL tests prove disabled mode, idempotent replay, cold start,
+  mandatory stop-loss without a model, shadow non-execution, active-lease
+  conflict, expired-lease recovery, configuration errors, market failures,
+  transaction rollback, concurrency, and owner mismatch rejection.
+- Operator pause/resume, expired-lease recovery, and drawdown-lock override now
+  write atomic audit journal entries. Unlock requires an explicit reason and is
+  refused while an owned run lease is active.
+- Next.js startup instrumentation validates required runtime configuration, and
+  mutating admin handlers re-verify the signed session in addition to proxy
+  enforcement.
+- The admin dashboard derives missed-run, lease, market-freshness,
+  reconciliation, and alert-delivery health from persisted state. Daily-summary
+  sent/skipped/failed outcomes are persisted and route/database failures are
+  explicit.
+- CI now enforces lint, app and script/test typechecking, production build,
+  critical-module coverage, all engineering backtests, production dependency
+  audit, real-PostgreSQL migration/executor/orchestration tests, and migration
+  drift. A protected manual no-trade Foundry smoke workflow is included.
+- Harness integrity now enforces canonical agentic policy, instruction/reference
+  integrity, deterministic SDLC safety fixtures, report-only entropy contracts,
+  and byte-stable GH-AW source/lock generation. A mock-first per-worktree app
+  harness proves isolated database/app startup and operator-console safety states
+  without production credentials or provider calls.
+- The evidence-pipeline foundation imports strict versioned CSV/JSON datasets,
+  binds dataset and plan provenance, evaluates isolated predeclared windows
+  through the production-aligned runner, suppresses invalid gap-spanning risk
+  metrics, and emits deterministic JSON plus dark standalone HTML reports.
+  Imported reports are always classified `engineering-only` and cannot satisfy
+  v2.2 or v3 production evidence gates.
+- The cron rollout-mode NULL fix is an additive migration after the original
+  immutable `0005` history. Real-PostgreSQL tests prove an existing database at
+  `0005` receives the corrected functions through normal Drizzle migration.
+- Current local validation: lint passes with one pre-existing PostCSS config
+  warning; the coverage-gated Jest suite, script/test typecheck, production
+  build, and real-PostgreSQL suite pass;
+  deliberate cron-function tampering and `PUBLIC` table exposure are rejected;
+  migration generation reports no drift; and the production dependency audit
+  is clean. The 8-scenario aggregate reports 8 engineering assertion passes,
+  3/8 beating cash, 2/8 beating buy-and-hold, and 0/8 beating both.
 Readiness requirements:
 
 - [x] `DATABASE_URL` uses the least-privilege `krypto_app` role.

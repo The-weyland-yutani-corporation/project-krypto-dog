@@ -59,8 +59,8 @@ Review the PR for real defects only.
 - Do not comment on style or formatting unless it causes a real defect.
 - Use `add-labels` to escalate trading, auth/security, QA, or docs/spec concerns to specialized review labels.
 - Always create exactly one `Agentic code review` check on the target PR's current head SHA.
-- Set the check to `success` only when there are no required fixes and no specialist escalation is needed.
-- Set the check to `failure` for any required fix, unresolved correctness concern, or specialist escalation.
+- Set the check to `success` when this code review finds no required fix or unresolved correctness concern. Adding a specialist label does not fail this check; the deterministic merge policy independently requires the corresponding specialist check.
+- Set the check to `failure` only for a required fix, unresolved correctness concern, incomplete review, or the deterministic E2E marker case above.
 
 ## Safe outputs
 

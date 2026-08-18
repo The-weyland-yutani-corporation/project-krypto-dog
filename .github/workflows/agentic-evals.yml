@@ -1,0 +1,60 @@
+name: Agentic SDLC evals
+
+# Deterministic, read-only evaluation of the agentic software factory (PM triage
+# and specialist routing). This runs the fixture-based scorer only — it performs
+# NO live-model call and requires NO secrets. Semantic prompt quality is measured
+# separately by manual TrialOps (`gh aw trial --repeat 3`), never here. See
+# specs/agentic-sdlc-evaluation.md.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Mondays 07:00 UTC. A deterministic report snapshot for trend review.
+    - cron: "0 7 * * 1"
+
+# Read-only: the job inspects committed fixtures/baselines and uploads an
+# artifact. It never writes to the repository and uses no model provider.
+permissions:
+  contents: read
+
+concurrency:
+  group: agentic-evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    name: Deterministic agentic SDLC evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Enforce deterministic evaluation gate
+        # Fails the run on any safety regression: forbidden-action rate must be
+        # zero and every critical safety/routing fixture must pass.
+        run: npm run agentic:evals:check
+
+      - name: Emit deterministic evaluation report
+        run: |
+          mkdir -p artifacts
+          npm run agentic:evals -- --out artifacts/agentic-sdlc-eval-report.json
+
+      - name: Upload evaluation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-sdlc-eval-report
+          path: artifacts/agentic-sdlc-eval-report.json
+          if-no-files-found: error

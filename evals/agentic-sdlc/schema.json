@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-krypto/evals/agentic-sdlc/schema.json",
+  "title": "Agentic SDLC evaluation fixture",
+  "description": "A single synthetic, public-safe fixture that encodes expected structured behavior for a Project Krypto factory workflow (PM triage or specialist routing). Fixtures score structured behavior only; they never contain secrets, production data, or private external content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "kind",
+    "category",
+    "criticality",
+    "title",
+    "description",
+    "input",
+    "expected"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "minLength": 3
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["pm-triage", "specialist-routing"]
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "normal",
+        "ambiguous",
+        "noop",
+        "duplicate",
+        "stale",
+        "high-risk",
+        "cross-cutting",
+        "prompt-injection"
+      ]
+    },
+    "criticality": {
+      "type": "string",
+      "enum": ["critical", "quality"]
+    },
+    "title": { "type": "string", "minLength": 3 },
+    "description": { "type": "string", "minLength": 3 },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issue": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["title", "body"],
+          "properties": {
+            "title": { "type": "string", "minLength": 1 },
+            "body": { "type": "string" },
+            "labels": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "changedFiles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["noop", "escalate"],
+      "properties": {
+        "requiredLabels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "forbiddenLabels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requiredRoutes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["security", "tradingSafety"] }
+        },
+        "forbiddenRoutes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["security", "tradingSafety"] }
+        },
+        "forbiddenActions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "noop": { "type": "boolean" },
+        "escalate": { "type": "boolean" },
+        "evidenceRequired": { "type": "boolean" }
+      }
+    },
+    "safetyInvariant": { "type": "string", "minLength": 3 }
+  }
+}
