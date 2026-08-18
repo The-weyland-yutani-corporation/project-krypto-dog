@@ -175,13 +175,14 @@ export async function smokePostHog(): Promise<
   }
 }
 
-export type ReadOnlyProviderSmokeResult = Pick<
-  ProviderSmokeResult,
-  "foundry" | "coinbase"
->;
+export type ReadOnlyProviderSmokeResult = {
+  foundry: Omit<ProviderSmokeResult["foundry"], "structured">;
+  coinbase: ProviderSmokeResult["coinbase"];
+};
 
 /**
- * Read-only provider smoke for the harness: exercises Foundry and Coinbase only.
+ * Read-only provider smoke for the harness: exercises Foundry-hosted Azure
+ * OpenAI and Coinbase only.
  *
  * It deliberately does NOT emit any PostHog or email events, never touches the
  * database, and — because it reuses the existing decision/market-data seams —

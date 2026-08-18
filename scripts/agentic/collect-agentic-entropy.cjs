@@ -647,7 +647,8 @@ function ruleNoProhibitedLiveExecutor(ctx) {
   const remediation =
     "remove the live-execution path; a live executor requires a separate accepted RFC, release plan, and human enablement";
   const violations = [];
-  const liveRe = /(^|[/.-])live([/.-]|$).*execut|execut.*(^|[/.-])live([/.-]|$)/i;
+  const liveRe =
+    /(?:^|[/.-])live[/.-].*execut|execut.*[/.-]live(?:[/.-]|$)/i;
   for (const rel of ctx.allSources) {
     if (liveRe.test(rel)) {
       violations.push(makeViolation(ruleId, ZERO_TOLERANCE, rel, { liveExecutor: true }, remediation));

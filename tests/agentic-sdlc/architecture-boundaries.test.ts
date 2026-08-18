@@ -41,7 +41,7 @@ describe("agent-legible architecture boundaries", () => {
 
   it("has no live executor in v2", () => {
     const unsafe = sourceFiles("src").filter((file) =>
-      /(^|[/.-])live([/.-]|$).*execut|execut.*(^|[/.-])live([/.-]|$)/i.test(
+      /(?:^|[/.-])live[/.-].*execut|execut.*[/.-]live(?:[/.-]|$)/i.test(
         file,
       ),
     );

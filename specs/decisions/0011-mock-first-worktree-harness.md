@@ -14,8 +14,8 @@ fixed host port (`5433`). Two worktrees could not run the app at the same time
 without colliding on the container name, the host database port, the app port,
 and the shared Compose volume.
 
-The app also has real external dependencies — Azure AI Foundry (Anthropic),
-Coinbase market data, PostHog analytics, and Resend email — plus the trading
+The app also has real external dependencies — Foundry-hosted Azure OpenAI v1,
+Coinbase market data, PostHog analytics, and ACS Email — plus the trading
 safety kernel (`AGENTS.md`): paper-only execution, a read-only model boundary,
 deterministic authorization, drawdown lock, cooldown, operator pause, owned
 leases, and journaling. Any local harness must be **structurally incapable** of
@@ -53,12 +53,12 @@ Jest roots. The harness is governed by these binding rules:
    collide.
 
 3. **Shadow-only real smoke.** Real-provider validation exists only behind the
-   explicit `smoke` subcommand, which requires `--allow-network-smoke` and real
-   Foundry credentials, forces `AGENT_HARNESS_MODE=smoke` +
-   `ROLLOUT_MODE=shadow`, runs a **read-only** Foundry + Coinbase smoke (reusing
-   `smokeFoundry` / `smokeCoinbase`; it never emits PostHog or email events),
-   never invokes trade execution, and refuses production-looking database
-   hosts/URLs and `NODE_ENV=production`.
+   explicit `smoke` subcommand, which requires `--allow-network-smoke`, valid
+   Azure OpenAI v1 configuration, and an attended Entra identity; forces
+   `AGENT_HARNESS_MODE=smoke` + `ROLLOUT_MODE=shadow`; runs a **read-only**
+   Azure OpenAI + Coinbase smoke (reusing `smokeFoundry` / `smokeCoinbase`; it
+   never emits PostHog or email events); never invokes trade execution; and
+   refuses production-looking database hosts/URLs and `NODE_ENV=production`.
 
 4. **No production credentials, ever.** The harness sets only local fixture
    `CRON_SECRET` / `ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET` values, never reads

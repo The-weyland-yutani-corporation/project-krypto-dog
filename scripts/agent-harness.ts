@@ -5,7 +5,7 @@
  * `AGENT_HARNESS_MODE=mock`, `ROLLOUT_MODE=disabled`, and no external network or
  * production credentials. `up --shadow` uses deterministic providers under
  * `shadow` (still no network, no trade mutation). `smoke` is an explicit,
- * credential-gated, read-only real-provider check that stays shadow and never
+ * configuration-gated, read-only real-provider check that stays shadow and never
  * executes a trade. `status` and `down` operate only on resources this
  * invocation created, verified through a versioned, secret-free manifest.
  *
@@ -50,6 +50,13 @@ const SENSITIVE_ENV_PREFIXES = [
 ] as const;
 
 const SENSITIVE_ENV_EXACT = [
+  "AZURE_CLIENT_ID",
+  "AZURE_TENANT_ID",
+  "AZURE_CLIENT_SECRET",
+  "AZURE_CLIENT_CERTIFICATE_PATH",
+  "AZURE_CLIENT_CERTIFICATE_PASSWORD",
+  "AZURE_USERNAME",
+  "AZURE_PASSWORD",
   "DATABASE_URL",
   "DIRECT_URL",
   "ROLLOUT_MODE",
@@ -387,9 +394,11 @@ export function buildDatabaseUrl(
   return `postgresql://${user}:${password}@${host}:${port}/${databaseName}`;
 }
 
-/** Local, obviously-non-production fixture credentials for the console/cron. */
+/** Local, obviously-non-production fixture configuration for instrumentation. */
 function fixtureCredentials(): Record<string, string> {
   return {
+    AZURE_OPENAI_BASE_URL: "https://stub.openai.azure.com/openai/v1",
+    AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-harness-stub",
     CRON_SECRET: "harness-cron-secret",
     ADMIN_PASSWORD: "harness-admin-password",
     ADMIN_SESSION_SECRET: "harness-admin-session-secret",
@@ -464,9 +473,10 @@ export interface SmokeEnvInput {
 }
 
 /**
- * Construct the explicit smoke environment. Preserves real Foundry credentials
- * from the base env (Coinbase needs none), forces `smoke` + `shadow`, points the
- * app at the isolated harness database, and still omits PostHog and email
+ * Construct the explicit smoke environment. Preserves only the Azure OpenAI v1
+ * endpoint/deployment configuration and optional managed-identity selector from
+ * the base env (Coinbase needs none), forces `smoke` + `shadow`, points the app
+ * at the isolated harness database, and still omits API keys, PostHog, and email
  * credentials so no analytics/email events are emitted.
  */
 export function buildSmokeEnv(input: SmokeEnvInput): Record<string, string> {
@@ -485,16 +495,11 @@ export function buildSmokeEnv(input: SmokeEnvInput): Record<string, string> {
     NEXT_TELEMETRY_DISABLED: "1",
     ...fixtureCredentials(),
   };
-  // Preserve exactly the Foundry credential keys required for a real LLM call.
+  // Authentication is attended Entra/managed identity; provider API keys stay scrubbed.
   for (const key of [
-    "ANTHROPIC_FOUNDRY_BASE_URL",
-    "ANTHROPIC_FOUNDRY_API_KEY",
-    "ANTHROPIC_FOUNDRY_DEPLOYMENT",
-    "ANTHROPIC_FOUNDRY_API_VERSION",
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_BASE_URL",
     "AZURE_OPENAI_DEPLOYMENT_NAME",
-    "AZURE_OPENAI_API_VERSION",
+    "AZURE_CLIENT_ID",
   ]) {
     const value = input.baseEnv[key];
     if (value !== undefined) env[key] = value;
@@ -505,13 +510,13 @@ export function buildSmokeEnv(input: SmokeEnvInput): Record<string, string> {
 }
 
 /**
- * Gate the smoke command: explicit opt-in, real Foundry credentials, and never
- * a production node env or a production-looking database.
+ * Gate the smoke command: explicit opt-in, valid Azure OpenAI v1 configuration,
+ * and never a production node env or a production-looking database.
  */
 export function assertSmokeAllowed(
   options: SmokeOptions,
   env: Record<string, string | undefined>,
-  resolveFoundryConfig: (
+  resolveProviderConfig: (
     env: Record<string, string | undefined>,
   ) => unknown | undefined,
 ): void {
@@ -521,10 +526,10 @@ export function assertSmokeAllowed(
     );
   }
   assertNotProduction(env);
-  if (!resolveFoundryConfig(env)) {
+  if (!resolveProviderConfig(env)) {
     throw new Error(
-      "Real-provider smoke requires real Foundry credentials " +
-        "(ANTHROPIC_FOUNDRY_BASE_URL + ANTHROPIC_FOUNDRY_API_KEY + ANTHROPIC_FOUNDRY_DEPLOYMENT).",
+      "Real-provider smoke requires valid Azure OpenAI configuration " +
+        "(AZURE_OPENAI_BASE_URL + AZURE_OPENAI_DEPLOYMENT_NAME) and an authenticated Entra identity.",
     );
   }
   for (const key of ["DATABASE_URL", "DIRECT_URL"] as const) {
@@ -1135,8 +1140,8 @@ async function commandUp(argv: string[]): Promise<void> {
 
 async function commandSmoke(argv: string[]): Promise<void> {
   const options = parseSmokeOptions(argv);
-  const { resolveFoundryConfig } = await import("@/lib/config");
-  assertSmokeAllowed(options, process.env, resolveFoundryConfig);
+  const { resolveAzureOpenAIConfig } = await import("@/lib/config");
+  assertSmokeAllowed(options, process.env, resolveAzureOpenAIConfig);
 
   const worktreePath = canonicalWorktreePath();
   const id = deriveWorktreeId(worktreePath);
@@ -1146,8 +1151,8 @@ async function commandSmoke(argv: string[]): Promise<void> {
   const [appPort, dbPort] = await findFreePorts(2);
   const ports: HarnessPorts = { app: appPort, db: dbPort };
 
-  // Read-only real provider smoke first (Foundry + Coinbase only; no PostHog/email).
-  process.stdout.write("▶ Read-only provider smoke (Foundry + Coinbase)…\n");
+  // Read-only real provider smoke first (Azure OpenAI + Coinbase only; no PostHog/email).
+  process.stdout.write("▶ Read-only provider smoke (Azure OpenAI + Coinbase)…\n");
   const smokeEnv = buildSmokeEnv({ ports, databaseName, baseEnv: process.env });
   for (const [key, value] of Object.entries(smokeEnv)) {
     process.env[key] = value;

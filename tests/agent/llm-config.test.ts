@@ -51,6 +51,7 @@ const ALL_ENV_KEYS = [
   "APP_ORIGIN",
   "ADMIN_PASSWORD",
   "ADMIN_SESSION_SECRET",
+  "AGENT_HARNESS_MODE",
   "AZURE_COMMUNICATION_CONNECTION_STRING",
   "AZURE_COMMUNICATION_EMAIL_SENDER",
   "ALERT_EMAIL_TO",
@@ -143,6 +144,13 @@ describe("resolveAzureOpenAIConfig", () => {
       {
         AZURE_OPENAI_BASE_URL:
           "https://resource.openai.azure.com/openai/v1",
+      },
+    ],
+    [
+      "a malformed URL",
+      {
+        AZURE_OPENAI_BASE_URL: "::not-a-url::",
+        AZURE_OPENAI_DEPLOYMENT_NAME: "krypto-dev-luna",
       },
     ],
     [
@@ -290,6 +298,8 @@ describe("validateEnv", () => {
     "AZURE_COMMUNICATION_CONNECTION_STRING",
     "AZURE_COMMUNICATION_EMAIL_SENDER",
     "ALERT_EMAIL_TO",
+    "ADMIN_SESSION_SECRET",
+    "POSTHOG_API_KEY",
     "POSTHOG_ENVIRONMENT",
     "APP_ORIGIN",
   ])("requires %s in production", (name) => {
@@ -298,6 +308,19 @@ describe("validateEnv", () => {
         NODE_ENV: "production",
         AZURE_CLIENT_ID: TEST_CLIENT_ID,
         [name]: undefined,
+      },
+      () => {
+        expect(() => validateEnv()).toThrow("Invalid environment variables");
+      },
+    );
+  });
+
+  it("forbids harness mode in production", () => {
+    withEnv(
+      {
+        NODE_ENV: "production",
+        AZURE_CLIENT_ID: TEST_CLIENT_ID,
+        AGENT_HARNESS_MODE: "smoke",
       },
       () => {
         expect(() => validateEnv()).toThrow("Invalid environment variables");

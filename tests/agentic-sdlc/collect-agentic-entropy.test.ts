@@ -462,12 +462,19 @@ describe("entropy rule — no_prohibited_live_executor", () => {
     const repo = makeTmpRepo();
     write(repo, "src/tools/safe-trade.ts", "export const x = 1;\n");
     const r = entropy.ruleNoProhibitedLiveExecutor(
-      baseCtx({ repoRoot: repo, allSources: ["src/trading/live-executor.ts"] }),
+      baseCtx({
+        repoRoot: repo,
+        allSources: [
+          "src/trading/live-executor.ts",
+          "src/trading/executor-live.ts",
+        ],
+      }),
     );
     expect(r.check.status).toBe(entropy.FAIL);
     expect(r.check.severity).toBe(entropy.ZERO_TOLERANCE);
     const paths = r.violations.map((v) => v.path);
     expect(paths).toContain("src/trading/live-executor.ts");
+    expect(paths).toContain("src/trading/executor-live.ts");
     expect(paths).toContain("src/tools/safe-trade.ts");
   });
 });

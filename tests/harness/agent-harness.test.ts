@@ -232,9 +232,14 @@ describe("mock/shadow environment construction", () => {
     expect(env.DATABASE_URL).toContain(":54329/krypto_feature_a");
     expect(env.DIRECT_URL).toBe(env.DATABASE_URL);
     expect(env.KRYPTO_DB_HOST_PORT).toBe("54329");
+    expect(env.AZURE_OPENAI_BASE_URL).toBe(
+      "https://stub.openai.azure.com/openai/v1",
+    );
+    expect(env.AZURE_OPENAI_DEPLOYMENT_NAME).toBe("krypto-harness-stub");
     for (const key of [
       "ANTHROPIC_FOUNDRY_API_KEY",
       "AZURE_OPENAI_API_KEY",
+      "AZURE_CLIENT_ID",
       "POSTHOG_API_KEY",
       "RESEND_API_KEY",
       "ALERT_EMAIL_TO",
@@ -264,6 +269,8 @@ describe("mock/shadow environment construction", () => {
       PATH: "/usr/bin",
       HOME: "/home/dev",
       ANTHROPIC_FOUNDRY_API_KEY: "real-key",
+      AZURE_CLIENT_ID: "11111111-1111-4111-8111-111111111111",
+      AZURE_CLIENT_SECRET: "real-secret",
       POSTHOG_API_KEY: "phc_real",
       DATABASE_URL: "postgresql://prod/db",
       ROLLOUT_MODE: "paper",
@@ -272,6 +279,8 @@ describe("mock/shadow environment construction", () => {
     expect(sanitized.PATH).toBe("/usr/bin");
     expect(sanitized.HOME).toBe("/home/dev");
     expect(sanitized.ANTHROPIC_FOUNDRY_API_KEY).toBeUndefined();
+    expect(sanitized.AZURE_CLIENT_ID).toBeUndefined();
+    expect(sanitized.AZURE_CLIENT_SECRET).toBeUndefined();
     expect(sanitized.POSTHOG_API_KEY).toBeUndefined();
     expect(sanitized.DATABASE_URL).toBeUndefined();
     expect(sanitized.ROLLOUT_MODE).toBeUndefined();
@@ -338,27 +347,27 @@ describe("production and credential refusal", () => {
     ).toBe(false);
   });
 
-  const foundry = () => ({ baseURL: "x", apiKey: "y", deployment: "z" });
-  const noFoundry = () => undefined;
+  const azureOpenAI = () => ({ baseURL: "x", deployment: "z" });
+  const noAzureOpenAI = () => undefined;
 
   it("requires the explicit opt-in flag for smoke", () => {
     expect(() =>
       assertSmokeAllowed(
         { allowNetworkSmoke: false },
         { NODE_ENV: "development" },
-        foundry,
+        azureOpenAI,
       ),
     ).toThrow(/--allow-network-smoke/);
   });
 
-  it("requires real Foundry credentials for smoke", () => {
+  it("requires valid Azure OpenAI configuration for smoke", () => {
     expect(() =>
       assertSmokeAllowed(
         { allowNetworkSmoke: true },
         { NODE_ENV: "development" },
-        noFoundry,
+        noAzureOpenAI,
       ),
-    ).toThrow(/Foundry credentials/);
+    ).toThrow(/Azure OpenAI configuration/);
   });
 
   it("refuses production node env and production databases for smoke", () => {
@@ -366,7 +375,7 @@ describe("production and credential refusal", () => {
       assertSmokeAllowed(
         { allowNetworkSmoke: true },
         { NODE_ENV: "production" },
-        foundry,
+        azureOpenAI,
       ),
     ).toThrow(/NODE_ENV=production/);
     expect(() =>
@@ -376,7 +385,7 @@ describe("production and credential refusal", () => {
           NODE_ENV: "development",
           DIRECT_URL: "postgresql://u:p@db.x.supabase.co:5432/postgres",
         },
-        foundry,
+        azureOpenAI,
       ),
     ).toThrow(/production-looking DIRECT_URL/);
   });
@@ -386,26 +395,34 @@ describe("production and credential refusal", () => {
       assertSmokeAllowed(
         { allowNetworkSmoke: true },
         { NODE_ENV: "development", DATABASE_URL: "postgresql://127.0.0.1/k" },
-        foundry,
+        azureOpenAI,
       ),
     ).not.toThrow();
   });
 
-  it("preserves Foundry keys but forces smoke/shadow with no analytics", () => {
+  it("preserves Azure OpenAI config but forces smoke/shadow with no API keys or analytics", () => {
     const env = buildSmokeEnv({
       ports: { app: 3000, db: 5455 },
       databaseName: "krypto_smoke",
       baseEnv: {
-        ANTHROPIC_FOUNDRY_BASE_URL: "https://x.services.ai.azure.com/anthropic",
-        ANTHROPIC_FOUNDRY_API_KEY: "real",
-        ANTHROPIC_FOUNDRY_DEPLOYMENT: "claude",
+        AZURE_OPENAI_BASE_URL: "https://x.openai.azure.com/openai/v1",
+        AZURE_OPENAI_DEPLOYMENT_NAME: "gpt-5.6-luna",
+        AZURE_CLIENT_ID: "11111111-1111-4111-8111-111111111111",
+        AZURE_OPENAI_API_KEY: "must-not-survive",
         POSTHOG_API_KEY: "phc_real",
         RESEND_API_KEY: "re_real",
       },
     });
     expect(env.AGENT_HARNESS_MODE).toBe("smoke");
     expect(env.ROLLOUT_MODE).toBe("shadow");
-    expect(env.ANTHROPIC_FOUNDRY_API_KEY).toBe("real");
+    expect(env.AZURE_OPENAI_BASE_URL).toBe(
+      "https://x.openai.azure.com/openai/v1",
+    );
+    expect(env.AZURE_OPENAI_DEPLOYMENT_NAME).toBe("gpt-5.6-luna");
+    expect(env.AZURE_CLIENT_ID).toBe(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    expect(env.AZURE_OPENAI_API_KEY).toBeUndefined();
     expect(env.POSTHOG_API_KEY).toBeUndefined();
     expect(env.RESEND_API_KEY).toBeUndefined();
   });

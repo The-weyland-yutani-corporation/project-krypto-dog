@@ -81,12 +81,13 @@ before signaling that exact pid, then runs `docker compose -p <project> down
 ### Real-provider smoke (opt-in, shadow, read-only)
 
 Real-provider confidence is available only behind an explicit flag and requires
-real Foundry credentials in your environment. It stays `shadow`, runs a
-**read-only** Foundry + Coinbase check (no PostHog or email events, no trade
-execution), and refuses production-looking databases and `NODE_ENV=production`:
+valid Azure OpenAI v1 configuration plus an attended Entra identity (`az login`).
+It stays `shadow`, runs a **read-only** Azure OpenAI + Coinbase check (no PostHog
+or email events, no trade execution), and refuses production-looking databases
+and `NODE_ENV=production`:
 
 ```bash
-# Read-only provider smoke only (Foundry + Coinbase):
+# Read-only provider smoke only (Azure OpenAI + Coinbase):
 npm run smoke:providers -- --allow-network-smoke
 
 # Provider smoke + boot the app in smoke/shadow mode:
