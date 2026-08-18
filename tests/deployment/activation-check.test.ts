@@ -6,6 +6,7 @@ import {
 
 import {
   ACTIVATION_CHECK_SCHEMA_VERSION,
+  MAX_APPROVAL_AGE_MS,
   runActivationCheck,
   type ActivationCheckOptions,
 } from "@/deployment/activation-check";
@@ -24,7 +25,18 @@ const IMAGE_DIGEST =
 const TARGET_ORIGIN = "https://krypto.example.com";
 const CRON_SECRET = "cron-secret-value";
 const APPROVAL_SECRET = "approval-secret-of-sufficient-length-x";
-const DEFAULT_BINDING_ID = "deployment-smoke-binding-uuid";
+const DEFAULT_BINDING_ID =
+  "deployment-smoke-binding-123e4567-e89b-42d3-a456-426614174000";
+const APPROVAL_ID =
+  "deployment-smoke-approved-123e4567-e89b-42d3-a456-426614174001";
+const MODE_MISMATCH_EVIDENCE_ID =
+  "deployment-smoke-mode-mismatch-123e4567-e89b-42d3-a456-426614174002";
+const CRON_EVIDENCE_ID =
+  "deployment-smoke-cron-123e4567-e89b-42d3-a456-426614174003";
+const ADMIN_EVIDENCE_ID =
+  "deployment-smoke-admin-123e4567-e89b-42d3-a456-426614174004";
+const APPROVED_AT = "2026-08-14T00:00:00.000Z";
+const CHECKED_AT = new Date("2026-08-14T01:00:00.000Z");
 
 const BASE_OPTIONS: ActivationCheckOptions = {
   databaseUrl: "******db.example.com/postgres",
@@ -38,12 +50,19 @@ const BASE_OPTIONS: ActivationCheckOptions = {
 };
 
 type ApprovalRowOverrides = Partial<{
+  id: string;
+  createdAt: string;
+  sameTimestampCount: number;
   bindingId: string | null;
+  modeMismatchEvidenceId: string | null;
+  cronEvidenceId: string | null;
+  adminEvidenceId: string | null;
   targetOrigin: string | null;
   cronSecretBinding: string | null;
   releaseSha: string | null;
   imageDigest: string | null;
   rolloutMode: string | null;
+  approvedAt: string | null;
   approvalSignature: string | null;
 }>;
 
@@ -68,16 +87,29 @@ type ShadowRunOverrides = Partial<{
 
 /**
  * Builds a fully self-consistent, genuinely-signed approval row (as if
- * `createTargetApproval` had persisted it with APPROVAL_SECRET), then
- * applies field overrides on top. Overriding a field independently of the
- * signature models a row an attacker without APPROVAL_SECRET could never
- * actually produce, but lets each test isolate exactly one failing check.
+ * `createTargetApproval` had persisted it with APPROVAL_SECRET), including
+ * any requested field overrides. Tests that model post-signature tampering
+ * explicitly retain the baseline signature.
  */
 function buildApprovalRow(
   overrides: ApprovalRowOverrides = {},
 ): Record<string, unknown> {
   const bindingId =
     overrides.bindingId === undefined ? DEFAULT_BINDING_ID : overrides.bindingId;
+  const approvalId =
+    overrides.id === undefined ? APPROVAL_ID : overrides.id;
+  const modeMismatchEvidenceId =
+    overrides.modeMismatchEvidenceId === undefined
+      ? MODE_MISMATCH_EVIDENCE_ID
+      : overrides.modeMismatchEvidenceId;
+  const cronEvidenceId =
+    overrides.cronEvidenceId === undefined
+      ? CRON_EVIDENCE_ID
+      : overrides.cronEvidenceId;
+  const adminEvidenceId =
+    overrides.adminEvidenceId === undefined
+      ? ADMIN_EVIDENCE_ID
+      : overrides.adminEvidenceId;
   const targetOrigin =
     overrides.targetOrigin === undefined
       ? TARGET_ORIGIN
@@ -92,30 +124,42 @@ function buildApprovalRow(
     overrides.cronSecretBinding === undefined
       ? cronSecretBinding(CRON_SECRET, APPROVAL_SECRET)
       : overrides.cronSecretBinding;
+  const approvedAt =
+    overrides.approvedAt === undefined ? APPROVED_AT : overrides.approvedAt;
   const approvalSignatureValue =
     overrides.approvalSignature === undefined
       ? computeApprovalSignature(
           canonicalApprovalPayload({
+            approvalId,
             bindingId: bindingId ?? "",
+            modeMismatchEvidenceId: modeMismatchEvidenceId ?? "",
+            cronEvidenceId: cronEvidenceId ?? "",
+            adminEvidenceId: adminEvidenceId ?? "",
             targetOrigin: targetOrigin ?? "",
             releaseSha: releaseSha ?? "",
             imageDigest: imageDigest ?? "",
             rolloutMode: rolloutMode ?? "",
             cronSecretBinding: cronSecretBindingValue ?? "",
+            approvedAt: approvedAt ?? "",
           }),
           APPROVAL_SECRET,
         )
       : overrides.approvalSignature;
 
   return {
-    id: "deployment-smoke-approved-uuid",
-    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    id: approvalId,
+    createdAt: overrides.createdAt ?? APPROVED_AT,
+    sameTimestampCount: overrides.sameTimestampCount ?? 1,
     bindingId,
+    modeMismatchEvidenceId,
+    cronEvidenceId,
+    adminEvidenceId,
     targetOrigin,
     cronSecretBinding: cronSecretBindingValue,
     releaseSha,
     imageDigest,
     rolloutMode,
+    approvedAt,
     approvalSignature: approvalSignatureValue,
   };
 }
@@ -123,6 +167,7 @@ function buildApprovalRow(
 function createSqlMock(options: {
   approval?: ApprovalRowOverrides | null;
   bindingExists?: boolean;
+  bindingRowId?: string | null;
   agentState?: AgentStateOverrides | null;
   shadowRun?: ShadowRunOverrides | null;
 }) {
@@ -130,6 +175,7 @@ function createSqlMock(options: {
   const {
     approval = {},
     bindingExists = true,
+    bindingRowId = DEFAULT_BINDING_ID,
     agentState = {},
     shadowRun = {},
   } = options;
@@ -141,7 +187,9 @@ function createSqlMock(options: {
       const query = Array.from(first).join(" ").replace(/\s+/g, " ").trim();
       calls.push(query);
       if (
-        query === "BEGIN READ ONLY" ||
+        query === "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY" ||
+        query === "SET LOCAL TIME ZONE 'UTC'" ||
+        query === "SET LOCAL TIME ZONE DEFAULT" ||
         query.startsWith("SET LOCAL statement_timeout") ||
         query === "ROLLBACK"
       ) {
@@ -153,7 +201,10 @@ function createSqlMock(options: {
       }
       if (query.includes("WHERE id =") && query.includes("AgentJournal")) {
         return bindingExists
-          ? [{ event: "deployment-smoke-binding" }]
+          ? [{
+              event: "deployment-smoke-binding",
+              bindingId: bindingRowId,
+            }]
           : [];
       }
       if (query.includes('FROM "krypto"."AgentState"')) {
@@ -205,6 +256,15 @@ function createSqlMock(options: {
   return sql;
 }
 
+function runCheck(
+  options: ActivationCheckOptions = BASE_OPTIONS,
+  checkedAt: Date = CHECKED_AT,
+) {
+  return runActivationCheck(options, {
+    now: () => new Date(checkedAt),
+  });
+}
+
 describe("schedule-activation verifier", () => {
   beforeEach(() => {
     mockedPostgres.mockReset();
@@ -214,7 +274,7 @@ describe("schedule-activation verifier", () => {
     const sql = createSqlMock({ approval: {} });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.schemaVersion).toBe(ACTIVATION_CHECK_SCHEMA_VERSION);
     expect(report.approved).toBe(true);
@@ -225,16 +285,191 @@ describe("schedule-activation verifier", () => {
     expect(
       report.checks.find((check) => check.id === "approval-signature-valid"),
     ).toEqual(expect.objectContaining({ status: "pass" }));
-    expect(sql.__calls[0]).toBe("BEGIN READ ONLY");
+    expect(report.approval).toEqual({
+      id: APPROVAL_ID,
+      bindingId: DEFAULT_BINDING_ID,
+      modeMismatchEvidenceId: MODE_MISMATCH_EVIDENCE_ID,
+      cronEvidenceId: CRON_EVIDENCE_ID,
+      adminEvidenceId: ADMIN_EVIDENCE_ID,
+      approvedAt: APPROVED_AT,
+      expiresAt: new Date(
+        new Date(APPROVED_AT).getTime() + MAX_APPROVAL_AGE_MS,
+      ).toISOString(),
+    });
+    expect(sql.__calls[0]).toBe(
+      "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+    );
+    expect(sql.__calls).toContain("SET LOCAL TIME ZONE 'UTC'");
+    expect(sql.__calls).toContain("SET LOCAL TIME ZONE DEFAULT");
     expect(sql.__calls).not.toContain("COMMIT");
     expect(sql.__calls[sql.__calls.length - 1]).toBe("ROLLBACK");
   });
+
+  it("accepts an approval at the exact 24-hour boundary", async () => {
+    const sql = createSqlMock({ approval: {} });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runCheck(
+      BASE_OPTIONS,
+      new Date(new Date(APPROVED_AT).getTime() + MAX_APPROVAL_AGE_MS),
+    );
+
+    expect(report.approved).toBe(true);
+    expect(
+      report.checks.find(
+        (check) => check.id === "approval-within-24-hours",
+      ),
+    ).toEqual(expect.objectContaining({ status: "pass" }));
+  });
+
+  it("accepts an approval at the exact not-before boundary", async () => {
+    const sql = createSqlMock({ approval: {} });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runCheck(BASE_OPTIONS, new Date(APPROVED_AT));
+
+    expect(report.approved).toBe(true);
+    expect(
+      report.checks.find((check) => check.id === "approval-not-in-future"),
+    ).toEqual(expect.objectContaining({ status: "pass" }));
+  });
+
+  it("rejects an approval one millisecond beyond 24 hours", async () => {
+    const sql = createSqlMock({ approval: {} });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runCheck(
+      BASE_OPTIONS,
+      new Date(new Date(APPROVED_AT).getTime() + MAX_APPROVAL_AGE_MS + 1),
+    );
+
+    expect(report.approved).toBe(false);
+    expect(
+      report.checks.find(
+        (check) => check.id === "approval-within-24-hours",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+  });
+
+  it("rejects a future-dated approval", async () => {
+    const sql = createSqlMock({ approval: {} });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runCheck(
+      BASE_OPTIONS,
+      new Date(new Date(APPROVED_AT).getTime() - 1),
+    );
+
+    expect(report.approved).toBe(false);
+    expect(
+      report.checks.find((check) => check.id === "approval-not-in-future"),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+  });
+
+  it("rejects a malformed signed approval timestamp", async () => {
+    const malformed = "2026-08-14T00:00:00Z";
+    const sql = createSqlMock({
+      approval: {
+        approvedAt: malformed,
+        createdAt: malformed,
+      },
+    });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runCheck();
+
+    expect(report.approved).toBe(false);
+    expect(
+      report.checks.find((check) => check.id === "approval-timestamp-valid"),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+  });
+
+  it("rejects a signed timestamp that differs from the persisted row timestamp", async () => {
+    const sql = createSqlMock({
+      approval: {
+        createdAt: "2026-08-14T00:00:00.001Z",
+      },
+    });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runCheck();
+
+    expect(report.approved).toBe(false);
+    expect(
+      report.checks.find((check) => check.id === "approval-timestamp-valid"),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+  });
+
+  it("rejects concurrent approvals with the same latest timestamp", async () => {
+    const sql = createSqlMock({
+      approval: { sameTimestampCount: 2 },
+    });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runCheck();
+
+    expect(report.approved).toBe(false);
+    expect(
+      report.checks.find(
+        (check) => check.id === "approval-order-unambiguous",
+      ),
+    ).toEqual(expect.objectContaining({ status: "block" }));
+  });
+
+  it.each([
+    [
+      "approval ID",
+      { id: "deployment-smoke-approved-not-a-uuid" },
+      DEFAULT_BINDING_ID,
+    ],
+    [
+      "binding ID",
+      { bindingId: "deployment-smoke-binding-not-a-uuid" },
+      "deployment-smoke-binding-not-a-uuid",
+    ],
+    [
+      "mode-mismatch evidence ID",
+      {
+        modeMismatchEvidenceId:
+          "deployment-smoke-mode-mismatch-not-a-uuid",
+      },
+      DEFAULT_BINDING_ID,
+    ],
+    [
+      "cron evidence ID",
+      { cronEvidenceId: "deployment-smoke-cron-not-a-uuid" },
+      DEFAULT_BINDING_ID,
+    ],
+    [
+      "admin evidence ID",
+      { adminEvidenceId: "deployment-smoke-admin-not-a-uuid" },
+      DEFAULT_BINDING_ID,
+    ],
+  ] as Array<[string, ApprovalRowOverrides, string]>)(
+    "rejects a malformed persisted %s even when its signature and binding row are self-consistent",
+    async (_field, approval, bindingRowId) => {
+      const sql = createSqlMock({ approval, bindingRowId });
+      mockedPostgres.mockReturnValueOnce(sql as never);
+
+      const report = await runCheck();
+
+      expect(report.approved).toBe(false);
+      expect(
+        report.checks.find(
+          (check) => check.id === "approval-identifiers-valid",
+        ),
+      ).toEqual(expect.objectContaining({ status: "block" }));
+      expect(
+        report.checks.find((check) => check.id === "approval-signature-valid"),
+      ).toEqual(expect.objectContaining({ status: "pass" }));
+    },
+  );
 
   it("never emits the raw database URL, cron secret, or approval secret in the report", async () => {
     const sql = createSqlMock({ approval: {} });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
     const serialized = JSON.stringify(report);
 
     expect(serialized).not.toContain(CRON_SECRET);
@@ -246,7 +481,7 @@ describe("schedule-activation verifier", () => {
     const sql = createSqlMock({ approval: {}, shadowRun: {} });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck({
+    const report = await runCheck({
       ...BASE_OPTIONS,
       expectedShadowIdempotencyKey: "manual-shadow:run123-a1",
       expectedShadowStartedAfter: "2026-08-13T12:00:00Z",
@@ -285,7 +520,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck({
+    const report = await runCheck({
       ...BASE_OPTIONS,
       expectedShadowIdempotencyKey: "manual-shadow:run123-a1",
       expectedShadowStartedAfter: "2026-08-13T12:00:00Z",
@@ -308,7 +543,7 @@ describe("schedule-activation verifier", () => {
     const sql = createSqlMock({ approval: null });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -323,7 +558,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -331,13 +566,31 @@ describe("schedule-activation verifier", () => {
     ).toEqual(expect.objectContaining({ status: "block" }));
   });
 
+  it.each([null, "different-binding-id"])(
+    "rejects a missing or mismatched persisted evidence binding ID (%s)",
+    async (bindingRowId) => {
+      const sql = createSqlMock({
+        approval: {},
+        bindingRowId,
+      });
+      mockedPostgres.mockReturnValueOnce(sql as never);
+
+      const report = await runCheck();
+
+      expect(report.approved).toBe(false);
+      expect(
+        report.checks.find((check) => check.id === "binding-id-match"),
+      ).toEqual(expect.objectContaining({ status: "block" }));
+    },
+  );
+
   it("rejects a target-origin mismatch", async () => {
     const sql = createSqlMock({
       approval: { targetOrigin: "https://impostor.example.com" },
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -351,7 +604,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -365,7 +618,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -379,7 +632,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -396,7 +649,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -411,7 +664,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -426,7 +679,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -445,7 +698,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -461,7 +714,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -480,7 +733,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -488,17 +741,89 @@ describe("schedule-activation verifier", () => {
     ).toEqual(expect.objectContaining({ status: "block" }));
   });
 
+  it.each([
+    ["approval ID", { id: "deployment-smoke-approved-replayed" }],
+    ["binding ID", { bindingId: "deployment-smoke-binding-replayed" }],
+    [
+      "mode-mismatch evidence ID",
+      { modeMismatchEvidenceId: "deployment-smoke-mode-mismatch-replayed" },
+    ],
+    ["cron evidence ID", { cronEvidenceId: "deployment-smoke-cron-replayed" }],
+    [
+      "admin evidence ID",
+      { adminEvidenceId: "deployment-smoke-admin-replayed" },
+    ],
+    ["target origin", { targetOrigin: "https://other.example.com" }],
+    ["release SHA", { releaseSha: "e".repeat(40) }],
+    ["image digest", { imageDigest: `sha256:${"e".repeat(64)}` }],
+    ["rollout mode", { rolloutMode: "shadow" }],
+    ["cron-secret binding", { cronSecretBinding: "e".repeat(64) }],
+    ["approval timestamp", { approvedAt: "2026-08-14T00:00:01.000Z" }],
+  ] as Array<[string, ApprovalRowOverrides]>)(
+    "invalidates the signed approval when its attributed %s changes",
+    async (_field, override) => {
+      const baseSignature = buildApprovalRow().approvalSignature as string;
+      const sql = createSqlMock({
+        approval: {
+          ...override,
+          approvalSignature: baseSignature,
+        },
+      });
+      mockedPostgres.mockReturnValueOnce(sql as never);
+
+      const report = await runCheck();
+
+      expect(report.approved).toBe(false);
+      expect(
+        report.checks.find((check) => check.id === "approval-signature-valid"),
+      ).toEqual(expect.objectContaining({ status: "block" }));
+    },
+  );
+
+  it.each([
+    ["approval ID", { id: "" }],
+    ["binding ID", { bindingId: null }],
+    ["mode-mismatch evidence ID", { modeMismatchEvidenceId: null }],
+    ["cron evidence ID", { cronEvidenceId: null }],
+    ["admin evidence ID", { adminEvidenceId: null }],
+    ["target origin", { targetOrigin: null }],
+    ["release SHA", { releaseSha: null }],
+    ["image digest", { imageDigest: null }],
+    ["rollout mode", { rolloutMode: null }],
+    ["cron-secret binding", { cronSecretBinding: null }],
+    ["approval timestamp", { approvedAt: null }],
+    ["approval signature", { approvalSignature: null }],
+  ] as Array<[string, ApprovalRowOverrides]>)(
+    "rejects a missing attributed %s",
+    async (_field, override) => {
+      const sql = createSqlMock({ approval: override });
+      mockedPostgres.mockReturnValueOnce(sql as never);
+
+      const report = await runCheck();
+
+      expect(report.approved).toBe(false);
+      expect(
+        report.checks.find((check) => check.id === "approval-binding-complete"),
+      ).toEqual(expect.objectContaining({ status: "block" }));
+    },
+  );
+
   it("rejects when the persisted binding was signed with a different approval secret", async () => {
     const otherSecret = "a-completely-different-approval-secret-value";
     const cronBinding = cronSecretBinding(CRON_SECRET, otherSecret);
     const signature = computeApprovalSignature(
       canonicalApprovalPayload({
+        approvalId: APPROVAL_ID,
         bindingId: DEFAULT_BINDING_ID,
+        modeMismatchEvidenceId: MODE_MISMATCH_EVIDENCE_ID,
+        cronEvidenceId: CRON_EVIDENCE_ID,
+        adminEvidenceId: ADMIN_EVIDENCE_ID,
         targetOrigin: TARGET_ORIGIN,
         releaseSha: RELEASE_SHA,
         imageDigest: IMAGE_DIGEST,
         rolloutMode: "disabled",
         cronSecretBinding: cronBinding,
+        approvedAt: APPROVED_AT,
       }),
       otherSecret,
     );
@@ -510,7 +835,7 @@ describe("schedule-activation verifier", () => {
     });
     mockedPostgres.mockReturnValueOnce(sql as never);
 
-    const report = await runActivationCheck(BASE_OPTIONS);
+    const report = await runCheck();
 
     expect(report.approved).toBe(false);
     expect(
@@ -570,7 +895,7 @@ describe("schedule-activation verifier", () => {
       });
       mockedPostgres.mockReturnValueOnce(sql as never);
 
-      const report = await runActivationCheck({
+      const report = await runCheck({
         ...BASE_OPTIONS,
         targetOrigin: loopbackOrigin,
       });

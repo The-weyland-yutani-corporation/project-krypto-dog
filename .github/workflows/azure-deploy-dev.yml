@@ -497,11 +497,13 @@ jobs:
         env:
           DATABASE_URL_DEV: ${{ secrets.DATABASE_URL }}
           DIRECT_URL_DEV: ${{ secrets.DIRECT_URL }}
+          MIGRATION_URL_DEV: ${{ secrets.MIGRATION_URL }}
           CRON_SECRET_DEV: ${{ secrets.CRON_SECRET }}
           POSTHOG_API_KEY_DEV: ${{ secrets.POSTHOG_API_KEY }}
           ADMIN_PASSWORD_DEV: ${{ secrets.ADMIN_PASSWORD }}
           ADMIN_SESSION_SECRET_DEV: ${{ secrets.ADMIN_SESSION_SECRET }}
           RUNTIME_DATABASE_PASSWORD_DEV: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+          MIGRATOR_DATABASE_PASSWORD_DEV: ${{ secrets.MIGRATOR_DATABASE_PASSWORD }}
           DEPLOYMENT_APPROVAL_SECRET_DEV: ${{ secrets.DEPLOYMENT_APPROVAL_SECRET }}
         run: |
           set -euo pipefail
@@ -887,9 +889,11 @@ jobs:
             echo "The single marked manual hourly execution was not Succeeded." >&2
             exit 1
           fi
-          echo "execution_name=${execution_name}" >> "$GITHUB_OUTPUT"
-          echo "idempotency_key=${manual_shadow_idempotency_key}" >> "$GITHUB_OUTPUT"
-          echo "started_after=${manual_shadow_started_after}" >> "$GITHUB_OUTPUT"
+          {
+            echo "execution_name=${execution_name}"
+            echo "idempotency_key=${manual_shadow_idempotency_key}"
+            echo "started_after=${manual_shadow_started_after}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Bind activation evidence to the exact manual shadow AgentRun
         env:
@@ -930,11 +934,19 @@ jobs:
 
   promote-schedule:
     name: Promote validated dev shadow jobs to Schedule
-    needs: [gate, deploy-environment, build-images, validate-shadow]
+    needs:
+      [
+        gate,
+        deploy-environment,
+        deploy-release,
+        build-images,
+        validate-shadow,
+      ]
     if: >-
       always() &&
       needs.gate.result == 'success' &&
       needs.deploy-environment.result == 'success' &&
+      needs.deploy-release.result == 'success' &&
       needs.build-images.result == 'success' &&
       needs.validate-shadow.result == 'success' &&
       needs.gate.outputs.deployment_stage == 'full'
@@ -947,6 +959,8 @@ jobs:
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+      EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+      ACTIVATION_CHECK_JOB_NAME: ${{ needs.deploy-release.outputs.activation_check_job_name }}
       WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
     outputs:
       schedule_deployed_at: ${{ steps.verify.outputs.schedule_deployed_at }}
@@ -963,6 +977,45 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Revalidate the exact zero-trade shadow proof before schedule mutation
+        id: activation
+        env:
+          MANUAL_SHADOW_IDEMPOTENCY_KEY: ${{ needs.validate-shadow.outputs.manual_shadow_idempotency_key }}
+          MANUAL_SHADOW_STARTED_AFTER: ${{ needs.validate-shadow.outputs.manual_shadow_started_after }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          job_execution_id="$(azure_new_job_execution_id activation-check-promotion)"
+          .github/scripts/azure/run-ops-job.sh \
+            --job-name "${ACTIVATION_CHECK_JOB_NAME}" \
+            --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
+            --job-execution-id "${job_execution_id}" \
+            --expected-shadow-idempotency-key "${MANUAL_SHADOW_IDEMPOTENCY_KEY}" \
+            --expected-shadow-started-after "${MANUAL_SHADOW_STARTED_AFTER}" \
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+          .github/scripts/azure/download-evidence.sh \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --environment-name dev \
+            --release-sha "${RESOLVED_SHA}" \
+            --operation activation-check \
+            --job-execution-id "${job_execution_id}" \
+            --destination evidence-promotion
+          report_path="evidence-promotion/dev/${RESOLVED_SHA}/activation-check/${job_execution_id}/report.json"
+          node .github/scripts/azure/validate-report.mjs \
+            --report "${report_path}" \
+            --operation activation-check \
+            --release-sha "${RESOLVED_SHA}" \
+            --image-digest "sha256:${WEB_DIGEST_HEX}"
+          echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish promotion-time activation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-dev-promotion-evidence-${{ needs.gate.outputs.sha }}
+          path: evidence-promotion/
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Render rollout.dev.bicepparam (shadow, Schedule)
         id: render
@@ -997,9 +1050,15 @@ jobs:
 
       - name: Enable and validate missing-success monitoring before Schedule
         env:
+          ACTIVATION_REPORT: ${{ steps.activation.outputs.report_path }}
           SCHEDULE_ENABLED_AT: ${{ steps.render.outputs.schedule_enabled_at }}
         run: |
           set -euo pipefail
+          node .github/scripts/azure/validate-report.mjs \
+            --report "${ACTIVATION_REPORT}" \
+            --operation activation-check \
+            --release-sha "${RESOLVED_SHA}" \
+            --image-digest "sha256:${WEB_DIGEST_HEX}"
           az deployment group what-if \
             --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
             --template-file infra/schedule-monitoring.bicep \
@@ -1038,8 +1097,15 @@ jobs:
         run: node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-rollout-shadow-schedule.json
 
       - name: Deploy infra/rollout.bicep (shadow, Schedule)
+        env:
+          ACTIVATION_REPORT: ${{ steps.activation.outputs.report_path }}
         run: |
           set -euo pipefail
+          node .github/scripts/azure/validate-report.mjs \
+            --report "${ACTIVATION_REPORT}" \
+            --operation activation-check \
+            --release-sha "${RESOLVED_SHA}" \
+            --image-digest "sha256:${WEB_DIGEST_HEX}"
           az deployment group create \
             --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
             --name "roll-dev-schedule-${RESOLVED_SHA}" \

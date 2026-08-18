@@ -26,6 +26,9 @@ jobs:
     name: Quality and evidence gates
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
 
     steps:
       - name: Checkout
@@ -48,6 +51,11 @@ jobs:
         # excluded from tsconfig.json). Run a separate pass over them via
         # tsconfig.scripts.json to catch type errors in seed scripts and tests.
         run: npm run typecheck:scripts
+
+      - name: Verify protected mutation approval policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run deployment:verify-github-environments
 
       - name: Typecheck (Next.js build)
         # `next build` runs the TypeScript compiler over the app code.
@@ -159,7 +167,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-17
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
-          /usr/lib/postgresql/17/bin/pg_dump --version
+
+      - name: Capture exact runtime matrix
+        env:
+          TEST_POSTGRES_ADMIN_URL: ${{ format('postgresql://postgres:{0}@127.0.0.1:5432/postgres', 'postgres') }}
+        run: npm run --silent evidence:runtime-matrix -- --out artifacts/runtime-matrix.json --commit "$GITHUB_SHA"
 
       - name: Run migration and transactional integration suite
         env:
@@ -172,6 +184,16 @@ jobs:
         run: |
           npm run db:generate
           test -z "$(git status --porcelain -- drizzle)"
+
+      - name: Upload exact runtime matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-matrix-${{ github.sha }}
+          path: artifacts/runtime-matrix.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90
 
   harness-integrity:
     name: Harness integrity

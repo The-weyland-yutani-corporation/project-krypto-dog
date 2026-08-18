@@ -171,6 +171,7 @@ jobs:
     timeout-minutes: 30
     environment: production-promotion
     permissions:
+      actions: read
       contents: read
       id-token: write
     env:
@@ -185,6 +186,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Verify live production-promotion approval authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/azure/verify-github-environment-protection.sh --environment production-promotion
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -326,13 +332,15 @@ jobs:
            exit 1
           fi
 
-          echo "container_apps_environment_id=${cae_id}" >> "$GITHUB_OUTPUT"
-          echo "acr_login_server=${acr_login_server}" >> "$GITHUB_OUTPUT"
-          echo "runtime_identity_id=${runtime_identity_id}" >> "$GITHUB_OUTPUT"
-          echo "runtime_identity_client_id=${runtime_identity_client_id}" >> "$GITHUB_OUTPUT"
-          echo "scheduler_identity_id=${scheduler_identity_id}" >> "$GITHUB_OUTPUT"
-          echo "communication_email_sender=${communication_email_sender}" >> "$GITHUB_OUTPUT"
-          echo "evidence_container_url=${evidence_container_url}" >> "$GITHUB_OUTPUT"
+          {
+            echo "container_apps_environment_id=${cae_id}"
+            echo "acr_login_server=${acr_login_server}"
+            echo "runtime_identity_id=${runtime_identity_id}"
+            echo "runtime_identity_client_id=${runtime_identity_client_id}"
+            echo "scheduler_identity_id=${scheduler_identity_id}"
+            echo "communication_email_sender=${communication_email_sender}"
+            echo "evidence_container_url=${evidence_container_url}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Render rollout.prod.bicepparam from live state (disabled/Manual)
         if: steps.detect.outputs.existing_release == 'true'
@@ -444,6 +452,7 @@ jobs:
     timeout-minutes: 60
     environment: production-deploy
     permissions:
+      actions: read
       contents: read
       id-token: write
     env:
@@ -464,6 +473,11 @@ jobs:
             echo "Missing helper: fetch the complete live properties.template, merge JOB_EXECUTION_ID into its env list, and start the execution with az containerapp job start --yaml." >&2
             exit 1
           fi
+
+      - name: Verify live production-deploy approval authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/azure/verify-github-environment-protection.sh --environment production-deploy
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -543,6 +557,7 @@ jobs:
     timeout-minutes: 30
     environment: production-deploy
     permissions:
+      actions: read
       contents: read
       id-token: write
     env:
@@ -573,6 +588,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Verify live production-deploy approval authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/azure/verify-github-environment-protection.sh --environment production-deploy
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -824,6 +844,7 @@ jobs:
     timeout-minutes: 30
     environment: production-deploy
     permissions:
+      actions: read
       contents: read
       id-token: write
     env:
@@ -837,6 +858,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Verify live production-deploy approval authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/azure/verify-github-environment-protection.sh --environment production-deploy
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -901,6 +927,7 @@ jobs:
     timeout-minutes: 30
     environment: production-deploy
     permissions:
+      actions: read
       contents: read
       id-token: write
     env:
@@ -916,6 +943,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Verify live production-deploy approval authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/azure/verify-github-environment-protection.sh --environment production-deploy
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -967,11 +999,13 @@ jobs:
         env:
           DATABASE_URL_PROD: ${{ secrets.DATABASE_URL }}
           DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
+          MIGRATION_URL_PROD: ${{ secrets.MIGRATION_URL }}
           CRON_SECRET_PROD: ${{ secrets.CRON_SECRET }}
           POSTHOG_API_KEY_PROD: ${{ secrets.POSTHOG_API_KEY }}
           ADMIN_PASSWORD_PROD: ${{ secrets.ADMIN_PASSWORD }}
           ADMIN_SESSION_SECRET_PROD: ${{ secrets.ADMIN_SESSION_SECRET }}
           RUNTIME_DATABASE_PASSWORD_PROD: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+          MIGRATOR_DATABASE_PASSWORD_PROD: ${{ secrets.MIGRATOR_DATABASE_PASSWORD }}
           DEPLOYMENT_APPROVAL_SECRET_PROD: ${{ secrets.DEPLOYMENT_APPROVAL_SECRET }}
         run: |
           set -euo pipefail
@@ -990,11 +1024,13 @@ jobs:
         env:
           DATABASE_URL_PROD: ${{ secrets.DATABASE_URL }}
           DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
+          MIGRATION_URL_PROD: ${{ secrets.MIGRATION_URL }}
           CRON_SECRET_PROD: ${{ secrets.CRON_SECRET }}
           POSTHOG_API_KEY_PROD: ${{ secrets.POSTHOG_API_KEY }}
           ADMIN_PASSWORD_PROD: ${{ secrets.ADMIN_PASSWORD }}
           ADMIN_SESSION_SECRET_PROD: ${{ secrets.ADMIN_SESSION_SECRET }}
           RUNTIME_DATABASE_PASSWORD_PROD: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+          MIGRATOR_DATABASE_PASSWORD_PROD: ${{ secrets.MIGRATOR_DATABASE_PASSWORD }}
           DEPLOYMENT_APPROVAL_SECRET_PROD: ${{ secrets.DEPLOYMENT_APPROVAL_SECRET }}
         run: |
           set -euo pipefail
@@ -1035,6 +1071,7 @@ jobs:
     timeout-minutes: 90
     environment: production-deploy
     permissions:
+      actions: read
       contents: read
       id-token: write
     env:
@@ -1058,6 +1095,11 @@ jobs:
             echo "Missing helper: fetch the complete live properties.template, merge JOB_EXECUTION_ID into its env list, and start the execution with az containerapp job start --yaml." >&2
             exit 1
           fi
+
+      - name: Verify live production-deploy approval authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/azure/verify-github-environment-protection.sh --environment production-deploy
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -1186,6 +1228,7 @@ jobs:
     timeout-minutes: 20
     environment: production-deploy
     permissions:
+      actions: read
       contents: read
       id-token: write
     env:
@@ -1206,6 +1249,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Verify live production-deploy approval authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/azure/verify-github-environment-protection.sh --environment production-deploy
 
       - name: Azure login (OIDC)
         uses: azure/login@v2

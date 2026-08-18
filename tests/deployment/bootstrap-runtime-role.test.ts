@@ -1,7 +1,11 @@
 import {
   RUNTIME_ROLE_NAME,
+  SCHEMA_OWNER_ROLE_NAME,
+  MIGRATOR_ROLE_NAME,
+  SCHEDULER_ROLE_NAME,
   bootstrapRuntimeRoleMembership,
   bootstrapRuntimeLoginRole,
+  bootstrapDatabaseRoles,
   isValidRoleIdentifier,
 } from "@/deployment/bootstrap-runtime-role";
 import postgres from "postgres";
@@ -19,7 +23,8 @@ function createSqlMock(
     | "already-member"
     | "missing-runtime-role"
     | "runtime-role-can-login"
-    | "missing-login-role" = "grant",
+    | "missing-login-role"
+    | "elevated-login-role" = "grant",
 ) {
   const granted: string[] = [];
   const sql = jest.fn(
@@ -49,7 +54,16 @@ function createSqlMock(
         if (scenario === "missing-login-role") {
           return [];
         }
-        return [{ present: true }];
+        return [
+          {
+            present: true,
+            isSuperuser: scenario === "elevated-login-role",
+            canCreateDb: false,
+            canCreateRole: false,
+            canReplicate: false,
+            canBypassRls: false,
+          },
+        ];
       }
       if (query.includes("pg_has_role")) {
         return [{ isMember: scenario === "already-member" }];
@@ -58,11 +72,15 @@ function createSqlMock(
         granted.push(query);
         return [];
       }
+      if (query.includes("ALTER ROLE")) {
+        return [];
+      }
       throw new Error(`Unhandled SQL in test: ${query}`);
     },
-  ) as jest.Mock & { end: jest.Mock; granted: string[] };
+  ) as jest.Mock & { end: jest.Mock; granted: string[]; unsafe: jest.Mock };
   sql.end = jest.fn(async () => undefined);
   sql.granted = granted;
+  sql.unsafe = jest.fn(async () => []);
   return sql;
 }
 
@@ -145,6 +163,19 @@ describe("bootstrapRuntimeRoleMembership", () => {
         loginRole: "azure_app_identity",
       }),
     ).rejects.toThrow(/Login role azure_app_identity does not exist/);
+  });
+
+  it("refuses an elevated pre-provisioned login role", async () => {
+    mockedPostgres.mockReturnValueOnce(
+      createSqlMock("elevated-login-role") as never,
+    );
+
+    await expect(
+      bootstrapRuntimeRoleMembership({
+        directUrl: "******db.example.com/postgres",
+        loginRole: "azure_app_identity",
+      }),
+    ).rejects.toThrow(/elevated attribute/);
   });
 
   it("grants membership when the login role is not yet a member", async () => {
@@ -263,6 +294,8 @@ function createLoginSqlMock(
           return [
             {
               canLogin: false,
+              inherits: true,
+              connectionLimit: 20,
               isSuperuser: false,
               canCreateDb: false,
               canCreateRole: false,
@@ -274,6 +307,8 @@ function createLoginSqlMock(
         return [
           {
             canLogin: true,
+            inherits: true,
+            connectionLimit: 20,
             isSuperuser: false,
             canCreateDb: false,
             canCreateRole: false,
@@ -288,11 +323,18 @@ function createLoginSqlMock(
       if (query.includes("GRANT")) {
         return [];
       }
+      if (query.includes("ALTER ROLE") && query.includes("search_path")) {
+        return [];
+      }
       throw new Error(`Unhandled SQL in test: ${query}`);
     },
-  ) as jest.Mock & { end: jest.Mock; executed: string[] };
+  ) as jest.Mock & { end: jest.Mock; executed: string[]; unsafe: jest.Mock };
   sql.end = jest.fn(async () => undefined);
   sql.executed = executed;
+  sql.unsafe = jest.fn(async (query: string) => {
+    executed.push(query.replace(/\s+/g, " ").trim());
+    return [];
+  });
   return sql;
 }
 
@@ -454,5 +496,296 @@ describe("bootstrapRuntimeLoginRole", () => {
     await expect(bootstrapRuntimeLoginRole(baseInput)).rejects.toThrow(
       /Post-bootstrap verification failed/,
     );
+  });
+});
+
+interface DatabaseRolesSqlMockOptions {
+  adminRole?: string;
+  existingRoles?: string[];
+  kryptoSchemaOwner?: string | null;
+  drizzleSchemaOwner?: string | null;
+  legacySchemasPresent?: string[];
+  migratorAttributesSafe?: boolean;
+}
+
+function createDatabaseRolesSqlMock(options: DatabaseRolesSqlMockOptions = {}) {
+  const adminRole = options.adminRole ?? "db_admin";
+  const existingRoles = new Set(options.existingRoles ?? []);
+  const kryptoSchemaOwner = options.kryptoSchemaOwner ?? null;
+  const drizzleSchemaOwner = options.drizzleSchemaOwner ?? null;
+  const legacyPresent = new Set(options.legacySchemasPresent ?? []);
+  const migratorAttributesSafe = options.migratorAttributesSafe ?? true;
+
+  const executed: string[] = [];
+  const unsafeExecuted: string[] = [];
+
+  const sql = jest.fn(
+    async (
+      first: TemplateStringsArray | string,
+      ...values: unknown[]
+    ): Promise<unknown> => {
+      if (typeof first === "string") {
+        return { identifier: first };
+      }
+      const query = Array.from(first).join(" ").replace(/\s+/g, " ").trim();
+      executed.push(query);
+
+      if (query.includes('current_user AS "adminRole"')) {
+        return [{ adminRole }];
+      }
+      if (query.includes('current_database() AS "databaseName"')) {
+        return [{ databaseName: "krypto_test_db" }];
+      }
+      if (query.includes("ALTER ROLE") && query.includes("search_path")) {
+        return [];
+      }
+      if (
+        query.includes('to_regnamespace') &&
+        query.includes('"kryptoPresent"')
+      ) {
+        return [
+          {
+            kryptoPresent: kryptoSchemaOwner !== null,
+            drizzlePresent: drizzleSchemaOwner !== null,
+          },
+        ];
+      }
+      if (query.includes("SELECT true AS present FROM pg_roles WHERE rolname =")) {
+        const roleName = values[0] as string;
+        return existingRoles.has(roleName) ? [{ present: true }] : [];
+      }
+      if (query === "BEGIN" || query === "COMMIT" || query === "ROLLBACK") {
+        return [];
+      }
+      if (query.includes("set_config")) {
+        return [];
+      }
+      if (query.includes('rolcanlogin AS "canLogin"')) {
+        return [
+          {
+            canLogin: migratorAttributesSafe,
+            inherits: !migratorAttributesSafe,
+            isSuperuser: false,
+            canCreateDb: false,
+            canCreateRole: false,
+            canReplicate: false,
+            canBypassRls: false,
+          },
+        ];
+      }
+      if (query.includes("GRANT") || query.includes("REVOKE")) {
+        return [];
+      }
+      if (query.includes("nspowner::regrole::text AS owner")) {
+        const schemaName = values[0] as string;
+        if (schemaName === "krypto") {
+          return kryptoSchemaOwner === null ? [] : [{ owner: kryptoSchemaOwner }];
+        }
+        if (schemaName === "drizzle") {
+          return drizzleSchemaOwner === null
+            ? []
+            : [{ owner: drizzleSchemaOwner }];
+        }
+        return [];
+      }
+      if (query.includes("to_regnamespace")) {
+        const schemaName = values[0] as string;
+        return [{ present: legacyPresent.has(schemaName) }];
+      }
+      throw new Error(`Unhandled SQL in test: ${query}`);
+    },
+  ) as jest.Mock & {
+    end: jest.Mock;
+    unsafe: jest.Mock;
+    executed: string[];
+    unsafeExecuted: string[];
+  };
+  sql.end = jest.fn(async () => undefined);
+  sql.executed = executed;
+  sql.unsafeExecuted = unsafeExecuted;
+  sql.unsafe = jest.fn(async (query: string) => {
+    unsafeExecuted.push(query.replace(/\s+/g, " ").trim());
+    return [];
+  });
+  return sql;
+}
+
+describe("bootstrapDatabaseRoles", () => {
+  const baseInput = {
+    directUrl: "postgres://admin@db.example.com/postgres",
+    migratorPassword: "s3cret-migrator-pass",
+  };
+
+  beforeEach(() => {
+    mockedPostgres.mockReset();
+  });
+
+  it("throws when DIRECT_URL is missing", async () => {
+    await expect(
+      bootstrapDatabaseRoles({ migratorPassword: "x" }),
+    ).rejects.toThrow(/DIRECT_URL is required/);
+    expect(mockedPostgres).not.toHaveBeenCalled();
+  });
+
+  it("throws when the migrator password is missing", async () => {
+    await expect(
+      bootstrapDatabaseRoles({ directUrl: baseInput.directUrl }),
+    ).rejects.toThrow(/migrator password is required/);
+    expect(mockedPostgres).not.toHaveBeenCalled();
+  });
+
+  it("throws for an unsafe connection limit", async () => {
+    mockedPostgres.mockReturnValueOnce(createDatabaseRolesSqlMock() as never);
+    await expect(
+      bootstrapDatabaseRoles({
+        ...baseInput,
+        migratorConnectionLimit: -5,
+      }),
+    ).rejects.toThrow(/unsafe connection limit/);
+  });
+
+  it("creates every role from scratch on a from-scratch install with no ownership to transfer", async () => {
+    const sql = createDatabaseRolesSqlMock();
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const result = await bootstrapDatabaseRoles(baseInput);
+
+    expect(result.schemaOwnerRole).toBe(SCHEMA_OWNER_ROLE_NAME);
+    expect(result.migratorRole).toBe(MIGRATOR_ROLE_NAME);
+    expect(result.schedulerRole).toBe(SCHEDULER_ROLE_NAME);
+    expect(result.runtimeRole).toBe(RUNTIME_ROLE_NAME);
+    expect(result.schemaOwnerCreated).toBe(true);
+    expect(result.schedulerCreated).toBe(true);
+    expect(result.runtimeCreated).toBe(true);
+    expect(result.migratorExisted).toBe(false);
+    expect(result.migratorCreated).toBe(true);
+    expect(result.migratorPasswordRotated).toBe(false);
+    expect(result.migratorAttributesSafe).toBe(true);
+    expect(result.appSchemaOwnershipTransferred).toBe(false);
+    expect(result.migrationLedgerOwnershipTransferred).toBe(false);
+    expect(result.legacySchemasRevoked).toEqual([]);
+    expect(sql.end).toHaveBeenCalled();
+  });
+
+  it("rotates the migrator password and reports no re-creation when every role already exists", async () => {
+    const sql = createDatabaseRolesSqlMock({
+      existingRoles: [
+        SCHEMA_OWNER_ROLE_NAME,
+        SCHEDULER_ROLE_NAME,
+        RUNTIME_ROLE_NAME,
+        MIGRATOR_ROLE_NAME,
+      ],
+      kryptoSchemaOwner: SCHEMA_OWNER_ROLE_NAME,
+      drizzleSchemaOwner: MIGRATOR_ROLE_NAME,
+    });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const result = await bootstrapDatabaseRoles(baseInput);
+
+    expect(result.schemaOwnerCreated).toBe(false);
+    expect(result.schedulerCreated).toBe(false);
+    expect(result.runtimeCreated).toBe(false);
+    expect(result.migratorExisted).toBe(true);
+    expect(result.migratorCreated).toBe(false);
+    expect(result.migratorPasswordRotated).toBe(true);
+    expect(result.appSchemaOwnershipTransferred).toBe(false);
+    expect(result.migrationLedgerOwnershipTransferred).toBe(false);
+  });
+
+  it("transfers ownership on an upgrade where krypto and drizzle are still admin-owned", async () => {
+    const sql = createDatabaseRolesSqlMock({
+      adminRole: "legacy_admin",
+      kryptoSchemaOwner: "legacy_admin",
+      drizzleSchemaOwner: "legacy_admin",
+    });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const result = await bootstrapDatabaseRoles(baseInput);
+
+    expect(result.adminRole).toBe("legacy_admin");
+    expect(result.appSchemaOwnershipTransferred).toBe(true);
+    expect(result.migrationLedgerOwnershipTransferred).toBe(true);
+    expect(
+      sql.unsafeExecuted.some(
+        (query) =>
+          query.includes("ALTER SCHEMA") && query.includes("krypto_schema_owner"),
+      ),
+    ).toBe(true);
+    expect(
+      sql.unsafeExecuted.some(
+        (query) =>
+          query.includes("ALTER SCHEMA") && query.includes("krypto_migrator"),
+      ),
+    ).toBe(true);
+  });
+
+  it("skips ownership transfer entirely when a schema does not exist yet", async () => {
+    const sql = createDatabaseRolesSqlMock({
+      kryptoSchemaOwner: null,
+      drizzleSchemaOwner: null,
+    });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const result = await bootstrapDatabaseRoles(baseInput);
+
+    expect(result.appSchemaOwnershipTransferred).toBe(false);
+    expect(result.migrationLedgerOwnershipTransferred).toBe(false);
+  });
+
+  it("revokes runtime access only for legacy schemas that are actually present", async () => {
+    const sql = createDatabaseRolesSqlMock({
+      legacySchemasPresent: ["vault", "net"],
+    });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const result = await bootstrapDatabaseRoles(baseInput);
+
+    expect(result.legacySchemasRevoked).toEqual(["vault", "net"]);
+  });
+
+  it("revokes both krypto_runtime and PUBLIC access on every present legacy schema", async () => {
+    const sql = createDatabaseRolesSqlMock({
+      legacySchemasPresent: ["vault", "net"],
+    });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    await bootstrapDatabaseRoles(baseInput);
+
+    for (const schemaName of ["vault", "net"]) {
+      const schemaRevokes = sql.unsafeExecuted.filter((query) =>
+        query.includes(`SCHEMA "${schemaName}"`),
+      );
+      expect(
+        schemaRevokes.some(
+          (query) =>
+            query.includes('FROM "krypto_runtime"') &&
+            query.includes("REVOKE ALL ON SCHEMA"),
+        ),
+      ).toBe(true);
+      expect(
+        schemaRevokes.some(
+          (query) =>
+            query.includes("FROM PUBLIC") &&
+            query.includes("REVOKE ALL ON SCHEMA"),
+        ),
+      ).toBe(true);
+    }
+    // A legacy schema that was never present must never be touched at all.
+    expect(
+      sql.unsafeExecuted.some((query) => query.includes('SCHEMA "cron"')),
+    ).toBe(false);
+    expect(
+      sql.unsafeExecuted.some((query) => query.includes('SCHEMA "pg_net"')),
+    ).toBe(false);
+  });
+
+  it("throws when post-bootstrap migrator attribute verification fails", async () => {
+    const sql = createDatabaseRolesSqlMock({ migratorAttributesSafe: false });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    await expect(bootstrapDatabaseRoles(baseInput)).rejects.toThrow(
+      /Post-bootstrap verification failed/,
+    );
+    expect(sql.end).toHaveBeenCalled();
   });
 });

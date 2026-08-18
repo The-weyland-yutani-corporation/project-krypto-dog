@@ -46,6 +46,17 @@ deterministic backtest/scenario harness is described in
   npm install
   ```
 
+Confirm the local application and client toolchain before running the suites:
+
+```bash
+node --version
+npm --version
+psql --version
+pg_dump --version
+```
+
+Node must print `v22.13.0`; `psql` and `pg_dump` must report major 17.
+
 ## 0. Worktree-safe app harness
 
 The harness (`scripts/agent-harness.ts`) boots the full app in an isolated
@@ -127,7 +138,11 @@ Confirm it is reachable:
 
 ```bash
 docker compose exec -T db psql -U krypto -d krypto -c 'SELECT 1;'
+docker compose exec -T db psql -U krypto -d krypto -Atc 'SHOW server_version;'
 ```
+
+The server must also report major 17. CI enforces the same complete contract and
+retains the exact command outputs in `runtime-matrix-<commit-sha>`.
 
 ## 2. Create local environment
 
@@ -145,6 +160,7 @@ AZURE_FOUNDRY_AGENT_VERSION=1
 
 DATABASE_URL=******localhost:5433/krypto
 DIRECT_URL=******localhost:5433/krypto
+MIGRATION_URL=******localhost:5433/krypto
 
 POSTHOG_API_KEY=phc_local_stub
 POSTHOG_HOST=https://us.i.posthog.com
@@ -232,14 +248,23 @@ origin/cron-secret-fingerprint approval that schedule activation must match.
 
 ## 3. Apply schema and seed
 
+`db:migrate` (`drizzle-kit migrate`) requires `MIGRATION_URL` as the
+dedicated least-privilege `krypto_migrator` role -- never `DIRECT_URL`
+(see [ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md)). Run
+the one-time local role bootstrap first, against `DIRECT_URL`'s superuser:
+
 ```bash
+KRYPTO_MIGRATOR_LOGIN_PASSWORD=krypto_local \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts --mode database-roles
 npm run db:migrate
 npm run db:init
 ```
 
-`db:migrate` uses `DIRECT_URL`. `db:init` inserts the singleton only when it is
-absent and never deletes trade or journal history. Do not use `db:push` or
-`supabase db push` for application schema changes.
+The bootstrap step idempotently creates/converges `krypto_schema_owner`,
+`krypto_migrator`, `krypto_scheduler`, and `krypto_runtime`; re-running it is
+safe. `db:init` inserts the singleton only when it is absent and never
+deletes trade or journal history. Do not use `db:push` or `supabase db push`
+for application schema changes.
 
 To verify both a fresh install and adoption of the existing v2 schema against
 temporary local PostgreSQL clusters:

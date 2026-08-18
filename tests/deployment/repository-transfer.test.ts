@@ -127,7 +127,8 @@ describe("transferred repository identity", () => {
       const source = read(relativePath);
       expect(source).toContain("Enterprise-hosted");
       expect(source).toContain("CI_RUNNER_LABEL");
-      expect(source).toContain("prevent_self_review=false");
+      expect(source).toContain("prevent_self_review=true");
+      expect(source).not.toContain("prevent_self_review=false");
       expect(source).toMatch(
         /development[\s\S]{0,120}no\s+(?:required\s+)?reviewer/i,
       );
@@ -141,16 +142,16 @@ describe("transferred repository identity", () => {
     );
     const deployment = read("specs/deployment.md");
     expect(deployment).toContain(
-      "| `platform` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` |",
+      "| `platform` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true` |",
     );
     expect(deployment).toContain(
       "| `development` | No required reviewer (intentional); branch/exact-SHA/CI gates remain |",
     );
     expect(deployment).toContain(
-      "| `production-deploy` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` |",
+      "| `production-deploy` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true` |",
     );
     expect(deployment).toContain(
-      "| `production-promotion` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false`; forced-disable boundary only |",
+      "| `production-promotion` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true`; forced-disable boundary only |",
     );
   });
 });

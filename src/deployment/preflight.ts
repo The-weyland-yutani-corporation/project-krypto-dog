@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import postgres from "postgres";
+import { classifyMigrationUrlSafety } from "./migration-url-safety";
 
-export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "1.4.0";
+export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "1.5.0";
 
 export type PreflightStatus = "pass" | "warn" | "block";
 
@@ -73,6 +74,14 @@ export interface DeploymentInventory {
   directCurrentUser: string | null;
   /** current_user on the DATABASE_URL (application runtime) connection. */
   runtimeCurrentUser: string | null;
+  /** session_user on the DIRECT_URL (admin/operator) connection. */
+  directSessionUser: string | null;
+  /** session_user on the DATABASE_URL (application runtime) connection. */
+  runtimeSessionUser: string | null;
+  /** current_user on the MIGRATION_URL (dedicated migrator) connection. */
+  migrationCurrentUser: string | null;
+  /** session_user on the MIGRATION_URL (dedicated migrator) connection. */
+  migrationSessionUser: string | null;
   applicationTables: Array<{ schema: string; table: string }>;
   protectedSchemas: string[];
   protectedRelations: Array<{
@@ -110,6 +119,7 @@ export interface DeploymentInventory {
   vaultSecretNames: string[];
   runtimeRole: RuntimeRoleInventory | null;
   runtimeLoginRole: RuntimeLoginRoleInventory | null;
+  trustBoundary: TrustBoundaryInventory | null;
 }
 
 export interface RuntimeRoleInventory {
@@ -145,6 +155,63 @@ export interface RuntimeLoginRoleInventory {
   excessSequencePrivileges: string[];
 }
 
+/**
+ * Attributes of one of the three NOLOGIN/LOGIN roles that make up the
+ * PostgreSQL trust boundary (GitHub issue #133), as observed via
+ * `pg_roles`.
+ */
+export interface TrustBoundaryRoleAttributes {
+  present: boolean;
+  canLogin: boolean;
+  inherits: boolean;
+  connectionLimit: number | null;
+}
+
+/**
+ * Full observed state of the four-role PostgreSQL trust boundary
+ * established by the admin database-role bootstrap
+ * (src/deployment/bootstrap-runtime-role.ts) and
+ * drizzle/0008_postgresql_trust_boundaries.sql. Every field here is a
+ * read-only observation captured over DIRECT_URL; none of these checks
+ * ever mutate state.
+ */
+export interface TrustBoundaryInventory {
+  schemaOwnerRole: TrustBoundaryRoleAttributes;
+  migratorRole: TrustBoundaryRoleAttributes;
+  schedulerRole: TrustBoundaryRoleAttributes;
+  runtimeGroupRole: TrustBoundaryRoleAttributes;
+  runtimeLoginRole: TrustBoundaryRoleAttributes;
+  /** krypto_migrator's membership in krypto_schema_owner has SET but not ADMIN. */
+  migratorHasSchemaOwnerSetOption: boolean | null;
+  /** krypto_migrator's membership in krypto_schema_owner has INHERIT — must be false. */
+  migratorInheritsSchemaOwner: boolean | null;
+  /** krypto_runtime must never be a MEMBER of any of the three elevated roles. */
+  runtimeIsMemberOfSchemaOwner: boolean | null;
+  runtimeIsMemberOfMigrator: boolean | null;
+  runtimeIsMemberOfScheduler: boolean | null;
+  runtimeLoginHasElevatedMembership: boolean | null;
+  operatorHasExplicitElevatedMembership: boolean | null;
+  /** Owner of the "krypto" schema itself — must equal krypto_schema_owner. */
+  appSchemaOwner: string | null;
+  /** Count of objects (tables/views/matviews/sequences) in "krypto" not owned by krypto_schema_owner. */
+  appSchemaBadOwnerCount: number | null;
+  /** Owner of the "drizzle" migration ledger schema — krypto_schema_owner or krypto_migrator are both acceptable. */
+  migrationLedgerOwner: string | null;
+  /** krypto_runtime must have no USAGE on the "drizzle" migration ledger schema. */
+  runtimeHasMigrationLedgerAccess: boolean | null;
+  /** Per legacy schema (vault/cron/net/pg_net), whether krypto_runtime can still reach it (must be false wherever the schema is present). */
+  legacySchemaRuntimeAccess: Record<string, boolean>;
+  /** Any table/function grant to krypto_runtime found in the "public" schema (expected to always be empty). */
+  runtimePublicObjectGrants: string[];
+  /** Whether the PUBLIC pseudo-role still holds CREATE on the "public" schema (a PostgreSQL 15+ default-hardened cluster reports false). */
+  publicSchemaCreatableByPublic: boolean | null;
+  runtimeHasPublicSchemaAccess: boolean | null;
+  migratorCanCreateDatabaseObjects: boolean | null;
+  migratorCanCreatePublicObjects: boolean | null;
+  /** Effective `search_path` observed on each connection, keyed by "direct"/"migration"/"runtime". */
+  searchPath: Record<string, string | null>;
+}
+
 export interface DeploymentPreflightReport {
   schemaVersion: string;
   generatedAt: string;
@@ -152,6 +219,7 @@ export interface DeploymentPreflightReport {
   target: {
     directUrl: string | null;
     runtimeUrl: string | null;
+    migrationUrl: string | null;
   };
   checks: PreflightCheck[];
   inventory: DeploymentInventory;
@@ -163,6 +231,13 @@ export interface DeploymentPreflightReport {
 export interface DeploymentPreflightInput {
   directUrl?: string;
   runtimeUrl?: string;
+  /**
+   * The dedicated migration connection string (see GitHub issue #133).
+   * Optional: when omitted, migration-identity and MIGRATION_URL-safety
+   * checks are reported as "not proven" (warn, or block on Azure) rather
+   * than skipped silently.
+   */
+  migrationUrl?: string;
   now?: Date;
   /**
    * Explicit deployment provider. Pass `"azure"` from Azure workflows so
@@ -219,6 +294,10 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
     createdAt: "1786579433481",
     hash: "fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71",
   },
+  {
+    createdAt: "1786579434481",
+    hash: "0f28fce3409b92986be1fe58a82b02a90dcbb48a0cab75a1bbfb6681e200638e",
+  },
 ] as const;
 /**
  * Migration count at which 0006 (the last migration that still installs
@@ -235,7 +314,28 @@ const MODE_BOUND_NULLABLE_CRON_FUNCTIONS_MIGRATION_COUNT = 6;
  * HTTP routes directly. See specs/decisions/0008-azure-native-deployment-architecture.md.
  */
 const CRON_FUNCTIONS_RETIRED_MIGRATION_COUNT = 8;
+/**
+ * Migration count at which 0008
+ * (drizzle/0008_postgresql_trust_boundaries.sql) is applied and the
+ * four-role PostgreSQL trust boundary (GitHub issue #133) --
+ * krypto_schema_owner, krypto_migrator, krypto_scheduler, krypto_runtime
+ * -- is fully established. Below this count the additional roles may
+ * legitimately not exist yet.
+ */
+const TRUST_BOUNDARY_MIGRATION_COUNT = 9;
 const RUNTIME_ROLE_NAME = "krypto_runtime";
+const SCHEMA_OWNER_ROLE_NAME = "krypto_schema_owner";
+const MIGRATOR_ROLE_NAME = "krypto_migrator";
+const SCHEDULER_ROLE_NAME = "krypto_scheduler";
+const APP_SCHEMA_NAME = "krypto";
+const MIGRATION_LEDGER_SCHEMA_NAME = "drizzle";
+/**
+ * Schemas that predate the Azure migration (Supabase Vault, pg_cron,
+ * pg_net) and must never be reachable by krypto_runtime. Existence-guarded
+ * everywhere these are checked so a fresh Azure install (where none of
+ * these exist at all) never reports a false denial-matrix violation.
+ */
+const LEGACY_UNRELATED_SCHEMAS = ["vault", "cron", "net", "pg_net"] as const;
 /**
  * Exact, fail-closed per-table privilege matrix for krypto_runtime (and,
  * transitively via membership, for the Azure application login role).
@@ -548,6 +648,10 @@ function baseInventory(): DeploymentInventory {
     runtimeSystemIdentifier: null,
     directCurrentUser: null,
     runtimeCurrentUser: null,
+    directSessionUser: null,
+    runtimeSessionUser: null,
+    migrationCurrentUser: null,
+    migrationSessionUser: null,
     applicationTables: [],
     protectedSchemas: [],
     protectedRelations: [],
@@ -569,6 +673,7 @@ function baseInventory(): DeploymentInventory {
     vaultSecretNames: [],
     runtimeRole: null,
     runtimeLoginRole: null,
+    trustBoundary: null,
   };
 }
 
@@ -594,6 +699,9 @@ export async function runDeploymentPreflight(
   const inventory = baseInventory();
   const directUrl = input.directUrl?.trim();
   const runtimeUrl = input.runtimeUrl?.trim();
+  const migrationUrl = input.migrationUrl?.trim();
+  let runtimeSearchPath: string | null = null;
+  let migrationSearchPath: string | null = null;
 
   if (!directUrl) {
     checks.push({
@@ -624,18 +732,24 @@ export async function runDeploymentPreflight(
             database: string;
             systemIdentifier: string;
             currentUser: string;
+            sessionUser: string;
+            searchPath: string;
           }>
         >`
           SELECT
             current_database() AS database,
             system_identifier::text AS "systemIdentifier",
-            current_user AS "currentUser"
+            current_user AS "currentUser",
+            session_user AS "sessionUser",
+            current_setting('search_path') AS "searchPath"
           FROM pg_control_system()
         `;
         inventory.runtimeDatabase = identity?.database ?? null;
         inventory.runtimeSystemIdentifier =
           identity?.systemIdentifier ?? null;
         inventory.runtimeCurrentUser = identity?.currentUser ?? null;
+        inventory.runtimeSessionUser = identity?.sessionUser ?? null;
+        runtimeSearchPath = identity?.searchPath ?? null;
       });
       checks.push({
         id: "runtime-connectivity",
@@ -658,6 +772,105 @@ export async function runDeploymentPreflight(
     }
   }
 
+  // Dedicated MIGRATION_URL connectivity, identity, and safety checks (see
+  // GitHub issue #133 and drizzle/0008_postgresql_trust_boundaries.sql).
+  // Migrations must run as krypto_migrator over a direct connection
+  // distinct from both DIRECT_URL (admin/operator) and DATABASE_URL
+  // (runtime) -- see src/deployment/migration-url-safety.ts for the exact
+  // rules. Fail closed on Azure when MIGRATION_URL is missing, unsafe, or
+  // authenticates as an unexpected identity.
+  if (migrationUrl) {
+    const migration = postgres(migrationUrl, {
+      max: 1,
+      prepare: false,
+      connect_timeout: 10,
+      idle_timeout: 2,
+    });
+    try {
+      await withReadOnlyTransaction(migration, async () => {
+        const [identity] = await migration<
+          Array<{ currentUser: string; sessionUser: string; searchPath: string }>
+        >`
+          -- migration connection identity
+          SELECT
+            current_user AS "currentUser",
+            session_user AS "sessionUser",
+            current_setting('search_path') AS "searchPath"
+        `;
+        inventory.migrationCurrentUser = identity?.currentUser ?? null;
+        inventory.migrationSessionUser = identity?.sessionUser ?? null;
+        migrationSearchPath = identity?.searchPath ?? null;
+      });
+      checks.push({
+        id: "migration-connectivity",
+        status: "pass",
+        summary: "MIGRATION_URL accepted a read-only query.",
+        evidence: {
+          currentUser: inventory.migrationCurrentUser,
+          sessionUser: inventory.migrationSessionUser,
+        },
+      });
+    } catch (error) {
+      checks.push({
+        id: "migration-connectivity",
+        status: "block",
+        summary: "MIGRATION_URL could not execute a read-only query.",
+        evidence: { errorCode: errorCode(error) },
+      });
+    } finally {
+      await migration.end();
+    }
+  }
+  // When MIGRATION_URL itself is missing, whether that blocks or merely
+  // warns depends on whether this environment's applied migration history
+  // has reached TRUST_BOUNDARY_MIGRATION_COUNT yet (MIGRATION_URL only
+  // became a hard requirement as of migration 0008) -- so these three
+  // "missing" checks are deferred and pushed after the DIRECT_URL
+  // inventory below has populated inventory.drizzleMigrationCount. A
+  // MIGRATION_URL that *is* provided but fails to connect, fails safety
+  // validation, or authenticates as the wrong identity is a live problem
+  // and always blocks immediately, regardless of migration history.
+  if (migrationUrl) {
+    const migrationUrlSafety = classifyMigrationUrlSafety({
+      migrationUrl,
+      directUrl,
+      runtimeUrl,
+      expectedUsername: MIGRATOR_ROLE_NAME,
+    });
+    checks.push({
+      id: "migration-url-safety",
+      status: migrationUrlSafety.safe ? "pass" : "block",
+      summary: migrationUrlSafety.safe
+        ? "MIGRATION_URL is a direct, distinct connection correctly identified as the dedicated migrator role."
+        : `MIGRATION_URL failed safety validation: ${migrationUrlSafety.reasons.join(" ")}`,
+      evidence: { reasons: migrationUrlSafety.reasons },
+    });
+
+    if (inventory.migrationCurrentUser !== null) {
+      const migrationIdentityCorrect =
+        inventory.migrationCurrentUser === MIGRATOR_ROLE_NAME;
+      checks.push({
+        id: "migration-identity",
+        status: migrationIdentityCorrect ? "pass" : "block",
+        summary: migrationIdentityCorrect
+          ? `MIGRATION_URL's current_user is exactly ${MIGRATOR_ROLE_NAME}.`
+          : `MIGRATION_URL's current_user (${inventory.migrationCurrentUser}) is not ${MIGRATOR_ROLE_NAME}.`,
+        evidence: { migrationCurrentUser: inventory.migrationCurrentUser },
+      });
+    } else {
+      // Connectivity already failed and blocked above; a missing
+      // current_user here is a symptom of that same failure, not an
+      // independent not-yet-migrated state.
+      checks.push({
+        id: "migration-identity",
+        status: "block",
+        summary:
+          "Could not capture current_user on MIGRATION_URL to prove the migrator identity.",
+        evidence: { migrationCurrentUser: null },
+      });
+    }
+  }
+
   if (directUrl) {
     const direct = postgres(directUrl, {
       max: 1,
@@ -674,13 +887,17 @@ export async function runDeploymentPreflight(
             serverVersion: string;
             systemIdentifier: string;
             currentUser: string;
+            sessionUser: string;
+            searchPath: string;
           }>
         >`
           SELECT
             current_database() AS database,
             current_setting('server_version') AS "serverVersion",
             system_identifier::text AS "systemIdentifier",
-            current_user AS "currentUser"
+            current_user AS "currentUser",
+            session_user AS "sessionUser",
+            current_setting('search_path') AS "searchPath"
           FROM pg_control_system()
         `;
         inventory.database = server?.database ?? null;
@@ -688,6 +905,8 @@ export async function runDeploymentPreflight(
         inventory.directSystemIdentifier =
           server?.systemIdentifier ?? null;
         inventory.directCurrentUser = server?.currentUser ?? null;
+        inventory.directSessionUser = server?.sessionUser ?? null;
+        const directSearchPath = server?.searchPath ?? null;
         checks.push({
           id: "direct-connectivity",
           status: "pass",
@@ -1981,6 +2200,672 @@ export async function runDeploymentPreflight(
           }) as Record<string, unknown>,
         });
 
+        // PostgreSQL trust boundary (GitHub issue #133): the four-role
+        // hierarchy established by src/deployment/bootstrap-runtime-role.ts
+        // (bootstrapDatabaseRoles) and
+        // drizzle/0008_postgresql_trust_boundaries.sql. Every observation
+        // below is read-only over DIRECT_URL. Genuinely exploitable live
+        // exposures (excess membership, wrong ownership, leaked default
+        // privileges, reachable legacy schemas) always block regardless of
+        // provider; "trust boundary not migrated yet" is provider-gated
+        // warn/block, mirroring the existing runtime-role pattern.
+        const trustBoundaryExpected =
+          inventory.drizzleMigrationCount !== null &&
+          inventory.drizzleMigrationCount >= TRUST_BOUNDARY_MIGRATION_COUNT;
+        const notYetMigratedStatus: PreflightCheck["status"] =
+          provider === "azure" ? "block" : "warn";
+
+        const roleAttributeRows = await sql<
+          Array<{
+            rolname: string;
+            canLogin: boolean;
+            inherits: boolean;
+            connectionLimit: number;
+          }>
+        >`
+          -- trust boundary role attributes
+          SELECT
+            rolname,
+            rolcanlogin AS "canLogin",
+            rolinherit AS "inherits",
+            rolconnlimit AS "connectionLimit"
+          FROM pg_roles
+          WHERE rolname IN (${SCHEMA_OWNER_ROLE_NAME}, ${MIGRATOR_ROLE_NAME}, ${SCHEDULER_ROLE_NAME}, ${RUNTIME_ROLE_NAME}, ${runtimeCurrentUser ?? ""})
+        `;
+        const roleAttributeByName = new Map(
+          roleAttributeRows.map((row) => [row.rolname, row]),
+        );
+        const toRoleAttributes = (
+          roleName: string,
+        ): TrustBoundaryRoleAttributes => {
+          const row = roleAttributeByName.get(roleName);
+          return row
+            ? {
+                present: true,
+                canLogin: row.canLogin,
+                inherits: row.inherits,
+                connectionLimit: row.connectionLimit,
+              }
+            : { present: false, canLogin: false, inherits: false, connectionLimit: null };
+        };
+        const schemaOwnerRole = toRoleAttributes(SCHEMA_OWNER_ROLE_NAME);
+        const migratorRole = toRoleAttributes(MIGRATOR_ROLE_NAME);
+        const schedulerRole = toRoleAttributes(SCHEDULER_ROLE_NAME);
+        const runtimeGroupRole = toRoleAttributes(RUNTIME_ROLE_NAME);
+        const runtimeLoginTrustRole = runtimeCurrentUser
+          ? toRoleAttributes(runtimeCurrentUser)
+          : { present: false, canLogin: false, inherits: false, connectionLimit: null };
+
+        const [migratorMembership] = await sql<
+          Array<{ adminOption: boolean; inheritOption: boolean; setOption: boolean }>
+        >`
+          -- trust boundary migrator membership options
+          SELECT
+            am.admin_option AS "adminOption",
+            am.inherit_option AS "inheritOption",
+            am.set_option AS "setOption"
+          FROM pg_auth_members am
+          JOIN pg_roles m ON m.oid = am.member
+          JOIN pg_roles r ON r.oid = am.roleid
+          WHERE m.rolname = ${MIGRATOR_ROLE_NAME} AND r.rolname = ${SCHEMA_OWNER_ROLE_NAME}
+        `;
+        const migratorHasSchemaOwnerSetOption =
+          migratorMembership?.setOption ?? false;
+        const migratorInheritsSchemaOwner =
+          migratorMembership?.inheritOption ?? false;
+        const migratorHasSchemaOwnerAdminOption =
+          migratorMembership?.adminOption ?? false;
+
+        const [runtimeMembership] = await sql<
+          Array<{
+            ownerMember: boolean | null;
+            migratorMember: boolean | null;
+            schedulerMember: boolean | null;
+          }>
+        >`
+          -- trust boundary runtime elevated membership
+          SELECT
+            CASE
+              WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${RUNTIME_ROLE_NAME})
+               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${SCHEMA_OWNER_ROLE_NAME})
+              THEN pg_has_role(${RUNTIME_ROLE_NAME}, ${SCHEMA_OWNER_ROLE_NAME}, 'MEMBER')
+            END AS "ownerMember",
+            CASE
+              WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${RUNTIME_ROLE_NAME})
+               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${MIGRATOR_ROLE_NAME})
+              THEN pg_has_role(${RUNTIME_ROLE_NAME}, ${MIGRATOR_ROLE_NAME}, 'MEMBER')
+            END AS "migratorMember",
+            CASE
+              WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${RUNTIME_ROLE_NAME})
+               AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${SCHEDULER_ROLE_NAME})
+              THEN pg_has_role(${RUNTIME_ROLE_NAME}, ${SCHEDULER_ROLE_NAME}, 'MEMBER')
+            END AS "schedulerMember"
+        `;
+        const runtimeIsMemberOfSchemaOwner =
+          runtimeMembership?.ownerMember ?? null;
+        const runtimeIsMemberOfMigrator =
+          runtimeMembership?.migratorMember ?? null;
+        const runtimeIsMemberOfScheduler =
+          runtimeMembership?.schedulerMember ?? null;
+
+        const [explicitMembershipRow] = await sql<
+          Array<{ runtimeLoginElevated: boolean; operatorElevated: boolean }>
+        >`-- trust boundary explicit login memberships
+          SELECT
+            EXISTS (
+              SELECT 1
+              FROM pg_auth_members am
+              JOIN pg_roles member_role ON member_role.oid = am.member
+              JOIN pg_roles granted_role ON granted_role.oid = am.roleid
+              WHERE member_role.rolname = ${runtimeCurrentUser ?? ""}
+                AND granted_role.rolname IN (${SCHEMA_OWNER_ROLE_NAME}, ${MIGRATOR_ROLE_NAME}, ${SCHEDULER_ROLE_NAME})
+            ) AS "runtimeLoginElevated",
+            EXISTS (
+              SELECT 1
+              FROM pg_auth_members am
+              JOIN pg_roles member_role ON member_role.oid = am.member
+              JOIN pg_roles granted_role ON granted_role.oid = am.roleid
+              WHERE member_role.rolname = ${directCurrentUser ?? ""}
+                AND granted_role.rolname IN (${SCHEMA_OWNER_ROLE_NAME}, ${MIGRATOR_ROLE_NAME})
+            ) AS "operatorElevated"`;
+        const runtimeLoginHasElevatedMembership =
+          explicitMembershipRow?.runtimeLoginElevated ?? null;
+        const operatorHasExplicitElevatedMembership =
+          explicitMembershipRow?.operatorElevated ?? null;
+
+        const [appSchemaOwnerRow] = await sql<
+          Array<{ owner: string | null }>
+        >`
+          -- trust boundary app schema owner
+          SELECT nspowner::regrole::text AS owner
+          FROM pg_namespace
+          WHERE nspname = ${APP_SCHEMA_NAME}
+        `;
+        const appSchemaOwner = appSchemaOwnerRow?.owner ?? null;
+
+        const [appSchemaBadOwnerRow] = await sql<
+          Array<{ badOwnerCount: number }>
+        >`
+          -- trust boundary app schema bad owner count
+          SELECT count(*)::int AS "badOwnerCount"
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = ${APP_SCHEMA_NAME}
+            AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
+            AND c.relowner::regrole::text <> ${SCHEMA_OWNER_ROLE_NAME}
+        `;
+        const appSchemaBadOwnerCount =
+          appSchemaBadOwnerRow?.badOwnerCount ?? null;
+
+        const [migrationLedgerOwnerRow] = await sql<
+          Array<{ owner: string | null }>
+        >`
+          -- trust boundary migration ledger owner
+          SELECT nspowner::regrole::text AS owner
+          FROM pg_namespace
+          WHERE nspname = ${MIGRATION_LEDGER_SCHEMA_NAME}
+        `;
+        const migrationLedgerOwner = migrationLedgerOwnerRow?.owner ?? null;
+        const migrationLedgerOwnerAcceptable =
+          migrationLedgerOwner === null ||
+          migrationLedgerOwner === SCHEMA_OWNER_ROLE_NAME ||
+          migrationLedgerOwner === MIGRATOR_ROLE_NAME;
+
+        const [runtimeLedgerAccessRow] = await sql<
+          Array<{ hasAccess: boolean | null }>
+        >`
+          -- trust boundary runtime migration ledger access
+          SELECT
+            CASE
+              WHEN to_regnamespace(${MIGRATION_LEDGER_SCHEMA_NAME}) IS NOT NULL
+               AND ${runtimeCurrentUser ?? ""} <> ''
+              THEN
+                has_schema_privilege(${runtimeCurrentUser ?? ""}, ${MIGRATION_LEDGER_SCHEMA_NAME}, 'USAGE')
+                OR EXISTS (
+                  SELECT 1
+                  FROM pg_class c
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = ${MIGRATION_LEDGER_SCHEMA_NAME}
+                    AND CASE WHEN c.relkind = 'S' THEN
+                      (
+                        has_sequence_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'USAGE')
+                        OR has_sequence_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'SELECT')
+                        OR has_sequence_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'UPDATE')
+                      )
+                    ELSE
+                      (
+                        has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'SELECT')
+                        OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'INSERT')
+                        OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'UPDATE')
+                        OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'DELETE')
+                        OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'TRUNCATE')
+                        OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'REFERENCES')
+                        OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'TRIGGER')
+                      )
+                    END
+                )
+            END AS "hasAccess"
+        `;
+        const runtimeHasMigrationLedgerAccess =
+          runtimeLedgerAccessRow?.hasAccess ?? null;
+
+        const legacySchemaRuntimeAccess: Record<string, boolean> = {};
+        for (const legacySchema of LEGACY_UNRELATED_SCHEMAS) {
+          const [legacyRow] = await sql<
+            Array<{ hasAccess: boolean | null }>
+          >`
+            -- trust boundary legacy schema access
+            SELECT
+              CASE
+                WHEN to_regnamespace(${legacySchema}) IS NOT NULL
+                   AND ${runtimeCurrentUser ?? ""} <> ''
+                  THEN
+                    has_schema_privilege(${runtimeCurrentUser ?? ""}, ${legacySchema}, 'USAGE')
+                    OR EXISTS (
+                      SELECT 1
+                      FROM pg_class c
+                      JOIN pg_namespace n ON n.oid = c.relnamespace
+                      WHERE n.nspname = ${legacySchema}
+                        AND CASE WHEN c.relkind = 'S' THEN
+                          (
+                            has_sequence_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'USAGE')
+                            OR has_sequence_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'SELECT')
+                            OR has_sequence_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'UPDATE')
+                          )
+                        ELSE (
+                          has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'SELECT')
+                          OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'INSERT')
+                          OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'UPDATE')
+                          OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'DELETE')
+                        ) END
+                    )
+              END AS "hasAccess"
+          `;
+          legacySchemaRuntimeAccess[legacySchema] =
+            legacyRow?.hasAccess ?? false;
+        }
+        const legacySchemaViolations = LEGACY_UNRELATED_SCHEMAS.filter(
+          (legacySchema) => legacySchemaRuntimeAccess[legacySchema],
+        );
+
+        const runtimePublicGrantRows = await sql<Array<{ name: string }>>`
+          -- trust boundary runtime public object grants
+          SELECT 'relation:' || c.relname AS name
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public'
+            AND c.relkind <> 'S'
+            AND ${runtimeCurrentUser ?? ""} <> ''
+            AND (
+              has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'SELECT')
+              OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'INSERT')
+              OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'UPDATE')
+              OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'DELETE')
+              OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'TRUNCATE')
+              OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'REFERENCES')
+              OR has_table_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'TRIGGER')
+            )
+          UNION ALL
+          SELECT 'sequence:' || c.relname AS name
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public'
+            AND c.relkind = 'S'
+            AND ${runtimeCurrentUser ?? ""} <> ''
+            AND (
+              has_sequence_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'USAGE')
+              OR has_sequence_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'SELECT')
+              OR has_sequence_privilege(${runtimeCurrentUser ?? ""}, c.oid, 'UPDATE')
+            )
+          UNION ALL
+          SELECT 'routine:' || p.proname AS name
+          FROM pg_proc p
+          JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'public'
+            AND ${runtimeCurrentUser ?? ""} <> ''
+            AND has_function_privilege(${runtimeCurrentUser ?? ""}, p.oid, 'EXECUTE')
+        `;
+        const runtimePublicObjectGrants = runtimePublicGrantRows.map(
+          (row) => row.name,
+        );
+
+        const [publicSchemaAclRow] = await sql<
+          Array<{ creatable: boolean }>
+        >`-- trust boundary public schema create
+          SELECT has_schema_privilege('public', 'public', 'CREATE') AS creatable`;
+        const publicSchemaCreatableByPublic =
+          publicSchemaAclRow?.creatable ?? null;
+        const [runtimePublicSchemaAccessRow] = await sql<
+          Array<{ hasAccess: boolean | null }>
+        >`-- trust boundary runtime public schema access
+          SELECT CASE
+            WHEN ${runtimeCurrentUser ?? ""} <> ''
+              THEN has_schema_privilege(${runtimeCurrentUser ?? ""}, 'public', 'USAGE')
+            END AS "hasAccess"`;
+        const runtimeHasPublicSchemaAccess =
+          runtimePublicSchemaAccessRow?.hasAccess ?? null;
+
+        const [migratorCreatePrivilegesRow] = await sql<
+          Array<{ databaseCreate: boolean | null; publicCreate: boolean | null }>
+        >`-- trust boundary migrator create privileges
+          SELECT
+            CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${MIGRATOR_ROLE_NAME})
+              THEN has_database_privilege(${MIGRATOR_ROLE_NAME}, current_database(), 'CREATE')
+            END AS "databaseCreate",
+            CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${MIGRATOR_ROLE_NAME})
+              THEN has_schema_privilege(${MIGRATOR_ROLE_NAME}, 'public', 'CREATE')
+            END AS "publicCreate"`;
+        const migratorCanCreateDatabaseObjects =
+          migratorCreatePrivilegesRow?.databaseCreate ?? null;
+        const migratorCanCreatePublicObjects =
+          migratorCreatePrivilegesRow?.publicCreate ?? null;
+
+        const defaultAclLeakRows = await sql<
+          Array<{ defaclRole: string; objType: string; grantee: string | null }>
+        >`
+          -- trust boundary default privilege leaks
+          SELECT
+            r.rolname AS "defaclRole",
+            da.defaclobjtype AS "objType",
+            acl.grantee::regrole::text AS grantee
+          FROM pg_default_acl da
+          JOIN pg_roles r ON r.oid = da.defaclrole
+          LEFT JOIN pg_namespace n ON n.oid = da.defaclnamespace
+          CROSS JOIN LATERAL aclexplode(da.defaclacl) AS acl
+          WHERE r.rolname IN (${SCHEMA_OWNER_ROLE_NAME}, ${MIGRATOR_ROLE_NAME})
+            AND (da.defaclnamespace = 0 OR n.nspname = ${APP_SCHEMA_NAME})
+            AND acl.grantee <> da.defaclrole
+        `;
+
+        inventory.trustBoundary = {
+          schemaOwnerRole,
+          migratorRole,
+          schedulerRole,
+          runtimeGroupRole,
+          runtimeLoginRole: runtimeLoginTrustRole,
+          migratorHasSchemaOwnerSetOption,
+          migratorInheritsSchemaOwner,
+          runtimeIsMemberOfSchemaOwner,
+          runtimeIsMemberOfMigrator,
+          runtimeIsMemberOfScheduler,
+          runtimeLoginHasElevatedMembership,
+          operatorHasExplicitElevatedMembership,
+          appSchemaOwner,
+          appSchemaBadOwnerCount,
+          migrationLedgerOwner,
+          runtimeHasMigrationLedgerAccess,
+          legacySchemaRuntimeAccess,
+          runtimePublicObjectGrants,
+          publicSchemaCreatableByPublic,
+          runtimeHasPublicSchemaAccess,
+          migratorCanCreateDatabaseObjects,
+          migratorCanCreatePublicObjects,
+          searchPath: {
+            direct: directSearchPath,
+            migration: migrationSearchPath,
+            runtime: runtimeSearchPath,
+          },
+        };
+
+        // A live security exposure -- a role that already exists but is
+        // configured unsafely (able to log in when it must not be, or
+        // otherwise misconfigured) -- always blocks, independent of
+        // whether the environment's migration history has reached
+        // TRUST_BOUNDARY_MIGRATION_COUNT yet.
+        const roleAttributesLiveExposure =
+          (schemaOwnerRole.present && schemaOwnerRole.canLogin) ||
+          (schedulerRole.present && schedulerRole.canLogin) ||
+          (migratorRole.present &&
+            (!migratorRole.canLogin || migratorRole.inherits)) ||
+          (runtimeGroupRole.present &&
+            (runtimeGroupRole.canLogin || runtimeGroupRole.connectionLimit !== 0)) ||
+          (trustBoundaryExpected &&
+            runtimeLoginTrustRole.present &&
+            (!runtimeLoginTrustRole.canLogin ||
+              !runtimeLoginTrustRole.inherits ||
+              runtimeLoginTrustRole.connectionLimit !== 20));
+        const roleAttributesProven =
+          schemaOwnerRole.present &&
+          !schemaOwnerRole.canLogin &&
+          migratorRole.present &&
+          migratorRole.canLogin &&
+          !migratorRole.inherits &&
+          schedulerRole.present &&
+          !schedulerRole.canLogin &&
+          runtimeGroupRole.present &&
+          !runtimeGroupRole.canLogin &&
+          runtimeGroupRole.connectionLimit === 0 &&
+          runtimeLoginTrustRole.present &&
+          runtimeLoginTrustRole.canLogin &&
+          runtimeLoginTrustRole.inherits &&
+          runtimeLoginTrustRole.connectionLimit === 20;
+        checks.push({
+          id: "trust-boundary-role-attributes",
+          status: roleAttributesProven
+            ? "pass"
+            : roleAttributesLiveExposure || trustBoundaryExpected
+              ? "block"
+              : "warn",
+          summary: roleAttributesProven
+            ? "Owner, scheduler, runtime group, migrator, and runtime login roles have the exact LOGIN/NOLOGIN, inheritance, and connection-limit posture."
+            : !schemaOwnerRole.present && !migratorRole.present && !schedulerRole.present
+              ? "krypto_schema_owner/krypto_migrator/krypto_scheduler do not exist yet; the trust boundary has not been migrated."
+              : `krypto_schema_owner is ${schemaOwnerRole.present ? (schemaOwnerRole.canLogin ? "LOGIN (unsafe)" : "NOLOGIN") : "missing"}; krypto_migrator is ${migratorRole.present ? (migratorRole.canLogin && !migratorRole.inherits ? "LOGIN+NOINHERIT" : "misconfigured") : "missing"}; krypto_scheduler is ${schedulerRole.present ? (schedulerRole.canLogin ? "LOGIN (unsafe)" : "NOLOGIN") : "missing"}.`,
+          evidence: {
+            schemaOwnerRole,
+            migratorRole,
+            schedulerRole,
+            runtimeGroupRole,
+            runtimeLoginRole: runtimeLoginTrustRole,
+          },
+        });
+
+        const migratorSetOnlyProven =
+          migratorRole.present &&
+          migratorHasSchemaOwnerSetOption &&
+          !migratorInheritsSchemaOwner;
+        // A misconfigured membership on an already-created migrator role
+        // (inheriting instead of SET-only, or no path at all) is a live
+        // exposure and always blocks; a migrator that simply does not
+        // exist yet only blocks once the environment's own migration
+        // history says it should.
+        const migratorSetOnlyLiveExposure =
+          migratorRole.present && !migratorSetOnlyProven;
+        checks.push({
+          id: "trust-boundary-migrator-set-role-path",
+          status: migratorSetOnlyProven
+            ? "pass"
+            : migratorSetOnlyLiveExposure || trustBoundaryExpected
+              ? "block"
+              : "warn",
+          summary: migratorSetOnlyProven
+            ? "krypto_migrator has SET (not INHERIT) membership in krypto_schema_owner: it must explicitly SET ROLE to create/alter schema objects."
+            : !migratorRole.present
+              ? "krypto_migrator does not exist yet."
+              : migratorInheritsSchemaOwner
+                ? "krypto_migrator INHERITs krypto_schema_owner; it must be SET-only (NOINHERIT membership)."
+                : "krypto_migrator lacks a SET-ROLE path to krypto_schema_owner; migrations cannot create schema-owned objects.",
+          evidence: {
+            migratorHasSchemaOwnerSetOption,
+            migratorInheritsSchemaOwner,
+            migratorHasSchemaOwnerAdminOption,
+          },
+        });
+
+        const runtimeElevatedMembershipViolations = [
+          runtimeIsMemberOfSchemaOwner === true ? SCHEMA_OWNER_ROLE_NAME : null,
+          runtimeIsMemberOfMigrator === true ? MIGRATOR_ROLE_NAME : null,
+          runtimeIsMemberOfScheduler === true ? SCHEDULER_ROLE_NAME : null,
+          runtimeLoginHasElevatedMembership === true
+            ? "runtime-login-explicit-membership"
+            : null,
+        ].filter((value): value is string => value !== null);
+        checks.push({
+          id: "trust-boundary-runtime-not-elevated",
+          // Always block regardless of provider: an observed elevated
+          // membership is a live security exposure, not merely a
+          // not-yet-migrated state.
+          status:
+            runtimeElevatedMembershipViolations.length > 0 ? "block" : "pass",
+          summary:
+            runtimeElevatedMembershipViolations.length > 0
+              ? `krypto_runtime is a member of elevated role(s): ${runtimeElevatedMembershipViolations.join(", ")}.`
+              : "Neither krypto_runtime nor the DATABASE_URL login is a member of krypto_schema_owner, krypto_migrator, or krypto_scheduler.",
+          evidence: {
+            runtimeIsMemberOfSchemaOwner,
+            runtimeIsMemberOfMigrator,
+            runtimeIsMemberOfScheduler,
+            runtimeLoginHasElevatedMembership,
+          },
+        });
+
+        checks.push({
+          id: "trust-boundary-operator-membership",
+          status:
+            operatorHasExplicitElevatedMembership === false
+              ? "pass"
+              : trustBoundaryExpected
+                ? "block"
+                : "warn",
+          summary:
+            operatorHasExplicitElevatedMembership === false
+              ? "DIRECT_URL's operator has no persistent explicit membership in schema-owner or migrator roles."
+              : "DIRECT_URL's operator retains an explicit elevated membership after bootstrap finalization.",
+          evidence: { operatorHasExplicitElevatedMembership },
+        });
+
+        const appSchemaOwnershipProven =
+          appSchemaOwner === SCHEMA_OWNER_ROLE_NAME &&
+          (appSchemaBadOwnerCount ?? 0) === 0;
+        checks.push({
+          id: "trust-boundary-app-schema-ownership",
+          status: appSchemaOwnershipProven
+            ? "pass"
+            : appSchemaOwner === null
+              ? "warn"
+              : trustBoundaryExpected
+                ? "block"
+                : "warn",
+          summary:
+            appSchemaOwner === null
+              ? `The "${APP_SCHEMA_NAME}" schema does not exist yet.`
+              : appSchemaOwnershipProven
+                ? `The "${APP_SCHEMA_NAME}" schema and all its tables/views/sequences are owned by ${SCHEMA_OWNER_ROLE_NAME}.`
+                : appSchemaOwner !== SCHEMA_OWNER_ROLE_NAME
+                  ? `The "${APP_SCHEMA_NAME}" schema is owned by ${appSchemaOwner}, not ${SCHEMA_OWNER_ROLE_NAME}.`
+                  : `${appSchemaBadOwnerCount} object(s) in "${APP_SCHEMA_NAME}" are not owned by ${SCHEMA_OWNER_ROLE_NAME}.`,
+          evidence: { appSchemaOwner, appSchemaBadOwnerCount },
+        });
+
+        checks.push({
+          id: "trust-boundary-migration-ledger-ownership",
+          status: migrationLedgerOwnerAcceptable
+            ? "pass"
+            : trustBoundaryExpected
+              ? "block"
+              : "warn",
+          summary:
+            migrationLedgerOwner === null
+              ? `The "${MIGRATION_LEDGER_SCHEMA_NAME}" migration ledger schema does not exist yet.`
+              : migrationLedgerOwnerAcceptable
+                ? `The "${MIGRATION_LEDGER_SCHEMA_NAME}" migration ledger schema is owned by ${migrationLedgerOwner}.`
+                : `The "${MIGRATION_LEDGER_SCHEMA_NAME}" migration ledger schema is owned by ${migrationLedgerOwner}, expected ${SCHEMA_OWNER_ROLE_NAME} or ${MIGRATOR_ROLE_NAME}.`,
+          evidence: { migrationLedgerOwner },
+        });
+
+        const runtimeDenialViolation =
+          runtimeHasMigrationLedgerAccess === true ||
+          legacySchemaViolations.length > 0 ||
+          runtimePublicObjectGrants.length > 0;
+        checks.push({
+          id: "trust-boundary-runtime-denial-matrix",
+          // Once 0008 is applied, any reachable ledger/legacy/public object
+          // blocks. Before 0008, report it as rollout evidence without
+          // retroactively making the legacy pre-migration inventory unusable.
+          status: runtimeDenialViolation
+            ? trustBoundaryExpected
+              ? "block"
+              : "warn"
+            : "pass",
+          summary:
+            runtimeHasMigrationLedgerAccess === true
+              ? `krypto_runtime has USAGE on the "${MIGRATION_LEDGER_SCHEMA_NAME}" migration ledger schema.`
+              : legacySchemaViolations.length > 0
+                ? `krypto_runtime can still reach legacy schema(s): ${legacySchemaViolations.join(", ")}.`
+                : runtimePublicObjectGrants.length > 0
+                  ? `krypto_runtime holds unexpected public-schema grant(s): ${runtimePublicObjectGrants.join(", ")}.`
+                  : "krypto_runtime has no access to the drizzle migration ledger, legacy vault/cron/net/pg_net schemas, or unrelated public-schema objects.",
+          evidence: {
+            runtimeHasMigrationLedgerAccess,
+            legacySchemaRuntimeAccess,
+            runtimePublicObjectGrants,
+          },
+        });
+
+        checks.push({
+          id: "trust-boundary-default-privileges",
+          // Always block: a default-privilege leak grants access to every
+          // future object, not just existing ones.
+          status: defaultAclLeakRows.length > 0 ? "block" : "pass",
+          summary:
+            defaultAclLeakRows.length > 0
+              ? `Default privileges for krypto_schema_owner/krypto_migrator in "${APP_SCHEMA_NAME}" leak access to unexpected grantee(s): ${Array.from(new Set(defaultAclLeakRows.map((row) => row.grantee ?? "PUBLIC"))).join(", ")}.`
+              : `No default-privilege leaks found for future objects created by krypto_schema_owner/krypto_migrator in "${APP_SCHEMA_NAME}".`,
+          evidence: { leaks: defaultAclLeakRows },
+        });
+
+        checks.push({
+          id: "trust-boundary-public-schema-create",
+          status:
+            publicSchemaCreatableByPublic === null
+              ? notYetMigratedStatus
+              : publicSchemaCreatableByPublic
+                ? "block"
+                : "pass",
+          summary:
+            publicSchemaCreatableByPublic === null
+              ? 'Could not evaluate PUBLIC\'s CREATE privilege on the "public" schema.'
+              : publicSchemaCreatableByPublic
+                ? 'The PUBLIC pseudo-role still holds CREATE on the "public" schema (search-path-hijack exposure).'
+                : 'The PUBLIC pseudo-role has no CREATE privilege on the "public" schema.',
+          evidence: { publicSchemaCreatableByPublic },
+        });
+
+        checks.push({
+          id: "trust-boundary-runtime-public-schema",
+          status:
+            runtimeHasPublicSchemaAccess === false
+              ? "pass"
+              : trustBoundaryExpected
+                ? "block"
+                : "warn",
+          summary:
+            runtimeHasPublicSchemaAccess === false
+              ? "DATABASE_URL has no USAGE on the unrelated public schema."
+              : "DATABASE_URL can resolve unrelated objects in the public schema.",
+          evidence: { runtimeHasPublicSchemaAccess },
+        });
+
+        const migratorConnectionLimitBounded =
+          migratorRole.present &&
+          migratorRole.connectionLimit !== null &&
+          migratorRole.connectionLimit >= 1 &&
+          migratorRole.connectionLimit <= 1000;
+        checks.push({
+          id: "trust-boundary-migrator-connection-limit",
+          status: migratorConnectionLimitBounded
+            ? "pass"
+            : !migratorRole.present && !trustBoundaryExpected
+              ? "warn"
+              : "block",
+          summary: !migratorRole.present
+            ? "krypto_migrator does not exist yet."
+            : migratorConnectionLimitBounded
+              ? `krypto_migrator has a bounded connection limit (${migratorRole.connectionLimit}).`
+              : `krypto_migrator has an unbounded or unsafe connection limit (${migratorRole.connectionLimit}).`,
+          evidence: { connectionLimit: migratorRole.connectionLimit },
+        });
+
+        const migratorCreatePrivilegesRestricted =
+          migratorCanCreateDatabaseObjects === true &&
+          migratorCanCreatePublicObjects === false;
+        checks.push({
+          id: "trust-boundary-migrator-create-boundary",
+          status: migratorCreatePrivilegesRestricted
+            ? "pass"
+            : !trustBoundaryExpected
+              ? "warn"
+              : "block",
+          summary: migratorCreatePrivilegesRestricted
+            ? "krypto_migrator has the database CREATE required by drizzle-kit, cannot create objects in public, and can alter application objects only after explicit SET ROLE."
+            : "krypto_migrator is missing drizzle-kit's required database CREATE or retains unsafe public-schema CREATE.",
+          evidence: {
+            databaseCreate: migratorCanCreateDatabaseObjects,
+            publicCreate: migratorCanCreatePublicObjects,
+          },
+        });
+
+        const searchPathsSafe =
+          directSearchPath === "pg_catalog" &&
+          migrationSearchPath === "pg_catalog" &&
+          runtimeSearchPath === "krypto, pg_catalog";
+        checks.push({
+          id: "trust-boundary-search-path",
+          status: searchPathsSafe
+            ? "pass"
+            : trustBoundaryExpected
+              ? "block"
+              : "warn",
+          summary: searchPathsSafe
+            ? "DIRECT_URL and MIGRATION_URL use pg_catalog-only search paths; DATABASE_URL uses krypto, pg_catalog with public excluded."
+            : "One or more database identities has a missing or unsafe search_path; public and $user must not participate in name resolution.",
+          evidence: {
+            direct: directSearchPath,
+            migration: migrationSearchPath,
+            runtime: runtimeSearchPath,
+          },
+        });
+
         const [vaultRelation] = await sql<
           Array<{ relation: string | null }>
         >`SELECT to_regclass('vault.secrets')::text AS relation`;
@@ -2041,6 +2926,36 @@ export async function runDeploymentPreflight(
     }
   }
 
+  if (!migrationUrl) {
+    // MIGRATION_URL only became a hard requirement as of migration 0008
+    // (drizzle/0008_postgresql_trust_boundaries.sql); before an
+    // environment's applied migration history reaches
+    // TRUST_BOUNDARY_MIGRATION_COUNT, its absence is an expected
+    // not-yet-migrated state (warn), not a live problem.
+    const trustBoundaryMigrationExpected =
+      inventory.drizzleMigrationCount !== null &&
+      inventory.drizzleMigrationCount >= TRUST_BOUNDARY_MIGRATION_COUNT;
+    const missingMigrationUrlStatus: PreflightCheck["status"] =
+      trustBoundaryMigrationExpected ? "block" : "warn";
+    checks.push({
+      id: "migration-connectivity",
+      status: missingMigrationUrlStatus,
+      summary:
+        "MIGRATION_URL is missing; the dedicated migrator identity cannot be proven.",
+    });
+    checks.push({
+      id: "migration-url-safety",
+      status: missingMigrationUrlStatus,
+      summary: "MIGRATION_URL is missing; its safety cannot be validated.",
+    });
+    checks.push({
+      id: "migration-identity",
+      status: missingMigrationUrlStatus,
+      summary:
+        "Could not capture current_user on MIGRATION_URL to prove the migrator identity.",
+    });
+  }
+
   const blockers = checks
     .filter((check) => check.status === "block")
     .map((check) => check.id);
@@ -2052,6 +2967,7 @@ export async function runDeploymentPreflight(
     target: {
       directUrl: redactPostgresUrl(directUrl),
       runtimeUrl: redactPostgresUrl(runtimeUrl),
+      migrationUrl: redactPostgresUrl(migrationUrl),
     },
     checks,
     inventory,

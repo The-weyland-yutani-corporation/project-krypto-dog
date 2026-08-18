@@ -16,6 +16,8 @@ This tree implements the Azure-native target accepted by
 - Runtime-selected subscription: **Visual Studio Enterprise Subscription**.
   Its ID and internal identifiers must not be published.
 - Region: `westus3`.
+- Application and ops containers: Node.js 22.13.0; the ops image carries
+  PostgreSQL 17 client/server tools for migrations and restore verification.
 - Resource groups: `rg-krypto-platform`, `rg-krypto-dev`,
   `rg-krypto-prod`.
 - Dedicated future Foundry account: `ai-krypto-westus3`.
@@ -38,7 +40,7 @@ provision PostgreSQL there. It is not a current target.
 | Surface | Live state | Evidence |
 |---|---|---|
 | Subscription/bootstrap | Required providers registered; three resource groups and four GitHub OIDC identities exist | Bootstrap complete |
-| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset, and the temporary Azure runner registrations/resource group are retired. Platform and both production environments require `@VeVarunSharma` review with `prevent_self_review=false`; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
+| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset, and the temporary Azure runner registrations/resource group are retired. Platform and both production environments require `@VeVarunSharma` review with `prevent_self_review=true` and administrator bypass disabled; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
 | Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
 | Foundry agents | Separate dev/prod projects and toolless prompt agents version `1` are active; exact-definition and structured `HOLD` smokes passed | Applied |
 | Foundry workload access | Dev runtime/ops have the proven custom-only `Project Krypto Foundry Agent Invoker`; the reviewed template adds the same project-scoped assignment for prod without changing live prod; legacy direct-model roles await app-image cutover | Dev proven; prod source ready |
@@ -46,6 +48,7 @@ provision PostgreSQL there. It is not a current target.
 | Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841960745) |
 | Releases | Dev/prod web Container Apps and scheduler/ops jobs are deployed; dev completed target-smoke and scheduled-run evidence, prod remains disabled/manual, and both still run the pre-agent image until the reviewed cutover release | Deployed with safety state |
 | Analytics | Shared ingestion key temporarily staged with mandatory dev/prod event tags; separate projects remain a promotion gate | Release-testable |
+| PostgreSQL trust boundary | `krypto_schema_owner`/`krypto_migrator`/`krypto_scheduler` roles and dedicated `MIGRATION_URL` ([ADR 0014](../specs/decisions/0014-postgresql-trust-boundary-roles.md), issue [#133](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/133)) are source-implemented; the attended per-environment upgrade has not been run against either live environment | Source ready; live upgrade pending |
 
 Azure Support API ticket creation for the dedicated account failed because the
 subscription has no eligible support plan. The established account removes
@@ -127,7 +130,8 @@ resource-group Contributor can deploy other resources in that group.
 Template separation therefore also depends on protected workflow files,
 GitHub Environment reviewers, branch rules, and CODEOWNERS. The `platform`,
 `production-deploy`, and `production-promotion` environments require review by
-`@VeVarunSharma` with `prevent_self_review=false`. `development` intentionally
+`@VeVarunSharma` with `prevent_self_review=true` and administrator bypass
+disabled. `development` intentionally
 has no required reviewer for routine dev delivery. Every path still requires
 its configured branch, exact source SHA, and successful CI.
 
@@ -316,15 +320,22 @@ live GitHub Environment approval.
 ```text
 DATABASE_URL
 DIRECT_URL
+MIGRATION_URL
 CRON_SECRET
 POSTHOG_API_KEY
 ADMIN_PASSWORD
 ADMIN_SESSION_SECRET
 RUNTIME_DATABASE_PASSWORD
+MIGRATOR_DATABASE_PASSWORD
 DEPLOYMENT_APPROVAL_SECRET
 ```
 
 `environment.bicep` separately accepts `POSTGRES_ADMIN_PASSWORD`.
+`MIGRATION_URL`/`MIGRATOR_DATABASE_PASSWORD` are new, required by
+[`../specs/decisions/0014-postgresql-trust-boundary-roles.md`](../specs/decisions/0014-postgresql-trust-boundary-roles.md);
+source support is implemented, but neither environment's live secrets have
+been set to real values yet — see `../specs/deployment.md` §13 for the
+attended per-environment upgrade this requires.
 
 Dev and prod use independent safety/auth values. The temporary PostHog
 shared-key fallback is allowed only because `POSTHOG_ENVIRONMENT` is mandatory
@@ -358,12 +369,21 @@ secret resource, not the whole vault.
 |---|---|---|---|
 | runtime | Web Container App | `database-url`, `cron-secret`, `posthog-api-key`, `azure-communication-connection-string`, `admin-password`, `admin-session-secret` | ACR pull; project-scoped Project Krypto Foundry Agent Invoker |
 | scheduler | Hourly and daily jobs | `cron-secret` only | ACR pull; no Foundry role |
-| ops | Five manual jobs | Union of `database-url`, `direct-url`, `cron-secret`, `admin-password`, `posthog-api-key`, `runtime-database-password`, `deployment-approval-secret` | ACR pull; evidence-container writer; project-scoped Project Krypto Foundry Agent Invoker |
+| ops | Five manual jobs (shared identity; per-job container env is narrower — see the ops jobs table below) | Union of `database-url`, `direct-url`, `migration-url`, `cron-secret`, `admin-password`, `posthog-api-key`, `runtime-database-password`, `migrator-database-password`, `deployment-approval-secret` | ACR pull; evidence-container writer; project-scoped Project Krypto Foundry Agent Invoker |
 
 The ops identity never receives the ACS connection string or admin session
 secret. Target smoke validates ACS by asking the running app to send and
 persist a daily-summary delivery; the runtime, not the ops process, holds the
 ACS secret.
+
+The ops identity's Key Vault RBAC grants (above) are broader than any single
+job's mounted environment: `migration-url` and `migrator-database-password`
+are readable by the shared identity because `migrate-init` needs them, but
+`release.bicep` mounts them as container env only on `migrate-init`
+(`MIGRATION_URL`/`KRYPTO_MIGRATOR_LOGIN_PASSWORD`), plus credential-bearing `MIGRATION_URL`
+on `preflight` — never on `verified-backup`, `target-smoke`, or
+`activation-check`. See
+[`../specs/decisions/0014-postgresql-trust-boundary-roles.md`](../specs/decisions/0014-postgresql-trust-boundary-roles.md).
 
 ## Web/runtime configuration
 
@@ -398,8 +418,8 @@ deploys both jobs as `Manual`; only `rollout.bicep` may set `Schedule`.
 
 | Job | Extra nonsecret settings | Mounted secrets |
 |---|---|---|
-| `migrate-init` | `AZURE_RUNTIME_LOGIN_ROLE` | `DIRECT_URL`, `DATABASE_URL`, `AZURE_RUNTIME_LOGIN_PASSWORD` |
-| `preflight` | — | `DATABASE_URL`, `DIRECT_URL` |
+| `migrate-init` | `AZURE_RUNTIME_LOGIN_ROLE` | `DIRECT_URL`, `MIGRATION_URL`, `DATABASE_URL`, `KRYPTO_MIGRATOR_LOGIN_PASSWORD`, `AZURE_RUNTIME_LOGIN_PASSWORD` |
+| `preflight` | — | `DATABASE_URL`, `DIRECT_URL`, `MIGRATION_URL` |
 | `verified-backup` | — | `DATABASE_URL`, `DIRECT_URL` |
 | `target-smoke` | target URL/host, digest, disabled mode, Azure OpenAI base/deployment, `POSTHOG_HOST` | `CRON_SECRET`, `ADMIN_PASSWORD`, `DIRECT_URL`, `POSTHOG_API_KEY`, `DEPLOYMENT_APPROVAL_SECRET` |
 | `activation-check` | target origin, digest | `CRON_SECRET`, `DIRECT_URL`, `DEPLOYMENT_APPROVAL_SECRET` |
@@ -408,6 +428,15 @@ All five also receive `ENVIRONMENT_NAME`, `RELEASE_SHA`,
 `EVIDENCE_CONTAINER_URL`, `AZCOPY_MSI_CLIENT_ID`, and `AZURE_CLIENT_ID`.
 `AZURE_CLIENT_ID` selects the ops identity for Foundry; no model credential is
 mounted.
+
+`migrate-init` now also runs the protected database-role bootstrap (as
+`krypto_owner` over `DIRECT_URL`) and the reviewed migration (as the
+least-privilege `krypto_migrator` over `MIGRATION_URL`) before its existing
+runtime-login-bootstrap and singleton-init steps — see
+[`../specs/decisions/0014-postgresql-trust-boundary-roles.md`](../specs/decisions/0014-postgresql-trust-boundary-roles.md)
+and [`../specs/deployment.md`](../specs/deployment.md) §13 for the operator
+upgrade procedure. `preflight` opens `MIGRATION_URL` in a read-only transaction only to prove the
+migrator's identity/safety and never authenticates writes with it.
 
 ## Safe per-execution full-template override
 

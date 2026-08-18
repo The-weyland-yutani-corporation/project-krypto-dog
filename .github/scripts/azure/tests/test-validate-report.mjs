@@ -83,6 +83,20 @@ run(
   "report.binding.imageDigest disagrees with report.imageDigest -- must reject (binding checked independently)",
 );
 
+run(
+  "target-smoke-missing-evidence-binding.json",
+  ["--operation", "target-smoke", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1],
+  false,
+  "report missing a signed approval binding field -- must reject",
+);
+
+run(
+  "target-smoke-malformed-approved-at.json",
+  ["--operation", "target-smoke", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1],
+  false,
+  "report has a noncanonical persisted approval timestamp -- must reject",
+);
+
 // --- Release SHA binding must also match exactly. ---
 run(
   "target-smoke-sha-mismatch.json",
@@ -120,6 +134,34 @@ run(
   ["--operation", "target-smoke", "--release-sha", RELEASE_SHA_A],
   false,
   "omitting --image-digest does not bypass the passed=true requirement",
+);
+
+run(
+  "activation-check-pass.json",
+  ["--operation", "activation-check", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1, "--now", "2026-08-15T00:00:00.000Z"],
+  true,
+  "activation-check report binds complete approval provenance at the exact 24-hour boundary",
+);
+
+run(
+  "activation-check-expired.json",
+  ["--operation", "activation-check", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1, "--now", "2026-08-15T00:00:00.001Z"],
+  false,
+  "activation-check approval expired at validation time -- must reject",
+);
+
+run(
+  "activation-check-missing-binding.json",
+  ["--operation", "activation-check", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1, "--now", "2026-08-14T01:00:00.000Z"],
+  false,
+  "activation-check report missing an evidence-binding check -- must reject",
+);
+
+run(
+  "activation-check-missing-shadow-proof.json",
+  ["--operation", "activation-check", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1, "--now", "2026-08-14T01:00:00.000Z"],
+  false,
+  "activation-check report missing exact zero-trade shadow proof -- must reject",
 );
 
 console.log(`\n${passCount + failCount} assertions run, ${passCount} passed, ${failCount} failed.`);

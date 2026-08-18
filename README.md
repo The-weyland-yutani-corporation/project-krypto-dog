@@ -32,7 +32,7 @@
 | **Hosted today** | [Azure dev](https://ca-dev-web.wonderfulmoss-0222e5e1.westus3.azurecontainerapps.io/) · [Azure production](https://ca-prod-web.ambitioussea-a305198e.westus3.azurecontainerapps.io/) |
 | **Azure state (2026-08-15)** | Application/data resources run in `westus3`. Operational dev/prod `gpt-5.6-luna` deployments run on `ghcp-foundry-eastus2` with Entra authentication. The dedicated `ai-krypto-westus3` account remains model-empty after `715-123420`. |
 | **Current blockers** | A separate PostHog project and a new evidence-bound promotion design remain mandatory before production may leave `disabled`. The 90-day production evidence policy remains `Unlocked` pending separate irreversible approval. |
-| **Stack** | Next.js 16 (App Router) · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
+| **Stack** | Next.js 16 (App Router) · Node.js 22.13.0 · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL 17 |
 | **Scheduling state** | Dev hourly/daily jobs are monitored `Schedule` jobs in `shadow`; production jobs are all `Manual` and production has no promotion workflow. |
 | **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
 | **Architecture and live links** | [`specs/architecture.md`](./specs/architecture.md) — hosted baseline, target diagrams, planned resources, live endpoint register, rollout safety, and operator consoles |
@@ -89,7 +89,13 @@ cp .env.example .env
 # ACS Email vars may be omitted locally; non-production delivery then reports
 # an explicit console-only skipped result.
 
-# 4. Apply reviewed schema migrations + initialize singleton
+# 4. Bootstrap the local PostgreSQL trust-boundary roles (one-time; creates
+# krypto_schema_owner/krypto_migrator/krypto_scheduler/krypto_runtime against
+# DIRECT_URL), then apply reviewed schema migrations as krypto_migrator over
+# MIGRATION_URL, then initialize the singleton. See ADR 0014:
+# specs/decisions/0014-postgresql-trust-boundary-roles.md.
+KRYPTO_MIGRATOR_LOGIN_PASSWORD=krypto_local \
+  npx tsx scripts/bootstrap-azure-runtime-role.ts --mode database-roles
 npm run db:migrate
 npm run db:init
 
@@ -120,7 +126,7 @@ open http://localhost:3000/admin/login
 | `npm run test:integration` | Real-PostgreSQL migration and execution suite |
 | `npm run test:watch` | Jest watch mode |
 | `npm run db:generate` | Generate Drizzle migration SQL from schema changes |
-| `npm run db:migrate` | Run committed migrations using `DIRECT_URL` |
+| `npm run db:migrate` | Run committed migrations as the least-privilege `krypto_migrator` role using `MIGRATION_URL` (never `DIRECT_URL`; see [ADR 0014](./specs/decisions/0014-postgresql-trust-boundary-roles.md)) |
 | `npm run db:init` | Idempotently initialize the `AgentState` singleton |
 | `npm run test:migrations` | Real-PostgreSQL migration, privilege/tamper, decimal, transaction, lease, run-flow, preflight, and backup tests |
 | `npm run db:studio` | Drizzle Studio (browse the DB) |
@@ -134,6 +140,7 @@ open http://localhost:3000/admin/login
 | `npm run evidence:import -- --input <dataset.json> --out <materialized.json>` | Strictly validate and hash a versioned JSON evidence dataset |
 | `npm run evidence:import -- --input <observations.csv> --manifest <manifest.json> --out <materialized.json>` | Import strict `timestamp,priceUSD` CSV observations with an explicit manifest/gap descriptor |
 | `npm run evidence:evaluate -- --dataset <materialized.json> --plan <plan.json> --json-out <report.json> --html-out <report.html>` | Run predeclared isolated walk-forward windows through the production-aligned backtest runner |
+| `npm run evidence:runtime-matrix -- --out <artifact.json> --commit <40-hex-sha>` | Fail closed unless exact Node.js 22.13.0 and PostgreSQL 17 server/client commands pass, then write commit-bound CI evidence |
 
 Evidence datasets and reports are internal simulation artifacts. Keep real or
 large source datasets and generated reports outside git; only tiny deterministic
@@ -201,6 +208,15 @@ tests/                    # Jest unit + integration tests
 > operator links. The selected runtime subscription is **Visual Studio
 > Enterprise Subscription**; do not publish its subscription ID.
 
+> **PostgreSQL trust boundary (ADR 0014):** migrations run as the dedicated
+> least-privilege `krypto_migrator` role over `MIGRATION_URL`, distinct from
+> `DATABASE_URL` (`krypto_app`/`krypto_runtime`) and `DIRECT_URL`
+> (`krypto_owner`, now narrowed to idempotent role bootstrap and privileged
+> inventory/backup). See
+> [`specs/decisions/0014-postgresql-trust-boundary-roles.md`](./specs/decisions/0014-postgresql-trust-boundary-roles.md).
+> Source is implemented; the attended per-environment upgrade
+> (`specs/deployment.md` §13) has not yet run against live dev/prod.
+
 Observed live runs:
 
 - [Dedicated account succeeded; model deployment failed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
@@ -213,7 +229,8 @@ Enterprise-hosted Actions are active ([proof run
 `CI_RUNNER_LABEL` is unset; the temporary Azure self-hosted runner registrations
 and their runner resource group are retired. `platform`, `production-deploy`,
 and `production-promotion` require
-review by `@VeVarunSharma` with `prevent_self_review=false`; `development`
+review by `@VeVarunSharma` with `prevent_self_review=true` and administrator
+bypass disabled; `development`
 intentionally has no required reviewer so routine dev releases can proceed.
 Every mutation still requires the configured branch, an exact CI-passed source
 SHA, and the workflow's fail-closed checks. The first releases used the

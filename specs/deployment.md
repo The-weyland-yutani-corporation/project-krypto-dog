@@ -27,6 +27,7 @@ and must not be used for a new release.
 | Region | `westus3` |
 | Platform resource group | `rg-krypto-platform` |
 | Dev/prod resource groups | `rg-krypto-dev` / `rg-krypto-prod` |
+| Application runtime | Node.js 22.13.0, pinned by `.nvmrc`, package engines, and both Docker targets |
 | Operational Foundry account | Established `ghcp-foundry-eastus2` (temporary shared model host) |
 | Dedicated future account | `ai-krypto-westus3` (live, local auth disabled, model-empty after `715-123420`) |
 | Model | OpenAI `gpt-5.6-luna`, version `2026-07-09` |
@@ -54,7 +55,7 @@ those values without making them public documentation.
 | Stage | Live state | Evidence |
 |---|---|---|
 | Providers/bootstrap | Required providers are registered; platform/dev/prod resource groups and four GitHub OIDC identities exist | Complete |
-| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset and no self-hosted runner is registered. Platform and production environments require `@VeVarunSharma` review with `prevent_self_review=false`; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
+| GitHub controls | Enterprise-hosted Actions are active; `CI_RUNNER_LABEL` is unset and no self-hosted runner is registered. Platform and production environments require `@VeVarunSharma` review with `prevent_self_review=true`; development intentionally has no reviewer. Branch, exact-SHA, and CI gates remain mandatory. | Hosted execution and approvals active |
 | Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments and isolated prompt agents on `ghcp-foundry-eastus2` succeeded. Both immutable agent version `1` deployments passed exact structured `HOLD` smokes. | Operational agents complete |
 | Workload access | Dev runtime/ops have the proven custom-only Project Krypto Foundry Agent Invoker. The reviewed source grants prod the same project-scoped role, but live prod remains untouched until an approved apply. Legacy account-scoped direct-model roles remain until each pre-agent image is replaced. | Dev proven; prod source ready; compatibility-role removal pending cutover |
 | Dev release | Live in shadow; manual activation and first scheduled execution passed with zero trades | Retained exact-SHA evidence |
@@ -144,10 +145,45 @@ reviewer so routine dev delivery can proceed through the remaining gates.
 
 | Environment | Approval policy | Workflows | Required variables | Required secrets |
 |---|---|---|---|---|
-| `platform` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
-| `development` | No required reviewer (intentional); branch/exact-SHA/CI gates remain | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
-| `production-deploy` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
-| `production-promotion` | Required reviewer `@VeVarunSharma`; `prevent_self_review=false`; forced-disable boundary only | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
+| `platform` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true` | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
+| `development` | No required reviewer (intentional); branch/exact-SHA/CI gates remain | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `MIGRATION_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `MIGRATOR_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
+| `production-deploy` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
+| `production-promotion` | Required reviewer `@VeVarunSharma`; `prevent_self_review=true`; forced-disable boundary only | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
+
+### Approval and evidence procedure
+
+- CI runs `npm run deployment:verify-github-environments` against the live
+  GitHub API and immutable organization/repository IDs. Platform and production
+  mutation jobs fail unless the configured authority is a human
+  `@VeVarunSharma` reviewer with `prevent_self_review=true` and
+  `can_admins_bypass=false`; bots, applications, teams, unknown users,
+  administrator bypass, self-review-capable rules, and unexpected deployment
+  branches are denied. Every protected mutation job repeats this live check
+  immediately before Azure OIDC login so policy drift after CI cannot authorize
+  a mutation.
+- GitHub Environment deployment records are authoritative for the human
+  reviewer. Do not label `GITHUB_ACTOR` as the approver. The signed
+  `deployment-smoke-approved` journal row is a separate machine attestation.
+- That attestation binds approval ID; database-binding, mode-mismatch, cron-run,
+  and admin-run evidence IDs; target origin; release SHA; image digest;
+  disabled rollout mode; keyed cron-secret binding; and canonical approval
+  timestamp. It expires exactly 24 hours after
+  `approvedAt`; missing or malformed identifiers/fields, future timestamps,
+  row mismatches, changes, copies, or concurrently ambiguous evidence are
+  rejected. The dev shadow schedule path reruns activation-check in its mutation
+  job and validates current-time expiry immediately before monitoring and
+  rollout mutations, so a retained report cannot outlive its approval.
+- `@VeVarunSharma` owns rollback through the protected forced-disable path. If
+  that account requested the run, authorize a distinct audited human reviewer
+  before proceeding; never disable self-review prevention. GitHub deployment
+  records, retained workflow artifacts, immutable Azure evidence blobs, and the
+  #76 evidence index share custody of the redacted record.
+`MIGRATION_URL` and `MIGRATOR_DATABASE_PASSWORD` are new secrets required by
+[ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md)'s PostgreSQL
+trust-boundary roles (issue [#133](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/133)).
+Source support for both environments is implemented; neither environment's
+live GitHub Environment secrets have been set to these values yet, and no
+live role migration has run — see §13 below.
 
 Bootstrap RBAC boundaries:
 
@@ -182,8 +218,14 @@ Requirements:
   connection string directly to that environment's Key Vault.
 - `DEPLOYMENT_APPROVAL_SECRET` is distinct from `CRON_SECRET` and is mounted
   only on `target-smoke` and `activation-check`.
-- `DATABASE_URL` uses `krypto_app`; `DIRECT_URL` uses `krypto_owner`. Both
-  target the same private server/database with `sslmode=require`.
+- `DATABASE_URL` uses `krypto_app`; `DIRECT_URL` uses `krypto_owner`;
+  `MIGRATION_URL` uses the dedicated least-privilege `krypto_migrator` role
+  over a direct (non-pooled) connection. All three target the same private
+  server/database with `sslmode=require`. `MIGRATOR_DATABASE_PASSWORD` is
+  granted only to `migrate-init`. The credential-bearing `MIGRATION_URL` is
+  mounted only on `migrate-init` and the protected `preflight` job; preflight
+  opens an explicit read-only transaction.
+  See [ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md).
 
 ## 3. Provision the Foundry model platform
 
@@ -536,6 +578,77 @@ The public origins are recorded in
 [`architecture.md`](./architecture.md). Keep private database, Key Vault,
 evidence-storage, identity, and full resource identifiers out of public docs.
 
+## 13. PostgreSQL trust-boundary roles (ADR 0014) and upgrade procedure
+
+**Current status: source implemented; not yet run against live dev/prod.**
+[ADR 0014](./decisions/0014-postgresql-trust-boundary-roles.md) defines the
+five-role trust boundary required by issue
+[#133](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/133)
+(`krypto_owner`, `krypto_schema_owner`, `krypto_migrator`, `krypto_scheduler`,
+`krypto_runtime`/`krypto_app`) and the dedicated `MIGRATION_URL` connection.
+This section is the operator procedure for adopting it against a live
+environment; completing it does not itself change `ROLLOUT_MODE`, schedule
+state, or any other release behavior described in §6/§7 above.
+
+1. **Pause/confirm.** Verify the target environment's schedule is currently
+   `Manual`/disabled (both dev and prod already satisfy this per the current
+   live checkpoint in §0). Do not begin against an environment with an active
+   `Schedule` trigger without first pausing it via the existing rollback path
+   (§12).
+2. **Verified backup.** Run `verified-backup` for the current release and
+   retain its immutable evidence before any role or ownership change.
+3. **Set secrets.** Add `MIGRATION_URL` and `MIGRATOR_DATABASE_PASSWORD` to
+   that environment's GitHub Environment secrets (in addition to the existing
+   `DIRECT_URL`, `DATABASE_URL`, `RUNTIME_DATABASE_PASSWORD`,
+   `POSTGRES_ADMIN_PASSWORD`). Never commit real values.
+4. **Deploy source.** Run the existing gated deploy workflow
+   (`azure-deploy-dev.yml` / `azure-deploy-prod.yml`) for the release
+   containing `drizzle/0008_postgresql_trust_boundaries.sql` and the updated
+   `migrate-init` ops job.
+5. **Run `migrate-init`.** This performs, in order: idempotent admin
+   role/ownership bootstrap over `DIRECT_URL`; the reviewed migration over
+   `MIGRATION_URL` as `krypto_migrator`; runtime login bootstrap; and
+   idempotent singleton init via an explicit `krypto_migrator` `SET ROLE
+   "krypto_schema_owner"`. It never deletes or resets
+   `TradeExecution`/`AgentRun`/`AgentJournal`/`AgentState` rows. Download and
+   validate its immutable evidence.
+6. **Run `preflight`.** Confirm every `trust-boundary-*` check passes (role
+   attributes, connection limits, memberships, the migrator's `SET`-only
+   boundary, the runtime denial matrix, default privileges, and the
+   fail-closed `search_path`). Download and validate its immutable
+   evidence.
+7. **Run `target-smoke`.** Confirm the application still functions end to end
+   against the narrowed runtime role. Download and validate its immutable
+   evidence.
+8. **Dev first, then prod.** Do not begin the prod upgrade until dev's own
+   upgrade evidence (steps 2, 5, 6, 7) has passed.
+9. **Preserve rows/history.** Every step above is idempotent and preserves
+   existing trading rows and migration history; nothing in this procedure is
+   a reset or reseed.
+10. **No schedule activation.** This procedure never changes a schedule from
+    `Manual`/disabled to `Schedule`. Schedule activation remains the fully
+    separate, already-gated procedure in §6 steps 6–10 and §10.
+11. **Rollback/credential handling.** A failure at any step, or an unexpected
+    `trust-boundary-*` block, is handled exactly like any other failed
+    deployment: use the existing rollback job (§12), do not proceed to the
+    next environment, and do not retain the partially-applied credentials as
+    if the upgrade had succeeded.
+12. **Ongoing rotation.** After the initial upgrade, rotate
+    `MIGRATOR_DATABASE_PASSWORD` and `RUNTIME_DATABASE_PASSWORD`
+    independently using the existing `azure-rotate-secrets.yml` workflow,
+    which now re-runs `migrate-init` (reasserting/rotating both credentials)
+    before its `target-smoke` re-run, and still leaves the environment
+    disabled/manual afterward.
+
+Evidence for issue [#76](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/76)
+per environment: a redacted role matrix; a GitHub Environment secret
+inventory proving `MIGRATION_URL`/`MIGRATOR_DATABASE_PASSWORD` are absent
+from the runtime and scheduler and from `verified-backup`/`target-smoke`/
+`activation-check`; the migration attestation from step 5; the denial
+transcript from step 6; and the `scripts/test-migrations.sh` fresh-install
+and upgrade test transcript. See ADR 0014's Consequences section for the full
+list.
+
 ## Further reading
 
 - [`../infra/README.md`](../infra/README.md) — template, identity, secret,
@@ -546,3 +659,5 @@ evidence-storage, identity, and full resource identifiers out of public docs.
 - [`monitoring.md`](./monitoring.md) — operational alerts and reviews.
 - [`decisions/0008-azure-native-deployment-architecture.md`](./decisions/0008-azure-native-deployment-architecture.md)
   — accepted Azure architecture.
+- [`decisions/0014-postgresql-trust-boundary-roles.md`](./decisions/0014-postgresql-trust-boundary-roles.md)
+  — PostgreSQL owner/schema-owner/migrator/scheduler/runtime trust boundary.
