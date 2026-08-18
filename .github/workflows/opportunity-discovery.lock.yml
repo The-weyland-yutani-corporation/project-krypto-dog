@@ -57,7 +57,7 @@
 name: "Opportunity Discovery"
 on:
   schedule:
-  - cron: "39 4 * * 5"
+  - cron: "53 5 * * 4"
   workflow_dispatch:
     inputs:
       aw_context:

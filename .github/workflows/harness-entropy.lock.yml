@@ -53,7 +53,7 @@
 name: "Agentic Entropy (report-only)"
 on:
   schedule:
-  - cron: "52 22 * * 1"
+  - cron: "24 9 * * 1"
     # Friendly format: weekly on monday (scattered)
   workflow_dispatch:
     inputs:
