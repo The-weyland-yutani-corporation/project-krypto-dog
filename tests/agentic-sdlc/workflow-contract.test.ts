@@ -33,6 +33,8 @@ describe("agentic SDLC workflow contracts", () => {
     expect(reconciler).toContain(
       "await reconcileAgenticPullRequests({ github, context, core });",
     );
+    expect(reconciler).toContain("checks: write");
+    expect(reconciler).not.toContain("statuses: write");
   });
 
   it("keeps the traditional E2E workflow manual-only", () => {
@@ -86,10 +88,12 @@ describe("agentic SDLC workflow contracts", () => {
     expect(e2e.indexOf("readyForAutoMerge")).toBeLessThan(
       e2e.indexOf("enablePullRequestAutoMerge"),
     );
-    expect(e2e.indexOf('state: "pending"')).toBeLessThan(
+    expect(e2e.indexOf('status: "in_progress"')).toBeLessThan(
       e2e.indexOf("enablePullRequestAutoMerge"),
     );
-    expect(e2e).toContain("statuses: write");
+    expect(e2e).toContain("github.rest.checks.create");
+    expect(e2e).not.toContain("createCommitStatus");
+    expect(e2e).toContain("checks: write");
     expect(e2e).toContain("if: always()");
     expect(e2e).toContain(
       "CANARY_BRANCH: agentic-e2e/${{ github.run_id }}-${{ github.run_attempt }}",

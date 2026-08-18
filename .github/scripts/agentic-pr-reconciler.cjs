@@ -425,36 +425,39 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
     }
   };
 
-  const ensureStatus = async (sha, state, description, targetUrl) => {
-    const statuses = await github.paginate(
-      github.rest.repos.listCommitStatusesForRef,
-      {
-        owner,
-        repo,
-        ref: sha,
-        per_page: 100,
-      },
-    );
-    const current = statuses.find(
-      (status) => status.context === MERGE_CONTEXT,
-    );
+  const ensureCheckRun = async (
+    sha,
+    state,
+    description,
+    targetUrl,
+    checkRuns,
+  ) => {
+    const status = state === "success" ? "completed" : "in_progress";
+    const conclusion = state === "success" ? "success" : null;
+    const current = latestNamedCheck(checkRuns, MERGE_CONTEXT);
 
     if (
       current &&
-      current.state === state &&
-      current.description === description
+      current.status === status &&
+      (current.conclusion || null) === conclusion &&
+      current.output &&
+      current.output.summary === description
     ) {
       return;
     }
 
-    await github.rest.repos.createCommitStatus({
+    await github.rest.checks.create({
       owner,
       repo,
-      sha,
-      state,
-      context: MERGE_CONTEXT,
-      description,
-      target_url: targetUrl,
+      name: MERGE_CONTEXT,
+      head_sha: sha,
+      status,
+      ...(conclusion ? { conclusion } : {}),
+      details_url: targetUrl,
+      output: {
+        title: MERGE_CONTEXT,
+        summary: description,
+      },
     });
   };
 
@@ -520,11 +523,12 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
         repository,
       });
 
-      await ensureStatus(
+      await ensureCheckRun(
         sha,
         policy.state,
         policy.description,
         pullRequest.html_url,
+        checkRuns,
       );
 
       if (!policy.sameRepository || pullRequest.draft) {

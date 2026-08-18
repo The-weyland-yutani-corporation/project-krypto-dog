@@ -266,6 +266,6 @@ workflow files.
 - v2 remains paper trading only.
 - Live execution requires a separate RFC, architecture review, security review, trading-safety review, and human approval.
 - Changes to trading, guardrails, auth, secrets, workflows, database state, deployment procedure, or operator behavior require current-head specialist agent checks selected from deterministic path rules.
-- The required `Agentic merge policy` status remains pending until all applicable agent checks pass; a human change request or blocking label still vetoes approval.
+- The required `Agentic merge policy` check run remains pending until all applicable agent checks pass; a human change request or blocking label still vetoes approval.
 - Self-heal is limited to two repair commits and structurally restricted to the same non-sensitive documentation scope eligible for autonomous merge.
 - Opportunity discovery creates software tickets and experiments behind rubber-duck review; it does not provide trading advice, execute trades, or bypass safety review.

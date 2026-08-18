@@ -19,11 +19,10 @@ concurrency:
 
 permissions:
   actions: write
-  checks: read
+  checks: write
   contents: read
   issues: write
   pull-requests: read
-  statuses: write
 
 jobs:
   reconcile:
