@@ -55,6 +55,7 @@ interface PolicyResult {
   trustedAgent: boolean;
   lowRisk: boolean;
   hasBlockingLabel: boolean;
+  hasSelfHealBlockingLabel: boolean;
   hasCurrentHumanApproval: boolean;
   hasCurrentHumanChangesRequested: boolean;
   riskTier: string;
@@ -714,6 +715,55 @@ describe("deterministic merge policy", () => {
       description: "Current-head human and agent reviews approve boundary PR",
     });
   });
+
+  it.each([
+    {
+      label: "security-review",
+      file: "docs/guides/contributing.md",
+      specialistCheck: "Security review",
+    },
+    {
+      label: "trading-safety",
+      file: "docs/guides/contributing.md",
+      specialistCheck: "Trading safety review",
+    },
+  ])(
+    "allows $label routing after its current-head specialist check passes",
+    ({ label, file, specialistCheck }) => {
+      const result = policy({
+        pullRequest: pullRequest({
+          title: "Update a routed surface",
+          user: { login: "trusted-human", type: "User" },
+          labels: [
+            { name: "agentic-automerge" },
+            { name: label },
+          ],
+        }),
+        files: [{ filename: file, status: "modified" }],
+        checkRuns: [
+          {
+            id: 1,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 2,
+            name: specialistCheck,
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      });
+
+      expect(result).toMatchObject({
+        state: "success",
+        description: "Current-head agent reviews approve this PR",
+        hasBlockingLabel: false,
+        hasSelfHealBlockingLabel: false,
+      });
+    },
+  );
 
   it("treats a mismatched docs-sync label as blocking", () => {
     expect(

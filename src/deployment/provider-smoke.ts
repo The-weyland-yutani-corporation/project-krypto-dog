@@ -175,6 +175,29 @@ export async function smokePostHog(): Promise<
   }
 }
 
+export type ReadOnlyProviderSmokeResult = {
+  foundry: Omit<ProviderSmokeResult["foundry"], "structured">;
+  coinbase: ProviderSmokeResult["coinbase"];
+};
+
+/**
+ * Read-only provider smoke for the harness: exercises Foundry-hosted Azure
+ * OpenAI and Coinbase only.
+ *
+ * It deliberately does NOT emit any PostHog or email events, never touches the
+ * database, and — because it reuses the existing decision/market-data seams —
+ * cannot execute a trade. It is the only real-network path the harness allows,
+ * and callers must have already gated it behind an explicit opt-in, shadow mode,
+ * and non-production checks.
+ */
+export async function runReadOnlyProviderSmoke(): Promise<ReadOnlyProviderSmokeResult> {
+  const [foundry, coinbase] = await Promise.all([
+    smokeFoundry(),
+    smokeCoinbase(),
+  ]);
+  return { foundry, coinbase };
+}
+
 export async function runProviderSmoke(): Promise<ProviderSmokeResult> {
   const [foundry, structured, coinbase, postHog] = await Promise.all([
     smokeFoundry(),

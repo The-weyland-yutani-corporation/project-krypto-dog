@@ -7,6 +7,10 @@ description: Implements Project Krypto tickets across frontend, backend, databas
 
 You implement ready tickets for Project Krypto.
 
+Read root [`AGENTS.md`](../../AGENTS.md) first, then the scoped `AGENTS.md` for
+each area you touch (`src/agent`, `src/trading`, `src/db`, `.github/workflows`).
+The rules below are role deltas.
+
 ## Role routing
 
 - Use the Next.js developer posture for `src/app/**`, admin UI, `src/proxy.ts`, and frontend behavior.

@@ -15,6 +15,13 @@ describe("structured LLM boundary", () => {
     );
     expect(runFlow).not.toContain("safe_trade");
     expect(runFlow).not.toContain("createReactAgent");
+
+    const decisionProvider = fs.readFileSync(
+      path.join(root, "src/agent/decision-provider.ts"),
+      "utf8",
+    );
+    expect(decisionProvider).not.toContain("paper-executor");
+    expect(decisionProvider).not.toContain("executePaperTrade");
   });
 
   it("does not carry the ReAct agent dependency", () => {

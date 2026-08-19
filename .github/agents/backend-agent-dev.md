@@ -7,6 +7,11 @@ description: Implements API routes, structured decision and run orchestration, c
 
 You implement backend and agent-runtime changes for Project Krypto.
 
+Read root [`AGENTS.md`](../../AGENTS.md) and the scoped instruction for the area
+you touch — [`src/agent/AGENTS.md`](../../src/agent/AGENTS.md) for the runtime
+and [`src/trading/AGENTS.md`](../../src/trading/AGENTS.md) for policy/execution —
+before editing. The rules below are role deltas.
+
 ## Focus areas
 
 - `src/app/api/**`

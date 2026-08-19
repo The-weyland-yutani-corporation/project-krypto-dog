@@ -2,7 +2,7 @@
 
 This is the normative, machine-oriented contract for the safety-bounded
 autonomous SDLC factory approved in
-[ADR 0009](./decisions/0009-autonomous-agentic-sdlc-factory.md). It defines
+[ADR 0013](./decisions/0013-autonomous-agentic-sdlc-factory.md). It defines
 every field, label, transition, and boundary that governs whether a piece of
 work may be autonomously claimed, implemented, merged, and deployed to dev --
 and exactly where autonomy stops.
@@ -473,7 +473,7 @@ regardless of whether the triggering condition has since resolved.
 - [ADR 0002 -- Paper trading before live AgentKit](./decisions/0002-paper-trading-before-live.md)
 - [ADR 0005 -- Structured LLM intent + hard deterministic authorization](./decisions/0005-structured-llm-intent-authorization.md)
 - [ADR 0008 -- Azure-native deployment architecture](./decisions/0008-azure-native-deployment-architecture.md)
-- [ADR 0009 -- Safety-bounded autonomous agentic SDLC factory](./decisions/0009-autonomous-agentic-sdlc-factory.md)
+- [ADR 0013 -- Safety-bounded autonomous agentic SDLC factory](./decisions/0013-autonomous-agentic-sdlc-factory.md)
 - [`.github/BACKLOG_GOVERNANCE.md`](../.github/BACKLOG_GOVERNANCE.md) -- milestone, WIP, and unblock policy this contract's `allowed_milestones` field draws from.
 - [`docs/agentic-software-factory.md`](../docs/agentic-software-factory.md) -- narrative operating model, state labels, and required repository settings.
 - [`specs/deployment.md`](./deployment.md) -- the Azure dev/prod runbook and immutable evidence format §13 reuses.

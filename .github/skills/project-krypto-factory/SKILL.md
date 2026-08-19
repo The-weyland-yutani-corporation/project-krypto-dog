@@ -13,20 +13,23 @@ Use this skill when designing, debugging, or extending the Project Krypto GH-AW 
 1. Use GH-AW markdown workflows as the orchestration backbone.
 2. Keep each workflow small, event-driven, and permission-scoped.
 3. Keep agent jobs read-only; use GH-AW safe outputs for issues, comments, labels, and PRs.
-4. Accept work only under a human-approved `factory:goal` and use issues,
+4. Keep baseline merge/routing/authority policy in
+   `.github/agentic-policy.json`; validate it with
+   `.github/scripts/agentic-policy.cjs`.
+5. Accept work only under a human-approved `factory:goal` and use issues,
    sub-issues, milestones, and labels as the queue source of truth.
-5. Let the deterministic queue controller select and claim one issue; use
+6. Let the deterministic queue controller select and claim one issue; use
    `implement-ticket` only to assign that exact claim to the Copilot coding
    agent.
-6. Let the deterministic lifecycle reconciler independently verify claim
+7. Let the deterministic lifecycle reconciler independently verify claim
    provenance, exactly one Copilot PR, merge SHA, and exact-SHA dev evidence
    before closing the issue.
-7. Treat labels as explicit lifecycle state and keep exactly one lifecycle
+8. Treat labels as explicit lifecycle state and keep exactly one lifecycle
    label plus one risk label on each queued item.
-8. Permit agent-consensus merge for routine and sensitive/reversible changes
+9. Permit agent-consensus merge for routine and sensitive/reversible changes
    only after all exact-current-head checks pass. Boundary/irreversible changes
    require a current-head trusted human approval.
-9. Auto-deploy only to exact-SHA dev/staging. Production deployment, secrets,
+10. Auto-deploy only to exact-SHA dev/staging. Production deployment, secrets,
    permission widening, schedule activation, and live trading remain human-only.
 
 ## Core labels
@@ -118,6 +121,9 @@ path-selected specialists; boundary changes add current-head human approval.
 Unknown paths, malformed risk data, factory-control files, live/production
 boundaries, permission policy, destructive migrations, and migrations whose
 patch content is unavailable fail closed to `risk:boundary`.
+The specialist route regexes remain centralized in
+`.github/agentic-policy.json`; the deterministic factory policy adds the
+goal/risk/path ceiling without weakening those routes.
 
 ## Merge and self-heal policy
 

@@ -1,6 +1,6 @@
 # Backlog Governance
 
-This document defines WIP thresholds, milestone rules, and unblock criteria for Project Krypto's issue backlog. It governs the agentic workflow factory to prevent scope explosion. Production-paper issue scope and ordering are mapped in [`specs/production-readiness-prd.v1.md`](../specs/production-readiness-prd.v1.md); this document remains authoritative for workflow governance. See [`specs/agentic-factory-contract.md`](../specs/agentic-factory-contract.md) and [ADR 0009](../specs/decisions/0009-autonomous-agentic-sdlc-factory.md) for the normative queue/lifecycle contract this document's thresholds feed.
+This document defines WIP thresholds, milestone rules, and unblock criteria for Project Krypto's issue backlog. It governs the agentic workflow factory to prevent scope explosion. Production-paper issue scope and ordering are mapped in [`specs/production-readiness-prd.v1.md`](../specs/production-readiness-prd.v1.md); this document remains authoritative for workflow governance. See [`specs/agentic-factory-contract.md`](../specs/agentic-factory-contract.md) and [ADR 0013](../specs/decisions/0013-autonomous-agentic-sdlc-factory.md) for the normative queue/lifecycle contract this document's thresholds feed.
 
 ## Milestones
 
@@ -25,7 +25,7 @@ act:
   "Use 1 until concurrency graduation evidence passes") — at most one issue
   may be `factory:claimed`/`factory:implementing`/`factory:pr-open`/
   `factory:repairing` under the goal at a time until the evidence-gated
-  graduation to concurrency 2 described in ADR 0009 §8/contract §11.
+  graduation to concurrency 2 described in ADR 0013 §8/contract §11.
 - **`assignment_budget`** is the maximum number of `implement-ticket`
   assignments the goal authorizes before it requires human renewal. When
   exhausted, `factory-queue-controller` must stop selecting issues under

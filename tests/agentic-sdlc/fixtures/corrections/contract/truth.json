@@ -1,0 +1,21 @@
+{
+  "pm-triage:2001:131": {
+    "acted": [
+      "ready-for-planning",
+      "needs-qa"
+    ],
+    "present": [
+      "needs-qa"
+    ]
+  },
+  "code-review:3001:42": {
+    "acted": [
+      "trading-safety"
+    ],
+    "present": []
+  },
+  "pm-triage:2002:200": {
+    "acted": [],
+    "present": []
+  }
+}

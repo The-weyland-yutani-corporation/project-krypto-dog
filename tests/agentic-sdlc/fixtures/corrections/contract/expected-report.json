@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "mode": "staged",
+  "generatedAt": "2000-01-01T00:00:00.000Z",
+  "commit": "fixture",
+  "window": {
+    "mode": "governance",
+    "days": 7,
+    "start": "2000-01-01",
+    "end": "2000-01-08"
+  },
+  "predictionSummary": {
+    "total": 3,
+    "byWorkflow": {
+      "code-review": 1,
+      "pm-triage": 2
+    },
+    "byKind": {
+      "pm-triage": 2,
+      "specialist-routing": 1
+    }
+  },
+  "truthSummary": {
+    "trustedActors": null,
+    "botExcluded": 0,
+    "untrustedExcluded": 0
+  },
+  "diffSummary": {
+    "match": 0,
+    "mismatch": 2,
+    "pending": 1
+  },
+  "pendingCount": 1,
+  "sampleSize": 2,
+  "correctionRate": 1,
+  "immutableRouteConflicts": [
+    {
+      "id": "code-review:3001:42",
+      "itemNumber": 42,
+      "route": "trading-safety",
+      "note": "trusted human removed a predicted specialist label that immutable path routing still requires; immutable route preserved"
+    }
+  ],
+  "versionGroupings": {
+    "byInstructionHash": {
+      "aab677eaf186edbebfb96b7bace7cff4a016c4629e72c08545242d4271f4f455": {
+        "match": 0,
+        "mismatch": 1,
+        "pending": 0
+      },
+      "e183eeebd3cd3ebda480a79d1d336a6d2f3d3cf5a7f9549582c201568edf3be5": {
+        "match": 0,
+        "mismatch": 1,
+        "pending": 1
+      }
+    },
+    "byWorkflowVersion": {
+      "unknown": {
+        "match": 0,
+        "mismatch": 2,
+        "pending": 1
+      }
+    },
+    "byModel": {
+      "gpt-5-review": {
+        "match": 0,
+        "mismatch": 1,
+        "pending": 0
+      },
+      "gpt-5-triage": {
+        "match": 0,
+        "mismatch": 1,
+        "pending": 1
+      }
+    }
+  },
+  "diffs": [
+    {
+      "id": "code-review:3001:42",
+      "kind": "specialist-routing",
+      "workflow": "code-review",
+      "itemNumber": 42,
+      "instructionHash": "aab677eaf186edbebfb96b7bace7cff4a016c4629e72c08545242d4271f4f455",
+      "model": "gpt-5-review",
+      "workflowVersion": null,
+      "immutableRoutes": [
+        "trading-safety"
+      ],
+      "semanticPredictedRoutes": [
+        "security",
+        "trading-safety"
+      ],
+      "status": "mismatch",
+      "correction": true,
+      "fields": [
+        {
+          "field": "route:trading-safety",
+          "predicted": true,
+          "truth": false,
+          "immutableRequired": true,
+          "outcome": "mismatch"
+        }
+      ],
+      "immutableRouteConflicts": [
+        {
+          "route": "trading-safety",
+          "note": "trusted human removed a predicted specialist label that immutable path routing still requires; immutable route preserved"
+        }
+      ]
+    },
+    {
+      "id": "pm-triage:2001:131",
+      "kind": "pm-triage",
+      "workflow": "pm-triage",
+      "itemNumber": 131,
+      "instructionHash": "e183eeebd3cd3ebda480a79d1d336a6d2f3d3cf5a7f9549582c201568edf3be5",
+      "model": "gpt-5-triage",
+      "workflowVersion": null,
+      "status": "mismatch",
+      "correction": true,
+      "fields": [
+        {
+          "field": "label:needs-qa",
+          "predicted": false,
+          "truth": true,
+          "outcome": "mismatch"
+        },
+        {
+          "field": "label:ready-for-planning",
+          "predicted": true,
+          "truth": false,
+          "outcome": "mismatch"
+        }
+      ],
+      "immutableRouteConflicts": []
+    },
+    {
+      "id": "pm-triage:2002:200",
+      "kind": "pm-triage",
+      "workflow": "pm-triage",
+      "itemNumber": 200,
+      "instructionHash": "e183eeebd3cd3ebda480a79d1d336a6d2f3d3cf5a7f9549582c201568edf3be5",
+      "model": "gpt-5-triage",
+      "workflowVersion": null,
+      "status": "pending",
+      "correction": false,
+      "fields": [],
+      "immutableRouteConflicts": []
+    }
+  ],
+  "materialHash": "39e8714e77302d26160cc25c9307c4720b59e8f81f71e6201de9453a0b062d07",
+  "baselineDelta": {
+    "publishedHash": null,
+    "cacheHash": null,
+    "changed": true,
+    "cacheHit": false,
+    "delta": null
+  },
+  "shouldReport": true
+}

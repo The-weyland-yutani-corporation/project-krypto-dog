@@ -53,12 +53,11 @@ interface CheckRun {
   name: string;
   status: string;
   conclusion: string | null;
-}
-
-interface CommitStatus {
-  context: string;
-  state: string;
-  description: string;
+  details_url?: string;
+  output?: {
+    title: string;
+    summary: string;
+  };
 }
 
 interface ApiParams {
@@ -79,7 +78,6 @@ interface HarnessOptions {
   commitsByPull?: Record<number, Commit[]>;
   checksBySha?: Record<string, CheckRun[]>;
   runs?: Record<string, WorkflowRun[]>;
-  statusesBySha?: Record<string, CommitStatus[]>;
   fileErrors?: number[];
   controlIssues?: Array<{ labels: Array<{ name: string }> }>;
   controlTimeline?: Array<{
@@ -194,7 +192,6 @@ function createHarness(options: HarnessOptions = {}) {
   const listFiles = jest.fn();
   const listReviews = jest.fn();
   const listCommits = jest.fn();
-  const listCommitStatusesForRef = jest.fn();
   const listForRepo = jest.fn();
   const listEventsForTimeline = jest.fn();
   const listComments = jest.fn();
@@ -263,9 +260,6 @@ function createHarness(options: HarnessOptions = {}) {
       if (method === listCommits) {
         return options.commitsByPull?.[params.pull_number ?? -1] ?? [];
       }
-      if (method === listCommitStatusesForRef) {
-        return options.statusesBySha?.[params.ref ?? ""] ?? [];
-      }
       if (method === listForRef) {
         return options.checksBySha?.[params.ref ?? ""] ?? [
           {
@@ -304,7 +298,7 @@ function createHarness(options: HarnessOptions = {}) {
   });
 
   const listForRef = jest.fn();
-  const createCommitStatus = jest.fn(async (_params: ApiParams) => ({}));
+  const createCheckRun = jest.fn(async (_params: ApiParams) => ({}));
   const createWorkflowDispatch = jest.fn(
     async (_params: ApiParams) => ({}),
   );
@@ -362,6 +356,7 @@ function createHarness(options: HarnessOptions = {}) {
         listWorkflowRuns,
       },
       checks: {
+        create: createCheckRun,
         listForRef,
       },
       issues: {
@@ -379,10 +374,7 @@ function createHarness(options: HarnessOptions = {}) {
         listFiles,
         listReviews,
       },
-      repos: {
-        createCommitStatus,
-        listCommitStatusesForRef,
-      },
+      repos: {},
     },
   };
 
@@ -394,7 +386,7 @@ function createHarness(options: HarnessOptions = {}) {
       removeLabel,
       createComment,
       approveWorkflowRun,
-      createCommitStatus,
+      createCheckRun,
       createWorkflowDispatch,
       listForRef,
       listForRepo,
@@ -433,15 +425,30 @@ function dispatchedWorkflow(
   );
 }
 
+function expectCheckRun(
+  mock: jest.Mock,
+  name: string,
+  status: string,
+  summary: string,
+) {
+  expect(mock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      name,
+      status,
+      output: expect.objectContaining({ summary }),
+    }),
+  );
+}
+
 describe("agentic PR reconciler integration", () => {
   it("keeps enrolled PRs fail-closed when the factory control issue is missing", async () => {
     const { mocks } = await reconcile({ controlIssues: [] });
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "pending",
-        description: "Factory is paused",
-      }),
+    expectCheckRun(
+      mocks.createCheckRun,
+      "Agentic merge policy",
+      "in_progress",
+      "Factory is paused",
     );
     expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
   });
@@ -458,11 +465,11 @@ describe("agentic PR reconciler integration", () => {
       ],
     });
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "pending",
-        description: "Factory shadow mode does not authorize merge",
-      }),
+    expectCheckRun(
+      mocks.createCheckRun,
+      "Agentic merge policy",
+      "in_progress",
+      "Factory shadow mode does not authorize merge",
     );
     expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
   });
@@ -478,11 +485,11 @@ describe("agentic PR reconciler integration", () => {
         },
       ],
     });
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "pending",
-        description: "Factory is paused",
-      }),
+    expectCheckRun(
+      mocks.createCheckRun,
+      "Agentic merge policy",
+      "in_progress",
+      "Factory is paused",
     );
     expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
   });
@@ -527,11 +534,11 @@ describe("agentic PR reconciler integration", () => {
         },
       });
 
-      expect(mocks.createCommitStatus).toHaveBeenCalledWith(
-        expect.objectContaining({
-          state: "success",
-          description: "Current-head agent reviews approve this PR",
-        }),
+      expectCheckRun(
+        mocks.createCheckRun,
+        "Agentic merge policy",
+        "completed",
+        "Current-head agent reviews approve this PR",
       );
   });
 
@@ -595,11 +602,11 @@ describe("agentic PR reconciler integration", () => {
       },
     });
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "pending",
-        description: "Boundary change requires current human approval",
-      }),
+    expectCheckRun(
+      mocks.createCheckRun,
+      "Agentic merge policy",
+      "in_progress",
+      "Boundary change requires current human approval",
     );
   });
 
@@ -677,11 +684,11 @@ describe("agentic PR reconciler integration", () => {
       },
     });
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "pending",
-        description: "PR risk exceeds approved goal",
-      }),
+    expectCheckRun(
+      mocks.createCheckRun,
+      "Agentic merge policy",
+      "in_progress",
+      "PR risk exceeds approved goal",
     );
     expect(mocks.addLabels).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -732,43 +739,59 @@ describe("agentic PR reconciler integration", () => {
         },
       });
 
-      expect(mocks.createCommitStatus).toHaveBeenCalledWith(
-        expect.objectContaining({
-          state: "pending",
-          description: "Factory claim provenance is invalid",
-        }),
+      expectCheckRun(
+        mocks.createCheckRun,
+        "Agentic merge policy",
+        "in_progress",
+        "Factory claim provenance is invalid",
       );
       expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
   });
 
-  it("creates the deterministic merge-policy commit status", async () => {
+  it("creates the deterministic merge-policy check run", async () => {
     const { mocks } = await reconcile();
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith({
+    expect(mocks.createCheckRun).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
       repo: "project-krypto-dog",
-      sha: "sha-1",
-      state: "success",
-      context: "Agentic merge policy",
-      description: "Current-head agent reviews approve this PR",
-      target_url: `https://github.com/${repository}/pull/1`,
+      name: "Agentic merge policy",
+      head_sha: "sha-1",
+      status: "completed",
+      conclusion: "success",
+      details_url: `https://github.com/${repository}/pull/1`,
+      output: {
+        title: "Agentic merge policy",
+        summary: "Current-head agent reviews approve this PR",
+      },
     });
   });
 
-  it("does not recreate an identical current merge-policy status", async () => {
+  it("does not recreate an identical current merge-policy check run", async () => {
     const { mocks } = await reconcile({
-      statusesBySha: {
+      checksBySha: {
         "sha-1": [
           {
-            context: "Agentic merge policy",
-            state: "success",
-            description: "Current-head agent reviews approve this PR",
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "Agentic merge policy",
+            status: "completed",
+            conclusion: "success",
+            details_url: `https://github.com/${repository}/pull/1`,
+            output: {
+              title: "Agentic merge policy",
+              summary: "Current-head agent reviews approve this PR",
+            },
           },
         ],
       },
     });
 
-    expect(mocks.createCommitStatus).not.toHaveBeenCalled();
+    expect(mocks.createCheckRun).not.toHaveBeenCalled();
   });
 
   it("dispatches missing CI and agentic review on the PR head", async () => {
@@ -817,10 +840,13 @@ describe("agentic PR reconciler integration", () => {
       },
     });
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+    expect(mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        state: "pending",
-        description: "Waiting for QA verification",
+        status: "in_progress",
+        output: {
+          title: "Agentic merge policy",
+          summary: "Waiting for QA verification",
+        },
       }),
     );
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
@@ -901,10 +927,14 @@ describe("agentic PR reconciler integration", () => {
       },
     });
 
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+    expect(mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        state: "success",
-        description: "Current-head agent reviews approve this PR",
+        status: "completed",
+        conclusion: "success",
+        output: {
+          title: "Agentic merge policy",
+          summary: "Current-head agent reviews approve this PR",
+        },
       }),
     );
     expect(
@@ -963,18 +993,17 @@ describe("agentic PR reconciler integration", () => {
       checksBySha: { "sha-1": checks },
       runs,
     });
-    expect(withoutApproval.mocks.createCommitStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "pending",
-        description: "Boundary change requires current human approval",
-      }),
+    expectCheckRun(
+      withoutApproval.mocks.createCheckRun,
+      "Agentic merge policy",
+      "in_progress",
+      "Boundary change requires current human approval",
     );
-    expect(withoutApproval.mocks.createCommitStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "pending",
-        context: "Human boundary approval",
-        description: "Boundary change requires current-head human approval",
-      }),
+    expectCheckRun(
+      withoutApproval.mocks.createCheckRun,
+      "Human boundary approval",
+      "in_progress",
+      "Boundary change requires current-head human approval",
     );
     expect(withoutApproval.mocks.addLabels).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
@@ -1000,17 +1029,17 @@ describe("agentic PR reconciler integration", () => {
       checksBySha: { "sha-1": checks },
       runs,
     });
-    expect(withApproval.mocks.createCommitStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "success",
-        description: "Current-head human and agent reviews approve boundary PR",
-      }),
+    expectCheckRun(
+      withApproval.mocks.createCheckRun,
+      "Agentic merge policy",
+      "completed",
+      "Current-head human and agent reviews approve boundary PR",
     );
-    expect(withApproval.mocks.createCommitStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "success",
-        context: "Human boundary approval",
-      }),
+    expectCheckRun(
+      withApproval.mocks.createCheckRun,
+      "Human boundary approval",
+      "completed",
+      "Current-head human approval satisfies boundary policy",
     );
   });
 
@@ -1319,11 +1348,11 @@ describe("agentic PR reconciler integration", () => {
     expect(core.warning).toHaveBeenCalledWith(
       "Failed to reconcile PR #1: file lookup failed for 1",
     );
-    expect(mocks.createCommitStatus).toHaveBeenCalledTimes(1);
-    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+    expect(mocks.createCheckRun).toHaveBeenCalledTimes(1);
+    expect(mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        sha: "sha-2",
-        context: "Agentic merge policy",
+        head_sha: "sha-2",
+        name: "Agentic merge policy",
       }),
     );
   });

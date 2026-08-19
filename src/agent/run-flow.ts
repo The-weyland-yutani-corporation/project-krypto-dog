@@ -17,7 +17,10 @@ import {
   type AgentRun,
   type AgentState,
 } from "@/db/schema";
-import { generateTradeDecision } from "@/agent/decision";
+import {
+  resolveDecisionProvider,
+  type DecisionProvider,
+} from "@/agent/decision-provider";
 import {
   calculateEMA,
   calculateRSI,
@@ -77,6 +80,7 @@ export interface ExecuteAgentRunOptions {
   triggerSource: AgentTriggerSource;
   idempotencyKey?: string;
   requiredMode?: TradingMode;
+  decisionProvider?: DecisionProvider;
 }
 
 export type ExecuteAgentRunOutcome =
@@ -785,7 +789,9 @@ export async function executeAgentRun(
         reasoning: "Deterministic safety policy controls this run",
       };
     } else if (policy.shouldInvokeModel) {
-      const generated = await generateTradeDecision({
+      const generated = await (
+        options.decisionProvider ?? resolveDecisionProvider()
+      ).generate({
         account: context.account,
         market: context.market,
         policy,

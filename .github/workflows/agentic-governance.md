@@ -1,5 +1,5 @@
 ---
-description: Weekly governance report for GH-AW cost, outcomes, noise, and factory health.
+description: Weekly MonitorOps governance report for GH-AW factory health, cost, safe-output outcomes, and configured-threshold breaches. Deterministic collector runs first; the agent only summarizes the normalized snapshot.
 on:
   workflow_dispatch:
   schedule: weekly on monday
@@ -14,11 +14,11 @@ tools:
   github:
     mode: gh-proxy
     toolsets: [default]
+  cache-memory:
+    retention-days: 90
   bash:
-    - gh aw status
-    - gh aw health
-    - gh aw logs
-    - gh aw outcomes
+    - "node scripts/agentic/collect-factory-health.cjs *"
+    - "cat /tmp/gh-aw/factory-health.json"
 network: defaults
 safe-outputs:
   update-issue:
@@ -29,32 +29,90 @@ safe-outputs:
     allowed-labels: [agentic-factory, report]
     max: 1
     deduplicate-by-title: 1
+    close-older-issues: true
+    expires: 30d
+  mentions: false
+  allowed-github-references: []
   noop:
     report-as-issue: false
 max-ai-credits: 1000
 max-daily-ai-credits: 2500
 ---
 
-# Agentic Governance
+# Agentic Governance (MonitorOps)
 
-Create a weekly governance report for the GH-AW software factory.
+Weekly governance report for the GH-AW software factory. A deterministic,
+dependency-free collector normalizes every active workflow, its usage, factory
+throughput, and configured-threshold state into one JSON snapshot **before** you
+summarize it. You never re-derive metrics by hand.
 
-## Include
+## Steps
 
-- Which workflows ran and whether they succeeded.
-- Which safe outputs were accepted, ignored, closed, or merged.
-- Noisy workflows, duplicate outputs, or low-value automation.
-- AI-credit and runtime concerns when available.
-- Recommended workflow tuning.
-- Queue selection/rejection distribution, duplicate/orphaned state, active
-  concurrency, assignment outcomes, first-pass CI, repairs, dev deployment,
-  rollback, boundary escalations, and human vetoes.
-- Cost per merged PR when provider data exists; otherwise enforce and report
-  hard session/run/AI-credit caps without inventing a monetary estimate.
-- If `gh aw` commands are unavailable in the runner, report the missing tool instead of inventing metrics.
+### 1. Run the collector first
 
-## Safe outputs
+Run exactly this command (it is read-only toward GitHub and writes only under
+`/tmp/gh-aw/`):
 
-- Update the canonical open `[factory-governance]` issue when it exists. Use
-  `create-issue` only to establish it when absent.
-- Use `noop` if no GH-AW runs or outcomes exist yet.
+```
+node scripts/agentic/collect-factory-health.cjs \
+  --mode governance \
+  --out /tmp/gh-aw/factory-health.json \
+  --cache /tmp/gh-aw/cache-memory/monitor-ops-governance.json \
+  --workflow-mode \
+  --title-prefix "[factory-governance] "
+```
+
+Then read `/tmp/gh-aw/factory-health.json`. Do not run any other data-gathering
+commands; the snapshot is the single source of truth for this report.
+
+### 2. Decide whether to report
+
+- If `materialState.changed` is `false`, call `noop` with a one-line reason
+  (the material state matches the last published governance report) and stop.
+- Otherwise, update the canonical open `[factory-governance]` issue when it
+  exists; use `create-issue` only to establish it when absent.
+
+### 3. Write the report
+
+Report on the whole active factory from the snapshot only. Use `###`/`####`
+headings and GitHub alerts (`> [!NOTE]`, `> [!WARNING]`). Do not use emoji, and
+do not invent numbers.
+
+#### Required sections
+
+- **Coverage** — confirm every active workflow in `workflows[]` is represented,
+  including zero-run workflows (`usage.runs == 0`). Never report a zero-run
+  workflow as failing.
+- **Run health** — per-workflow run counts and conclusions from
+  `usage.conclusions`; call out repeated failures.
+- **Cost** — `usage.aiCredits`, `usage.maxRunAiCredits`, and duration. When a
+  value is `null` it is unavailable; state "not available", never `0`.
+- **Telemetry coverage** — from `telemetry`; if `usage.tokens`,
+  `usage.safeOutputOutcomes`, or `usage.corrections` are `null`, report them as
+  unavailable rather than zero.
+- **Issue and PR state** — throughput, actionable-opportunity WIP vs the policy
+  cap (`issues.wipCap`), stale/blocked work, and PR review/check state.
+- **Autonomy funnel and invariants** — report queue/lifecycle counts,
+  assignment/repair/dev outcomes, duplicate/orphaned state, boundary
+  escalations, rollback, and human vetoes when present in the snapshot.
+- **Threshold breaches** — list every entry in `thresholds.breaches` with its
+  `id` and `evidence`. If empty, state that no configured threshold is breached.
+  Put breaches under a `> [!WARNING]` alert.
+
+### 4. Embed the state-hash marker
+
+End the issue body with the exact material-state marker so the next run can
+detect a noop, on its own line:
+
+```
+<!-- factory-state-hash: MATERIAL_STATE_HASH -->
+```
+
+Replace `MATERIAL_STATE_HASH` with `materialState.hash` from the snapshot.
+
+## Rules
+
+- The collector — not the agent — gathers data. If the collector fails or its
+  JSON is missing, call `noop` explaining the failure; do not fabricate metrics.
+- Do not add GitHub references, backlinks, or @mentions.
+- Keep everything read-only. The only visible write is the single report issue.

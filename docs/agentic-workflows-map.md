@@ -20,7 +20,7 @@ flowchart TD
     goal["factory:goal + factory:goal-approved<br/>human-approved scope/WIP/budget"]
     pr["Pull request events<br/>opened / synchronize / ready_for_review / labeled"]
     ci["CI workflow_run<br/>failed, cancelled, timed out"]
-    schedule["Schedules<br/>daily status / weekly governance"]
+    schedule["Schedules<br/>status / governance / evals<br/>entropy / corrections"]
   end
 
   subgraph Planning
@@ -65,6 +65,9 @@ flowchart TD
     lifecycle["agentic-lifecycle-reconciler<br/>claim / PR / merge / dev state"]
     heal["pr-self-heal<br/>2 routine / 1 sensitive / 0 boundary"]
     e2e["agentic-sdlc-e2e<br/>manual docs canary"]
+    evals["agentic-evals<br/>deterministic scorer"]
+    entropy["harness-entropy<br/>report-only hygiene"]
+    corrections["agentic-corrections<br/>report-only correction evidence"]
   end
 
   subgraph Safety["Safety boundaries"]
@@ -111,6 +114,9 @@ flowchart TD
   schedule --> status
   schedule --> governance
   schedule --> qc
+  schedule --> evals
+  schedule --> entropy
+  schedule --> corrections
 
   pm --> research
   pm --> duck
@@ -166,7 +172,13 @@ flowchart TD
 
 This is why workflow markdown is the source of truth, while lock files are committed generated artifacts for transparency.
 
-`agentic-pr-reconciler.yml` is intentionally a traditional deterministic Actions workflow: it performs policy checks and dispatch only, loads its tested implementation from the trusted default branch, and never executes pull-request code. `factory-queue-controller.yml` selects and claims queue work from trusted default-branch code. `agentic-lifecycle-reconciler.yml` independently correlates claim, assignee, one PR, merge SHA, and dev evidence; it also loads only trusted sparse-checked-out scripts and never executes PR code. `agentic-sdlc-e2e.yml` is a narrower manual review/merge/self-heal docs canary. `agentic-factory-full-e2e.yml` exercises the complete goal-authorized, queue-controlled, issue-to-dev-evidence path against an already-approved goal (see "Full issue-to-coding-agent cycle canary" below).
+`agentic-pr-reconciler.yml`, `factory-queue-controller.yml`, and
+`agentic-lifecycle-reconciler.yml` are traditional deterministic workflows.
+Each loads only trusted default-branch scripts and never executes PR code.
+`agentic-sdlc-e2e.yml` is the narrow manual merge/review/self-heal canary;
+`agentic-factory-full-e2e.yml` exercises the full goal-authorized issue-to-dev
+path. `agentic-evals.yml` runs deterministic, read-only SDLC evaluation on a
+manual/weekly schedule with no live-model call.
 
 ## SDLC lifecycle
 
@@ -192,6 +204,9 @@ This is why workflow markdown is the source of truth, while lock files are commi
 | PR self-heal | Reconciler dispatch after a failed required check | `pr-self-heal` | Project Krypto Developer | One focused repair commit or blocked handoff |
 | Dev delivery | Successful push CI on `main` | `azure-deploy-dev` | Deterministic deployment workflow | Exact-SHA shadow deployment, activation/schedule proof, `Dev deployment evidence`, fail-closed rollback |
 | Factory E2E | Manual `happy-path` or `self-heal` dispatch | `agentic-sdlc-e2e` | Deterministic Actions canary | Required-context, repair, native auto-merge, and cleanup evidence |
+| SDLC evaluation | Manual/weekly schedule | `agentic-evals` | Deterministic Actions scorer | Read-only eval report artifact; no live-model call |
+| Factory entropy | Manual/weekly schedule | `harness-entropy` | Entropy Reporter | One report-only issue or noop; no fix authority |
+| Correction evidence | Manual/weekly schedule | `agentic-corrections` | Correction Reporter | Trusted-human label correction metrics or noop |
 | Status | Daily schedule/manual | `daily-repo-status` | Repo Status Reporter | Daily factory status issue |
 | Governance | Weekly schedule/manual | `agentic-governance` | Governance Reporter | Cost/outcome/noise report issue |
 
@@ -226,6 +241,9 @@ This is why workflow markdown is the source of truth, while lock files are commi
 | Issue/PR/Azure-dev event or 15-minute schedule | `agentic-lifecycle-reconciler` | Correlates the factory issue, claim, Copilot PR, merge SHA, and dev evidence without executing PR code. |
 | Successful push CI on `main` | `azure-deploy-dev` | Deploys the exact CI-passed SHA to dev shadow, publishes a commit status and development Deployment, and verifies rollback on activation failure. |
 | Manual factory E2E | `agentic-sdlc-e2e` | Updates one stable docs heartbeat through the happy path or deterministic self-heal path; never runs on a schedule or PR event. |
+| Manual/weekly schedule | `agentic-evals` | Runs deterministic SDLC safety/contract fixtures and uploads an artifact; no model call. |
+| Manual/weekly schedule | `harness-entropy` | Reports material harness entropy without fix authority. |
+| Manual/weekly schedule | `agentic-corrections` | Reports PM-triage and specialist-label corrections from trusted-human label events. |
 | Daily schedule | `daily-repo-status` | Creates or replaces daily factory status issue. |
 | Weekly schedule | `agentic-governance` | Reports workflow health, cost, outcomes, and noise. |
 
@@ -247,30 +265,43 @@ QA and docs-sync intentionally do not have slash commands. They are label-trigge
 
 ## Workflow catalog
 
-| Workflow | Agent/import | Primary triggers | Safe outputs |
-|---|---|---|---|
-| `opportunity-discovery` | `trading-growth-pm.md` | `schedule: weekly`, `/discover`, manual | `create-issue`, `add-comment`, `noop` |
-| `daily-repo-status` | Built-in prompt | `schedule: daily`, manual | `update-issue` (canonical `[factory-status]` issue), `create-issue` (only if absent), `noop` |
-| `research-brief` | `researcher.md` | `/research`, `ai:research`, manual | `add-comment`, `create-issue`, `remove-labels`, `noop` |
-| `pm-triage` | `product-manager.md` | Issue opened/reopened/labeled, manual | `add-comment`, `add-labels`, `remove-labels`, `create-issue`, `noop` |
-| `rubber-duck-architecture` | `rubber-duck.md` | `/rubber-duck`, `needs-rubber-duck`, manual | `add-comment`, `add-labels`, `remove-labels`, `noop` |
-| `em-planning` | `engineering-manager.md` | `/plan`, `ready-for-planning`, manual | `add-comment`, `create-issue`, `add-labels`, `remove-labels`, `noop` |
-| `factory-queue-controller` | Deterministic GitHub Script | 15-minute schedule, manual | Issue claim labels/comments, `implement-ticket` `workflow_dispatch` (issue + claim nonce) |
-| `implement-ticket` | `project-krypto-dev.md` | Queue-controller `workflow_dispatch` only (`issue`, `claim_nonce`) | `assign-to-agent` (Copilot, custom agent `project-krypto-dev`), `noop` — no direct PR or code edit |
-| `code-review` | Built-in prompt | PR opened/sync/reopened/ready, manual | `create-check-run`, `add-comment`, `add-labels`, `create-issue`, `noop` |
-| `qa-test-plan` | `qa-engineer.md` | `needs-qa`, reconciler dispatch, manual | `create-check-run` (`QA verification`), `add-comment`, `create-issue`, `noop` |
-| `security-review` | `security-reviewer.md` | `security-review`, reconciler dispatch, manual | `create-check-run`, `add-comment`, `create-issue`, `noop` |
-| `trading-safety-review` | `trading-safety-reviewer.md` | `trading-safety` issue label, high-risk PR paths/reconciler dispatch, manual | `create-check-run`, `add-comment`, `add-labels`, `create-issue`, `noop` |
-| `docs-sync` | `docs-spec-writer.md` | `docs-sync`, manual | `add-comment`, `create-pull-request`, `create-issue`, `remove-labels`, `noop` |
-| `ci-doctor` | Built-in prompt | Failed `CI` workflow run, manual | `create-issue`, `add-comment`, `noop` |
-| `release-readiness` | `release-manager.md` | `/release-readiness`, `release-readiness`, manual | `add-comment`, `create-issue`, `noop` |
-| `agentic-governance` | Built-in prompt | `schedule: weekly on monday`, manual | `update-issue` (canonical `[factory-governance]` issue), `create-issue` (only if absent), `noop` |
-| `pr-self-heal` | `project-krypto-dev.md` | Reconciler `workflow_dispatch` | `push-to-pull-request-branch`, `add-comment`, `add-labels`, `noop` |
-| `agentic-pr-reconciler` | Deterministic GitHub Script | PR/review/workflow events, 5-minute schedule | Commit status, workflow dispatch, exhausted-repair labels |
-| `agentic-lifecycle-reconciler` | Deterministic GitHub Script | Issue/PR/Azure-dev events, 15-minute schedule | Lifecycle labels, PR enrollment/native auto-merge enablement, canonical audit comment, dev-evidence closure, fail-closed pause |
-| `azure-deploy-dev` | Deterministic GitHub Actions | Successful push CI on `main`, manual exact SHA | Dev shadow release, immutable evidence, monitored schedule, rollback, `Dev deployment evidence` status and `development` Deployment |
-| `agentic-sdlc-e2e` | Deterministic GitHub Script | Manual only | Constrained docs canary PR, native auto-merge enrollment, assertions, cleanup |
-| `agentic-factory-full-e2e` | Deterministic GitHub Script | Manual (`goal_issue` input) or weekly schedule gated on `FACTORY_CANARY_GOAL` variable | `risk:routine` canary sub-issue under an existing human-approved goal, queue-controller dispatch, poll to `factory:done` (fails fast on `blocked`), independent re-check of `factory:deployed-dev`-equivalent evidence, heartbeat update |
+The table below is generated from GH-AW source frontmatter. It covers the
+agent workflows compiled from `.github/workflows/*.md`. Traditional
+deterministic workflows — `factory-queue-controller`,
+`agentic-pr-reconciler`, `agentic-lifecycle-reconciler`,
+`agentic-sdlc-e2e`, `agentic-factory-full-e2e`, `agentic-evals`, and the
+Azure deployment workflows — are not GH-AW sources; their behavior is
+described in the SDLC lifecycle and safety sections. `agentic-evals` runs the
+deterministic SDLC evaluation (see
+[`../specs/agentic-sdlc-evaluation.md`](../specs/agentic-sdlc-evaluation.md))
+on a manual/weekly schedule with read-only permissions and no live-model call.
+
+<!-- generated:workflow-inventory:start -->
+
+_Generated from `.github/workflows/*.md` frontmatter by `scripts/generate-agentic-docs.ts`. Do not edit by hand; run `npm run agentic:docs` after changing a workflow source._
+
+| Workflow | Import | Primary triggers | Safe outputs | AI credits (run / day) |
+|---|---|---|---|---|
+| `agentic-corrections` | `Built-in prompt` | manual; schedule: weekly on monday | `create-issue`, `noop` | 1000 / 2500 |
+| `agentic-governance` | `Built-in prompt` | manual; schedule: weekly on monday | `create-issue`, `noop`, `update-issue` | 1000 / 2500 |
+| `ci-doctor` | `Built-in prompt` | manual; workflow_run: CI | `add-comment`, `create-issue`, `noop` | 1200 / 3000 |
+| `code-review` | `Built-in prompt` | manual; PR: opened, ready_for_review, reopened, synchronize | `add-comment`, `add-labels`, `create-check-run`, `create-issue`, `noop` | 1500 / 5000 |
+| `daily-repo-status` | `Built-in prompt` | manual; schedule: daily | `create-issue`, `noop`, `update-issue` | 1000 / 2500 |
+| `docs-sync` | `docs-spec-writer.md` | manual; issue label: docs-sync; PR: labeled | `add-comment`, `create-issue`, `create-pull-request`, `noop`, `remove-labels` | 1400 / 3000 |
+| `em-planning` | `engineering-manager.md` | manual; /plan; issue label: ready-for-planning | `add-comment`, `add-labels`, `create-issue`, `noop`, `remove-labels` | 1200 / 3000 |
+| `harness-entropy` | `Built-in prompt` | manual; schedule: weekly on monday | `create-issue`, `noop` | 1000 / 2500 |
+| `implement-ticket` | `project-krypto-dev.md` | manual | `add-comment`, `assign-to-agent`, `noop` | 500 / 1500 |
+| `opportunity-discovery` | `trading-growth-pm.md` | manual; schedule: weekly; /discover | `add-comment`, `create-issue`, `noop` | 1000 / 2000 |
+| `pm-triage` | `product-manager.md` | manual; issue: labeled, opened, reopened | `add-comment`, `add-labels`, `create-issue`, `noop`, `remove-labels` | 1000 / 3000 |
+| `pr-self-heal` | `project-krypto-dev.md` | manual | `add-comment`, `add-labels`, `noop`, `push-to-pull-request-branch` | 2200 / 5000 |
+| `qa-test-plan` | `qa-engineer.md` | manual; issue label: needs-qa; PR: labeled | `add-comment`, `create-check-run`, `create-issue`, `noop` | 1600 / 3500 |
+| `release-readiness` | `release-manager.md` | manual; /release-readiness; PR: labeled | `add-comment`, `create-issue`, `noop` | 1200 / 3000 |
+| `research-brief` | `researcher.md` | manual; /research; issue label: ai:research | `add-comment`, `create-issue`, `noop`, `remove-labels` | 1500 / 4000 |
+| `rubber-duck-architecture` | `rubber-duck.md` | manual; /rubber-duck; issue label: needs-rubber-duck; PR: labeled | `add-comment`, `add-labels`, `noop`, `remove-labels` | 1200 / 3000 |
+| `security-review` | `security-reviewer.md` | manual; issue label: security-review; PR: labeled | `add-comment`, `create-check-run`, `create-issue`, `noop` | 1500 / 3500 |
+| `trading-safety-review` | `trading-safety-reviewer.md` | manual; issue label: trading-safety; PR: labeled, opened, reopened, synchronize (path-scoped) | `add-comment`, `add-labels`, `create-check-run`, `create-issue`, `noop` | 1600 / 4000 |
+
+<!-- generated:workflow-inventory:end -->
 
 ## Label state model
 
@@ -438,8 +469,124 @@ issue-to-coding-agent cycle canary described next.
    and never touches `production-deploy`/`production-promotion` or live
    trading.
 
-### Operational reporting
+### Operational reporting (MonitorOps)
 
-1. `daily-repo-status` finds or creates the canonical `[factory-status]` issue and refreshes it in place (`update-issue`), including milestone/throughput/WIP-gate data, an autonomy-funnel count per lifecycle label, and hard invariants (duplicate claims, multiple PRs per issue, malformed labels, stale leases, boundary PRs merged without human approval, production/live automation attempts).
-2. `agentic-governance` finds or creates the canonical `[factory-governance]` issue and refreshes it with cost, outcome, and noise data.
-3. Neither workflow creates a new issue on every run; they update one canonical issue each, and use the same data to help tune triggers, labels, and budgets over time.
+Both scheduled reporters run the same deterministic, dependency-free collector
+(`scripts/agentic/collect-factory-health.cjs`) as their first step, then only
+summarize its normalized JSON snapshot. The collector:
+
+- inventories every `.github/workflows/*.md` GH-AW source (plus the `agentic-evals`
+  and `ci` Actions workflows) over an explicit closed UTC window — the last 24
+  full hours for `daily`, the last 7 full days for `governance`;
+- represents every active workflow, including zero-run workflows, and serializes
+  unavailable cost/token/safe-output/correction telemetry as `null`, never `0`;
+- computes a material-state hash and evaluates configured thresholds (repeated
+  failure, WIP over cap, eval/harness failure, per-run AI-credit cap, telemetry
+  missing across two published periods, and source/lock drift);
+- treats the `<!-- factory-state-hash: ... -->` marker embedded in prior report
+  issues as the authoritative published state, so a `cache-memory` miss never
+  suppresses the next report.
+
+`cache-memory` (90-day retention) stores only snapshots and watermarks. The
+reporters are read-only toward GitHub, expose only the trusted collector and
+snapshot reader on their bash allowlist, and publish a single recurring issue with
+`close-older-issues`, `expires`, no @mentions, and no GitHub backlinks:
+
+1. `daily-repo-status` reports concise existing-work changes (throughput, aging,
+   blocked work, PR state) and never creates new feature scope.
+2. `agentic-governance` reports full factory health, cost, and threshold
+   breaches.
+3. Each embeds the state-hash marker and calls `noop` when the material state is
+   unchanged, so an idle week produces no issue.
+
+### Report-only entropy (harness-entropy)
+
+`harness-entropy` is a weekly (plus `workflow_dispatch`) **report-only** scan of
+the factory's governance surfaces. It never invents or applies a code, policy,
+instruction, or trading change — it may quote deterministic remediation for a
+risky path but must not modify it or suggest bypassing review. Two deterministic,
+dependency-free collectors run
+before the agent summarizes anything:
+
+1. the MonitorOps collector (governance mode) writes
+   `/tmp/gh-aw/factory-health.json`;
+2. `scripts/agentic/collect-agentic-entropy.cjs` consumes that snapshot and emits
+   a versioned JSON manifest (`/tmp/gh-aw/entropy-manifest.json`).
+
+The manifest reuses existing authorities rather than duplicating logic — the
+canonical policy loader, the MonitorOps workflow inventory, and the supplied
+MonitorOps snapshot (WIP, telemetry, repeated failures are read from the snapshot,
+never re-queried from GitHub). It reports across explicit **dimensions** — policy
+consistency, source/lock consistency, instruction/reference integrity,
+architecture integrity, observability coverage, backlog hygiene, and
+maintainability hotspots — with per-rule evidence and **no vanity aggregate
+score**. Each violation carries its exact owning `path` and a `remediation`.
+
+Rules split into two severities:
+
+- **Zero-tolerance** (also enforced locally by `npm run entropy:check`, wired into
+  `harness:check`): canonical policy valid, every active GH-AW source compiled
+  with required generated support files, local instruction/doc references resolve,
+  workflow imports exist, no prohibited live executor, and generated doc markers
+  present.
+- **Advisory** (report-only, never blocks CI): duplicated policy literals, stale
+  actionable-opportunity WIP vs the policy cap, workflow telemetry coverage and
+  repeated failures, architecture boundary hotspots, source files over the
+  documented advisory line threshold (500), and TODO/FIXME/HACK markers. Backlog
+  and telemetry rules report `unknown` when no MonitorOps snapshot is supplied,
+  never a false zero.
+
+The workflow exposes only the two trusted node collectors and `cat` on its bash
+allowlist, a single `create-issue` safe output (max 1, `close-older-issues`,
+90-day `expires`, no @mentions, no backlinks) plus `noop`, and `cache-memory`
+with 90-day retention. It publishes at most one recurring `[factory-entropy]`
+issue and embeds an `<!-- entropy-state-hash: ... -->` marker; the published
+issue history is authoritative over cache, so a cache miss never suppresses a
+report. It calls `noop` when there is no material delta and no actionable
+violation.
+
+### Staged CorrectionOps (agentic-corrections)
+
+`agentic-corrections` is a weekly (plus `workflow_dispatch`) **staged,
+report-only** loop that measures how often the factory's PM-triage and
+specialist-routing label decisions were later corrected by a trusted human. It
+improves measurement only — it never proposes or applies a code, policy,
+instruction, label, or trading change. One deterministic, dependency-free
+collector (`scripts/agentic/collect-agentic-corrections.cjs`) runs before the
+agent summarizes anything and writes `/tmp/gh-aw/correction-report.json`.
+
+Predictions are reconstructed from the real `gh aw logs --artifacts all` artifact
+shape (`aw_info.json`, `safeoutputs.jsonl`,
+`safe-outputs-items/safe-output-items.jsonl`, and the
+`aw-prompts/prompt-import-tree.json` + `prompt.txt` instruction fingerprint), not
+from model-authored markers:
+
+- **PM triage** — requested `add-labels`/`noop` and the target issue;
+- **Specialist routing** — requested `add-labels` limited to
+  `security-review`/`trading-safety` as *semantic* routes, kept separate from the
+  *immutable* routes derived from the PR's changed paths via the canonical
+  reconciler (`.github/scripts/agentic-pr-reconciler.cjs`).
+
+Trusted truth comes only from later GitHub label events authored by a
+`User` collaborator with `admin`/`maintain`/`write` permission after the
+prediction was applied; bots and untrusted users are provenance-only and never
+scored, and a record with no trusted human action is `pending`, never a `match`.
+A human removing a predicted specialist label is a semantic correction but never
+weakens an immutable route — that is surfaced as a `> [!WARNING]` safety conflict.
+The versioned report tracks match/mismatch/pending, correction rate (or `null` at
+sample size `0`), immutable-route conflicts, and
+instruction/workflow/model groupings, and stores no raw
+issue/comment/prompt/event body.
+
+The workflow exposes only the trusted node collector and `cat` on its bash
+allowlist, read-only permissions, a single `create-issue` safe output (max 1,
+`close-older-issues`, 90-day `expires`, no @mentions, no backlinks) plus `noop`,
+and `cache-memory` with 90-day retention. It publishes at most one recurring
+`[factory-corrections]` issue and embeds an
+`<!-- correction-state-hash: ... -->` marker; the published issue history is
+authoritative over cache, so a cache miss re-baselines without a false correction.
+It calls `noop` when there is no new trusted correction evidence or no material
+delta. A deterministic `npm run corrections:check` validates the diff engine
+against committed contract fixtures and never contacts GitHub. It never scores or
+learns around trading authorization, guardrails, leases, reconciliation, operator
+pause, or the paper/live boundary.

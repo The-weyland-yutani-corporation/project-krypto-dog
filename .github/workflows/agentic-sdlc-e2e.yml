@@ -18,11 +18,10 @@ concurrency:
 
 permissions:
   actions: write
-  checks: read
+  checks: write
   contents: write
   issues: write
   pull-requests: write
-  statuses: write
 
 jobs:
   canary:
@@ -300,6 +299,7 @@ jobs:
               "Quality and evidence gates",
               "PostgreSQL migrations and execution",
               "Agentic code review",
+              "Agentic merge policy",
             ];
             const deadline = Date.now() + 75 * 60 * 1000;
             let previousSummary = "";
@@ -347,7 +347,7 @@ jobs:
                 );
               }
 
-              const [checkResponse, statuses, commits, files] =
+              const [checkResponse, commits, files] =
                 await Promise.all([
                   github.rest.checks.listForRef({
                     owner,
@@ -355,15 +355,6 @@ jobs:
                     ref: pull.head.sha,
                     per_page: 100,
                   }),
-                  github.paginate(
-                    github.rest.repos.listCommitStatusesForRef,
-                    {
-                      owner,
-                      repo,
-                      ref: pull.head.sha,
-                      per_page: 100,
-                    },
-                  ),
                   github.paginate(github.rest.pulls.listCommits, {
                     owner,
                     repo,
@@ -399,15 +390,16 @@ jobs:
                   ];
                 }),
               );
-              const mergePolicy = statuses.find(
-                (status) => status.context === "Agentic merge policy",
+              const mergePolicy = latestByName(
+                checks,
+                "Agentic merge policy",
               );
               const allContextsPass =
                 requiredChecks.every(
                   (name) =>
                     latestByName(checks, name)?.status === "completed" &&
                     latestByName(checks, name)?.conclusion === "success",
-                ) && mergePolicy?.state === "success";
+                );
               const passingConclusions = new Set([
                 "neutral",
                 "skipped",
@@ -478,14 +470,17 @@ jobs:
                 verifiedHead = pull.head.sha;
                 autoMergeEnabledAt =
                   Math.floor(Date.now() / 1000) * 1000;
-                await github.rest.repos.createCommitStatus({
+                await github.rest.checks.create({
                   owner,
                   repo,
-                  sha: verifiedHead,
-                  state: "pending",
-                  context: "Agentic merge policy",
-                  description: "E2E hold while native auto-merge is enabled",
-                  target_url: pull.html_url,
+                  name: "Agentic merge policy",
+                  head_sha: verifiedHead,
+                  status: "in_progress",
+                  details_url: pull.html_url,
+                  output: {
+                    title: "Agentic merge policy",
+                    summary: "E2E hold while native auto-merge is enabled",
+                  },
                 });
                 await new Promise((resolve) => setTimeout(resolve, 2000));
 
@@ -542,7 +537,9 @@ jobs:
               const summary = JSON.stringify({
                 head: pull.head.sha,
                 checks: checkState,
-                mergePolicy: mergePolicy?.state ?? "missing",
+                mergePolicy: mergePolicy
+                  ? `${mergePolicy.status}/${mergePolicy.conclusion ?? "pending"}`
+                  : "missing",
                 initialReviewFailed,
                 repairVerified,
                 selfHealCommits: selfHealCommits.length,

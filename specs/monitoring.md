@@ -269,6 +269,101 @@ Daily:
 - each paper trade has a matching run and journal;
 - no-trade decisions remain coherent.
 
+Current baseline: 0 production days (v2 not yet deployed). See `specs/readiness.md`
+§1 for the current evidence summary.
+
+## Factory observability (MonitorOps)
+
+The signals above cover the **trading app**. The **agentic factory** that builds
+it has its own observability, documented in
+[`../docs/agentic-workflows-map.md`](../docs/agentic-workflows-map.md)
+(Operational reporting). In short, the `daily-repo-status` and
+`agentic-governance` workflows run a deterministic collector
+(`scripts/agentic/collect-factory-health.cjs`) over explicit closed UTC windows
+and summarize a normalized JSON snapshot:
+
+- every active GH-AW workflow is represented, including zero-run workflows;
+- unavailable cost/token/safe-output/correction telemetry is `null`, never `0`;
+- a material-state hash drives noop suppression, with the published hash read
+  from prior report issues (`<!-- factory-state-hash: ... -->`) rather than cache;
+- configured thresholds (repeated failure, WIP over cap, eval/harness failure,
+  per-run AI-credit cap, telemetry missing across two published periods, and
+  source/lock drift) produce explicit, evidence-backed breaches.
+
+Factory reports are read-only, single recurring issues; they do not replace the
+trading-app signals in this runbook.
+
+### Report-only entropy (harness-entropy)
+
+The weekly `harness-entropy` workflow adds a report-only entropy loop on top of
+MonitorOps. A deterministic, dependency-free collector
+(`scripts/agentic/collect-agentic-entropy.cjs`) runs the MonitorOps governance
+collector first, then scans the governance surfaces (canonical policy, GH-AW
+sources/locks, instruction/doc references, architecture boundaries) and reuses
+the MonitorOps snapshot for backlog and telemetry signals. It emits a versioned
+JSON manifest:
+
+- entropy is reported across explicit dimensions (policy consistency, source/lock
+  consistency, instruction/reference integrity, architecture integrity,
+  observability coverage, backlog hygiene, maintainability hotspots) with per-rule
+  evidence — there is no single opaque score;
+- zero-tolerance rules also run locally via `npm run entropy:check` (wired into
+  `npm run harness:check`); advisory findings (stale WIP, file-size hotspots,
+  TODO markers) are report-only and never block ordinary CI;
+- backlog/telemetry rules report `unknown` when no MonitorOps snapshot is present,
+  never a false zero;
+- a material-state hash drives noop suppression, with the published hash read from
+  prior `[factory-entropy]` report issues (`<!-- entropy-state-hash: ... -->`)
+  authoritative over cache, so a cache miss never suppresses a report.
+
+The workflow is strictly report-only: it has no create-pull-request, push, edit,
+or deletion output, publishes at most one recurring issue, and never proposes or
+applies a code, policy, or trading change.
+
+### Staged CorrectionOps (agentic-corrections)
+
+The weekly `agentic-corrections` workflow adds a staged, report-only correction
+loop that measures — and only measures — how often the factory's PM-triage and
+specialist-routing label decisions were later corrected by a trusted human. A
+deterministic, dependency-free collector
+(`scripts/agentic/collect-agentic-corrections.cjs`) reconstructs each prediction
+from the real `gh aw logs --artifacts all` artifact shape (`aw_info.json`,
+`safeoutputs.jsonl`, `safe-outputs-items/safe-output-items.jsonl`, and the
+`aw-prompts/prompt-import-tree.json` + `prompt.txt` instruction fingerprint) and
+emits a versioned JSON report:
+
+- **PM triage** predictions parse the requested `add-labels`/`noop` and target
+  issue; **specialist routing** predictions parse `add-labels` limited to
+  `security-review`/`trading-safety` as *semantic* routes, kept separate from the
+  *immutable* routes derived deterministically from the PR's changed filenames via
+  the canonical reconciler (`.github/scripts/agentic-pr-reconciler.cjs`);
+- trusted truth comes only from later GitHub label events authored by a
+  `User` collaborator with `admin`/`maintain`/`write` permission, after the
+  prediction was applied — bots and untrusted users are retained as provenance
+  counts but never scored, and a record with no trusted human action is `pending`,
+  never a `match`;
+- a human removing a predicted specialist label is a semantic correction but can
+  never weaken an immutable path route; such a case is surfaced as a
+  safety-warning conflict and the immutable route is preserved;
+- the report tracks match/mismatch/pending, correction rate (or `null` when the
+  sample size is `0`), immutable-route conflicts, and
+  instruction/workflow/model version groupings — no raw
+  issue/comment/prompt/event body is ever stored or emitted;
+- a material-state hash drives noop suppression, with the published hash read from
+  prior `[factory-corrections]` report issues
+  (`<!-- correction-state-hash: ... -->`) authoritative over cache, so a cache miss
+  re-baselines without a false correction or a duplicate issue;
+- a deterministic `npm run corrections:check` validates the diff engine against
+  committed contract fixtures and never contacts GitHub.
+
+CorrectionOps improves measurement only in v1: it has no create-pull-request,
+push, edit, `add-labels`, or deletion output, publishes at most one recurring
+issue, and never scores or learns around trading authorization, guardrails,
+leases, reconciliation, operator pause, or the paper/live boundary. See
+[`decisions/0010-staged-correction-ops.md`](./decisions/0010-staged-correction-ops.md).
+Any future write authority requires a separate human-accepted decision and the
+evidence gate in
+[`decisions/0012-evidence-gated-automation-authority.md`](./decisions/0012-evidence-gated-automation-authority.md).
 Weekly paper review:
 
 - final paper equity;

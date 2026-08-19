@@ -1,5 +1,5 @@
 ---
-description: Daily Project Krypto factory status report focused on throughput, aging, and blocked work. Does not generate new feature scope.
+description: Daily MonitorOps factory status report focused on throughput, aging, and blocked work for existing issues and PRs. Runs the deterministic collector first and never creates new feature scope.
 on:
   workflow_dispatch:
   schedule: daily
@@ -14,6 +14,11 @@ tools:
   github:
     mode: gh-proxy
     toolsets: [default]
+  cache-memory:
+    retention-days: 90
+  bash:
+    - "node scripts/agentic/collect-factory-health.cjs *"
+    - "cat /tmp/gh-aw/factory-health.json"
 network: defaults
 safe-outputs:
   update-issue:
@@ -24,42 +29,86 @@ safe-outputs:
     allowed-labels: [agentic-factory, report]
     max: 1
     deduplicate-by-title: 1
+    close-older-issues: true
+    expires: 7d
+  mentions: false
+  allowed-github-references: []
   noop:
     report-as-issue: false
 max-ai-credits: 1000
 max-daily-ai-credits: 2500
 ---
 
-# Daily Repo Status
+# Daily Repo Status (MonitorOps)
 
-Create or refresh one canonical factory status issue for Project Krypto. Focus
-on delivery-loop health, not issue volume. Do **not** create, suggest, or scope
-new feature issues.
+Concise daily factory status for Project Krypto: throughput, issue aging, and
+blocked work for **existing** issues and PRs only. A deterministic collector
+gathers the data first; you only summarize it. Do **not** create, suggest, or
+scope new feature issues.
 
-## Include
+## Steps
 
-1. **Milestone progress** — open/closed issue counts per milestone (v2.1, v2.2, v3, Deferred: Strategy Research).
-2. **Throughput** — issues closed in the last 7 days vs. issues opened in the last 7 days. Flag if opening rate exceeds closing rate.
-3. **WIP aging** — list any `in_progress` or `ready-for-ai-dev` issues older than 5 days with their age in days.
-4. **Blocked work** — list all issues with the `blocked` label and their blocking reason if stated.
-5. **Open PRs** — grouped by review state (draft, needs-review, approved, failing CI).
-6. **Failing or recently failed CI runs** — name, branch, and failure type.
-7. **Stale items** — open issues with no activity in > 14 days that need human attention.
-8. **High-risk work** — anything touching trading, guardrails, auth, workflows, database state, or deployment.
-9. **WIP gate status** — count of open `opportunity` issues without the `blocked` label; flag if ≥ 20 (opportunity-discovery noop threshold).
-10. **Recommended next actions** — up to 3 concrete actions for the next 24 hours based only on existing work; do not invent new scope.
-11. **Autonomy funnel** — counts in `ready-for-ai-dev`, `factory:claimed`,
-    `factory:implementing`, `factory:pr-open`, `factory:repairing`,
-    `factory:merged`, `factory:deployed-dev`, and `factory:done`.
-12. **Hard invariants** — duplicate claims, multiple PRs per issue, malformed
-    lifecycle/risk labels, stale leases, boundary PRs without human approval,
-    and production/live automation attempts.
-13. **Reliability** — assignment success, first-pass CI, bounded repair,
-    canary, dev deployment, and rollback outcomes.
+### 1. Run the collector first
+
+Run exactly this command (read-only toward GitHub; writes only under
+`/tmp/gh-aw/`):
+
+```
+node scripts/agentic/collect-factory-health.cjs \
+  --mode daily \
+  --out /tmp/gh-aw/factory-health.json \
+  --cache /tmp/gh-aw/cache-memory/monitor-ops-daily.json \
+  --workflow-mode \
+  --title-prefix "[factory-status] "
+```
+
+Then read `/tmp/gh-aw/factory-health.json`. Do not run other data-gathering
+commands.
+
+### 2. Decide whether to report
+
+- If `materialState.changed` is `false`, call `noop` with a one-line reason
+  (no material change since the last published status) and stop.
+- Otherwise, update the canonical open `[factory-status]` issue when it exists;
+  use `create-issue` only when absent.
+
+### 3. Write the report
+
+Keep it concise and grounded only in the snapshot. Use `###`/`####` headings and
+GitHub alerts (`> [!NOTE]`, `> [!WARNING]`). No emoji, no invented numbers.
+
+#### Required sections
+
+- **Throughput** — `issues.openedInWindow`, `issues.closedInWindow`, and
+  `issues.netOpened`; flag under `> [!WARNING]` when `netOpened` is positive.
+- **WIP and aging** — `issues.staleWip` (with ages) and actionable-opportunity
+  WIP (`issues.openActionableOpportunities`) versus the cap (`issues.wipCap`).
+- **Blocked work** — `issues.blocked`.
+- **Open PRs** — grouped by `pullRequests.byReviewState` and
+  `pullRequests.byCheckState`.
+- **Failing workflows** — any workflow in `workflows[]` whose `usage.conclusions`
+  include failures, or a `thresholds.breaches` entry. Zero-run workflows are not
+  failures.
+- **Autonomy funnel and invariants** — include queue/lifecycle counts,
+  assignment/repair/dev outcomes, duplicate/orphaned state, stale leases,
+  boundary escalations, and production/live attempts when the snapshot exposes
+  them.
+
+### 4. Embed the state-hash marker
+
+End the issue body with the material-state marker on its own line:
+
+```
+<!-- factory-state-hash: MATERIAL_STATE_HASH -->
+```
+
+Replace `MATERIAL_STATE_HASH` with `materialState.hash` from the snapshot.
 
 ## Rules
 
-- Use repository data only; do not speculate or generate new feature scope.
-- Search for the canonical open `[factory-status]` issue. Use `update-issue`
-  when it exists; create it only when absent.
-- Use `noop` only if there is no meaningful repository activity and no open work to report.
+- Use snapshot data only; never speculate or generate new feature scope.
+- Report existing-work changes only. Threshold breaches belong to the weekly
+  governance report; here just note them briefly and link nothing.
+- If the collector fails or its JSON is missing, call `noop` and explain; do not
+  fabricate metrics.
+- Do not add GitHub references, backlinks, or @mentions.

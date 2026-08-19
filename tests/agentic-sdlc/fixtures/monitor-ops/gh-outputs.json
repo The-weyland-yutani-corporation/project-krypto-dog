@@ -1,0 +1,115 @@
+{
+  "_comment": "Synthetic, public-safe GH-AW/GitHub command outputs used to drive the MonitorOps collector deterministically. No real issue bodies, secrets, or production data. `now` anchors the closed UTC windows the fixtures target.",
+  "now": "2026-08-10T00:15:37.000Z",
+  "status": [
+    { "id": "pm-triage", "compiled": true, "enabled": true },
+    { "id": "agentic-governance", "compiled": true, "enabled": true },
+    { "id": "daily-repo-status", "compiled": true, "enabled": true }
+  ],
+  "logsGovernance": {
+    "runs": [
+      {
+        "workflow": "pm-triage",
+        "createdAt": "2026-08-05T10:00:00.000Z",
+        "conclusion": "success",
+        "durationSeconds": 42,
+        "aiCredits": 120,
+        "totalTokens": 0
+      },
+      {
+        "workflow": "pm-triage",
+        "createdAt": "2026-08-06T10:00:00.000Z",
+        "conclusion": "failure",
+        "durationSeconds": 55,
+        "aiCredits": 3000
+      },
+      {
+        "workflow": "pm-triage",
+        "createdAt": "2026-08-07T10:00:00.000Z",
+        "conclusion": "failure",
+        "durationSeconds": 51,
+        "aiCredits": 140
+      },
+      {
+        "workflow": "code-review",
+        "createdAt": "2026-08-05T09:00:00.000Z",
+        "conclusion": "success",
+        "durationSeconds": 20
+      },
+      {
+        "workflow": "pm-triage",
+        "createdAt": "2026-07-01T09:00:00.000Z",
+        "conclusion": "failure",
+        "aiCredits": 999
+      }
+    ]
+  },
+  "auxRuns": {
+    "agentic-evals": [
+      { "databaseId": 5001, "conclusion": "failure", "status": "completed", "createdAt": "2026-08-06T09:00:00.000Z" },
+      { "databaseId": 5002, "conclusion": "success", "status": "completed", "createdAt": "2026-08-08T09:00:00.000Z" }
+    ],
+    "ci": [
+      { "databaseId": 6001, "conclusion": "success", "status": "completed", "createdAt": "2026-08-08T09:00:00.000Z" }
+    ]
+  },
+  "issues": [
+    {
+      "number": 101,
+      "state": "open",
+      "labels": ["opportunity"],
+      "createdAt": "2026-08-01T00:00:00.000Z",
+      "updatedAt": "2026-08-08T00:00:00.000Z"
+    },
+    {
+      "number": 102,
+      "state": "open",
+      "labels": ["opportunity", "blocked"],
+      "createdAt": "2026-07-01T00:00:00.000Z",
+      "updatedAt": "2026-07-15T00:00:00.000Z"
+    },
+    {
+      "number": 103,
+      "state": "open",
+      "labels": ["ready-for-ai-dev"],
+      "createdAt": "2026-08-01T00:00:00.000Z",
+      "updatedAt": "2026-08-02T00:00:00.000Z"
+    },
+    {
+      "number": 104,
+      "state": "closed",
+      "labels": [],
+      "createdAt": "2026-08-04T00:00:00.000Z",
+      "closedAt": "2026-08-06T00:00:00.000Z"
+    }
+  ],
+  "pullRequests": [
+    {
+      "number": 200,
+      "state": "open",
+      "isDraft": false,
+      "reviewDecision": "APPROVED",
+      "statusCheckRollup": [{ "conclusion": "success" }]
+    },
+    {
+      "number": 201,
+      "state": "open",
+      "isDraft": true,
+      "reviewDecision": "",
+      "statusCheckRollup": [{ "conclusion": "failure" }]
+    }
+  ],
+  "reportIssuesNone": [],
+  "reportIssuesWithHash": [
+    {
+      "number": 900,
+      "createdAt": "2026-08-03T00:00:00.000Z",
+      "body": "Old governance report\n<!-- factory-state-hash: 1111111111111111111111111111111111111111111111111111111111111111 -->"
+    },
+    {
+      "number": 950,
+      "createdAt": "2026-08-09T00:00:00.000Z",
+      "body": "Newer governance report\n<!-- factory-state-hash: 2222222222222222222222222222222222222222222222222222222222222222 -->"
+    }
+  ]
+}

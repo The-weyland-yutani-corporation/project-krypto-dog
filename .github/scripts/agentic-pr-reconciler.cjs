@@ -1,5 +1,6 @@
 "use strict";
 
+const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const {
   CODE_REVIEW_CHECK,
   FACTORY_MODE_LABELS,
@@ -9,54 +10,43 @@ const {
   RISK_TIERS,
   SECURITY_CHECK,
   TRADING_SAFETY_CHECK,
-  determineRiskTier,
-  areChangedFilesWithinAllowedPaths,
   areAllowedPathPatternsWithin,
+  areChangedFilesWithinAllowedPaths,
   compareRiskTiers,
-  getSpecialistChecks,
+  determineRiskTier,
   isKnownRiskTier,
   maxRiskTier,
   normalizeAllowedPathPatterns,
   resolveFactoryModeFromLabels,
 } = require("./agentic-factory-policy.cjs");
-const {
-  parseClaimPayload,
-} = require("./agentic-queue-controller.cjs");
+const { parseClaimPayload } = require("./agentic-queue-controller.cjs");
 
-const MERGE_CONTEXT = "Agentic merge policy";
+const {
+  autoMergeLabel: AUTO_MERGE_LABEL,
+  blockedLabel: BLOCKED_LABEL,
+  exhaustedLabel: EXHAUSTED_LABEL,
+  failingConclusions: FAILING_CONCLUSIONS,
+  lowRiskPathPattern: LOW_RISK_PATH_PATTERN,
+  lowRiskStatuses: LOW_RISK_STATUSES,
+  maxRepairCommits: MAX_REPAIR_COMMITS,
+  mergeBlockingLabels: MERGE_BLOCKING_LABELS,
+  mergeContext: MERGE_CONTEXT,
+  nonRepairableReviewConclusions: NON_REPAIRABLE_REVIEW_CONCLUSIONS,
+  passingCheckConclusions: PASSING_CHECK_CONCLUSIONS,
+  securityExactPaths: SECURITY_EXACT_PATHS,
+  securityPathPatterns: SECURITY_PATH_PATTERNS,
+  selfHealBlockingLabels: SELF_HEAL_BLOCKING_LABELS,
+  sensitiveTokenPattern: SENSITIVE_DOC_TOKEN_PATTERN,
+  tradingSafetyExactPaths: TRADING_SAFETY_EXACT_PATHS,
+  tradingSafetyPathPatterns: TRADING_SAFETY_PATH_PATTERNS,
+  trustedAgentAuthors: TRUSTED_AGENT_AUTHORS,
+  trustedReviewAssociations: TRUSTED_REVIEW_ASSOCIATIONS,
+} = AGENTIC_POLICY;
+
 const REVIEW_CHECK_NAME = CODE_REVIEW_CHECK;
 const QA_CHECK_NAME = QA_CHECK;
 const SECURITY_CHECK_NAME = SECURITY_CHECK;
 const TRADING_SAFETY_CHECK_NAME = TRADING_SAFETY_CHECK;
-const AUTO_MERGE_LABEL = "agentic-automerge";
-const EXHAUSTED_LABEL = "self-heal-exhausted";
-const BLOCKED_LABEL = "blocked";
-
-const TRUSTED_AGENT_AUTHORS = new Set([
-  "github-actions[bot]",
-  "copilot-swe-agent[bot]",
-]);
-const TRUSTED_REVIEW_ASSOCIATIONS = new Set([
-  "OWNER",
-  "MEMBER",
-  "COLLABORATOR",
-]);
-const BLOCKING_LABELS = new Set([
-  BLOCKED_LABEL,
-  EXHAUSTED_LABEL,
-]);
-const FAILING_CONCLUSIONS = new Set([
-  "cancelled",
-  "failure",
-  "startup_failure",
-  "timed_out",
-]);
-const LOW_RISK_STATUSES = new Set(["added", "modified"]);
-const PASSING_CHECK_CONCLUSIONS = new Set([
-  "neutral",
-  "skipped",
-  "success",
-]);
 
 function getLabels(pullRequest) {
   return new Set(
@@ -315,14 +305,12 @@ async function verifyAgentImplementationProvenance({
 function isLowRiskPath(filename) {
   if (
     typeof filename !== "string" ||
-    !/^docs\/.*\.(gif|jpe?g|md|png|txt|webp)$/i.test(filename)
+    !LOW_RISK_PATH_PATTERN.test(filename)
   ) {
     return false;
   }
 
-  return !/(^|\/)(agentic|auth|backup|database|deploy(?:ment)?|env|guardrails?|incident|migrations?|oncall|operator|policy|production|release|rollback|runbooks?|secrets?|security|trading|workflows?)(\/|[-_.])/i.test(
-    filename,
-  );
+  return !SENSITIVE_DOC_TOKEN_PATTERN.test(filename);
 }
 
 function isLowRiskChange(files) {
@@ -338,17 +326,31 @@ function isLowRiskChange(files) {
 }
 
 function requiresSecurityReview(filename) {
-  return require("./agentic-factory-policy.cjs").requiresSecurityCheck(filename);
+  return Boolean(
+    typeof filename === "string" &&
+      (SECURITY_EXACT_PATHS.has(filename) ||
+        SECURITY_PATH_PATTERNS.some((pattern) => pattern.test(filename))),
+  );
 }
 
 function requiresTradingSafetyReview(filename) {
-  return require("./agentic-factory-policy.cjs").requiresTradingSafetyCheck(
-    filename,
+  return Boolean(
+    typeof filename === "string" &&
+      (TRADING_SAFETY_EXACT_PATHS.has(filename) ||
+        TRADING_SAFETY_PATH_PATTERNS.some((pattern) => pattern.test(filename))),
   );
 }
 
 function getRequiredSpecialistChecks(files) {
-  return getSpecialistChecks(files);
+  const filenames = files.flatMap((file) =>
+    [file.filename, file.previous_filename].filter(Boolean),
+  );
+  return [
+    ...(filenames.some(requiresSecurityReview) ? [SECURITY_CHECK_NAME] : []),
+    ...(filenames.some(requiresTradingSafetyReview)
+      ? [TRADING_SAFETY_CHECK_NAME]
+      : []),
+  ];
 }
 
 function getReviewState(pullRequest, reviews, sha) {
@@ -386,14 +388,22 @@ function getReviewState(pullRequest, reviews, sha) {
   };
 }
 
-function hasBlockingLabel(pullRequest) {
+function hasAnyBlockingLabel(pullRequest, blockingLabels) {
   const labels = getLabels(pullRequest);
   const title = pullRequest.title || "";
 
   return (
-    [...BLOCKING_LABELS].some((label) => labels.has(label)) ||
+    [...blockingLabels].some((label) => labels.has(label)) ||
     (labels.has("docs-sync") && !title.startsWith("[docs-sync] "))
   );
+}
+
+function hasBlockingLabel(pullRequest) {
+  return hasAnyBlockingLabel(pullRequest, MERGE_BLOCKING_LABELS);
+}
+
+function hasSelfHealBlockingLabel(pullRequest) {
+  return hasAnyBlockingLabel(pullRequest, SELF_HEAL_BLOCKING_LABELS);
 }
 
 function getCheckState(checkRuns, name) {
@@ -526,6 +536,7 @@ function evaluateMergePolicy({
     factoryEnrolled && factoryMode !== FACTORY_MODES.ACTIVE;
   const lowRisk = isLowRiskChange(files);
   const hardBlockingLabel = hasBlockingLabel(pullRequest);
+  const selfHealBlockingLabel = hasSelfHealBlockingLabel(pullRequest);
   const requestedChecks = getRequestedChecks(pullRequest);
   const prRiskLabel = getDeclaredRiskLabel(pullRequest);
   const declaredRiskLabel =
@@ -613,6 +624,8 @@ function evaluateMergePolicy({
     factoryModeBlocksAction,
     lowRisk,
     hasBlockingLabel: blockingLabel,
+    hasSelfHealBlockingLabel: selfHealBlockingLabel,
+    hasSelfHealBlockingLabel: selfHealBlockingLabel,
     hasCurrentHumanApproval,
     hasCurrentHumanChangesRequested,
     agentApproved: agentApproval.approved,
@@ -714,9 +727,7 @@ function hasFailedReviewCheck(checkRuns) {
   return (
     reviewCheck &&
     reviewCheck.status === "completed" &&
-    !["action_required", "neutral", "skipped", "success"].includes(
-      reviewCheck.conclusion,
-    )
+    !NON_REPAIRABLE_REVIEW_CONCLUSIONS.has(reviewCheck.conclusion)
   );
 }
 
@@ -861,42 +872,40 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
     }
   };
 
-  const ensureStatus = async (
+  const ensureCheckRun = async (
     sha,
     state,
     description,
     targetUrl,
+    checkRuns,
     contextName = MERGE_CONTEXT,
   ) => {
-    const statuses = await github.paginate(
-      github.rest.repos.listCommitStatusesForRef,
-      {
-        owner,
-        repo,
-        ref: sha,
-        per_page: 100,
-      },
-    );
-    const current = statuses.find(
-      (status) => status.context === contextName,
-    );
+    const status = state === "success" ? "completed" : "in_progress";
+    const conclusion = state === "success" ? "success" : null;
+    const current = latestNamedCheck(checkRuns, contextName);
 
     if (
       current &&
-      current.state === state &&
-      current.description === description
+      current.status === status &&
+      (current.conclusion || null) === conclusion &&
+      current.output &&
+      current.output.summary === description
     ) {
       return;
     }
 
-    await github.rest.repos.createCommitStatus({
+    await github.rest.checks.create({
       owner,
       repo,
-      sha,
-      state,
-      context: contextName,
-      description,
-      target_url: targetUrl,
+      name: contextName,
+      head_sha: sha,
+      status,
+      ...(conclusion ? { conclusion } : {}),
+      details_url: targetUrl,
+      output: {
+        title: contextName,
+        summary: description,
+      },
     });
   };
 
@@ -1027,14 +1036,15 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
         goalMaxRiskTier: implementationProvenance.goalMaxRiskTier,
       });
 
-      await ensureStatus(
+      await ensureCheckRun(
         sha,
         policy.state,
         policy.description,
         pullRequest.html_url,
+        checkRuns,
       );
       if (policy.requiresHumanBoundaryApproval) {
-        await ensureStatus(
+        await ensureCheckRun(
           sha,
           policy.hasCurrentHumanApproval &&
             !policy.hasCurrentHumanChangesRequested
@@ -1044,6 +1054,7 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
             ? "Current-head human approval satisfies boundary policy"
             : "Boundary change requires current-head human approval",
           pullRequest.html_url,
+          checkRuns,
           HUMAN_BOUNDARY_APPROVAL_CHECK,
         );
       }
@@ -1148,7 +1159,7 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
           trustedAgent: policy.trustedAgent,
           lowRisk: policy.lowRisk,
           riskTier: policy.riskTier,
-          hasBlockingLabel: policy.hasBlockingLabel,
+          hasBlockingLabel: policy.hasSelfHealBlockingLabel,
           ciNeedsDispatch,
           reviewShouldDispatch,
           ciHeld,
@@ -1205,11 +1216,14 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
 }
 
 module.exports = {
+  AGENTIC_POLICY,
   AUTO_MERGE_LABEL,
   BLOCKED_LABEL,
-  BLOCKING_LABELS,
+  MERGE_BLOCKING_LABELS,
+  SELF_HEAL_BLOCKING_LABELS,
   EXHAUSTED_LABEL,
   LOW_RISK_STATUSES,
+  MAX_REPAIR_COMMITS,
   MERGE_CONTEXT,
   QA_CHECK_NAME,
   REVIEW_CHECK_NAME,
@@ -1230,6 +1244,7 @@ module.exports = {
   getRequiredSpecialistChecks,
   getReviewState,
   hasBlockingLabel,
+  hasSelfHealBlockingLabel,
   hasFailedCiRun,
   hasFailedReviewCheck,
   isLowRiskChange,

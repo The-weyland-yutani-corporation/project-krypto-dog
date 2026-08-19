@@ -1,0 +1,66 @@
+[
+  {
+    "kind": "pm-triage",
+    "id": "pm-triage:2001:131",
+    "workflow": "pm-triage",
+    "runId": "2001",
+    "headSha": "1111111111111111111111111111111111111111",
+    "model": "gpt-5-triage",
+    "instructionHash": "e183eeebd3cd3ebda480a79d1d336a6d2f3d3cf5a7f9549582c201568edf3be5",
+    "itemNumber": 131,
+    "itemType": "issue",
+    "predictedLabels": [
+      "ready-for-planning"
+    ],
+    "predictedNoop": false,
+    "evidenceArtifactIds": [
+      "2001"
+    ],
+    "createdAt": "2026-08-01T09:00:00Z",
+    "appliedAt": "2026-08-01T09:03:00Z"
+  },
+  {
+    "kind": "specialist-routing",
+    "id": "code-review:3001:42",
+    "workflow": "code-review",
+    "runId": "3001",
+    "headSha": "2222222222222222222222222222222222222222",
+    "model": "gpt-5-review",
+    "instructionHash": "aab677eaf186edbebfb96b7bace7cff4a016c4629e72c08545242d4271f4f455",
+    "itemNumber": 42,
+    "itemType": "pull_request",
+    "semanticPredictedRoutes": [
+      "security",
+      "trading-safety"
+    ],
+    "immutableRoutes": [
+      "trading-safety"
+    ],
+    "changedFileCount": 2,
+    "evidenceArtifactIds": [
+      "3001"
+    ],
+    "createdAt": "2026-08-02T10:00:00Z",
+    "appliedAt": "2026-08-02T10:05:00Z"
+  },
+  {
+    "kind": "pm-triage",
+    "id": "pm-triage:2002:200",
+    "workflow": "pm-triage",
+    "runId": "2002",
+    "headSha": "1111111111111111111111111111111111111111",
+    "model": "gpt-5-triage",
+    "instructionHash": "e183eeebd3cd3ebda480a79d1d336a6d2f3d3cf5a7f9549582c201568edf3be5",
+    "itemNumber": 200,
+    "itemType": "issue",
+    "predictedLabels": [
+      "ready-for-planning"
+    ],
+    "predictedNoop": false,
+    "evidenceArtifactIds": [
+      "2001"
+    ],
+    "createdAt": "2026-08-01T08:00:00Z",
+    "appliedAt": "2026-08-01T09:03:00Z"
+  }
+]

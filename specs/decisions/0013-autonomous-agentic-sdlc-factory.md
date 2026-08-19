@@ -1,4 +1,4 @@
-# 0009 -- Safety-bounded autonomous agentic SDLC factory
+# 0013 -- Safety-bounded autonomous agentic SDLC factory
 
 - **Status:** Accepted
 - **Date:** 2026-08-18
