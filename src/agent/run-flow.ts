@@ -48,7 +48,11 @@ import {
   trackTradeExecuted,
   type AgentTriggerSource,
 } from "@/lib/analytics";
-import { executePaperTrade } from "@/trading/paper-executor";
+import {
+  executePaperTrade,
+  type ExecutePaperTradeRequest,
+  type PaperExecutionResult,
+} from "@/trading/paper-executor";
 import {
   AgentUpstreamError,
   RequiredRolloutModeError,
@@ -76,11 +80,48 @@ import type {
 const ACCOUNT_ID = "singleton";
 const LEASE_DURATION_MS = 90_000;
 
+/**
+ * Injectable dependencies for `executeAgentRun`.
+ * @internal — for testing only; production callers rely on `buildDefaultAgentRunDeps`.
+ */
+export interface AgentRunDeps {
+  decisionProvider: DecisionProvider;
+  paperExecutor: (
+    request: ExecutePaperTradeRequest,
+  ) => Promise<PaperExecutionResult>;
+  journalPersist: (
+    runId: string,
+    market: TradingMarketSnapshot,
+    decision: TradeDecision | null,
+    authorization: AuthorizationResult | null,
+    tradeId?: string,
+  ) => Promise<void>;
+  leaseRelease: (leaseOwner: string, now: Date) => Promise<boolean>;
+  analyticsRunStarted: (triggerSource: AgentTriggerSource) => void;
+  analyticsRunCompleted: (
+    result: AgentRunResult,
+    triggerSource: AgentTriggerSource,
+  ) => void;
+}
+
+/** @internal */
+export function buildDefaultAgentRunDeps(): Required<AgentRunDeps> {
+  return {
+    decisionProvider: resolveDecisionProvider(),
+    paperExecutor: executePaperTrade,
+    journalPersist: persistJournal,
+    leaseRelease: releaseLease,
+    analyticsRunStarted: trackAgentRunStarted,
+    analyticsRunCompleted: trackAgentRunCompleted,
+  };
+}
+
 export interface ExecuteAgentRunOptions {
   triggerSource: AgentTriggerSource;
   idempotencyKey?: string;
   requiredMode?: TradingMode;
-  decisionProvider?: DecisionProvider;
+  /** @internal — inject deps for testing; production callers omit this */
+  deps?: Partial<AgentRunDeps>;
 }
 
 export type ExecuteAgentRunOutcome =
@@ -576,8 +617,9 @@ async function persistJournal(
 function finalizeAnalytics(
   result: AgentRunResult,
   triggerSource: AgentTriggerSource,
+  deps: Pick<AgentRunDeps, "analyticsRunCompleted">,
 ): void {
-  trackAgentRunCompleted(result, triggerSource);
+  deps.analyticsRunCompleted(result, triggerSource);
   if (result.tokenUsage) {
     trackLLMTokenUsage(result.tokenUsage);
   }
@@ -602,7 +644,7 @@ function finalizeAnalytics(
 
 function resultFromExecution(
   runId: string,
-  execution: Awaited<ReturnType<typeof executePaperTrade>>,
+  execution: PaperExecutionResult,
   market: TradingMarketSnapshot,
   reasoning: string,
   tokenUsage: AgentRunResult["tokenUsage"],
@@ -667,6 +709,8 @@ function errorHttpStatus(error: unknown): number {
 export async function executeAgentRun(
   options: ExecuteAgentRunOptions,
 ): Promise<ExecuteAgentRunOutcome> {
+  const defaults = buildDefaultAgentRunDeps();
+  const deps: Required<AgentRunDeps> = { ...defaults, ...options.deps };
   const startedAt = new Date();
   const startedMs = startedAt.getTime();
   let mode: TradingMode = "disabled";
@@ -694,7 +738,7 @@ export async function executeAgentRun(
   if (acquisition.kind === "existing") {
     return reconstructExistingRun(acquisition.run);
   }
-  trackAgentRunStarted(options.triggerSource);
+  deps.analyticsRunStarted(options.triggerSource);
   if (acquisition.kind === "conflict") {
     const result: AgentRunResult = {
       runId: acquisition.runId,
@@ -708,7 +752,7 @@ export async function executeAgentRun(
       { reason: acquisition.message },
       options.triggerSource,
     );
-    finalizeAnalytics(result, options.triggerSource);
+    finalizeAnalytics(result, options.triggerSource, deps);
     return {
       kind: "mutex",
       message: acquisition.message,
@@ -733,7 +777,7 @@ export async function executeAgentRun(
       await completeRun(runId, "DISABLED", completedAt, {
         latencyMs: result.durationMs,
       });
-      finalizeAnalytics(result, options.triggerSource);
+      finalizeAnalytics(result, options.triggerSource, deps);
       return { kind: "ok", result };
     }
 
@@ -774,9 +818,9 @@ export async function executeAgentRun(
         accountSnapshotBefore: accountRecord(context.account),
         latencyMs: result.durationMs,
       });
-      await persistJournal(runId, context.market, null, null);
+      await deps.journalPersist(runId, context.market, null, null);
       result.journalWritten = true;
-      finalizeAnalytics(result, options.triggerSource);
+      finalizeAnalytics(result, options.triggerSource, deps);
       return { kind: "ok", result };
     }
 
@@ -789,9 +833,7 @@ export async function executeAgentRun(
         reasoning: "Deterministic safety policy controls this run",
       };
     } else if (policy.shouldInvokeModel) {
-      const generated = await (
-        options.decisionProvider ?? resolveDecisionProvider()
-      ).generate({
+      const generated = await deps.decisionProvider.generate({
         account: context.account,
         market: context.market,
         policy,
@@ -824,14 +866,14 @@ export async function executeAgentRun(
           latencyMs: result.durationMs,
         },
       );
-      await persistJournal(runId, context.market, null, null);
+      await deps.journalPersist(runId, context.market, null, null);
       result.journalWritten = true;
       trackGuardrailTriggered(
         "deterministic-policy",
         { reason: policy.holdReason },
         options.triggerSource,
       );
-      finalizeAnalytics(result, options.triggerSource);
+      finalizeAnalytics(result, options.triggerSource, deps);
       return { kind: "ok", result };
     }
 
@@ -871,18 +913,18 @@ export async function executeAgentRun(
         tokenUsage,
         latencyMs: result.durationMs,
       });
-      await persistJournal(
+      await deps.journalPersist(
         runId,
         context.market,
         decision,
         authorization,
       );
       result.journalWritten = true;
-      finalizeAnalytics(result, options.triggerSource);
+      finalizeAnalytics(result, options.triggerSource, deps);
       return { kind: "ok", result };
     }
 
-    const execution = await executePaperTrade({
+    const execution = await deps.paperExecutor({
       agentRunId: runId,
       leaseOwner,
       decision,
@@ -914,7 +956,7 @@ export async function executeAgentRun(
       tokenUsage,
       latencyMs: result.durationMs,
     });
-    await persistJournal(
+    await deps.journalPersist(
       runId,
       context.market,
       decision,
@@ -922,7 +964,7 @@ export async function executeAgentRun(
       execution.tradeId,
     );
     result.journalWritten = true;
-    finalizeAnalytics(result, options.triggerSource);
+    finalizeAnalytics(result, options.triggerSource, deps);
     return { kind: "ok", result };
   } catch (error) {
     const completedAt = new Date();
@@ -938,7 +980,7 @@ export async function executeAgentRun(
         errorType: "post-commit-persistence",
         errorMessage: message,
       });
-      finalizeAnalytics(committedResult, options.triggerSource);
+      finalizeAnalytics(committedResult, options.triggerSource, deps);
       return {
         kind: "upstream_error",
         result: committedResult,
@@ -985,11 +1027,11 @@ export async function executeAgentRun(
         errorMessage: message,
       },
     );
-    finalizeAnalytics(result, options.triggerSource);
+    finalizeAnalytics(result, options.triggerSource, deps);
     return { kind: "upstream_error", result, httpStatus };
   } finally {
     try {
-      const released = await releaseLease(leaseOwner, new Date());
+      const released = await deps.leaseRelease(leaseOwner, new Date());
       if (!released) {
         console.error(
           `[agent] Lease ${leaseOwner} was not released because ownership changed`,
