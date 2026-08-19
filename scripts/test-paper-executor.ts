@@ -10,6 +10,7 @@ import {
 } from "../src/db/schema";
 import { createPaperExecutor } from "../src/trading/paper-executor";
 import { DEFAULT_STRATEGY_CONFIG } from "../src/trading/strategy-config";
+import { TradeConflictError } from "../src/trading/errors";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -254,6 +255,60 @@ async function main() {
     .where(eq(tradeExecution.agentRunId, "executor-run-5"));
   assert.equal(ownerMismatchTrades.length, 0);
 
+  // executor-run-6: ownership change after insert but before state update → TradeConflictError + full rollback
+  const ownershipChangeTime = new Date(start.getTime() + 15 * 60 * 60 * 1000);
+  await prepareRun("executor-run-6", "lease-6", ownershipChangeTime);
+  const beforeOwnershipChange = await stateSnapshot();
+  await assert.rejects(
+    firstExecutor({
+      ...firstRequest,
+      agentRunId: "executor-run-6",
+      leaseOwner: "lease-6",
+      decision: {
+        action: "BUY",
+        notionalUSD: 20,
+        reasoning: "ownership-change rollback test",
+      },
+      market: {
+        ...firstRequest.market,
+        spotPriceUSD: 1900,
+        observedAt: ownershipChangeTime,
+      },
+      now: ownershipChangeTime,
+      hooks: {
+        afterTradeInsert: async () => {
+          // Simulate a concurrent actor stealing the lease between insert and state update
+          await adminDb
+            .update(agentState)
+            .set({ leaseOwner: "lease-6-stolen" })
+            .where(eq(agentState.id, "singleton"));
+        },
+      },
+    }),
+    (err) => err instanceof TradeConflictError,
+  );
+
+  const afterOwnershipChange = await stateSnapshot();
+  assert.equal(
+    afterOwnershipChange.currentPositionETHDecimal,
+    beforeOwnershipChange.currentPositionETHDecimal,
+  );
+  assert.equal(
+    afterOwnershipChange.currentPositionUSDCDecimal,
+    beforeOwnershipChange.currentPositionUSDCDecimal,
+  );
+  const ownershipChangeTrades = await adminDb
+    .select({ id: tradeExecution.id })
+    .from(tradeExecution)
+    .where(eq(tradeExecution.agentRunId, "executor-run-6"));
+  assert.equal(ownershipChangeTrades.length, 0);
+
+  // Restore lease for any subsequent assertions
+  await adminDb
+    .update(agentState)
+    .set({ leaseOwner: null, isRunning: false })
+    .where(eq(agentState.id, "singleton"));
+
   const allTrades = await adminDb.select().from(tradeExecution);
   assert.equal(allTrades.length, 4);
   assert.equal(
@@ -262,7 +317,7 @@ async function main() {
   );
 
   console.log(
-    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, weighted accounting, partial sell, and full exit.",
+    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, ownership-change rollback, weighted accounting, partial sell, and full exit.",
   );
 }
 
