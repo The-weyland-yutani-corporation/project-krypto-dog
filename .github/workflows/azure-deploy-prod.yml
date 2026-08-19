@@ -1,9 +1,8 @@
 name: Azure deploy prod
 
-# Automatic prod deploy after a successful CI run on the exact `main`
-# branch (a push-triggered CI run only), plus a manual workflow_dispatch
-# escape hatch. Always checks out the exact commit SHA the triggering CI
-# run validated. Existing releases pass the `production-promotion` approval
+# Production deployment is manual-only. An operator supplies an exact
+# CI-passed commit SHA through workflow_dispatch. Existing releases pass the
+# `production-promotion` approval
 # before forced disable, then the separate `production-deploy` approval for
 # current-release safety and infrastructure/release work.
 #
@@ -27,9 +26,6 @@ name: Azure deploy prod
 #      exact release SHA, and exact web/ops digests. This workflow never
 #      promotes shadow/paper or enables a schedule.
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       commit_sha:
@@ -77,12 +73,6 @@ jobs:
   gate:
     name: Determine and validate the commit to deploy
     runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
     permissions:
       contents: read
       actions: read
@@ -90,7 +80,6 @@ jobs:
       EVENT_NAME: ${{ github.event_name }}
       INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
       INPUT_DEPLOYMENT_STAGE: ${{ inputs.deployment_stage }}
-      WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
@@ -108,18 +97,10 @@ jobs:
         id: resolve
         run: |
           set -euo pipefail
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            candidate="${INPUT_COMMIT_SHA}"
-          else
-            candidate="${WORKFLOW_RUN_HEAD_SHA}"
-          fi
+          candidate="${INPUT_COMMIT_SHA}"
           source .github/scripts/azure/lib/common.sh
           validated="$(azure_validate_release_sha "${candidate}")"
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            deployment_stage="${INPUT_DEPLOYMENT_STAGE}"
-          else
-            deployment_stage="full"
-          fi
+          deployment_stage="${INPUT_DEPLOYMENT_STAGE}"
           if [ "${deployment_stage}" != "foundation" ] && [ "${deployment_stage}" != "full" ]; then
             echo "deployment_stage must be exactly 'foundation' or 'full'." >&2
             exit 1
@@ -128,13 +109,10 @@ jobs:
           echo "deployment_stage=${deployment_stage}" >> "$GITHUB_OUTPUT"
           echo "Resolved candidate commit ${validated} (event=${EVENT_NAME}, deployment_stage=${deployment_stage})."
 
-      # The automatic workflow_run path is already provably safe by
-      # construction (see this job's `if:` condition). A manually
-      # dispatched SHA is arbitrary operator input and must additionally have
+      # A manually dispatched SHA is arbitrary operator input and must have
       # successful push CI and be on the branch authorized for its stage:
       # foundation may come from protected develop/azure; full requires main.
       - name: Verify manually-dispatched SHA branch and successful push CI
-        if: env.EVENT_NAME == 'workflow_dispatch'
         env:
           RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
           DEPLOYMENT_STAGE: ${{ steps.resolve.outputs.deployment_stage }}

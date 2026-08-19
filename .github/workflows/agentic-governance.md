@@ -21,11 +21,14 @@ tools:
     - "cat /tmp/gh-aw/factory-health.json"
 network: defaults
 safe-outputs:
+  update-issue:
+    target: "*"
   create-issue:
     title-prefix: "[factory-governance] "
     labels: [agentic-factory, report]
     allowed-labels: [agentic-factory, report]
     max: 1
+    deduplicate-by-title: 1
     close-older-issues: true
     expires: 30d
   mentions: false
@@ -66,7 +69,8 @@ commands; the snapshot is the single source of truth for this report.
 
 - If `materialState.changed` is `false`, call `noop` with a one-line reason
   (the material state matches the last published governance report) and stop.
-- Otherwise, create exactly one issue using the `create-issue` safe output.
+- Otherwise, update the canonical open `[factory-governance]` issue when it
+  exists; use `create-issue` only to establish it when absent.
 
 ### 3. Write the report
 
@@ -88,6 +92,9 @@ do not invent numbers.
   unavailable rather than zero.
 - **Issue and PR state** — throughput, actionable-opportunity WIP vs the policy
   cap (`issues.wipCap`), stale/blocked work, and PR review/check state.
+- **Autonomy funnel and invariants** — report queue/lifecycle counts,
+  assignment/repair/dev outcomes, duplicate/orphaned state, boundary
+  escalations, rollback, and human vetoes when present in the snapshot.
 - **Threshold breaches** — list every entry in `thresholds.breaches` with its
   `id` and `evidence`. If empty, state that no configured threshold is breached.
   Put breaches under a `> [!WARNING]` alert.

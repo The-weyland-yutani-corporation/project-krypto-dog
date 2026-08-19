@@ -29,16 +29,11 @@
     "selfHealExhausted": "self-heal-exhausted",
     "mergeBlocking": [
       "blocked",
-      "self-heal-exhausted",
-      "needs-qa",
-      "ready-for-human-review"
+      "self-heal-exhausted"
     ],
     "selfHealBlocking": [
       "blocked",
       "self-heal-exhausted",
-      "needs-qa",
-      "security-review",
-      "trading-safety",
       "ready-for-human-review"
     ]
   },

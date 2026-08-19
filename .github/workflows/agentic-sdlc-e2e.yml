@@ -26,7 +26,6 @@ permissions:
 jobs:
   canary:
     name: Exercise native agentic auto-merge
-    if: github.repository == 'VeVarunSharma/project-krypto-dog'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -34,6 +33,65 @@ jobs:
       CANARY_PATH: docs/e2e/factory-heartbeat.md
 
     steps:
+      - name: Require human-activated factory mode
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const controls = await github.paginate(
+              github.rest.issues.listForRepo,
+              {
+                owner,
+                repo,
+                state: "open",
+                labels: "factory-control",
+                per_page: 100,
+              },
+            );
+            if (controls.length !== 1) {
+              throw new Error(
+                `Expected one factory-control issue; found ${controls.length}.`,
+              );
+            }
+            const labels = new Set(
+              controls[0].labels.map((label) =>
+                typeof label === "string" ? label : label.name,
+              ),
+            );
+            if (!labels.has("factory-mode:active")) {
+              throw new Error(
+                "The factory must be human-activated before an auto-merge canary.",
+              );
+            }
+            const timeline = await github.paginate(
+              github.rest.issues.listEventsForTimeline,
+              {
+                owner,
+                repo,
+                issue_number: controls[0].number,
+                per_page: 100,
+              },
+            );
+            const activeEvents = timeline
+              .filter(
+                (event) =>
+                  event.event === "labeled" &&
+                  event.label?.name === "factory-mode:active",
+              )
+              .sort(
+                (left, right) =>
+                  Date.parse(right.created_at || "") -
+                  Date.parse(left.created_at || ""),
+              );
+            if (
+              activeEvents.length === 0 ||
+              activeEvents[0].actor?.type !== "User"
+            ) {
+              throw new Error(
+                "Factory active mode is not backed by a current human label event.",
+              );
+            }
+
       - name: Create same-repository docs canary
         id: create
         uses: actions/github-script@v9

@@ -1,0 +1,53 @@
+name: Factory Queue Controller
+
+# Deterministic queue-controller runtime for the safety-bounded autonomous
+# SDLC factory (specs/agentic-factory-contract.md). This workflow never
+# executes issue/PR-authored code: it only reads issue/label/milestone state
+# through the GitHub API and, in `factory-mode:active`, claims and dispatches
+# at most one `implement-ticket.lock.yml` run per pass.
+#
+# Deliberately no `pull_request_target` and no code checkout from PR heads.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Conservative cadence: every 15 minutes.
+    - cron: "*/15 * * * *"
+
+concurrency:
+  # A single global group so queue-controller passes always serialize; this
+  # is required for the claim/dispatch sequence to stay race-free.
+  group: factory-queue-controller
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  actions: write
+
+jobs:
+  run-queue-controller:
+    name: Run factory queue controller
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out trusted queue-controller scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Run deterministic queue controller
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const path = require("node:path");
+            const runtimePath = path.join(
+              process.env.GITHUB_WORKSPACE,
+              ".github/scripts/agentic-queue-runtime.cjs",
+            );
+            const { runFactoryQueueController } = require(runtimePath);
+            await runFactoryQueueController({ github, context, core });

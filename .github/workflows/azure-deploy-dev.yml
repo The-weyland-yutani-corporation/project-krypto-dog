@@ -1,10 +1,10 @@
 name: Azure deploy dev
 
-# Automatic dev deploy after a successful CI run on the exact `develop/azure`
+# Automatic dev deploy after a successful CI run on the exact `main`
 # branch (a push-triggered CI run, never a pull_request-triggered run,
 # so this never deploys from an unmerged PR head), plus a manual
 # workflow_dispatch escape hatch. Always checks out the exact commit SHA
-# the triggering CI run validated -- never a re-resolved/moving `develop`
+# the triggering CI run validated -- never a re-resolved/moving branch
 # ref -- so what gets deployed is provably the same commit CI passed.
 #
 # Manual runs may stop at the `foundation` stage after environment.bicep.
@@ -60,7 +60,7 @@ jobs:
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'develop/azure')
+       github.event.workflow_run.head_branch == 'main')
     permissions:
       contents: read
       actions: read
@@ -116,12 +116,12 @@ jobs:
       # itself from the real completed run, so they cannot be spoofed by
       # an operator). A manually-dispatched SHA carries no such
       # guarantee -- it is arbitrary operator input -- so it alone must
-      # additionally be proven to be a real ancestor of origin/develop/azure
+      # additionally be proven to be a real ancestor of origin/main
       # AND to have its own successful, push-triggered CI run before it
       # is allowed to reach any deploy step. This is a hard, non-format
       # check: a syntactically valid 40-hex SHA that fails either
       # condition is rejected exactly like a malformed one.
-      - name: Verify manually-dispatched SHA is an ancestor of develop with a successful push CI run
+      - name: Verify manually-dispatched SHA is an ancestor of main with a successful push CI run
         if: env.EVENT_NAME == 'workflow_dispatch'
         env:
           RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
@@ -130,7 +130,7 @@ jobs:
           set -euo pipefail
           .github/scripts/azure/verify-deploy-sha.sh \
             --sha "${RESOLVED_SHA}" \
-            --branch develop/azure \
+            --branch main \
             --repo "${TARGET_REPO}" \
             --ci-workflow ci.yml
 
@@ -1481,3 +1481,70 @@ jobs:
             exit 1
           fi
           echo "::error::Dev promotion failed; rollback restored rolloutMode=disabled and both scheduler jobs to Manual."
+
+  publish-deployment-evidence:
+    name: Publish exact-SHA dev deployment evidence
+    needs:
+      - gate
+      - verify-final-state
+      - rollback-disabled
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+      statuses: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      VERIFY_RESULT: ${{ needs.verify-final-state.result }}
+      ROLLBACK_RESULT: ${{ needs.rollback-disabled.result }}
+    steps:
+      - name: Publish commit status and GitHub Deployment
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const verified = process.env.VERIFY_RESULT === "success";
+            const rollbackVerified = process.env.ROLLBACK_RESULT === "success";
+            const state = verified ? "success" : "failure";
+            const description = verified
+              ? "Exact-SHA dev shadow deployment and scheduled execution passed"
+              : rollbackVerified
+                ? "Dev deployment failed; disabled/manual rollback verified"
+                : "Dev deployment failed; rollback was not verified";
+            const targetUrl =
+              `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}` +
+              `/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: process.env.RESOLVED_SHA,
+              state,
+              context: "Dev deployment evidence",
+              description,
+              target_url: targetUrl,
+            });
+
+            const { data: deployment } =
+              await github.rest.repos.createDeployment({
+                ...context.repo,
+                ref: process.env.RESOLVED_SHA,
+                environment: "development",
+                auto_merge: false,
+                required_contexts: [],
+                description,
+                transient_environment: true,
+                production_environment: false,
+              });
+            if (typeof deployment === "object" && deployment.id) {
+              await github.rest.repos.createDeploymentStatus({
+                ...context.repo,
+                deployment_id: deployment.id,
+                state,
+                description,
+                log_url: targetUrl,
+                auto_inactive: true,
+              });
+            }

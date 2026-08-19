@@ -51,7 +51,7 @@ those values without making them public documentation.
 | Stage | Live state | Evidence |
 |---|---|---|
 | Providers/bootstrap | Required providers are registered; platform/dev/prod resource groups and four GitHub OIDC identities exist | Complete |
-| GitHub controls | Environments, branch restrictions, variables, and release secrets are configured. Required-reviewer rules are unsupported by the private-repo billing plan; mutation workflows are manual/paused behind branch, exact-SHA, and CI gates. | Staged; no reviewer enforcement |
+| GitHub controls | Environments, branch restrictions, variables, and release secrets are configured. `production-deploy`, `production-promotion`, `platform`, and `development-promotion` carry human required-reviewer protection (verified via the GitHub API); `development` carries only a branch policy and is the sole environment the factory mutates automatically, behind branch, exact-SHA, and CI gates. | Live; reviewer enforcement active on human-gated environments |
 | Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra plain/structured smokes. | Operational fallback complete |
 | Workload access | Dev/prod runtime and ops identities have Cognitive Services OpenAI User on the operational account | Complete |
 | Dev release | Live in shadow; manual activation and first scheduled execution passed with zero trades | Retained exact-SHA evidence |
@@ -125,22 +125,42 @@ az deployment sub create \
 Record the deployment outputs in a protected operator handoff. Client and
 principal IDs are configuration inputs, not documentation values.
 
-## 2. GitHub Environments and current manual gate
+## 2. GitHub Environments and current gates
 
-**Current status: configured but reviewer enforcement unavailable.** The four
+**Current status (verified via the GitHub API): five configured Environments,
+one autonomous.** `production-deploy`, `production-promotion`, `platform`,
+and `development-promotion` each carry a human required reviewer
+(`prevent_self_review` enabled on `production-deploy`/`production-promotion`/
+`platform`) plus a branch policy. `development` carries only a branch
+policy — no required reviewer — and is the only environment the factory may
+mutate autonomously; it is gated instead by the configured branch, an exact
+40-hex commit SHA, and successful push-triggered CI (see §3). `development`,
+`platform`, `production-deploy`, and `production-promotion` all have a
+branch policy allowing both `develop/azure` and `main` (`main` was added to
+`development` to match the automatic `workflow_run`-triggered dev deploy in
+§3, which always resolves the exact head SHA of a passing `main` push-CI
+run; the same `main` policy on the human-gated environments simply lets a
+human dispatch those workflows from `main` too, it does not change their
+required-reviewer gate). `development-promotion` is the one environment
+still restricted to `develop/azure` only, and it is not referenced by any
+deployment workflow — this is further confirmation that it is reserved, not
+wired into the automatic `main` dev-deploy path. A `copilot`
+environment also exists with no protection rules and is not used by any
+deployment workflow. Do not weaken any required-reviewer environment's
+protection rules, and do not claim an executable "production promotion"
+path exists: `production-promotion` remains identity/environment scope for
+forced-disable and rotation steps only.
+
 Environments, branch restrictions, and protected variables/secrets are
-configured. The private repository's
-billing plan does not support required-reviewer rules. Keep mutation workflows
-manual/paused and require the configured branch, exact 40-hex SHA, and
-successful CI. Do not enable automatic mutation without an equivalent reviewed
-approval boundary.
+configured for all of the following.
 
-| Environment | Workflows | Required variables | Required secrets |
-|---|---|---|---|
-| `platform` | `azure-platform.yml`, `azure-platform-access.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none |
-| `development` | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` |
-| `production-deploy` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values |
-| `production-promotion` | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none |
+| Environment | Workflows | Required variables | Required secrets | Branch policy |
+|---|---|---|---|---|
+| `platform` | `azure-platform.yml`, `azure-platform-access.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none | `develop/azure`, `main` |
+| `development` | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` | `develop/azure`, `main` |
+| `production-deploy` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values | `develop/azure`, `main` |
+| `production-promotion` | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none | `develop/azure`, `main` |
+| `development-promotion` | None (reserved; not referenced by any workflow) | — | — | `develop/azure` only |
 
 Bootstrap RBAC boundaries:
 
@@ -181,7 +201,7 @@ Requirements:
 ## 3. Provision the Foundry model platform
 
 **Current status: operational fallback live.** The
-[platform run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884)
+[platform run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884)
 created and verified `ai-krypto-westus3`, disabled local auth, verified the
 `CanNotDelete` lock, and passed exact catalog/quota validation. Azure rejected
 model deployment with error `715-123420` (“unusual activity”). The exact dev
@@ -219,29 +239,41 @@ capacity is allowed.
 ## 4. Deploy both environment foundations
 
 **Current status: complete.** The
-[dev foundation run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
+[dev foundation run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841581875)
 and
-[prod foundation run](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
+[prod foundation run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841960745)
 passed. Both foundations now contain ACR, private PostgreSQL 17, Key Vault,
 evidence storage, a Container Apps environment, ACS Email with an Azure-managed
 domain, Log Analytics/alerts, and runtime/scheduler/ops identities. Neither run
 created a release, web Container App, or job.
 
-`azure-deploy-dev.yml` and `azure-deploy-prod.yml` accept:
+`azure-deploy-dev.yml` accepts an automatic `workflow_run` trigger — gated on
+`github.event.workflow_run.event == 'push' && conclusion == 'success' &&
+head_branch == 'main'`, and always checking out that CI run's exact head SHA
+— which always resolves to the `full` deployment stage, plus a
+`workflow_dispatch` escape hatch (`commit_sha`, `deployment_stage`) for a
+manual foundation-only run. `azure-deploy-prod.yml` remains
+`workflow_dispatch`-only with the same two inputs and has no `workflow_run`
+trigger. Manual SHAs must be ancestors of the configured target branch and
+have their own successful push-triggered CI run.
 
-- `commit_sha`: exact 40-hex commit; and
-- `deployment_stage`: `foundation` or `full`.
-
-The workflow definition maps `workflow_run` events to `full`, but automatic
-mutation is currently paused. Manual SHAs must be ancestors of the configured
-target branch and have their own successful push-triggered CI run.
-
-### First dev-run caveat
+### Automatic dev deploy and evidence
 
 GitHub evaluates a `workflow_run` trigger using the workflow file from the
-repository's default branch. Dispatch only manually at the exact CI-passed SHA
-while required-reviewer enforcement is unavailable. Automatic mutation remains
-paused; do not re-enable it solely because a workflow version reaches `main`.
+repository's default branch, so `azure-deploy-dev.yml` runs automatically
+after every successful push-triggered `CI` run on `main`, deploying the
+exact SHA CI validated — no separate manual step is required for `development`,
+because that environment carries only a branch policy and no human required
+reviewer. The run publishes a `Dev deployment evidence` commit status and a
+GitHub Deployment (`environment: "development"`, `transient_environment:
+true`, `production_environment: false`) on that SHA, and structurally
+verifies rollback: any promotion-stage failure after a successful deploy
+triggers a fail-closed rollback path whose outcome is recorded in the same
+evidence. This mechanism has not yet been exercised by an actual production
+incident; treat "structurally verifies rollback on failure" and "a rollback
+has been observed in production" as two different claims. Production has no
+automatic trigger and must be dispatched manually with an explicit
+`commit_sha` at each stage, behind its required-reviewer environments.
 
 ### Foundation order
 
@@ -284,10 +316,12 @@ keyless model access.
 
 ## 6. Dev full release and schedule activation
 
-**Current status: ready to start.** No dev release resources or URL exist.
-Operational Luna and environment-tagged PostHog are staged. Manually run
-`full` at the exact CI-passed SHA; the automatic path remains paused while
-reviewer enforcement is unavailable.
+**Current status: complete; automatic trigger armed.** The dev release is
+live in `shadow` with a monitored `Schedule`. The original manual `full` run
+at the exact CI-passed SHA (below) established that state; the environment
+now also runs automatically on every successful push-triggered `CI` run on
+`main` (see §2 and §3), because `development` carries only a branch policy
+and no required reviewer.
 
 The implemented order is:
 

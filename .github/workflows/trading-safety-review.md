@@ -74,6 +74,9 @@ Review changes for paper-trading, portfolio, guardrail, and live-execution bound
 - For every pull request, create exactly one `Trading safety review` check on the current head.
 - Set the check to `success` only for `safe`.
 - Set the check to `failure` for `safe-with-required-fixes`, `unsafe`, or an incomplete review.
+- Keep the non-lifecycle `trading-safety` requirement label so the reconciler
+  reruns trading-safety review on every new head. The exact-current-head check
+  clears the merge gate.
 
 ## Safe outputs
 

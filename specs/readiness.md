@@ -63,13 +63,22 @@ Six Azure workflow surfaces implement or validate the target:
 
 Platform account/model mutation and platform access each use separate
 environment-scoped what-if and apply jobs. GitHub Environments, branch
-restrictions, and protected values are configured. Required-reviewer rules are unsupported by the private-repo
-billing plan, so mutation workflows are manual/paused behind configured branch,
-exact-SHA, and CI gates. GitHub-hosted jobs were blocked by the account Actions
-billing state during the first release, so the authenticated operator path used
-the same reviewed templates and evidence validators. Production deploy remains
-disabled manually; the proven dev automatic trigger is configured but cannot
-start while the billing block remains.
+restrictions, and protected values are configured. `production-deploy`,
+`production-promotion`, `platform`, and `development-promotion` each carry a
+human required reviewer (verified via the GitHub API); `development` carries
+only a branch policy and is the sole environment the factory mutates
+automatically, behind the configured branch, exact-SHA, and CI gates.
+`development`, `platform`, `production-deploy`, and `production-promotion`
+all have a branch policy allowing both `develop/azure` and `main` (`main`
+was added to `development` specifically to match the automatic `main`
+push-CI-triggered dev deploy); `development-promotion` alone is still
+restricted to `develop/azure` only and is not wired into any deployment
+workflow. The
+first release predates this reviewer configuration and used the
+authenticated operator path with the same reviewed templates and evidence
+validators; the dev automatic `workflow_run` trigger is now live and runs
+after every successful push-triggered `CI` run on `main`. Production deploy
+remains manual/disabled, gated by its required-reviewer environments.
 
 No executable production promotion workflow is shipped or approved.
 `production-promotion` remains only as the environment-scoped forced-disable
@@ -98,10 +107,16 @@ credential downgrade.
 - [x] Verify Locks Contributor is scoped to `rg-krypto-platform` for the
   Foundry lock and `rg-krypto-prod` for the prod PostgreSQL, Key Vault, and
   evidence-storage locks.
-- [x] Configure `platform`, `development`, `production-deploy`, and the
-  forced-disable-only `production-promotion` GitHub Environments, including
-  branch restrictions and the currently available protected values. Required
-  reviewers are unavailable on the current plan; keep mutation manual/paused.
+- [x] Configure `platform`, `development`, `production-deploy`,
+  `production-promotion` (forced-disable-only), and `development-promotion`
+  GitHub Environments, including branch restrictions and protected values.
+  `production-deploy`, `production-promotion`, `platform`, and
+  `development-promotion` each carry a human required reviewer;
+  `development` carries only a branch policy and is the environment the
+  factory mutates automatically. `development`, `platform`,
+  `production-deploy`, and `production-promotion` allow both `develop/azure`
+  and `main` as branch policy; `development-promotion` allows only
+  `develop/azure` and remains unwired to any workflow.
 - [x] Stage a dev telemetry fallback with mandatory
       `deployment_environment=dev`; do not count it as final project isolation.
 - [x] Run the Foundry account what-if/apply; verify local auth disabled and the
@@ -124,10 +139,15 @@ Both foundations are mandatory before the access workflow because the four
 principal IDs are created by those foundations. A full release before access
 binding is not an approved shortcut.
 
-Any full dev run must remain a manual dispatch at the exact CI-passed 40-hex
-SHA while required-reviewer enforcement is unavailable. GitHub evaluates
-`workflow_run` with the workflow version on the default branch, but automatic
-mutation must remain paused regardless of that trigger behavior.
+Dev full runs deploy automatically after every successful push-triggered `CI`
+run on `main` (the `azure-deploy-dev.yml` `workflow_run` trigger, gated on
+`event == 'push' && conclusion == 'success' && head_branch == 'main'`, always
+resolving to the exact head SHA that CI validated), because `development`
+carries only a branch policy and no required reviewer. A manual
+`workflow_dispatch` at an exact CI-passed 40-hex SHA remains available as an
+escape hatch. Production has no `workflow_run` trigger and must always be
+dispatched manually at an exact SHA, behind its required-reviewer
+environments.
 
 ## 5. Configuration readiness
 
@@ -326,7 +346,7 @@ No provider is ready until retained live evidence proves all applicable rows:
 | Admin/auth | Target-smoke proof without disclosing credentials | **Passed in dev and prod** |
 | Scheduler | Unique manual-shadow proof, post-run activation report, digest/generation-namespaced scheduled success, and cross-mode replay rejection | **Passed in dev; production intentionally Manual** |
 | Monitoring | Terminal job-failure alerts and activation-bound missing-hourly-success alert | **Passed; both Action Group tests dispatched successfully** |
-| Rollback | Verified restoration to disabled/manual, followed by monitoring disablement, after an induced or actual failed dev activation | Pending |
+| Rollback | Verified restoration to disabled/manual, followed by monitoring disablement, after an induced or actual failed dev activation | **Pending** — the automatic dev workflow structurally runs a fail-closed rollback job whenever a promotion step fails after a successful deploy, and records the outcome in the same `Dev deployment evidence` status/Deployment, but no induced or actual failure has yet produced that evidence |
 
 Evidence must be bound to the exact release SHA and immutable web/ops image
 digests. Job execution must use the full live template via `--yaml`, always

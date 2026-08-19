@@ -21,11 +21,14 @@ tools:
     - "cat /tmp/gh-aw/factory-health.json"
 network: defaults
 safe-outputs:
+  update-issue:
+    target: "*"
   create-issue:
     title-prefix: "[factory-status] "
     labels: [agentic-factory, report]
     allowed-labels: [agentic-factory, report]
     max: 1
+    deduplicate-by-title: 1
     close-older-issues: true
     expires: 7d
   mentions: false
@@ -66,7 +69,8 @@ commands.
 
 - If `materialState.changed` is `false`, call `noop` with a one-line reason
   (no material change since the last published status) and stop.
-- Otherwise, create exactly one issue using the `create-issue` safe output.
+- Otherwise, update the canonical open `[factory-status]` issue when it exists;
+  use `create-issue` only when absent.
 
 ### 3. Write the report
 
@@ -85,6 +89,10 @@ GitHub alerts (`> [!NOTE]`, `> [!WARNING]`). No emoji, no invented numbers.
 - **Failing workflows** — any workflow in `workflows[]` whose `usage.conclusions`
   include failures, or a `thresholds.breaches` entry. Zero-run workflows are not
   failures.
+- **Autonomy funnel and invariants** — include queue/lifecycle counts,
+  assignment/repair/dev outcomes, duplicate/orphaned state, stale leases,
+  boundary escalations, and production/live attempts when the snapshot exposes
+  them.
 
 ### 4. Embed the state-hash marker
 

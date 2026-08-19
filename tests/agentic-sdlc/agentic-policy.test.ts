@@ -54,7 +54,7 @@ describe("canonical agentic policy", () => {
     ).not.toContain("trading-safety");
     expect(
       [...policyModule.AGENTIC_POLICY.selfHealBlockingLabels],
-    ).toEqual(
+    ).not.toEqual(
       expect.arrayContaining(["security-review", "trading-safety"]),
     );
   });

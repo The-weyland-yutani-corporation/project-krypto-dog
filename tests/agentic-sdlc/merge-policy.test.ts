@@ -5,6 +5,7 @@ interface PullRequest {
   title: string;
   draft: boolean;
   html_url: string;
+  body: string;
   user: {
     login: string;
     type: string;
@@ -57,6 +58,13 @@ interface PolicyResult {
   hasSelfHealBlockingLabel: boolean;
   hasCurrentHumanApproval: boolean;
   hasCurrentHumanChangesRequested: boolean;
+  riskTier: string;
+  requiresHumanBoundaryApproval: boolean;
+  factoryMode: string;
+  factoryModeBlocksAction: boolean;
+  agentImplementationProvenance: boolean;
+  requiresVerifiedAgentProvenance: boolean;
+  implementationScopeValid: boolean;
 }
 
 interface SelfHealEligibility {
@@ -64,22 +72,30 @@ interface SelfHealEligibility {
   draft: boolean;
   trustedAgent: boolean;
   lowRisk: boolean;
+  riskTier?: string;
   hasBlockingLabel: boolean;
   ciNeedsDispatch: boolean;
   reviewShouldDispatch: boolean;
   ciHeld: boolean;
   reviewHeld: boolean;
+  specialistReviewPending?: boolean;
 }
 
 interface ReconcilerModule {
   canAttemptSelfHeal(input: SelfHealEligibility): boolean;
   countRepairAttempts(commits: Commit[]): number;
+  getRepairAttemptLimit(riskTier: string): number;
   evaluateMergePolicy(input: {
     pullRequest: PullRequest;
     files: ChangedFile[];
     reviews: Review[];
     checkRuns?: CheckRun[];
     repository: string;
+    factoryMode?: string;
+    agentImplementationProvenance?: boolean;
+    issueRiskLabel?: string;
+    issueAllowedPaths?: string[];
+    goalMaxRiskTier?: string;
   }): PolicyResult;
   getAgentApprovalState(
     files: ChangedFile[],
@@ -112,6 +128,13 @@ interface ReconcilerModule {
     pullRequest: PullRequest,
     repository: string,
   ): boolean;
+  getAgentImplementationReference(pullRequest: PullRequest): {
+    required: boolean;
+    valid: boolean;
+    nonce?: string;
+    issueNumber?: number;
+  };
+  getIssueFormSection(body: string, heading: string): string | undefined;
 }
 
 const {
@@ -119,6 +142,9 @@ const {
   countRepairAttempts,
   evaluateMergePolicy,
   getAgentApprovalState,
+  getAgentImplementationReference,
+  getIssueFormSection,
+  getRepairAttemptLimit,
   getRequiredSpecialistChecks,
   hasFailedCiRun,
   hasFailedReviewCheck,
@@ -140,6 +166,7 @@ function pullRequest(
     draft: false,
     html_url:
       "https://github.com/VeVarunSharma/project-krypto-dog/pull/42",
+    body: "",
     user: {
       login: "github-actions[bot]",
       type: "Bot",
@@ -173,12 +200,26 @@ function review(overrides: Partial<Review> = {}): Review {
   };
 }
 
+function passingCheck(name: string, id: number): CheckRun {
+  return {
+    id,
+    name,
+    status: "completed",
+    conclusion: "success",
+  };
+}
+
 function policy(
   overrides: {
     pullRequest?: PullRequest;
     files?: ChangedFile[];
     reviews?: Review[];
     checkRuns?: CheckRun[];
+    factoryMode?: string;
+    agentImplementationProvenance?: boolean;
+    issueRiskLabel?: string;
+    issueAllowedPaths?: string[];
+    goalMaxRiskTier?: string;
   } = {},
 ): PolicyResult {
   return evaluateMergePolicy({
@@ -199,23 +240,105 @@ function policy(
       },
     ],
     repository,
+    factoryMode: overrides.factoryMode,
+    agentImplementationProvenance:
+      overrides.agentImplementationProvenance,
+    issueRiskLabel: overrides.issueRiskLabel,
+    issueAllowedPaths: overrides.issueAllowedPaths,
+    goalMaxRiskTier: overrides.goalMaxRiskTier,
   });
 }
 
 describe("trusted agent identity", () => {
-  it.each(["github-actions[bot]", "copilot-swe-agent[bot]"])(
-    "trusts the enrolled same-repository %s identity",
-    (login) => {
+  it.each([
+    ["github-actions[bot]", "[docs-sync] Refresh contributor guide", ""],
+    [
+      "copilot-swe-agent[bot]",
+      "[ai-dev] Refresh contributor guide",
+      "<!-- factory-claim:run:1:42 -->\nRefs #42",
+    ],
+  ])(
+    "trusts the enrolled same-repository %s identity only for its title class",
+    (login, title, body) => {
       expect(
         isTrustedAgentPullRequest(
           pullRequest({
             user: { login, type: "Bot" },
+            title,
+            body,
           }),
           repository.toUpperCase(),
         ),
       ).toBe(true);
     },
   );
+
+  it("parses exactly one implementation claim and issue reference", () => {
+    expect(
+      getAgentImplementationReference(
+        pullRequest({
+          user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+          title: "[ai-dev] Implement",
+          body: "<!-- factory-claim:run:1:42 -->\nRefs #42",
+          labels: [
+            { name: "agentic-factory" },
+            { name: "agentic-automerge" },
+            { name: "risk:routine" },
+          ],
+        }),
+      ),
+    ).toEqual({
+      required: true,
+      valid: true,
+      nonce: "run:1:42",
+      issueNumber: 42,
+    });
+
+    expect(
+      getAgentImplementationReference(
+        pullRequest({
+          title: "[ai-dev] Missing claim",
+          body: "Refs #42",
+        }),
+      ),
+    ).toEqual({ required: true, valid: false });
+  });
+
+  it("reads rendered issue-form sections exactly", () => {
+    expect(
+      getIssueFormSection(
+        "### Scope and non-goals\n\nOne file.\n\n### Allowed paths\n\ndocs/**",
+        "Allowed paths",
+      ),
+    ).toBe("docs/**");
+    expect(
+      getIssueFormSection(
+        "### Allowed paths\n\ndocs/**\n\n### Allowed paths\n\nsrc/**",
+        "Allowed paths",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("does not let one trusted bot impersonate the other workflow class", () => {
+    expect(
+      isTrustedAgentPullRequest(
+        pullRequest({
+          user: { login: "github-actions[bot]", type: "Bot" },
+          title: "[ai-dev] Unverified implementation",
+        }),
+        repository,
+      ),
+    ).toBe(false);
+    expect(
+      isTrustedAgentPullRequest(
+        pullRequest({
+          user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+          title: "[docs-sync] Unverified docs",
+        }),
+        repository,
+      ),
+    ).toBe(false);
+  });
 
   it.each([
     {
@@ -349,7 +472,7 @@ describe("low-risk documentation allowlist", () => {
 });
 
 describe("deterministic merge policy", () => {
-  it("allows an enrolled trusted agent only for a low-risk change", () => {
+  it("allows routine work and waits for sensitive-work checks", () => {
     expect(policy()).toMatchObject({
       state: "success",
       description: "Current-head agent reviews approve this PR",
@@ -365,8 +488,9 @@ describe("deterministic merge policy", () => {
       }),
     ).toMatchObject({
       state: "pending",
-      description: "Waiting for Trading safety review",
+      description: "Waiting for QA verification",
       lowRisk: false,
+      riskTier: "risk:sensitive",
     });
   });
 
@@ -403,17 +527,28 @@ describe("deterministic merge policy", () => {
     });
   });
 
-  it("accepts only a trusted human approval on the current head", () => {
-    const highRiskFiles = [
-      { filename: "src/trading/policy.ts", status: "modified" },
+  it("requires current-head agent checks plus trusted human approval for boundary work", () => {
+    const boundaryFiles = [
+      { filename: ".github/workflows/ci.yml", status: "modified" },
+    ];
+    const boundaryChecks = [
+      passingCheck("Agentic code review", 1),
+      passingCheck("QA verification", 2),
+      passingCheck("Security review", 3),
     ];
 
     expect(
-      policy({ files: highRiskFiles, reviews: [review()] }),
+      policy({
+        files: boundaryFiles,
+        reviews: [review()],
+        checkRuns: boundaryChecks,
+      }),
     ).toMatchObject({
       state: "success",
-      description: "Current human approval satisfies policy",
+      description: "Current-head human and agent reviews approve boundary PR",
       hasCurrentHumanApproval: true,
+      riskTier: "risk:boundary",
+      requiresHumanBoundaryApproval: true,
     });
 
     for (const ineligibleReview of [
@@ -428,11 +563,13 @@ describe("deterministic merge policy", () => {
     ]) {
       expect(
         policy({
-          files: highRiskFiles,
+          files: boundaryFiles,
           reviews: [ineligibleReview],
+          checkRuns: boundaryChecks,
         }),
       ).toMatchObject({
         state: "pending",
+        description: "Boundary change requires current human approval",
         hasCurrentHumanApproval: false,
       });
     }
@@ -441,7 +578,7 @@ describe("deterministic merge policy", () => {
   it("lets the latest decisive review from one reviewer supersede its prior state", () => {
     expect(
       policy({
-        files: [{ filename: "src/app.ts", status: "modified" }],
+        files: [{ filename: "README.md", status: "modified" }],
         reviews: [
           review({ state: "CHANGES_REQUESTED" }),
           review({ state: "APPROVED" }),
@@ -475,12 +612,9 @@ describe("deterministic merge policy", () => {
     });
   });
 
-  it.each([
-    "blocked",
-    "self-heal-exhausted",
-    "needs-qa",
-    "ready-for-human-review",
-  ])("requires human approval when %s is present", (label) => {
+  it.each(["blocked", "self-heal-exhausted"])(
+    "keeps hard blocker %s pending",
+    (label) => {
     const result = policy({
       pullRequest: pullRequest({
         labels: [
@@ -495,17 +629,102 @@ describe("deterministic merge policy", () => {
       description: "A blocking review label requires changes",
       hasBlockingLabel: true,
     });
+    },
+  );
+
+  it.each([
+    ["needs-qa", "QA verification"],
+    ["security-review", "Security review"],
+    ["trading-safety", "Trading safety review"],
+  ])("uses transient %s as a required current-head check", (label, checkName) => {
+    const request = pullRequest({
+      labels: [
+        { name: "agentic-automerge" },
+        { name: label },
+      ],
+    });
+
+    expect(policy({ pullRequest: request })).toMatchObject({
+      state: "pending",
+      description: `Waiting for ${checkName}`,
+      hasBlockingLabel: true,
+    });
+    expect(
+      policy({
+        pullRequest: request,
+        checkRuns: [
+          passingCheck("Agentic code review", 1),
+          passingCheck(checkName, 2),
+        ],
+      }),
+    ).toMatchObject({
+      state: "success",
+      hasBlockingLabel: false,
+    });
+  });
+
+  it("keeps an emitted review check durable even without its requirement label", () => {
+    expect(
+      policy({
+        pullRequest: pullRequest({
+          labels: [
+            { name: "agentic-factory" },
+            { name: "agentic-automerge" },
+          ],
+        }),
+        checkRuns: [
+          passingCheck("Agentic code review", 1),
+          {
+            id: 2,
+            name: "QA verification",
+            status: "completed",
+            conclusion: "failure",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      state: "pending",
+      description: "QA verification requires changes",
+    });
+  });
+
+  it("treats ready-for-human-review as a boundary escalation", () => {
+    const escalated = pullRequest({
+      labels: [
+        { name: "agentic-automerge" },
+        { name: "ready-for-human-review" },
+      ],
+    });
+    const checks = [
+      passingCheck("Agentic code review", 1),
+      passingCheck("QA verification", 2),
+    ];
+    expect(policy({ pullRequest: escalated, checkRuns: checks })).toMatchObject({
+      state: "pending",
+      description: "Boundary change requires current human approval",
+      riskTier: "risk:boundary",
+    });
+    expect(
+      policy({
+        pullRequest: escalated,
+        checkRuns: checks,
+        reviews: [review()],
+      }),
+    ).toMatchObject({
+      state: "success",
+      description: "Current-head human and agent reviews approve boundary PR",
+    });
   });
 
   it.each([
     {
       label: "security-review",
-      file: ".github/workflows/ci.yml",
+      file: "docs/guides/contributing.md",
       specialistCheck: "Security review",
     },
     {
       label: "trading-safety",
-      file: "src/trading/policy.ts",
+      file: "docs/guides/contributing.md",
       specialistCheck: "Trading safety review",
     },
   ])(
@@ -513,7 +732,8 @@ describe("deterministic merge policy", () => {
     ({ label, file, specialistCheck }) => {
       const result = policy({
         pullRequest: pullRequest({
-          title: "[ai-dev] Update a routed surface",
+          title: "Update a routed surface",
+          user: { login: "trusted-human", type: "User" },
           labels: [
             { name: "agentic-automerge" },
             { name: label },
@@ -540,7 +760,7 @@ describe("deterministic merge policy", () => {
         state: "success",
         description: "Current-head agent reviews approve this PR",
         hasBlockingLabel: false,
-        hasSelfHealBlockingLabel: true,
+        hasSelfHealBlockingLabel: false,
       });
     },
   );
@@ -575,16 +795,114 @@ describe("deterministic merge policy", () => {
       description: "Draft pull requests cannot merge",
     });
   });
+
+  it("fails closed when an implementation PR lacks verified claim provenance", () => {
+    expect(
+      policy({
+        pullRequest: pullRequest({
+          user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+          title: "[ai-dev] Implement",
+          body: "<!-- factory-claim:run:1:42 -->\nRefs #42",
+          labels: [
+            { name: "agentic-factory" },
+            { name: "agentic-automerge" },
+            { name: "risk:routine" },
+          ],
+        }),
+        agentImplementationProvenance: false,
+      }),
+    ).toMatchObject({
+      state: "pending",
+      description: "Factory claim provenance is invalid",
+      requiresVerifiedAgentProvenance: true,
+      riskExceedsGoal: false,
+    });
+  });
+
+  it("inherits and cannot lower the claimed issue risk tier", () => {
+    const implementation = pullRequest({
+      user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+      title: "[ai-dev] Implement",
+      body: "<!-- factory-claim:run:1:42 -->\nRefs #42",
+      labels: [
+        { name: "agentic-factory" },
+        { name: "agentic-automerge" },
+        { name: "risk:routine" },
+      ],
+    });
+    expect(
+      policy({
+        pullRequest: implementation,
+        issueRiskLabel: "risk:boundary",
+        issueAllowedPaths: ["docs/**"],
+        goalMaxRiskTier: "risk:boundary",
+        checkRuns: [
+          passingCheck("Agentic code review", 1),
+          passingCheck("QA verification", 2),
+        ],
+      }),
+    ).toMatchObject({
+      state: "pending",
+      description: "Boundary change requires current human approval",
+      riskTier: "risk:boundary",
+    });
+
+  });
+
+  it("blocks an implementation diff that escapes the issue allowed paths", () => {
+    expect(
+      policy({
+        pullRequest: pullRequest({
+          user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+          title: "[ai-dev] Implement",
+          body: "<!-- factory-claim:run:1:42 -->\nRefs #42",
+          labels: [
+            { name: "agentic-factory" },
+            { name: "agentic-automerge" },
+            { name: "risk:routine" },
+          ],
+        }),
+        issueRiskLabel: "risk:routine",
+        issueAllowedPaths: ["docs/e2e/factory-full-heartbeat.md"],
+        files: [
+          {
+            filename: "src/trading/policy.ts",
+            status: "modified",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      state: "pending",
+      description: "PR changes escape issue allowed paths",
+      implementationScopeValid: false,
+    });
+  });
+
+  it.each([
+    ["shadow", "Factory shadow mode does not authorize merge"],
+    ["paused", "Factory is paused"],
+  ])("blocks enrolled PRs while factory mode is %s", (factoryMode, description) => {
+    expect(policy({ factoryMode })).toMatchObject({
+      state: "pending",
+      description,
+      factoryModeBlocksAction: true,
+    });
+    expect(
+      policy({
+        factoryMode,
+        pullRequest: pullRequest({
+          labels: [{ name: "agentic-factory" }],
+          user: { login: "trusted-human", type: "User" },
+        }),
+      }),
+    ).toMatchObject({
+      state: "success",
+      factoryModeBlocksAction: false,
+    });
+  });
 });
 
 describe("conditional specialist agent approval", () => {
-  const passingCheck = (name: string, id: number): CheckRun => ({
-    id,
-    name,
-    status: "completed",
-    conclusion: "success",
-  });
-
   it("maps security and workflow paths to Security review", () => {
     expect(
       getRequiredSpecialistChecks([
@@ -627,19 +945,21 @@ describe("conditional specialist agent approval", () => {
       },
     ];
     const codeReview = passingCheck("Agentic code review", 1);
-    const securityReview = passingCheck("Security review", 2);
-    const tradingReview = passingCheck("Trading safety review", 3);
+    const qaReview = passingCheck("QA verification", 2);
+    const securityReview = passingCheck("Security review", 3);
+    const tradingReview = passingCheck("Trading safety review", 4);
 
     expect(getAgentApprovalState(files, [codeReview])).toMatchObject({
       approved: false,
-      waitingCheck: "Security review",
+      waitingCheck: "QA verification",
       requiredSpecialistChecks: [
+        "QA verification",
         "Security review",
         "Trading safety review",
       ],
     });
     expect(
-      getAgentApprovalState(files, [codeReview, securityReview]),
+      getAgentApprovalState(files, [codeReview, qaReview, securityReview]),
     ).toMatchObject({
       approved: false,
       waitingCheck: "Trading safety review",
@@ -647,12 +967,14 @@ describe("conditional specialist agent approval", () => {
     expect(
       getAgentApprovalState(files, [
         codeReview,
+        qaReview,
         securityReview,
         tradingReview,
       ]),
     ).toMatchObject({
       approved: true,
       requiredSpecialistChecks: [
+        "QA verification",
         "Security review",
         "Trading safety review",
       ],
@@ -669,8 +991,9 @@ describe("conditional specialist agent approval", () => {
       ],
       checkRuns: [
         passingCheck("Agentic code review", 1),
+        passingCheck("QA verification", 2),
         {
-          id: 2,
+          id: 3,
           name: "Security review",
           status: "completed",
           conclusion: "failure",
@@ -694,7 +1017,8 @@ describe("conditional specialist agent approval", () => {
       ],
       checkRuns: [
         passingCheck("Agentic code review", 1),
-        passingCheck("Trading safety review", 2),
+        passingCheck("QA verification", 2),
+        passingCheck("Trading safety review", 3),
       ],
     });
 
@@ -706,6 +1030,13 @@ describe("conditional specialist agent approval", () => {
 });
 
 describe("bounded self-heal policy", () => {
+  it("caps routine at two, sensitive at one, and boundary at zero", () => {
+    expect(getRepairAttemptLimit("risk:routine")).toBe(2);
+    expect(getRepairAttemptLimit("risk:sensitive")).toBe(1);
+    expect(getRepairAttemptLimit("risk:boundary")).toBe(0);
+    expect(getRepairAttemptLimit("risk:unknown")).toBe(0);
+  });
+
   it("counts only trusted [self-heal] commits", () => {
     const commits: Commit[] = [
       {
@@ -743,6 +1074,7 @@ describe("bounded self-heal policy", () => {
     ["missing or held review", { reviewShouldDispatch: true }],
     ["held CI", { ciHeld: true }],
     ["held review", { reviewHeld: true }],
+    ["pending specialist review", { specialistReviewPending: true }],
   ] as const)("does not self-heal a %s pull request", (_name, override) => {
     const eligible: SelfHealEligibility = {
       sameRepository: true,
@@ -758,6 +1090,39 @@ describe("bounded self-heal policy", () => {
 
     expect(
       canAttemptSelfHeal({ ...eligible, ...override }),
+    ).toBe(false);
+  });
+
+  it("allows sensitive repair only when every other eligibility gate passes", () => {
+    expect(
+      canAttemptSelfHeal({
+        sameRepository: true,
+        draft: false,
+        trustedAgent: true,
+        lowRisk: false,
+        riskTier: "risk:sensitive",
+        hasBlockingLabel: false,
+        ciNeedsDispatch: false,
+        reviewShouldDispatch: false,
+        ciHeld: false,
+        reviewHeld: false,
+        specialistReviewPending: false,
+      }),
+    ).toBe(true);
+    expect(
+      canAttemptSelfHeal({
+        sameRepository: true,
+        draft: false,
+        trustedAgent: true,
+        lowRisk: false,
+        riskTier: "risk:boundary",
+        hasBlockingLabel: false,
+        ciNeedsDispatch: false,
+        reviewShouldDispatch: false,
+        ciHeld: false,
+        reviewHeld: false,
+        specialistReviewPending: false,
+      }),
     ).toBe(false);
   });
 

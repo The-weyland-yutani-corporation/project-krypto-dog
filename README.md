@@ -200,18 +200,29 @@ tests/                    # Jest unit + integration tests
 
 Observed live runs:
 
-- [Dedicated account succeeded; model deployment failed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
-- [Dev foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875)
-- [Prod foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745)
+- [Dedicated account succeeded; model deployment failed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
+- [Dev foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841581875)
+- [Prod foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841960745)
 
 GitHub Environments, branch restrictions, and protected values are configured.
-Required-reviewer rules are unavailable on the private repository's billing
-plan. GitHub-hosted jobs were also blocked at startup by the account's Actions
-billing state, so the first releases used the authenticated operator path with
-the same reviewed templates, exact source trees, immutable digests, and
+`production-deploy`, `production-promotion`, `platform`, and
+`development-promotion` each carry a human required reviewer (verified via
+the GitHub API); `development` carries only a branch policy and is the
+sole environment the factory mutates automatically. `development`,
+`platform`, `production-deploy`, and `production-promotion` allow both
+`develop/azure` and `main` as branch policy (`main` was added to
+`development` to match the automatic exact-SHA dev deploy below);
+`development-promotion` alone still allows only `develop/azure` and is not
+wired into any deployment workflow. The first releases
+predate this reviewer configuration and used the authenticated operator path
+with the same reviewed templates, exact source trees, immutable digests, and
 fail-closed evidence checks. Branch protection was restored after each reviewed
-merge. Shared-key PostHog telemetry is environment-tagged but cannot qualify as
-final project isolation for production promotion.
+merge. Dev now also deploys automatically after every successful push-triggered
+`CI` run on `main`, publishing `Dev deployment evidence` and a GitHub
+Deployment for the exact SHA CI validated (see
+[`specs/deployment.md`](./specs/deployment.md) §2-3). Shared-key PostHog
+telemetry is environment-tagged but cannot qualify as final project isolation
+for production promotion.
 
 Dev completed the staged
 disabled/manual → shadow/manual → unique manual shadow run → post-run
@@ -245,4 +256,4 @@ Project Krypto uses a hybrid spec strategy (see ADR [`0004-hybrid-spec-strategy.
 
 ## Repository
 
-[github.com/VeVarunSharma/project-krypto-dog](https://github.com/VeVarunSharma/project-krypto-dog)
+[github.com/The-weyland-yutani-corporation/project-krypto-dog](https://github.com/The-weyland-yutani-corporation/project-krypto-dog)

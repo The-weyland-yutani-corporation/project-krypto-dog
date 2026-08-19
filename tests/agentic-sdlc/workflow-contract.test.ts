@@ -13,10 +13,26 @@ describe("agentic SDLC workflow contracts", () => {
   );
   const e2e = read(".github/workflows/agentic-sdlc-e2e.yml");
   const codeReview = read(".github/workflows/code-review.md");
+  const implementTicket = read(".github/workflows/implement-ticket.md");
+  const qaReview = read(".github/workflows/qa-test-plan.md");
   const securityReview = read(".github/workflows/security-review.md");
   const selfHeal = read(".github/workflows/pr-self-heal.md");
   const tradingSafetyReview = read(
     ".github/workflows/trading-safety-review.md",
+  );
+  const devDeploy = read(".github/workflows/azure-deploy-dev.yml");
+  const prodDeploy = read(".github/workflows/azure-deploy-prod.yml");
+  const queueWorkflow = read(
+    ".github/workflows/factory-queue-controller.yml",
+  );
+  const lifecycleWorkflow = read(
+    ".github/workflows/agentic-lifecycle-reconciler.yml",
+  );
+  const fullE2e = read(
+    ".github/workflows/agentic-factory-full-e2e.yml",
+  );
+  const copilotSetup = read(
+    ".github/workflows/copilot-setup-steps.yml",
   );
 
   it("loads the tested reconciler implementation only from the trusted base", () => {
@@ -37,6 +53,33 @@ describe("agentic SDLC workflow contracts", () => {
     expect(reconciler).not.toContain("statuses: write");
   });
 
+  it.each([
+    ["queue controller", queueWorkflow, "agentic-queue-runtime.cjs"],
+    [
+      "lifecycle reconciler",
+      lifecycleWorkflow,
+      "agentic-lifecycle-reconciler.cjs",
+    ],
+  ])("loads the %s only from the trusted default branch", (_name, workflow, script) => {
+    expect(workflow).toContain(
+      "ref: ${{ github.event.repository.default_branch }}",
+    );
+    expect(workflow).toContain("persist-credentials: false");
+    expect(workflow).toContain("sparse-checkout: .github/scripts");
+    expect(workflow).toContain(script);
+    expect(workflow).not.toContain("ref: ${{ github.event.pull_request.head");
+  });
+
+  it("serializes deterministic queue and lifecycle mutation", () => {
+    expect(queueWorkflow).toContain("group: factory-queue-controller");
+    expect(queueWorkflow).toContain("cancel-in-progress: false");
+    expect(lifecycleWorkflow).toContain(
+      "group: agentic-lifecycle-reconciler",
+    );
+    expect(lifecycleWorkflow).toContain("cancel-in-progress: false");
+    expect(lifecycleWorkflow).not.toMatch(/^\s+status:/m);
+  });
+
   it("keeps the traditional E2E workflow manual-only", () => {
     const triggerBlock = e2e.slice(
       e2e.indexOf("on:"),
@@ -49,12 +92,83 @@ describe("agentic SDLC workflow contracts", () => {
     );
     expect(triggerBlock).toContain("- happy-path");
     expect(triggerBlock).toContain("- self-heal");
+    expect(e2e).toContain("Require human-activated factory mode");
+    expect(e2e).toContain('labels: "factory-control"');
+    expect(e2e).toContain('actor?.type !== "User"');
+  });
+
+  it("assigns claimed issues to the coding agent instead of editing directly", () => {
+    const triggerBlock = implementTicket.slice(
+      implementTicket.indexOf("on:"),
+      implementTicket.indexOf("permissions:"),
+    );
+
+    expect(triggerBlock).toContain("workflow_dispatch:");
+    expect(triggerBlock).toContain("claim_nonce:");
+    expect(triggerBlock).not.toContain("issues:");
+    expect(implementTicket).toContain("assign-to-agent:");
+    expect(implementTicket).toContain("custom-agent: project-krypto-dev");
+    expect(implementTicket).toContain(
+      "target: ${{ github.event.inputs.issue }}",
+    );
+    expect(implementTicket).not.toContain("create-pull-request:");
+  });
+
+  it("prepares the coding-agent workspace with pinned project dependencies", () => {
+    expect(copilotSetup).toContain("node-version-file: .nvmrc");
+    expect(copilotSetup).toContain("run: npm ci");
+    expect(copilotSetup).toContain("github/gh-aw-actions/setup-cli@v0.81.6");
+  });
+
+  it("emits machine-readable reviews and retains head-refresh requirements", () => {
+    expect(qaReview).toContain("name: QA verification");
+    expect(qaReview).toContain("create-check-run:");
+    expect(qaReview).not.toContain("remove-labels:");
+    expect(securityReview).not.toContain("remove-labels:");
+    expect(tradingSafetyReview).not.toContain("remove-labels:");
+    expect(qaReview).toContain("reruns");
+    expect(securityReview).toContain("reruns");
+    expect(tradingSafetyReview).toContain("reruns");
+    expect(reconciler).toContain("QA Test Plan");
+  });
+
+  it("automates only exact-SHA dev delivery from main", () => {
+    expect(devDeploy).toContain(
+      "github.event.workflow_run.head_branch == 'main'",
+    );
+    expect(devDeploy).toContain('context: "Dev deployment evidence"');
+    expect(devDeploy).toContain('environment: "development"');
+    expect(devDeploy).toContain("production_environment: false");
+  });
+
+  it("keeps production deployment structurally manual-only", () => {
+    const triggerBlock = prodDeploy.slice(
+      prodDeploy.indexOf("on:"),
+      prodDeploy.indexOf("concurrency:"),
+    );
+
+    expect(triggerBlock).toContain("workflow_dispatch:");
+    expect(triggerBlock).not.toContain("workflow_run:");
+    expect(prodDeploy).toContain("environment: production-promotion");
+    expect(prodDeploy).toContain("environment: production-deploy");
+  });
+
+  it("keeps the full-cycle canary goal-authorized and dev-only", () => {
+    expect(fullE2e).toContain("factory:goal-approved");
+    expect(fullE2e).toContain("factory-mode:active");
+    expect(fullE2e).toContain("latestHumanLabelEvent");
+    expect(fullE2e).toContain("factory-queue-controller.yml");
+    expect(fullE2e).toContain("factory:done");
+    expect(fullE2e).toContain("Dev deployment evidence");
+    expect(fullE2e).toContain('environment: "development"');
+    expect(fullE2e).toContain("factory-full-heartbeat.md");
+    expect(fullE2e).toContain("REQUESTED_AT");
+    expect(fullE2e).not.toContain("azure-deploy-prod");
+    expect(fullE2e).not.toContain("addLabels");
   });
 
   it("constrains the canary to the enrolled same-repository docs path", () => {
-    expect(e2e).toContain(
-      "if: github.repository == 'VeVarunSharma/project-krypto-dog'",
-    );
+    expect(e2e).not.toContain("if: github.repository ==");
     expect(e2e).toContain(
       "CANARY_PATH: docs/e2e/factory-heartbeat.md",
     );

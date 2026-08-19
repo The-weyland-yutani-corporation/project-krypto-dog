@@ -44,6 +44,10 @@ safe-outputs:
     labels: [agentic-factory, docs-sync]
     max: 3
     deduplicate-by-title: 1
+  remove-labels:
+    target: "*"
+    allowed: [docs-sync]
+    max: 1
   noop:
     report-as-issue: false
 max-ai-credits: 1400
@@ -73,4 +77,6 @@ Check whether docs and specs need updates.
 - Use `create-pull-request` for contained docs/spec updates.
 - Use `add-comment` for PR-local findings.
 - Use `create-issue` for follow-up docs gaps.
+- Use `remove-labels` to clear the processed `docs-sync` request label after
+  emitting the durable PR/comment/issue result.
 - Use `noop` when docs/specs are already aligned.

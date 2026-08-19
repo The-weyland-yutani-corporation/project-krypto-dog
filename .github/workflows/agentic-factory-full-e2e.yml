@@ -1,0 +1,405 @@
+name: Agentic Factory Full E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      goal_issue:
+        description: Human-approved factory goal issue number
+        required: true
+        type: string
+  schedule:
+    - cron: "17 6 * * 1"
+
+concurrency:
+  group: agentic-factory-full-e2e
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+  deployments: read
+  issues: write
+  pull-requests: read
+  statuses: read
+
+jobs:
+  full-cycle:
+    name: Exercise issue through exact-SHA dev evidence
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      vars.FACTORY_CANARY_GOAL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      INPUT_GOAL_ISSUE: ${{ inputs.goal_issue }}
+      SCHEDULED_GOAL_ISSUE: ${{ vars.FACTORY_CANARY_GOAL }}
+    steps:
+      - name: Create authorized canary issue
+        id: create
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const rawGoal =
+              context.eventName === "workflow_dispatch"
+                ? process.env.INPUT_GOAL_ISSUE
+                : process.env.SCHEDULED_GOAL_ISSUE;
+            if (!/^[1-9]\d*$/.test(rawGoal || "")) {
+              throw new Error("A positive approved goal issue number is required.");
+            }
+            const goalNumber = Number(rawGoal);
+
+            const [{ data: goal }, controls] = await Promise.all([
+              github.rest.issues.get({
+                owner,
+                repo,
+                issue_number: goalNumber,
+              }),
+              github.paginate(github.rest.issues.listForRepo, {
+                owner,
+                repo,
+                state: "open",
+                labels: "factory-control",
+                per_page: 100,
+              }),
+            ]);
+            const goalLabels = new Set(
+              goal.labels.map((label) =>
+                typeof label === "string" ? label : label.name,
+              ),
+            );
+            if (
+              goal.state !== "open" ||
+              !goalLabels.has("factory:goal") ||
+              !goalLabels.has("factory:goal-approved") ||
+              !goal.milestone
+            ) {
+              throw new Error(
+                `Goal #${goalNumber} is not an open, approved, milestone-bound factory goal.`,
+              );
+            }
+            if (controls.length !== 1) {
+              throw new Error(
+                `Expected one factory-control issue; found ${controls.length}.`,
+              );
+            }
+            const controlLabels = new Set(
+              controls[0].labels.map((label) =>
+                typeof label === "string" ? label : label.name,
+              ),
+            );
+            if (!controlLabels.has("factory-mode:active")) {
+              throw new Error("The factory must be human-activated before a full canary.");
+            }
+            const [goalTimeline, controlTimeline] = await Promise.all([
+              github.paginate(github.rest.issues.listEventsForTimeline, {
+                owner,
+                repo,
+                issue_number: goalNumber,
+                per_page: 100,
+              }),
+              github.paginate(github.rest.issues.listEventsForTimeline, {
+                owner,
+                repo,
+                issue_number: controls[0].number,
+                per_page: 100,
+              }),
+            ]);
+            const latestHumanLabelEvent = (events, labelName) =>
+              events
+                .filter(
+                  (event) =>
+                    event.event === "labeled" &&
+                    event.label?.name === labelName,
+                )
+                .sort(
+                  (left, right) =>
+                    Date.parse(right.created_at || "") -
+                    Date.parse(left.created_at || ""),
+                )[0]?.actor?.type === "User";
+            if (
+              !latestHumanLabelEvent(
+                goalTimeline,
+                "factory:goal-approved",
+              )
+            ) {
+              throw new Error(
+                `Goal #${goalNumber} approval is not backed by a human label event.`,
+              );
+            }
+            if (
+              !latestHumanLabelEvent(
+                controlTimeline,
+                "factory-mode:active",
+              )
+            ) {
+              throw new Error(
+                "Factory active mode is not backed by a human label event.",
+              );
+            }
+
+            const runUrl =
+              `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}` +
+              `/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const requestedAt = new Date().toISOString();
+            const body = [
+              "### Work type",
+              "",
+              "implementation",
+              "",
+              "### Approved parent goal",
+              "",
+              `#${goalNumber}`,
+              "",
+              "### Problem or goal",
+              "",
+              "Refresh the stable autonomous factory heartbeat with this canary run.",
+              "",
+              "### Scope and non-goals",
+              "",
+              "Modify only `docs/e2e/factory-full-heartbeat.md`. Do not change application, trading, auth, database, deployment, workflow, agent, skill, policy, or production files.",
+              "",
+              "### Allowed paths",
+              "",
+              "docs/e2e/factory-full-heartbeat.md",
+              "",
+              "### Risk tier",
+              "",
+              "risk:routine",
+              "",
+              "### Dependencies",
+              "",
+              "None",
+              "",
+              "### Acceptance criteria",
+              "",
+              `- The heartbeat names [run ${process.env.GITHUB_RUN_ID}](${runUrl}).`,
+              `- The heartbeat records requested time \`${requestedAt}\`.`,
+              "- Exactly one PR is opened and the issue is closed only after dev evidence.",
+              "",
+              "### Validation plan",
+              "",
+              "Verify the single Markdown file contains the exact run link and requested timestamp.",
+              "",
+              "### Rollback or safe reversal",
+              "",
+              "Revert the single heartbeat commit.",
+              "",
+              "### Context, links, or constraints",
+              "",
+              `Full-cycle canary run: ${runUrl}`,
+            ].join("\n");
+
+            const { data: issue } = await github.rest.issues.create({
+              owner,
+              repo,
+              title: `[factory-canary] Full autonomous cycle ${process.env.GITHUB_RUN_ID}`,
+              body,
+              labels: [
+                "agentic-factory",
+                "ready-for-ai-dev",
+                "risk:routine",
+              ],
+              milestone: goal.milestone.number,
+            });
+
+            try {
+              await github.request(
+                "POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues",
+                {
+                  owner,
+                  repo,
+                  issue_number: goalNumber,
+                  sub_issue_id: issue.id,
+                },
+              );
+            } catch (error) {
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: issue.number,
+                state: "closed",
+                state_reason: "not_planned",
+              });
+              throw error;
+            }
+
+            core.setOutput("issue", String(issue.number));
+            core.setOutput("goal", String(goalNumber));
+            core.setOutput("requested_at", requestedAt);
+
+      - name: Invoke queue controller
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              ...context.repo,
+              workflow_id: "factory-queue-controller.yml",
+              ref: context.payload.repository.default_branch,
+            });
+
+      - name: Wait for terminal dev-evidence state
+        uses: actions/github-script@v9
+        env:
+          CANARY_ISSUE: ${{ steps.create.outputs.issue }}
+          REQUESTED_AT: ${{ steps.create.outputs.requested_at }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issueNumber = Number(process.env.CANARY_ISSUE);
+            const deadline = Date.now() + 330 * 60 * 1000;
+            let previous = "";
+
+            while (Date.now() < deadline) {
+              const { data: issue } = await github.rest.issues.get({
+                owner,
+                repo,
+                issue_number: issueNumber,
+              });
+              const labels = issue.labels
+                .map((label) =>
+                  typeof label === "string" ? label : label.name,
+                )
+                .filter(Boolean)
+                .sort();
+              const summary = JSON.stringify({
+                state: issue.state,
+                labels,
+              });
+              if (summary !== previous) {
+                core.info(summary);
+                previous = summary;
+              }
+
+              if (labels.includes("blocked")) {
+                throw new Error(`Canary issue #${issueNumber} entered blocked state.`);
+              }
+              if (
+                issue.state === "closed" &&
+                labels.includes("factory:done")
+              ) {
+                const query =
+                  `repo:${owner}/${repo} is:pr "Refs #${issueNumber}"`;
+                const { data: search } =
+                  await github.rest.search.issuesAndPullRequests({
+                    q: query,
+                    per_page: 20,
+                  });
+                const exact = search.items.filter((item) =>
+                  new RegExp(`Refs #${issueNumber}(?!\\d)`).test(
+                    item.body || "",
+                  ),
+                );
+                if (exact.length !== 1) {
+                  throw new Error(
+                    `Expected one canary PR for issue #${issueNumber}; found ${exact.length}.`,
+                  );
+                }
+                const { data: pull } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: exact[0].number,
+                });
+                if (!pull.merged_at || !pull.merge_commit_sha) {
+                  throw new Error(
+                    `Canary PR #${pull.number} did not produce a merge SHA.`,
+                  );
+                }
+                const { data: heartbeat } =
+                  await github.rest.repos.getContent({
+                    owner,
+                    repo,
+                    path: "docs/e2e/factory-full-heartbeat.md",
+                    ref: pull.merge_commit_sha,
+                  });
+                if (
+                  Array.isArray(heartbeat) ||
+                  heartbeat.type !== "file"
+                ) {
+                  throw new Error(
+                    "Full-cycle heartbeat path did not resolve to a file.",
+                  );
+                }
+                const heartbeatContent = Buffer.from(
+                  heartbeat.content,
+                  "base64",
+                ).toString("utf8");
+                if (
+                  !heartbeatContent.includes(
+                    `run ${process.env.GITHUB_RUN_ID}`,
+                  ) ||
+                  !heartbeatContent.includes(process.env.REQUESTED_AT)
+                ) {
+                  throw new Error(
+                    "Full-cycle heartbeat does not contain this run's exact evidence.",
+                  );
+                }
+                const [statuses, deployments] = await Promise.all([
+                  github.paginate(
+                    github.rest.repos.listCommitStatusesForRef,
+                    {
+                      owner,
+                      repo,
+                      ref: pull.merge_commit_sha,
+                      per_page: 100,
+                    },
+                  ),
+                  github.paginate(github.rest.repos.listDeployments, {
+                    owner,
+                    repo,
+                    sha: pull.merge_commit_sha,
+                    environment: "development",
+                    per_page: 100,
+                  }),
+                ]);
+                const devStatus = statuses.find(
+                  (status) =>
+                    status.context === "Dev deployment evidence",
+                );
+                if (devStatus?.state !== "success") {
+                  throw new Error(
+                    `Merge ${pull.merge_commit_sha} lacks successful dev evidence status.`,
+                  );
+                }
+                let successfulDeployment = false;
+                for (const deployment of deployments) {
+                  const deploymentStatuses = await github.paginate(
+                    github.rest.repos.listDeploymentStatuses,
+                    {
+                      owner,
+                      repo,
+                      deployment_id: deployment.id,
+                      per_page: 100,
+                    },
+                  );
+                  if (
+                    deploymentStatuses.some(
+                      (status) => status.state === "success",
+                    )
+                  ) {
+                    successfulDeployment = true;
+                    break;
+                  }
+                }
+                if (!successfulDeployment) {
+                  throw new Error(
+                    `Merge ${pull.merge_commit_sha} lacks a successful development Deployment.`,
+                  );
+                }
+                core.info(
+                  `Canary issue #${issueNumber} completed through exact-SHA dev evidence.`,
+                );
+                return;
+              }
+              if (issue.state === "closed") {
+                throw new Error(
+                  `Canary issue #${issueNumber} closed without factory completion evidence.`,
+                );
+              }
+
+              await new Promise((resolve) => setTimeout(resolve, 30000));
+            }
+
+            throw new Error(
+              `Timed out waiting for canary issue #${issueNumber} to complete.`,
+            );

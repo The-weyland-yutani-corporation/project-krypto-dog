@@ -34,7 +34,10 @@ safe-outputs:
     max: 1
     hide-older-comments: true
   add-labels:
-    allowed: [ready-for-planning, ready-for-ai-dev, needs-qa, security-review, trading-safety, ready-for-human-review]
+    allowed: [ready-for-planning, ready-for-ai-dev, needs-qa, security-review, trading-safety, ready-for-human-review, risk:routine, risk:sensitive, risk:boundary, blocked]
+    max: 5
+  remove-labels:
+    allowed: [needs-rubber-duck, ready-for-planning, ready-for-ai-dev, risk:routine, risk:sensitive, risk:boundary]
     max: 5
   noop:
     report-as-issue: false
@@ -58,8 +61,14 @@ Run a round-robin review using these lenses:
 
 Synthesize one final recommendation: `approve`, `revise`, or `block`.
 
+For an issue, verify it descends from a human-approved factory goal and stays
+inside the goal scope/risk ceiling. Apply `ready-for-ai-dev` only when the
+readiness contract is complete and exactly one risk label is present. Remove
+superseded state/risk labels when advancing it.
+
 ## Safe outputs
 
 - Use `add-comment` with the full review and decision.
 - Use `add-labels` only when the next state is clear.
+- Use `remove-labels` only to clear superseded workflow-state or risk labels.
 - Use `noop` if there is no approach or target to review.

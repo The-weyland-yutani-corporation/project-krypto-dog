@@ -44,11 +44,17 @@ max-daily-ai-credits: 2000
 
 # Opportunity Discovery
 
-Discover at most **one** high-quality opportunity ticket per run. Scope is limited to v2.1 Safety and Correctness and v2.2 Evidence-Grade Paper Trading foundations. Strategy research is explicitly deferred.
+Discover at most **one** high-quality opportunity ticket per run inside a
+human-approved factory goal. Strategy research is explicitly deferred.
 
 ## WIP gate (check this first)
 
 Count the number of open issues with label `opportunity` that do **not** have label `blocked`. If that count is **≥ 20**, call `noop` immediately with the reason "backlog WIP limit reached — {count} open opportunity issues". Do not proceed further.
+
+Also require exactly one open parent goal carrying `factory:goal-approved`.
+Read its allowed scope, non-goals, maximum risk, WIP, and assignment budget.
+Call `noop` when no goal is active or when its queued/claimed/implementing work
+already reaches the goal's WIP allowance.
 
 Also call `noop` if:
 - The trigger is `workflow_dispatch` or `schedule` and there are no visible gaps in the v2.1 or v2.2 foundation work.
@@ -58,7 +64,7 @@ Also call `noop` if:
 
 - If triggered manually, use this focus if provided: `${{ github.event.inputs.focus }}`.
 - If triggered by `/discover`, use the sanitized triggering text as steering context: `${{ steps.sanitized.outputs.text }}`.
-- If no focus is provided, inspect the repository, current issues/PRs, specs, and obvious gaps in v2.1/v2.2 work only.
+- If no focus is provided, inspect only gaps authorized by the active goal.
 
 ## Allowed scope
 
@@ -84,6 +90,9 @@ Act as a proactive PM/research agent.
 6. Every created ticket starts behind rubber-duck review. Do not label tickets `ready-for-planning` or `ready-for-ai-dev`.
 7. For any ticket touching guardrails, portfolio accounting, risk controls, or live-trading boundaries, state that it requires rubber-duck and trading-safety review before implementation.
 8. If no opportunity clears the quality bar, call `noop`.
+9. Link the created opportunity to the active goal and include the goal number
+   in its body. Set the safe output's native `parent` to that goal number.
+   Never create or approve a new goal.
 
 ## Ticket format
 

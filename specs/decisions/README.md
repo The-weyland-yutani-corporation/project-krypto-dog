@@ -57,3 +57,4 @@ What did we choose, in one or two paragraphs?
 | [0010](./0010-staged-correction-ops.md) | Staged, report-only CorrectionOps | Accepted |
 | [0011](./0011-mock-first-worktree-harness.md) | Mock-first, per-worktree application harness | Accepted |
 | [0012](./0012-evidence-gated-automation-authority.md) | Evidence-gated automation authority | Accepted |
+| [0013](./0013-autonomous-agentic-sdlc-factory.md) | Safety-bounded autonomous agentic SDLC factory (goal-bound queue controller, tiered risk/repair caps, dev-only auto-deploy) | Accepted |
