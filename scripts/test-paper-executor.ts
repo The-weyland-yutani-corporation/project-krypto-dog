@@ -9,6 +9,7 @@ import {
   tradeExecution,
 } from "../src/db/schema";
 import { createPaperExecutor } from "../src/trading/paper-executor";
+import { TradeAuthorizationError } from "../src/trading/errors";
 import { DEFAULT_STRATEGY_CONFIG } from "../src/trading/strategy-config";
 
 function requireEnv(name: string): string {
@@ -261,8 +262,76 @@ async function main() {
     allTrades.length,
   );
 
+  // Test: policy re-evaluation inside the locked transaction denies a trade
+  // when operator pauses between the API decision and the execution lock.
+  const pauseTime = new Date(start.getTime() + 15 * 60 * 60 * 1000);
+  await prepareRun("executor-run-6", "lease-6", pauseTime);
+  const beforePause = await stateSnapshot();
+
+  // Pause the operator via a separate connection after prepareRun, simulating
+  // a state change that occurs between the API decision and execution lock.
+  await adminDb
+    .update(agentState)
+    .set({ isOperatorPaused: true })
+    .where(eq(agentState.id, "singleton"));
+
+  let pauseDenialError: unknown;
+  try {
+    await firstExecutor({
+      ...firstRequest,
+      agentRunId: "executor-run-6",
+      leaseOwner: "lease-6",
+      decision: {
+        action: "BUY",
+        notionalUSD: 20,
+        reasoning: "should be denied due to operator pause",
+      },
+      market: {
+        ...firstRequest.market,
+        spotPriceUSD: 1900,
+        observedAt: pauseTime,
+      },
+      now: pauseTime,
+    });
+  } catch (err) {
+    pauseDenialError = err;
+  }
+
+  assert(
+    pauseDenialError instanceof TradeAuthorizationError,
+    `Expected TradeAuthorizationError but got: ${pauseDenialError}`,
+  );
+
+  const afterPause = await stateSnapshot();
+  assert.equal(
+    afterPause.currentPositionETHDecimal,
+    beforePause.currentPositionETHDecimal,
+    "ETH balance must not change on denied trade",
+  );
+  assert.equal(
+    afterPause.currentPositionUSDCDecimal,
+    beforePause.currentPositionUSDCDecimal,
+    "USDC balance must not change on denied trade",
+  );
+
+  const pauseDeniedTrades = await adminDb
+    .select({ id: tradeExecution.id })
+    .from(tradeExecution)
+    .where(eq(tradeExecution.agentRunId, "executor-run-6"));
+  assert.equal(
+    pauseDeniedTrades.length,
+    0,
+    "No trade rows must be created when authorization is denied",
+  );
+
+  // Restore operator pause so subsequent runs are unaffected.
+  await adminDb
+    .update(agentState)
+    .set({ isOperatorPaused: false })
+    .where(eq(agentState.id, "singleton"));
+
   console.log(
-    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, weighted accounting, partial sell, and full exit.",
+    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, weighted accounting, partial sell, full exit, and policy re-evaluation denial.",
   );
 }
 
