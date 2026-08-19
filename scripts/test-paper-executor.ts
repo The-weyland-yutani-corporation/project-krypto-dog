@@ -10,6 +10,7 @@ import {
 } from "../src/db/schema";
 import { createPaperExecutor } from "../src/trading/paper-executor";
 import { DEFAULT_STRATEGY_CONFIG } from "../src/trading/strategy-config";
+import { TradeAuthorizationError } from "../src/trading/errors";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -261,8 +262,92 @@ async function main() {
     allTrades.length,
   );
 
+  // Denial test 1: slippage ceiling rejection
+  const slippageTime = new Date(start.getTime() + 15 * 60 * 60 * 1000);
+  await prepareRun("executor-run-6", "lease-6", slippageTime);
+  const beforeSlippageReject = await stateSnapshot();
+  await assert.rejects(
+    firstExecutor({
+      ...firstRequest,
+      agentRunId: "executor-run-6",
+      leaseOwner: "lease-6",
+      strategy: {
+        ...DEFAULT_STRATEGY_CONFIG,
+        paperSlippageBps: DEFAULT_STRATEGY_CONFIG.slippageCeilingBps + 1,
+      },
+      market: {
+        ...firstRequest.market,
+        spotPriceUSD: 1900,
+        observedAt: slippageTime,
+      },
+      now: slippageTime,
+    }),
+    (err: unknown) => err instanceof TradeAuthorizationError,
+  );
+  const afterSlippageReject = await stateSnapshot();
+  assert.equal(
+    afterSlippageReject.currentPositionETHDecimal,
+    beforeSlippageReject.currentPositionETHDecimal,
+  );
+  assert.equal(
+    afterSlippageReject.currentPositionUSDCDecimal,
+    beforeSlippageReject.currentPositionUSDCDecimal,
+  );
+  const slippageRejectTrades = await adminDb
+    .select({ id: tradeExecution.id })
+    .from(tradeExecution)
+    .where(eq(tradeExecution.agentRunId, "executor-run-6"));
+  assert.equal(slippageRejectTrades.length, 0);
+
+  // Denial test 2: non-PAPER mode rejection
+  const liveRunTime = new Date(start.getTime() + 18 * 60 * 60 * 1000);
+  await adminDb.insert(agentRun).values({
+    id: "executor-run-7",
+    idempotencyKey: "executor-run-7-idempotency",
+    triggerSource: "database-test",
+    tradingMode: "SHADOW",
+    strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+  });
+  await adminDb
+    .update(agentState)
+    .set({
+      leaseOwner: "lease-7",
+      leaseExpiresAt: new Date(liveRunTime.getTime() + 60 * 60 * 1000),
+      isRunning: true,
+    })
+    .where(eq(agentState.id, "singleton"));
+  const beforeLiveReject = await stateSnapshot();
+  await assert.rejects(
+    firstExecutor({
+      ...firstRequest,
+      agentRunId: "executor-run-7",
+      leaseOwner: "lease-7",
+      market: {
+        ...firstRequest.market,
+        spotPriceUSD: 1900,
+        observedAt: liveRunTime,
+      },
+      now: liveRunTime,
+    }),
+    (err: unknown) => err instanceof TradeAuthorizationError,
+  );
+  const afterLiveReject = await stateSnapshot();
+  assert.equal(
+    afterLiveReject.currentPositionETHDecimal,
+    beforeLiveReject.currentPositionETHDecimal,
+  );
+  assert.equal(
+    afterLiveReject.currentPositionUSDCDecimal,
+    beforeLiveReject.currentPositionUSDCDecimal,
+  );
+  const liveRejectTrades = await adminDb
+    .select({ id: tradeExecution.id })
+    .from(tradeExecution)
+    .where(eq(tradeExecution.agentRunId, "executor-run-7"));
+  assert.equal(liveRejectTrades.length, 0);
+
   console.log(
-    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, weighted accounting, partial sell, and full exit.",
+    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, weighted accounting, partial sell, full exit, slippage ceiling rejection, and non-PAPER mode rejection.",
   );
 }
 
