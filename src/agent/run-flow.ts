@@ -98,6 +98,44 @@ type InvocationAcquisition =
   | { kind: "existing"; run: AgentRun }
   | { kind: "conflict"; runId: string; message: string };
 
+/**
+ * Injectable dependencies for `executeAgentRun`.
+ * All fields are optional; callers that do not supply a field get the
+ * production default wired by `buildDefaultAgentRunDeps`.
+ * @internal — test-only surface; not part of the public module contract.
+ */
+export interface AgentRunDeps {
+  /** Provides the structured HOLD/BUY/SELL model proposal. */
+  decisionProvider?: DecisionProvider;
+  /** Executes a paper trade transactionally. */
+  paperExecutor?: typeof executePaperTrade;
+  /** Persists a journal entry for a completed run. */
+  journalPersist?: typeof persistJournal;
+  /** Releases the owned run lease after a run completes or errors. */
+  leaseRelease?: typeof releaseLease;
+  /** Fires the agent-run-started analytics event. */
+  analyticsRunStarted?: typeof trackAgentRunStarted;
+  /** Fires the agent-run-completed analytics event. */
+  analyticsRunCompleted?: typeof trackAgentRunCompleted;
+}
+
+/**
+ * Builds the production `AgentRunDeps` by wiring the existing static imports.
+ * No behaviour is changed; this is a pure re-export of the module-level
+ * singletons/functions already used by `executeAgentRun`.
+ * @internal — test-only surface.
+ */
+export function buildDefaultAgentRunDeps(): Required<AgentRunDeps> {
+  return {
+    decisionProvider: resolveDecisionProvider(),
+    paperExecutor: executePaperTrade,
+    journalPersist: persistJournal,
+    leaseRelease: releaseLease,
+    analyticsRunStarted: trackAgentRunStarted,
+    analyticsRunCompleted: trackAgentRunCompleted,
+  };
+}
+
 export function configuredModelVersion(
   env: Record<string, string | undefined> = process.env,
 ): string | null {
