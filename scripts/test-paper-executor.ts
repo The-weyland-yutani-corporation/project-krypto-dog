@@ -9,6 +9,7 @@ import {
   tradeExecution,
 } from "../src/db/schema";
 import { createPaperExecutor } from "../src/trading/paper-executor";
+import { TradeConflictError } from "../src/trading/errors";
 import { DEFAULT_STRATEGY_CONFIG } from "../src/trading/strategy-config";
 
 function requireEnv(name: string): string {
@@ -261,8 +262,158 @@ async function main() {
     allTrades.length,
   );
 
+  // --- Denial suite: missing AgentRun ---
+  const missingRunTime = new Date(start.getTime() + 15 * 60 * 60 * 1000);
+  // Set up a valid lease state but use a non-existent agentRunId
+  await adminDb
+    .update(agentState)
+    .set({
+      leaseOwner: "lease-missing",
+      leaseExpiresAt: new Date(missingRunTime.getTime() + 60 * 60 * 1000),
+      isRunning: true,
+    })
+    .where(eq(agentState.id, "singleton"));
+  const beforeMissingRun = await stateSnapshot();
+  await assert.rejects(
+    firstExecutor({
+      ...firstRequest,
+      agentRunId: "executor-run-nonexistent",
+      leaseOwner: "lease-missing",
+      decision: {
+        action: "BUY",
+        notionalUSD: 10,
+        reasoning: "missing agent run rejection",
+      },
+      market: {
+        ...firstRequest.market,
+        spotPriceUSD: 2000,
+        observedAt: missingRunTime,
+      },
+      now: missingRunTime,
+    }),
+    TradeConflictError,
+  );
+  const afterMissingRun = await stateSnapshot();
+  assert.equal(
+    afterMissingRun.currentPositionETHDecimal,
+    beforeMissingRun.currentPositionETHDecimal,
+  );
+  assert.equal(
+    afterMissingRun.currentPositionUSDCDecimal,
+    beforeMissingRun.currentPositionUSDCDecimal,
+  );
+  const missingRunTrades = await adminDb
+    .select({ id: tradeExecution.id })
+    .from(tradeExecution)
+    .where(eq(tradeExecution.agentRunId, "executor-run-nonexistent"));
+  assert.equal(missingRunTrades.length, 0);
+
+  // --- Denial suite: expired lease (past) ---
+  const expiredTime = new Date(start.getTime() + 18 * 60 * 60 * 1000);
+  await adminDb.insert(agentRun).values({
+    id: "executor-run-expired",
+    idempotencyKey: "executor-run-expired-idempotency",
+    triggerSource: "database-test",
+    tradingMode: "PAPER",
+    strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+  });
+  await adminDb
+    .update(agentState)
+    .set({
+      leaseOwner: "lease-expired",
+      leaseExpiresAt: new Date(expiredTime.getTime() - 1), // 1 ms in the past
+      isRunning: true,
+    })
+    .where(eq(agentState.id, "singleton"));
+  const beforeExpired = await stateSnapshot();
+  await assert.rejects(
+    firstExecutor({
+      ...firstRequest,
+      agentRunId: "executor-run-expired",
+      leaseOwner: "lease-expired",
+      decision: {
+        action: "BUY",
+        notionalUSD: 10,
+        reasoning: "expired lease rejection",
+      },
+      market: {
+        ...firstRequest.market,
+        spotPriceUSD: 2000,
+        observedAt: expiredTime,
+      },
+      now: expiredTime,
+    }),
+    TradeConflictError,
+  );
+  const afterExpired = await stateSnapshot();
+  assert.equal(
+    afterExpired.currentPositionETHDecimal,
+    beforeExpired.currentPositionETHDecimal,
+  );
+  assert.equal(
+    afterExpired.currentPositionUSDCDecimal,
+    beforeExpired.currentPositionUSDCDecimal,
+  );
+  const expiredTrades = await adminDb
+    .select({ id: tradeExecution.id })
+    .from(tradeExecution)
+    .where(eq(tradeExecution.agentRunId, "executor-run-expired"));
+  assert.equal(expiredTrades.length, 0);
+
+  // --- Denial suite: lease expired at exactly now (edge case) ---
+  const exactNowTime = new Date(start.getTime() + 21 * 60 * 60 * 1000);
+  await adminDb.insert(agentRun).values({
+    id: "executor-run-exact-now",
+    idempotencyKey: "executor-run-exact-now-idempotency",
+    triggerSource: "database-test",
+    tradingMode: "PAPER",
+    strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+  });
+  await adminDb
+    .update(agentState)
+    .set({
+      leaseOwner: "lease-exact-now",
+      leaseExpiresAt: exactNowTime, // equals now exactly
+      isRunning: true,
+    })
+    .where(eq(agentState.id, "singleton"));
+  const beforeExactNow = await stateSnapshot();
+  await assert.rejects(
+    firstExecutor({
+      ...firstRequest,
+      agentRunId: "executor-run-exact-now",
+      leaseOwner: "lease-exact-now",
+      decision: {
+        action: "BUY",
+        notionalUSD: 10,
+        reasoning: "exact-now lease rejection",
+      },
+      market: {
+        ...firstRequest.market,
+        spotPriceUSD: 2000,
+        observedAt: exactNowTime,
+      },
+      now: exactNowTime,
+    }),
+    TradeConflictError,
+  );
+  const afterExactNow = await stateSnapshot();
+  assert.equal(
+    afterExactNow.currentPositionETHDecimal,
+    beforeExactNow.currentPositionETHDecimal,
+  );
+  assert.equal(
+    afterExactNow.currentPositionUSDCDecimal,
+    beforeExactNow.currentPositionUSDCDecimal,
+  );
+  const exactNowTrades = await adminDb
+    .select({ id: tradeExecution.id })
+    .from(tradeExecution)
+    .where(eq(tradeExecution.agentRunId, "executor-run-exact-now"));
+  assert.equal(exactNowTrades.length, 0);
+
   console.log(
-    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, weighted accounting, partial sell, and full exit.",
+    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, weighted accounting, partial sell, full exit, missing AgentRun denial, expired lease denial, and exact-now lease denial.",
   );
 }
 
