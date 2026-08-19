@@ -8,7 +8,7 @@ import {
   agentState,
   tradeExecution,
 } from "../src/db/schema";
-import { createPaperExecutor } from "../src/trading/paper-executor";
+import { createPaperExecutor, PaperExecutionResult } from "../src/trading/paper-executor";
 import { DEFAULT_STRATEGY_CONFIG } from "../src/trading/strategy-config";
 
 function requireEnv(name: string): string {
@@ -254,15 +254,96 @@ async function main() {
     .where(eq(tradeExecution.agentRunId, "executor-run-5"));
   assert.equal(ownerMismatchTrades.length, 0);
 
+  // --- executor-run-6: before-lock idempotency ---
+  // Insert a tradeExecution row directly before calling the executor.
+  // The before-lock guard (line ~223-238 of paper-executor.ts) should detect
+  // the existing row and return {status: "idempotent"} without re-executing.
+  const beforeLockTime = new Date(start.getTime() + 15 * 60 * 60 * 1000);
+  await prepareRun("executor-run-6", "lease-6", beforeLockTime);
+  const beforeLockSnapshot = await stateSnapshot();
+  await adminDb.insert(tradeExecution).values({
+    direction: "BUY",
+    asset: "ETH",
+    amountUSD: 20,
+    amountAsset: 20 / 1900,
+    executionPrice: 1900,
+    agentReasoning: "pre-inserted for before-lock idempotency test",
+    agentRunId: "executor-run-6",
+    strategyVersion: DEFAULT_STRATEGY_CONFIG.version,
+  });
+  const beforeLockResult = await firstExecutor({
+    ...firstRequest,
+    agentRunId: "executor-run-6",
+    leaseOwner: "lease-6",
+    decision: { action: "BUY", notionalUSD: 20, reasoning: "before-lock idempotency" },
+    market: { ...firstRequest.market, observedAt: beforeLockTime },
+    now: beforeLockTime,
+  });
+  assert.equal(beforeLockResult.status, "idempotent");
+  // agentState must be unchanged — no double-execution
+  const afterBeforeLockSnapshot = await stateSnapshot();
+  assert.equal(
+    afterBeforeLockSnapshot.currentPositionETHDecimal,
+    beforeLockSnapshot.currentPositionETHDecimal,
+  );
+  assert.equal(
+    afterBeforeLockSnapshot.currentPositionUSDCDecimal,
+    beforeLockSnapshot.currentPositionUSDCDecimal,
+  );
+
+  // --- executor-run-7: after-lock idempotency ---
+  // The first executor holds the FOR UPDATE row-lock (inside afterTradeInsert hook,
+  // trade inserted but transaction not yet committed).  The second executor starts
+  // concurrently, passes the before-lock check (trade not visible yet under READ
+  // COMMITTED), then blocks waiting for the lock.  When the first executor commits,
+  // the second unblocks, re-checks inside the lock (after-lock guard, line ~263-270
+  // of paper-executor.ts), finds the committed trade, and returns {status:"idempotent"}.
+  const afterLockTime = new Date(start.getTime() + 18 * 60 * 60 * 1000);
+  await prepareRun("executor-run-7", "lease-7", afterLockTime);
+  const afterLockRequest = {
+    ...firstRequest,
+    agentRunId: "executor-run-7",
+    leaseOwner: "lease-7",
+    decision: { action: "BUY" as const, notionalUSD: 20, reasoning: "after-lock idempotency" },
+    market: { ...firstRequest.market, observedAt: afterLockTime },
+    now: afterLockTime,
+  };
+  let afterLockSecondPromise: Promise<PaperExecutionResult> | undefined;
+  const afterLockFirst = await firstExecutor({
+    ...afterLockRequest,
+    hooks: {
+      afterTradeInsert: () => {
+        // First executor still holds the FOR UPDATE lock here.
+        // Launch second executor so it will block on the lock, then detect the
+        // committed trade via the after-lock re-check.
+        afterLockSecondPromise = secondExecutor(afterLockRequest);
+        // Brief pause to allow second executor to reach the FOR UPDATE wait.
+        return new Promise<void>((resolve) => setTimeout(resolve, 80));
+      },
+    },
+  });
+  assert.equal(afterLockFirst.status, "executed");
+  assert(afterLockSecondPromise !== undefined, "second executor promise was not set");
+  const afterLockSecond = await afterLockSecondPromise;
+  assert.equal(afterLockSecond.status, "idempotent");
+  // balances must reflect the single committed trade, not a double-execution
+  const afterLockSnapshot = await stateSnapshot();
+  assert.notEqual(
+    afterLockSnapshot.currentPositionETHDecimal,
+    beforeLockSnapshot.currentPositionETHDecimal,
+    "after-lock: ETH position should have changed from the executed trade",
+  );
+
   const allTrades = await adminDb.select().from(tradeExecution);
-  assert.equal(allTrades.length, 4);
+  // run-1: 1 executed trade; run-2: 1; run-3: 1; run-4: 1; run-6: 1 (pre-inserted, no extra); run-7: 1
+  assert.equal(allTrades.length, 6);
   assert.equal(
     new Set(allTrades.map((trade) => trade.agentRunId)).size,
     allTrades.length,
   );
 
   console.log(
-    "Paper executor tests passed for concurrency, idempotency, rollback, lease ownership, weighted accounting, partial sell, and full exit.",
+    "Paper executor tests passed for concurrency, idempotency (before-lock and after-lock), rollback, lease ownership, weighted accounting, partial sell, and full exit.",
   );
 }
 
