@@ -5,6 +5,7 @@ interface PullRequest {
   title: string;
   draft: boolean;
   html_url: string;
+  body: string;
   user: {
     login: string;
     type: string;
@@ -80,6 +81,26 @@ interface HarnessOptions {
   runs?: Record<string, WorkflowRun[]>;
   statusesBySha?: Record<string, CommitStatus[]>;
   fileErrors?: number[];
+  controlIssues?: Array<{ labels: Array<{ name: string }> }>;
+  controlTimeline?: Array<{
+    event: string;
+    created_at: string;
+    label?: { name: string };
+    actor?: { login: string; type: string };
+  }>;
+  provenanceIssues?: Record<
+    number,
+    { body?: string; labels: Array<{ name: string }> }
+  >;
+  commentsByIssue?: Record<
+    number,
+    Array<{
+      body: string;
+      user: { login: string; type: string };
+    }>
+  >;
+  goalMaxRiskTier?: string;
+  goalAllowedPaths?: string;
 }
 
 interface ReconcilerModule {
@@ -106,6 +127,7 @@ function pullRequest(
     title: "[docs-sync] Refresh contributor guide",
     draft: false,
     html_url: `https://github.com/${repository}/pull/${number}`,
+    body: "",
     user: {
       login: "github-actions[bot]",
       type: "Bot",
@@ -173,11 +195,53 @@ function createHarness(options: HarnessOptions = {}) {
   const listReviews = jest.fn();
   const listCommits = jest.fn();
   const listCommitStatusesForRef = jest.fn();
+  const listForRepo = jest.fn();
+  const listEventsForTimeline = jest.fn();
+  const listComments = jest.fn();
+  const getIssue = jest.fn();
 
   const paginate = jest.fn(
     async (method: unknown, params: ApiParams): Promise<unknown[]> => {
       if (method === listPulls) {
         return pullRequests;
+      }
+      if (method === listForRepo) {
+        return (
+          options.controlIssues ?? [
+            {
+              number: 233,
+              labels: [
+                { name: "factory-control" },
+                { name: "factory-mode:active" },
+              ],
+            },
+          ]
+        );
+      }
+      if (method === listComments) {
+        return options.commentsByIssue?.[params.issue_number ?? -1] ?? [];
+      }
+      if (method === listEventsForTimeline) {
+        if (params.issue_number === 10) {
+          return [
+            {
+              event: "labeled",
+              created_at: "2026-08-19T00:00:00Z",
+              label: { name: "factory:goal-approved" },
+              actor: { login: "owner", type: "User" },
+            },
+          ];
+        }
+        return (
+          options.controlTimeline ?? [
+            {
+              event: "labeled",
+              created_at: "2026-08-19T00:00:00Z",
+              label: { name: "factory-mode:active" },
+              actor: { login: "owner", type: "User" },
+            },
+          ]
+        );
       }
       if (method === listFiles) {
         const number = params.pull_number ?? -1;
@@ -246,6 +310,31 @@ function createHarness(options: HarnessOptions = {}) {
   );
   const approveWorkflowRun = jest.fn(async (_params: ApiParams) => ({}));
   const addLabels = jest.fn(async (_params: ApiParams) => ({}));
+  const removeLabel = jest.fn(async (_params: ApiParams) => ({}));
+  const createComment = jest.fn(async (_params: ApiParams) => ({}));
+  getIssue.mockImplementation(async (params: ApiParams) => ({
+    data:
+      params.issue_number === 10
+        ? {
+            state: "open",
+            labels: [
+              { name: "factory:goal" },
+              { name: "factory:goal-approved" },
+            ],
+            body: [
+              "### Allowed paths",
+              "",
+              options.goalAllowedPaths ?? "docs/**",
+              "",
+              "### Maximum autonomous risk tier",
+              "",
+              options.goalMaxRiskTier ?? "risk:boundary",
+            ].join("\n"),
+          }
+        : options.provenanceIssues?.[params.issue_number ?? -1] ?? {
+            labels: [],
+          },
+  }));
   const core = {
     info: jest.fn(),
     warning: jest.fn(),
@@ -253,6 +342,19 @@ function createHarness(options: HarnessOptions = {}) {
 
   const github = {
     paginate,
+    request: jest.fn(
+      async (
+        _route: string,
+        params: ApiParams,
+      ): Promise<{ data: { number: number } }> => ({
+        data: {
+          number:
+            params.issue_number === 99
+              ? 10
+              : -1,
+        },
+      }),
+    ),
     rest: {
       actions: {
         approveWorkflowRun,
@@ -264,6 +366,12 @@ function createHarness(options: HarnessOptions = {}) {
       },
       issues: {
         addLabels,
+        get: getIssue,
+        listComments,
+        listForRepo,
+        listEventsForTimeline,
+        removeLabel,
+        createComment,
       },
       pulls: {
         list: listPulls,
@@ -283,10 +391,16 @@ function createHarness(options: HarnessOptions = {}) {
     github,
     mocks: {
       addLabels,
+      removeLabel,
+      createComment,
       approveWorkflowRun,
       createCommitStatus,
       createWorkflowDispatch,
       listForRef,
+      listForRepo,
+      listEventsForTimeline,
+      listComments,
+      getIssue,
       listWorkflowRuns,
       paginate,
     },
@@ -320,6 +434,313 @@ function dispatchedWorkflow(
 }
 
 describe("agentic PR reconciler integration", () => {
+  it("keeps enrolled PRs fail-closed when the factory control issue is missing", async () => {
+    const { mocks } = await reconcile({ controlIssues: [] });
+
+    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "pending",
+        description: "Factory is paused",
+      }),
+    );
+    expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps enrolled PRs advisory-only in shadow mode", async () => {
+    const { mocks } = await reconcile({
+      controlIssues: [
+        {
+          labels: [
+            { name: "factory-control" },
+            { name: "factory-mode:shadow" },
+          ],
+        },
+      ],
+    });
+
+    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "pending",
+        description: "Factory shadow mode does not authorize merge",
+      }),
+    );
+    expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects active mode when its latest label event is not human", async () => {
+    const { mocks } = await reconcile({
+      controlTimeline: [
+        {
+          event: "labeled",
+          created_at: "2026-08-19T00:00:00Z",
+          label: { name: "factory-mode:active" },
+          actor: { login: "github-actions[bot]", type: "Bot" },
+        },
+      ],
+    });
+    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "pending",
+        description: "Factory is paused",
+      }),
+    );
+    expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it("approves a correlated Copilot implementation PR with matching claim provenance", async () => {
+      const nonce = "run:1:99";
+      const implementation = pullRequest(1, {
+        title: "[ai-dev] Implement issue 99",
+        body: `<!-- factory-claim:${nonce} -->\nRefs #99`,
+        user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+        labels: [
+          { name: "agentic-factory" },
+          { name: "agentic-automerge" },
+          { name: "risk:routine" },
+        ],
+      });
+      const { mocks } = await reconcile({
+        pullRequests: [implementation],
+        provenanceIssues: {
+          99: {
+            body: "### Approved parent goal\n\n#10\n\n### Allowed paths\n\ndocs/**",
+            labels: [
+              { name: "agentic-factory" },
+              { name: "factory:pr-open" },
+              { name: "risk:routine" },
+            ],
+          },
+        },
+        commentsByIssue: {
+          99: [
+            {
+              user: { login: "github-actions[bot]", type: "Bot" },
+              body:
+                `<!-- factory-claim:v1 ${JSON.stringify({
+                  nonce,
+                  owner: "queue-controller",
+                  issueNumber: 99,
+                  expiresAt: "2099-01-01T00:00:00Z",
+                })} -->`,
+            },
+          ],
+        },
+      });
+
+      expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          state: "success",
+          description: "Current-head agent reviews approve this PR",
+        }),
+      );
+  });
+
+  it("inherits boundary risk from the claimed issue before PR risk labeling", async () => {
+    const nonce = "run:1:99";
+    const implementation = pullRequest(1, {
+      title: "[ai-dev] Implement issue 99",
+      body: `<!-- factory-claim:${nonce} -->\nRefs #99`,
+      user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+      labels: [
+        { name: "agentic-factory" },
+        { name: "agentic-automerge" },
+      ],
+    });
+
+    const { mocks } = await reconcile({
+      pullRequests: [implementation],
+      provenanceIssues: {
+        99: {
+          body: "### Approved parent goal\n\n#10\n\n### Allowed paths\n\ndocs/**",
+          labels: [
+            { name: "factory:pr-open" },
+            { name: "risk:boundary" },
+          ],
+        },
+      },
+      commentsByIssue: {
+        99: [
+          {
+            user: { login: "github-actions[bot]", type: "Bot" },
+            body:
+              `<!-- factory-claim:v1 ${JSON.stringify({
+                nonce,
+                owner: "queue-controller",
+                issueNumber: 99,
+                expiresAt: "2099-01-01T00:00:00Z",
+              })} -->`,
+          },
+        ],
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "QA verification",
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+      runs: {
+        [runKey("qa-test-plan.lock.yml", "sha-1")]: [
+          successRun(49, "QA Test Plan"),
+        ],
+      },
+    });
+
+    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "pending",
+        description: "Boundary change requires current human approval",
+      }),
+    );
+  });
+
+  it("pauses when the PR path risk exceeds its approved goal ceiling", async () => {
+    const nonce = "run:1:99";
+    const implementation = pullRequest(1, {
+      title: "[ai-dev] Change workflow policy",
+      body: `<!-- factory-claim:${nonce} -->\nRefs #99`,
+      user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+      labels: [
+        { name: "agentic-factory" },
+        { name: "agentic-automerge" },
+        { name: "risk:sensitive" },
+      ],
+    });
+    const { mocks } = await reconcile({
+      pullRequests: [implementation],
+      goalMaxRiskTier: "risk:sensitive",
+      goalAllowedPaths: ".github/**",
+      provenanceIssues: {
+        99: {
+          body: "### Approved parent goal\n\n#10\n\n### Allowed paths\n\n.github/**",
+          labels: [
+            { name: "factory:pr-open" },
+            { name: "risk:sensitive" },
+          ],
+        },
+      },
+      commentsByIssue: {
+        99: [
+          {
+            user: { login: "github-actions[bot]", type: "Bot" },
+            body:
+              `<!-- factory-claim:v1 ${JSON.stringify({
+                nonce,
+                owner: "queue-controller",
+                issueNumber: 99,
+                expiresAt: "2099-01-01T00:00:00Z",
+              })} -->`,
+          },
+        ],
+      },
+      filesByPull: {
+        1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "QA verification",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 42,
+            name: "Security review",
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+      runs: {
+        [runKey("qa-test-plan.lock.yml", "sha-1")]: [
+          successRun(49, "QA Test Plan"),
+        ],
+        [runKey("security-review.lock.yml", "sha-1")]: [
+          successRun(50, "Security Review"),
+        ],
+      },
+    });
+
+    expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "pending",
+        description: "PR risk exceeds approved goal",
+      }),
+    );
+    expect(mocks.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 233,
+        labels: ["factory-mode:paused"],
+      }),
+    );
+    expect(mocks.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 233,
+        body: expect.stringContaining("exceeds its approved goal ceiling"),
+      }),
+    );
+  });
+
+  it("fails closed when a Copilot implementation PR claim does not match the issue", async () => {
+      const implementation = pullRequest(1, {
+        title: "[ai-dev] Implement issue 99",
+        body: "<!-- factory-claim:run:1:99 -->\nRefs #99",
+        user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+        labels: [
+          { name: "agentic-factory" },
+          { name: "agentic-automerge" },
+          { name: "risk:routine" },
+        ],
+      });
+      const { mocks } = await reconcile({
+        pullRequests: [implementation],
+        provenanceIssues: {
+          99: {
+            body: "### Approved parent goal\n\n#10\n\n### Allowed paths\n\ndocs/**",
+            labels: [{ name: "factory:pr-open" }],
+          },
+        },
+        commentsByIssue: {
+          99: [
+            {
+              user: { login: "github-actions[bot]", type: "Bot" },
+              body:
+                `<!-- factory-claim:v1 ${JSON.stringify({
+                  nonce: "different:nonce:99",
+                  owner: "queue-controller",
+                  issueNumber: 99,
+                  expiresAt: "2099-01-01T00:00:00Z",
+                })} -->`,
+            },
+          ],
+        },
+      });
+
+      expect(mocks.createCommitStatus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          state: "pending",
+          description: "Factory claim provenance is invalid",
+        }),
+      );
+      expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
   it("creates the deterministic merge-policy commit status", async () => {
     const { mocks } = await reconcile();
 
@@ -399,9 +820,16 @@ describe("agentic PR reconciler integration", () => {
     expect(mocks.createCommitStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         state: "pending",
-        description: "Waiting for Security review",
+        description: "Waiting for QA verification",
       }),
     );
+    expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
+      owner: "VeVarunSharma",
+      repo: "project-krypto-dog",
+      workflow_id: "qa-test-plan.lock.yml",
+      ref: "docs/agent-update-1",
+      inputs: targetInputs(1),
+    });
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
       repo: "project-krypto-dog",
@@ -418,12 +846,12 @@ describe("agentic PR reconciler integration", () => {
     });
   });
 
-  it("approves a high-risk PR after every required agent check passes", async () => {
+  it("approves sensitive reversible work after every required agent check passes", async () => {
     const { mocks } = await reconcile({
       filesByPull: {
         1: [
           {
-            filename: ".github/workflows/ci.yml",
+            filename: "src/app/api/auth/login/route.ts",
             status: "modified",
           },
           {
@@ -442,12 +870,18 @@ describe("agentic PR reconciler integration", () => {
           },
           {
             id: 41,
-            name: "Security review",
+            name: "QA verification",
             status: "completed",
             conclusion: "success",
           },
           {
             id: 42,
+            name: "Security review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 43,
             name: "Trading safety review",
             status: "completed",
             conclusion: "success",
@@ -455,6 +889,9 @@ describe("agentic PR reconciler integration", () => {
         ],
       },
       runs: {
+        [runKey("qa-test-plan.lock.yml", "sha-1")]: [
+          successRun(49, "QA Test Plan"),
+        ],
         [runKey("security-review.lock.yml", "sha-1")]: [
           successRun(50, "Security Review"),
         ],
@@ -473,6 +910,12 @@ describe("agentic PR reconciler integration", () => {
     expect(
       dispatchedWorkflow(
         mocks.createWorkflowDispatch,
+        "qa-test-plan.lock.yml",
+      ),
+    ).toBe(false);
+    expect(
+      dispatchedWorkflow(
+        mocks.createWorkflowDispatch,
         "security-review.lock.yml",
       ),
     ).toBe(false);
@@ -482,6 +925,93 @@ describe("agentic PR reconciler integration", () => {
         "trading-safety-review.lock.yml",
       ),
     ).toBe(false);
+  });
+
+  it("keeps boundary work pending until a current-head human approves", async () => {
+    const checks = [
+      {
+        id: 40,
+        name: "Agentic code review",
+        status: "completed",
+        conclusion: "success",
+      },
+      {
+        id: 41,
+        name: "QA verification",
+        status: "completed",
+        conclusion: "success",
+      },
+      {
+        id: 42,
+        name: "Security review",
+        status: "completed",
+        conclusion: "success",
+      },
+    ];
+    const runs = {
+      [runKey("qa-test-plan.lock.yml", "sha-1")]: [
+        successRun(49, "QA Test Plan"),
+      ],
+      [runKey("security-review.lock.yml", "sha-1")]: [
+        successRun(50, "Security Review"),
+      ],
+    };
+    const withoutApproval = await reconcile({
+      filesByPull: {
+        1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+      },
+      checksBySha: { "sha-1": checks },
+      runs,
+    });
+    expect(withoutApproval.mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "pending",
+        description: "Boundary change requires current human approval",
+      }),
+    );
+    expect(withoutApproval.mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "pending",
+        context: "Human boundary approval",
+        description: "Boundary change requires current-head human approval",
+      }),
+    );
+    expect(withoutApproval.mocks.addLabels).toHaveBeenCalledWith({
+      owner: "VeVarunSharma",
+      repo: "project-krypto-dog",
+      issue_number: 1,
+      labels: ["ready-for-human-review"],
+    });
+
+    const withApproval = await reconcile({
+      filesByPull: {
+        1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+      },
+      reviewsByPull: {
+        1: [
+          {
+            state: "APPROVED",
+            commit_id: "sha-1",
+            author_association: "OWNER",
+            user: { login: "reviewer", type: "User" },
+          },
+        ],
+      },
+      checksBySha: { "sha-1": checks },
+      runs,
+    });
+    expect(withApproval.mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "success",
+        description: "Current-head human and agent reviews approve boundary PR",
+      }),
+    );
+    expect(withApproval.mocks.createCommitStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "success",
+        context: "Human boundary approval",
+      }),
+    );
   });
 
   it("approves held CI only for a trusted enrolled agent PR", async () => {

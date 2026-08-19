@@ -52,3 +52,4 @@ What did we choose, in one or two paragraphs?
 | [0006](./0006-migration-history-supabase-schema.md) | Single Drizzle migration history and private Supabase schema | Proposed |
 | [0007](./0007-evidence-based-goals.md) | Evidence-based goals and removal of guaranteed-profit language | Accepted |
 | [0008](./0008-azure-native-deployment-architecture.md) | Azure-native deployment architecture (Container Apps, Flexible Server, Key Vault, Bicep) — implemented, provisioning pending | Accepted |
+| [0009](./0009-autonomous-agentic-sdlc-factory.md) | Safety-bounded autonomous agentic SDLC factory (goal-bound queue controller, tiered risk/repair caps, dev-only auto-deploy) | Accepted |

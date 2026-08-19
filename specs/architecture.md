@@ -18,7 +18,7 @@ template and identity detail lives in
 |---|---|---|
 | Azure subscription | Runtime selection is **Visual Studio Enterprise Subscription**. Required providers are registered; bootstrap created the three resource groups and four GitHub OIDC identities. Its subscription ID and internal identifiers remain unpublished. | **Bootstrap complete** |
 | Region | `westus3` hosts `rg-krypto-platform`, `rg-krypto-dev`, and `rg-krypto-prod`. | **Provisioned** |
-| Platform | Dedicated `ai-krypto-westus3` exists with local auth disabled and a verified `CanNotDelete` lock, but remains model-empty after Azure `715-123420`. | [Dedicated-account attempt](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31839812884) |
+| Platform | Dedicated `ai-krypto-westus3` exists with local auth disabled and a verified `CanNotDelete` lock, but remains model-empty after Azure `715-123420`. | [Dedicated-account attempt](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884) |
 | Model | Operational `krypto-dev-luna` and `krypto-prod-luna` deployments exist on established account `ghcp-foundry-eastus2`: OpenAI `gpt-5.6-luna` `2026-07-09`, `GlobalStandard`, capacity 10 each. Entra plain and strict structured `HOLD` smokes passed. | **Provisioned fallback** |
 | Azure dev | `ca-dev-web` is live in `shadow`; hourly/daily jobs are scheduled and monitored. Migration, target smoke, one manual shadow run, activation check, alert dispatch, scheduled success, and post-run zero-trade checks passed. | **Deployed and shadow-ready** |
 | Azure prod | `ca-prod-web` is live in `disabled`; all seven jobs are `Manual`. Migration, restore-verified backup, target smoke, exact-digest, zero-trade, and no-schedule checks passed. | **Deployed disabled/manual** |
@@ -254,8 +254,8 @@ deployment outputs.
 
 | Service | Entry point | Purpose |
 |---|---|---|
-| GitHub Actions | [Workflow runs](https://github.com/VeVarunSharma/project-krypto-dog/actions) | Platform, access, foundation, release, and evidence runs |
-| GitHub Environments | [Environment settings](https://github.com/VeVarunSharma/project-krypto-dog/settings/environments) | Configured environment values and branch restrictions; required reviewers are unavailable on the current plan, so mutation remains manual/paused |
+| GitHub Actions | [Workflow runs](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions) | Platform, access, foundation, release, and evidence runs |
+| GitHub Environments | [Environment settings](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/settings/environments) | Configured environment values, branch restrictions, and human reviewer gates for platform/production mutation; development is the branch-restricted autonomous target |
 | Azure | [Azure portal](https://portal.azure.com/) | Select **Visual Studio Enterprise Subscription**, then the existing platform/dev/prod resource groups; do not publish internal URLs or IDs |
 | Microsoft Foundry | [Foundry portal](https://ai.azure.com/) | Operate `ghcp-foundry-eastus2`; retain `ai-krypto-westus3` for a future dedicated migration |
 | PostHog | [PostHog US](https://us.posthog.com/) | Inspect mandatory dev/prod event tags; create a separate dev project before future production promotion |

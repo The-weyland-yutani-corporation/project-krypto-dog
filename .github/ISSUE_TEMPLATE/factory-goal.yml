@@ -1,0 +1,98 @@
+name: Autonomous factory goal
+description: Define the human-approved scope within which the software factory may discover and deliver work.
+title: "[factory-goal] "
+labels:
+  - agentic-factory
+  - "factory:goal"
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue authorizes scope, not production or live-trading action.
+        A human maintainer must apply `factory:goal-approved` before the queue can consume child work.
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: State the bounded outcome the factory should achieve.
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: Measurable success condition
+      description: Define falsifiable completion evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: allowed_scope
+    attributes:
+      label: Allowed scope
+      description: List permitted subsystems, paths, or issue categories.
+    validations:
+      required: true
+  - type: textarea
+    id: allowed_paths
+    attributes:
+      label: Allowed paths
+      description: Maximum machine-readable scope. Use one exact repo-relative file or terminal `path/**` glob per line.
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Explicit non-goals
+      description: State what agents must not expand into.
+    validations:
+      required: true
+  - type: dropdown
+    id: max_risk
+    attributes:
+      label: Maximum autonomous risk tier
+      options:
+        - risk:routine
+        - risk:sensitive
+        - risk:boundary
+    validations:
+      required: true
+  - type: input
+    id: max_wip
+    attributes:
+      label: Maximum active coding-agent sessions
+      description: Use 1 until concurrency graduation evidence passes.
+      value: "1"
+    validations:
+      required: true
+  - type: input
+    id: assignment_budget
+    attributes:
+      label: Assignment budget
+      description: Maximum assignments allowed by this goal before human renewal.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Required evidence
+      description: List tests, checks, metrics, and dev/staging proof required for completion.
+    validations:
+      required: true
+  - type: textarea
+    id: pause_conditions
+    attributes:
+      label: Pause and stop conditions
+      description: Define conditions that must pause autonomous work.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Human-only boundaries
+      options:
+        - label: Production deployment remains human-approved.
+          required: true
+        - label: Live-trading enablement remains human-approved.
+          required: true
+        - label: Automation may pause itself but may not unpause itself.
+          required: true

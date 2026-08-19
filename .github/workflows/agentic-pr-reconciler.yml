@@ -8,14 +8,16 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
   pull_request_review:
     types: [submitted, dismissed]
+  issues:
+    types: [labeled, unlabeled]
   workflow_run:
     workflows:
-      [CI, Code Review, PR Self Heal, Security Review, Trading Safety Review]
+      [CI, Code Review, PR Self Heal, QA Test Plan, Security Review, Trading Safety Review]
     types: [completed]
 
 concurrency:
   group: agentic-pr-reconciler
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   actions: write
@@ -28,6 +30,9 @@ permissions:
 jobs:
   reconcile:
     name: Reconcile agentic pull requests
+    if: >-
+      github.event_name != 'issues' ||
+      startsWith(github.event.label.name, 'factory-mode:')
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

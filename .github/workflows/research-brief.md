@@ -33,9 +33,12 @@ safe-outputs:
     hide-older-comments: true
   create-issue:
     title-prefix: "[research] "
-    labels: [agentic-factory, ai:research]
+    labels: [agentic-factory, needs-triage]
     max: 3
     deduplicate-by-title: 1
+  remove-labels:
+    allowed: [ai:research]
+    max: 1
   noop:
     report-as-issue: false
 max-ai-credits: 1500
@@ -60,4 +63,5 @@ Research the question, cite sources, compare options, and recommend a next actio
 
 - Use `add-comment` to post the brief back to the triggering issue/comment when there is a triggering item.
 - Use `create-issue` only for concrete follow-up tickets that are not duplicates.
+- Use `remove-labels` to clear the processed `ai:research` request label.
 - Use `noop` if the request has no actionable research question.

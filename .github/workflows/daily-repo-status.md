@@ -16,12 +16,14 @@ tools:
     toolsets: [default]
 network: defaults
 safe-outputs:
+  update-issue:
+    target: "*"
   create-issue:
     title-prefix: "[factory-status] "
     labels: [agentic-factory, report]
     allowed-labels: [agentic-factory, report]
     max: 1
-    close-older-issues: true
+    deduplicate-by-title: 1
   noop:
     report-as-issue: false
 max-ai-credits: 1000
@@ -30,7 +32,9 @@ max-daily-ai-credits: 2500
 
 # Daily Repo Status
 
-Create a concise daily factory status report for Project Krypto. Focus on throughput, issue aging, and blocked work. Do **not** create, suggest, or scope new feature issues.
+Create or refresh one canonical factory status issue for Project Krypto. Focus
+on delivery-loop health, not issue volume. Do **not** create, suggest, or scope
+new feature issues.
 
 ## Include
 
@@ -44,9 +48,18 @@ Create a concise daily factory status report for Project Krypto. Focus on throug
 8. **High-risk work** — anything touching trading, guardrails, auth, workflows, database state, or deployment.
 9. **WIP gate status** — count of open `opportunity` issues without the `blocked` label; flag if ≥ 20 (opportunity-discovery noop threshold).
 10. **Recommended next actions** — up to 3 concrete actions for the next 24 hours based only on existing work; do not invent new scope.
+11. **Autonomy funnel** — counts in `ready-for-ai-dev`, `factory:claimed`,
+    `factory:implementing`, `factory:pr-open`, `factory:repairing`,
+    `factory:merged`, `factory:deployed-dev`, and `factory:done`.
+12. **Hard invariants** — duplicate claims, multiple PRs per issue, malformed
+    lifecycle/risk labels, stale leases, boundary PRs without human approval,
+    and production/live automation attempts.
+13. **Reliability** — assignment success, first-pass CI, bounded repair,
+    canary, dev deployment, and rollback outcomes.
 
 ## Rules
 
 - Use repository data only; do not speculate or generate new feature scope.
-- Create one issue with the configured `create-issue` safe output.
+- Search for the canonical open `[factory-status]` issue. Use `update-issue`
+  when it exists; create it only when absent.
 - Use `noop` only if there is no meaningful repository activity and no open work to report.

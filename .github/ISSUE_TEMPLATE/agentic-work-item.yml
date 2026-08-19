@@ -23,10 +23,62 @@ body:
     validations:
       required: true
   - type: textarea
+    id: parent_goal
+    attributes:
+      label: Approved parent goal
+      description: Link the human-approved factory goal that authorizes this scope.
+      placeholder: "#123"
+    validations:
+      required: true
+  - type: textarea
     id: problem
     attributes:
       label: Problem or goal
       description: What should change, and why?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and non-goals
+      description: State permitted files/subsystems and what must not change.
+    validations:
+      required: true
+  - type: textarea
+    id: allowed_paths
+    attributes:
+      label: Allowed paths
+      description: One exact repo-relative file or terminal directory glob (`path/**`) per line. Other wildcard forms are rejected.
+      placeholder: |
+        src/components/example.tsx
+        tests/components/**
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk tier
+      options:
+        - risk:routine
+        - risk:sensitive
+        - risk:boundary
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - priority:P0
+        - priority:P1
+        - priority:P2
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: List blocking issue numbers or write "None".
     validations:
       required: true
   - type: textarea
@@ -37,6 +89,20 @@ body:
       placeholder: |
         - [ ] The requested outcome is delivered.
         - [ ] Relevant validation or review is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: List exact existing commands, checks, and evidence that prove completion.
+    validations:
+      required: true
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback or safe reversal
+      description: Explain how the change is reverted or why it is safely reversible.
     validations:
       required: true
   - type: textarea

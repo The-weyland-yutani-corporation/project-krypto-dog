@@ -1,0 +1,76 @@
+name: Agentic Lifecycle Reconciler
+
+# Deterministic issue/session/PR/dev lifecycle reconciler for the
+# safety-bounded autonomous SDLC factory (specs/agentic-factory-contract.md).
+# This workflow never executes issue/PR-authored code: it only checks out
+# the trusted reconciler implementation from the exact default branch and
+# reads/writes issue, PR, check, and deployment state through the GitHub
+# API. `pull_request_target` is used deliberately (never `pull_request`) so
+# that untrusted PR heads are never checked out or built, and the checkout
+# step below is pinned to the default branch with a sparse `.github/scripts`
+# checkout and no persisted credentials.
+#
+# Deliberately no `status` trigger: `azure-deploy-dev.yml` publishes the
+# `Dev deployment evidence` commit status (and the `development` GitHub
+# Deployment) itself before that workflow run completes, so a `status`
+# event would fire on every ordinary commit status across the repo -- a
+# high-volume storm for a signal this reconciler doesn't need a dedicated
+# trigger for. The `workflow_run` trigger on "Azure deploy dev" completing,
+# plus the conservative schedule, is sufficient to pick up dev evidence
+# promptly without that volume.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Conservative cadence: every 15 minutes.
+    - cron: "*/15 * * * *"
+  issues:
+    types: [assigned, unassigned, labeled, unlabeled, closed, reopened]
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, closed, labeled, unlabeled]
+  workflow_run:
+    workflows: ["Azure deploy dev"]
+    types: [completed]
+
+concurrency:
+  # A single global group so reconciliation passes always serialize; this is
+  # required for the exactly-one-lifecycle-label and exactly-one-open-PR
+  # invariants to stay race-free. Never cancel an in-flight pass: doing so
+  # could interrupt a partially-applied label/comment mutation.
+  group: agentic-lifecycle-reconciler
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  checks: read
+  actions: read
+  deployments: read
+  statuses: read
+
+jobs:
+  reconcile:
+    name: Reconcile factory issue/PR/dev lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out trusted reconciler implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Reconcile factory lifecycle
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const path = require("node:path");
+            const reconcilerPath = path.join(
+              process.env.GITHUB_WORKSPACE,
+              ".github/scripts/agentic-lifecycle-reconciler.cjs",
+            );
+            const { reconcileFactoryLifecycle } = require(reconcilerPath);
+            await reconcileFactoryLifecycle({ github, context, core });

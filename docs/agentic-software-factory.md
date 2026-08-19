@@ -2,27 +2,115 @@
 
 Project Krypto uses GitHub Agentic Workflows (GH-AW) as the backbone for an event-driven SDLC factory.
 
-For the full workflow trigger map, Mermaid diagram, workflow catalog, and safety model, see [`agentic-workflows-map.md`](./agentic-workflows-map.md).
+For the full workflow trigger map, Mermaid diagram, workflow catalog, and safety model, see [`agentic-workflows-map.md`](./agentic-workflows-map.md). For the normative, machine-oriented rules this narrative summarizes, see [`specs/agentic-factory-contract.md`](../specs/agentic-factory-contract.md) and [ADR 0009](../specs/decisions/0009-autonomous-agentic-sdlc-factory.md).
 
 ## Operating model
 
-Work flows through small, safe automation loops:
+Work flows through small, safe automation loops, bounded by a human-approved
+factory goal:
 
-1. Proactive PM/research discovery creates evidence-backed opportunity tickets.
-2. Research creates evidence-backed briefs.
-3. Product management converts ideas into implementation-ready issues.
-4. Rubber-duck review challenges approach and risk.
-5. Engineering management breaks approved work into sequenced tickets.
-6. Implementation agents open auto-merge-enabled PRs.
-7. CI and agentic code review run on every current PR head.
-8. A capped self-heal loop may repair failed checks on eligible agent PRs.
-9. A deterministic merge policy approves same-repository PRs after current-head code review and any path-selected specialist checks pass.
-10. QA and docs-sync remain label-driven; security and trading-safety are selected from changed paths.
-11. Release readiness and governance workflows prepare operator handoff and track factory health.
+1. A human creates and approves a factory goal issue (`factory:goal` +
+   human-applied `factory:goal-approved`) stating allowed scope,
+   machine-readable allowed paths, non-goals, maximum risk tier, WIP, and
+   assignment budget. Nothing downstream is authorized without it.
+2. Proactive PM/research discovery creates evidence-backed opportunity
+   tickets inside that goal's allowed scope, and stops when the goal's WIP
+   allowance is reached (the legacy 20-open-`opportunity` count remains only
+   as a secondary absolute ceiling; see [`.github/BACKLOG_GOVERNANCE.md`](../.github/BACKLOG_GOVERNANCE.md)).
+3. Research creates evidence-backed briefs.
+4. Product management converts ideas into implementation-ready issues, each
+   linked to the approved parent goal.
+5. Rubber-duck review challenges approach and risk.
+6. Engineering management breaks approved work into sequenced, leaf tickets
+   with an explicit risk tier, machine-readable allowed paths, and every
+   queue-readiness field complete, and applies `ready-for-ai-dev` only when
+   they are.
+7. A deterministic queue controller (`factory-queue-controller.yml`/runtime,
+   reading a singleton `factory-control` issue for its `shadow`/`active`/
+   `paused` mode) selects **one** eligible `ready-for-ai-dev` issue at a
+   time, issues a claim nonce, labels it `factory:claimed`, and dispatches
+   `implement-ticket`.
+8. `implement-ticket` no longer edits code or opens a pull request itself.
+   It validates the claim (nonce, lease, goal approval, readiness) and, if
+   every invariant holds, uses the `assign-to-agent` safe output to hand the
+   issue to the Copilot coding agent under the `project-krypto-dev` custom
+   agent. The coding-agent session opens exactly one `[ai-dev] `-prefixed
+   pull request.
+9. CI and agentic code review run on every current PR head.
+10. A capped, risk-tiered self-heal loop may repair failed checks on
+    eligible agent PRs: 2 repair commits for `risk:routine`, 1 for
+    `risk:sensitive`, 0 for `risk:boundary` (no automated repair at the
+    boundary tier).
+11. A deterministic merge policy approves same-repository PRs once every
+    required check passes on the exact current head: baseline CI + code
+    review for `risk:routine`; plus `QA verification` and any
+    path-selected `Security review` / `Trading safety review` for
+    `risk:sensitive` (independent agent-check consensus, no human review
+    required); plus current-head human approval for `risk:boundary`.
+12. `needs-qa`, `security-review`, and `trading-safety` are review-requirement
+    labels, not lifecycle states. They persist across PR head changes so the
+    reconciler can rerun the matching exact-current-head check
+    (`QA verification`, `Security review`, `Trading safety review`); that check
+    result, not label removal, clears the merge gate.
+13. `agentic-lifecycle-reconciler` independently binds the issue claim,
+    Copilot assignee, exactly one `[ai-dev]` PR, merge SHA, and development
+    evidence. It enrolls only matching claim provenance, enables native
+    auto-merge without bypassing protection, and closes the issue only after
+    the exact merge SHA passes `Dev deployment evidence` and a successful
+    `development` Deployment.
+14. A successful push CI run on `main` automatically invokes the exact-SHA dev
+    shadow deployment. Any failed activation publishes failure evidence,
+    verifies disabled/manual rollback when required, and pauses the factory.
+    Production remains manual and human-protected.
+15. Release readiness and governance/status workflows update one canonical
+    tracking issue each with autonomy-funnel counts and hard invariants,
+    rather than creating new issues every run.
 
 ## State labels
 
-Use labels as workflow state:
+Use labels as workflow state. These are the exact, durable lifecycle labels
+(an issue/PR carries exactly one once past `needs-triage`):
+
+| Label | Meaning |
+|---|---|
+| `needs-triage` | PM should refine the issue |
+| `ready-for-planning` | EM should decompose work |
+| `ready-for-ai-dev` | Eligible for queue-controller selection once readiness and goal authorization hold |
+| `factory:claimed` | Queue controller selected this issue and issued a claim; not yet assigned |
+| `factory:implementing` | Assigned to the Copilot coding agent; a session is open |
+| `factory:pr-open` | The coding agent's `[ai-dev] ` PR is open under required checks |
+| `factory:repairing` | A capped, risk-tiered self-heal attempt is in progress |
+| `ready-for-human-review` | Boundary-tier work, exhausted repair, or an explicit reconciler failure |
+| `blocked` | Hard stop; only a human may resume out of it |
+| `factory:merged` | PR merged by the deterministic merge policy or human boundary approval |
+| `factory:deployed-dev` | Dev evidence validated for the exact merged SHA |
+| `factory:done` | Terminal; no further factory action occurs |
+
+Risk labels (exactly one per work item; see `specs/agentic-factory-contract.md` §6):
+
+| Label | Meaning |
+|---|---|
+| `risk:routine` | Reversible, low-blast-radius change |
+| `risk:sensitive` | Reversible but reviewable change (trading/guardrail/agent/db/deployment code, dependency/infra manifests, most of `specs/`) |
+| `risk:boundary` | Irreversible or control-plane/human-boundary scope; never auto-merged, never auto-repaired |
+
+Goal-authorization labels (not lifecycle states):
+
+| Label | Meaning |
+|---|---|
+| `factory:goal` | Marks a tracked issue as an autonomous factory goal |
+| `factory:goal-approved` | Human-applied; authorizes descendant work under that goal. Only a human may add or remove it |
+
+Review-requirement labels (not lifecycle states; retained so every new PR head
+receives the required check):
+
+| Label | Required check it gates | Merge-gate clearer |
+|---|---|---|
+| `needs-qa` | `QA verification` | Successful exact-current-head check |
+| `security-review` | `Security review` | Successful exact-current-head check |
+| `trading-safety` | `Trading safety review` | Successful exact-current-head check |
+
+Remaining discovery/review/reporting labels:
 
 | Label | Meaning |
 |---|---|
@@ -30,37 +118,41 @@ Use labels as workflow state:
 | `profit-hypothesis` | Hypothesis intended to improve risk-adjusted paper-trading performance |
 | `experiment` | Experiment or measurement-oriented implementation ticket |
 | `strategy-research` | Trading strategy or market research needed before implementation |
-| `needs-triage` | PM should refine the issue |
 | `ai:research` | Research brief requested |
-| `ready-for-planning` | EM should decompose work |
 | `needs-rubber-duck` | Approach needs challenge review |
-| `ready-for-ai-dev` | Implementation agent may open an auto-merge-enabled PR |
 | `needs-ai-review` | PR needs automated review |
-| `needs-qa` | QA/test-plan review requested |
-| `security-review` | Security review required |
-| `trading-safety` | Trading-safety review required |
 | `docs-sync` | Documentation/spec alignment required |
 | `release-readiness` | Release manager review required |
-| `ready-for-human-review` | Human review gate |
 | `agentic-automerge` | Agent-created PR opted into native auto-merge and reconciliation |
-| `self-heal-exhausted` | Automatic repair stopped after the retry cap |
+| `self-heal-exhausted` | Automatic repair stopped after the tier's retry cap |
+| `report` | Canonical status/governance report issue |
 
 ## Approval model
 
-Automation may create issues, comments, labels, and PRs. Same-repository PRs
-are approved by current-head agent checks:
+Automation may create issues, comments, labels, and PRs through safe outputs
+only. Same-repository PRs are approved by the deterministic merge policy
+once every required check passes on the exact current head SHA:
 
 - every PR requires CI and `Agentic code review`
-- auth, dependency, deployment, agent, skill, and workflow changes also require `Security review`
-- trading, guardrail, agent, backtest, database, migration, and trading RFC changes also require `Trading safety review`
+- `risk:sensitive` PRs also require `QA verification`, decided by
+  independent, current-head agent-check consensus — reversible/sensitive
+  work does **not** require a human review to auto-merge
+- auth, dependency, deployment, agent, skill, and workflow changes also
+  require `Security review`; trading, guardrail, agent, backtest, database,
+  migration, and trading RFC changes also require `Trading safety review`
+- `risk:boundary` PRs require every applicable check above **plus a
+  current-head human approval**; they are never auto-merged on agent
+  checks alone and never receive automated repair
 
-Humans may still veto a PR with a current-head change request or blocking label,
-and retain control over:
+Humans may still veto a PR with a current-head change request or blocking
+label, and retain control over:
 
 - production deployment
 - live-trading enablement
 - secrets and external account configuration
 - accepting architecture decisions
+- unpausing the factory once automation has paused itself (automation may
+  pause itself on a detected safety trigger; it may never unpause itself)
 
 ## Commands
 
@@ -72,8 +164,12 @@ The first workflow set supports these slash commands:
 | `/research` | Create a research brief from an issue or comment |
 | `/rubber-duck` | Challenge an approach before implementation |
 | `/plan` | Ask EM to decompose a scoped issue |
-| `/implement` | Ask an implementation agent to open an auto-merge-enabled PR |
 | `/release-readiness` | Produce a release readiness checklist |
+
+There is no `/implement` slash command. `implement-ticket` accepts only
+`workflow_dispatch` with a required `issue` number and `claim_nonce`, so the
+only legal caller is the queue controller; a human cannot dispatch it
+directly without first forging a claim, which the workflow rejects.
 
 QA and docs-sync are label-triggered with `needs-qa` and `docs-sync` so routine PRs do not fan out into expensive review loops.
 
@@ -88,6 +184,30 @@ The autonomous path is fail-closed unless the repository is configured with:
 - force pushes and protected-branch deletion disabled
 - default Actions workflow permissions set to read
 - Actions allowed to create pull requests; approval is represented by required check runs and the deterministic merge-policy status rather than a GitHub review from the PR author
+- a dedicated repository secret named `GH_AW_AGENT_TOKEN`, restricted to this
+  repository and granted only the permissions required by GH-AW
+  `assign-to-agent`; never reuse an Azure, production, or administrator token
+- `factory-mode:shadow` retained until that credential completes one manual
+  claim-to-Copilot-PR proof
+
+Repository Environments (verified via the GitHub API) split human-gated from
+autonomous scope: `production-deploy`, `production-promotion`, `platform`,
+and `development-promotion` all carry human required-reviewer protection.
+`development` carries only a branch policy — no required reviewer — and is
+the sole environment the factory may mutate autonomously (see
+[`specs/deployment.md`](../specs/deployment.md) §2). `development`,
+`platform`, `production-deploy`, and `production-promotion` all accept
+either `develop/azure` or `main` as their branch policy (`main` was added to
+`development` to match the automatic exact-SHA dev deploy that follows
+push-triggered CI on `main`); `development-promotion` alone still allows
+only `develop/azure` and is not wired into any deployment workflow. No
+environment named "production promotion" ships an executable promotion
+workflow; the `production-promotion` identity/environment exists only for
+forced-disable and rotation steps.
+
+`FACTORY_CANARY_GOAL` is optional. Configure it only after a human-approved,
+milestone-bound canary goal exists. Without it the scheduled full-cycle canary
+job skips; manual dispatch still requires an explicit approved goal.
 
 ## Validation baseline
 
@@ -109,12 +229,31 @@ tests locally:
 npm run test:agentic-sdlc
 ```
 
-These tests execute the production reconciler module used by
-`agentic-pr-reconciler.yml`. They cover trusted identity and same-repository
-checks, the docs allowlist and sensitive-name denylist, current-head review
-state, blocking labels, held/missing workflow runs, isolated API failures, and
-the two-commit self-heal cap. Workflow-contract tests keep the reconciler on a
-trusted default-branch checkout and keep the E2E workflow manual-only.
+These tests cover, across `agentic-factory-policy.cjs`,
+`agentic-queue-controller.cjs`, and `agentic-pr-reconciler.cjs`:
+
+- **Risk classification:** path-derived tier floor, issue-declared risk
+  raise-not-lower, destructive-migration detection, and fail-closed
+  behavior for malformed/unknown/empty input.
+- **Queue/claim semantics:** eligibility rejection reasons, deterministic
+  priority/milestone/age ordering, claim-nonce build/parse, and
+  malformed/stale-claim fail-closed handling.
+- **Lifecycle transitions:** every legal state/owner pair in the lifecycle
+  table, illegal-transition rejection, and the human-only exit from
+  `blocked`.
+- **QA/specialist required checks:** required-check-set selection per risk
+  tier and per path-selected specialist (`Security review` /
+  `Trading safety review`), and the `QA verification` gate for
+  `risk:sensitive`/`risk:boundary`.
+- **Repair caps:** the tiered self-heal budget (routine 2 / sensitive 1 /
+  boundary 0) and the forbidden-scope exclusions the reconciler and
+  `pr-self-heal` enforce.
+- Trusted identity and same-repository checks, current-head review state,
+  blocking labels, held/missing workflow runs, and isolated API failures in
+  `agentic-pr-reconciler.cjs`.
+
+Workflow-contract tests keep the reconciler on a trusted default-branch
+checkout and keep the E2E workflow manual-only.
 
 After changing a GH-AW source or compiled workflow, also run:
 
@@ -122,15 +261,21 @@ After changing a GH-AW source or compiled workflow, also run:
 gh aw compile --strict
 ```
 
-### Manual end-to-end canary
+### Manual merge/review canary
 
 The traditional `Agentic SDLC E2E` workflow is intentionally
-`workflow_dispatch`-only. Run either mode from `main`:
+`workflow_dispatch`-only and portable (no hardcoded repository owner). Run
+either mode from `main`:
 
 ```bash
 gh workflow run agentic-sdlc-e2e.yml --ref main -f mode=happy-path
 gh workflow run agentic-sdlc-e2e.yml --ref main -f mode=self-heal
 ```
+
+This canary exercises the **merge and review path** only — required
+contexts, bounded self-heal, and native auto-merge on a constrained,
+same-repository docs PR. It is **not** the full issue-to-coding-agent
+cycle canary; that is a separate workflow described next.
 
 - `happy-path` creates a same-repository `github-actions[bot]` PR that changes
   only `docs/e2e/factory-heartbeat.md`, enrolls it with `agentic-factory`,
@@ -151,11 +296,40 @@ or non-merged PR fails the run. The canary depends on the repository settings
 listed above and never touches trading, auth, database, deployment, policy, or
 workflow files.
 
+### Full issue-to-coding-agent cycle canary
+
+`agentic-factory-full-e2e.yml` exercises the complete goal-bound path: it
+requires an explicit, already human-approved goal (`workflow_dispatch` with a
+`goal_issue` input, or a weekly schedule gated on a human-set
+`FACTORY_CANARY_GOAL` repository variable), rejects the run unless that goal
+is open, milestone-bound, and carries `factory:goal` + `factory:goal-approved`,
+and rejects it unless exactly one `factory-control` issue exists with
+`factory-mode:active`. It then creates a `risk:routine` child canary issue as
+a sub-issue of that goal (scoped to touch only
+`docs/e2e/factory-full-heartbeat.md`), dispatches
+`factory-queue-controller.yml`, and polls (up to 330 minutes) until the issue
+reaches `factory:done` (closed). Reaching `factory:done` on the real lifecycle
+graph requires the merged PR to have already passed through
+`factory:deployed-dev` (§ State labels); the canary additionally re-verifies
+that evidence directly — a successful `Dev deployment evidence` status and a
+successful `development` Deployment on the exact merge SHA — rather than
+trusting the label alone. A `blocked` label on the canary issue fails the run.
+The result is recorded in
+[`docs/e2e/factory-full-heartbeat.md`](../docs/e2e/factory-full-heartbeat.md).
+It never authorizes or approves a goal itself — a human must already have
+done that — so it cannot be used to bypass goal authorization, and it
+contains no production path: it stops at exact-SHA dev evidence and never
+touches `production-deploy`/`production-promotion` or live trading.
+
 ## Safety invariants
 
 - v2 remains paper trading only.
 - Live execution requires a separate RFC, architecture review, security review, trading-safety review, and human approval.
+- No discovery, planning, or implementation work is selectable without an active, human-approved `factory:goal` + `factory:goal-approved` ancestor.
 - Changes to trading, guardrails, auth, secrets, workflows, database state, deployment procedure, or operator behavior require current-head specialist agent checks selected from deterministic path rules.
-- The required `Agentic merge policy` status remains pending until all applicable agent checks pass; a human change request or blocking label still vetoes approval.
-- Self-heal is limited to two repair commits and structurally restricted to the same non-sensitive documentation scope eligible for autonomous merge.
+- `risk:sensitive` (reversible) work merges on independent current-head agent-check consensus alone; `risk:boundary` (irreversible/control-plane) work additionally requires current-head human approval and never receives automated repair.
+- The required `Agentic merge policy` status remains pending until all applicable agent checks (and, at the boundary tier, human approval) pass; a human change request or blocking label still vetoes approval.
+- Self-heal is capped by risk tier (routine 2, sensitive 1, boundary 0 repair commits) and structurally restricted to forbidden-scope exclusions (`.github/**`, `infra/**`, `specs/**`, package manifests, environment files, and unrelated files are never touched by a repair commit).
+- Automatic deployment stops at exact-SHA `development` (shadow-only); production deployment and live trading remain human-only. See [`specs/deployment.md`](../specs/deployment.md) and [`specs/readiness.md`](../specs/readiness.md).
+- Automation may pause itself on a detected safety trigger; only a human operator may return the factory to `active`.
 - Opportunity discovery creates software tickets and experiments behind rubber-duck review; it does not provide trading advice, execute trades, or bypass safety review.

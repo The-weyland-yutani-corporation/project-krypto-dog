@@ -21,12 +21,14 @@ tools:
     - gh aw outcomes
 network: defaults
 safe-outputs:
+  update-issue:
+    target: "*"
   create-issue:
     title-prefix: "[factory-governance] "
     labels: [agentic-factory, report]
     allowed-labels: [agentic-factory, report]
     max: 1
-    close-older-issues: true
+    deduplicate-by-title: 1
   noop:
     report-as-issue: false
 max-ai-credits: 1000
@@ -44,9 +46,15 @@ Create a weekly governance report for the GH-AW software factory.
 - Noisy workflows, duplicate outputs, or low-value automation.
 - AI-credit and runtime concerns when available.
 - Recommended workflow tuning.
+- Queue selection/rejection distribution, duplicate/orphaned state, active
+  concurrency, assignment outcomes, first-pass CI, repairs, dev deployment,
+  rollback, boundary escalations, and human vetoes.
+- Cost per merged PR when provider data exists; otherwise enforce and report
+  hard session/run/AI-credit caps without inventing a monetary estimate.
 - If `gh aw` commands are unavailable in the runner, report the missing tool instead of inventing metrics.
 
 ## Safe outputs
 
-- Use `create-issue` for the weekly report.
+- Update the canonical open `[factory-governance]` issue when it exists. Use
+  `create-issue` only to establish it when absent.
 - Use `noop` if no GH-AW runs or outcomes exist yet.

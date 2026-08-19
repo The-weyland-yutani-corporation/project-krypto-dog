@@ -36,3 +36,20 @@ Use existing scripts only and prefer the narrowest checks that cover the change:
 - `npm run typecheck:scripts`
 - `npm run build`
 - `npm test -- --ci`
+
+## Factory assignment contract
+
+When assignment instructions contain a factory claim nonce:
+
+- Work only on the referenced issue and its explicit acceptance criteria.
+- Edit only the issue's machine-readable `Allowed paths`. If the task cannot
+  be completed within them, report it blocked instead of expanding scope.
+- Open exactly one PR against the instructed base branch.
+- Prefix the PR title with `[ai-dev] `.
+- Include the exact factory-claim marker and `Refs #<issue>` in the PR body.
+- Do not use `Fixes`, `Closes`, or another closing keyword; the factory closes
+  the issue only after dev deployment evidence passes.
+- Do not edit `.github/workflows/**`, `.github/scripts/**`,
+  `.github/agents/**`, `.github/skills/**`, branch protection, production
+  promotion, secrets/permissions, or live-trading boundaries. Report those as
+  blocked boundary work instead.

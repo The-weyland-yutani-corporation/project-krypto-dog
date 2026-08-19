@@ -33,11 +33,14 @@ safe-outputs:
   create-issue:
     title-prefix: "[plan] "
     labels: [agentic-factory]
+    allowed-labels: [agentic-factory, ready-for-ai-dev, needs-rubber-duck, needs-qa, security-review, trading-safety, docs-sync, risk:routine, risk:sensitive, risk:boundary, priority:P0, priority:P1, priority:P2, blocked]
     max: 10
-    group: true
     deduplicate-by-title: 1
   add-labels:
-    allowed: [ready-for-ai-dev, needs-rubber-duck, needs-qa, security-review, trading-safety, docs-sync]
+    allowed: [ready-for-ai-dev, needs-rubber-duck, needs-qa, security-review, trading-safety, docs-sync, risk:routine, risk:sensitive, risk:boundary, priority:P0, priority:P1, priority:P2, blocked]
+    max: 8
+  remove-labels:
+    allowed: [ready-for-planning, needs-rubber-duck, ready-for-ai-dev, risk:routine, risk:sensitive, risk:boundary, priority:P0, priority:P1, priority:P2]
     max: 8
   noop:
     report-as-issue: false
@@ -52,13 +55,44 @@ Break approved work into small, sequenced implementation tickets.
 ## Task
 
 - Read the target issue or planning scope.
+- Require a human-approved `factory:goal-approved` ancestor and keep every
+  child inside its allowed scope, maximum risk tier, WIP, and assignment budget.
 - Identify dependencies, parallel work, blockers, risks, and owners by role.
-- Create implementation-ready child/follow-up issues when needed.
-- State the definition of done and validation plan for each ticket.
+- Create leaf child issues with explicit parent goal, scope/non-goals,
+  machine-readable allowed paths, blocked-by relationships, exactly one risk
+  tier, acceptance criteria, exactly one priority, existing validation
+  commands, and rollback/safe reversal. Allowed paths use only exact files or
+  terminal `path/**` directory globs.
+- Set every created issue's native `parent` to the active approved goal. Do not
+  create an intermediate tracking parent: queue eligibility requires the
+  active goal to be the issue's direct native parent.
+- Apply `ready-for-ai-dev` only when every queue-readiness field is complete.
+- Remove superseded planning/risk labels when advancing an existing issue.
+
+## Child ticket body contract
+
+Every created queue candidate must use these rendered `###` headings exactly:
+
+- `Work type`
+- `Approved parent goal`
+- `Problem or goal`
+- `Scope and non-goals`
+- `Allowed paths`
+- `Risk tier`
+- `Priority`
+- `Dependencies`
+- `Acceptance criteria`
+- `Validation plan`
+- `Rollback or safe reversal`
+- `Context, links, or constraints`
+
+Do not duplicate a heading. The deterministic parser fails closed on missing,
+renamed, or duplicate authorization headings.
 
 ## Safe outputs
 
 - Use `add-comment` for the plan summary.
 - Use `create-issue` for child tickets.
 - Use `add-labels` to mark clear next-state labels.
+- Use `remove-labels` to clear superseded state and risk labels.
 - Use `noop` if the scope is not ready for planning.

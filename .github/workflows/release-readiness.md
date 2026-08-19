@@ -51,8 +51,13 @@ Produce a release readiness checklist and operator handoff.
 ## Task
 
 - Inspect the target release scope, related PRs/issues, CI status, migrations, docs, and deployment runbook.
+- For factory-delivered work, require a successful `Dev deployment evidence`
+  status and successful `development` Deployment on the exact merge SHA.
 - Identify required secrets, environment changes, migrations, smoke tests, rollback steps, and operator actions.
 - Block release readiness for unresolved high-risk issues.
+- Treat production deployment, schedule activation, secret/permission changes,
+  and live-trading enablement as human-only actions. Never dispatch them from
+  this advisory workflow.
 
 ## Safe outputs
 

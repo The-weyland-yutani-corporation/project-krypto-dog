@@ -13,11 +13,21 @@ Use this skill when designing, debugging, or extending the Project Krypto GH-AW 
 1. Use GH-AW markdown workflows as the orchestration backbone.
 2. Keep each workflow small, event-driven, and permission-scoped.
 3. Keep agent jobs read-only; use GH-AW safe outputs for issues, comments, labels, and PRs.
-4. Treat labels as state transitions.
-5. Open implementation and docs-sync PRs ready for review (`draft: false`) with native auto-merge enabled; auto-merge is not authorization to bypass policy.
-6. Allow merge without current human approval only through the deterministic low-risk exception. Require current human approval for every other merge and for any production/live-trading decision.
-7. Route risky changes through security, trading-safety, QA, and architecture reviews.
-8. Let proactive PM/research discovery originate software opportunities, but never bypass trading safety.
+4. Accept work only under a human-approved `factory:goal` and use issues,
+   sub-issues, milestones, and labels as the queue source of truth.
+5. Let the deterministic queue controller select and claim one issue; use
+   `implement-ticket` only to assign that exact claim to the Copilot coding
+   agent.
+6. Let the deterministic lifecycle reconciler independently verify claim
+   provenance, exactly one Copilot PR, merge SHA, and exact-SHA dev evidence
+   before closing the issue.
+7. Treat labels as explicit lifecycle state and keep exactly one lifecycle
+   label plus one risk label on each queued item.
+8. Permit agent-consensus merge for routine and sensitive/reversible changes
+   only after all exact-current-head checks pass. Boundary/irreversible changes
+   require a current-head trusted human approval.
+9. Auto-deploy only to exact-SHA dev/staging. Production deployment, secrets,
+   permission widening, schedule activation, and live trading remain human-only.
 
 ## Core labels
 
@@ -31,6 +41,10 @@ Use this skill when designing, debugging, or extending the Project Krypto GH-AW 
 - `ready-for-planning`
 - `needs-rubber-duck`
 - `ready-for-ai-dev`
+- `factory:claimed`
+- `factory:implementing`
+- `factory:pr-open`
+- `factory:repairing`
 - `needs-ai-review`
 - `needs-qa`
 - `security-review`
@@ -39,10 +53,22 @@ Use this skill when designing, debugging, or extending the Project Krypto GH-AW 
 - `release-readiness`
 - `ready-for-human-review`
 - `blocked`
+- `factory:merged`
+- `factory:deployed-dev`
+- `factory:done`
 - `agentic-automerge`
 - `self-heal-exhausted`
 - `ci-failure`
 - `report`
+- `factory:goal`
+- `factory:goal-approved`
+- `factory-control`
+- `factory-mode:shadow`
+- `factory-mode:active`
+- `factory-mode:paused`
+- `risk:routine`
+- `risk:sensitive`
+- `risk:boundary`
 
 ## Role agents
 
@@ -85,53 +111,50 @@ The automatic `trading-safety-review` PR path filter covers:
 - `supabase/migrations/**`
 - `specs/rfcs/**`
 
-That path filter is not a complete risk classification. Explicitly route other
-risky changes, including `src/trading/**`, auth/admin APIs, `src/proxy.ts`,
-deployment procedures, workflow/policy files, and future live-execution paths,
-to the appropriate specialist review. The deterministic merge policy keeps all
-of these paths human-gated even when no path-triggered review runs.
+That filter is not the risk classifier. Use
+`.github/scripts/agentic-factory-policy.cjs` as the only path-risk source:
+routine changes need baseline checks; sensitive/reversible changes add QA and
+path-selected specialists; boundary changes add current-head human approval.
+Unknown paths, malformed risk data, factory-control files, live/production
+boundaries, permission policy, destructive migrations, and migrations whose
+patch content is unavailable fail closed to `risk:boundary`.
 
 ## Merge and self-heal policy
 
-- `implement-ticket` and `docs-sync` create non-draft PRs with
-  `agentic-automerge` and native auto-merge enabled.
-- Merge without a current human approval is limited to a same-repository PR
-  from `github-actions[bot]` or `copilot-swe-agent[bot]`, with an `[ai-dev] ` or
-  `[docs-sync] ` title, `agentic-automerge`, and only added or modified
-  non-sensitive `docs/**` files using `.gif`, `.jpg`, `.jpeg`, `.md`, `.png`,
-  `.txt`, or `.webp`. Both the current path and any previous path must be
-  allowlisted.
-- The reconciler denies docs paths with these sensitive segment/name tokens:
-  `agentic`, `auth`, `backup`, `database`, `deploy`, `deployment`, `env`,
-  `guardrail`, `guardrails`, `incident`, `migration`, `migrations`, `oncall`,
-  `operator`, `policy`, `production`, `release`, `rollback`, `runbook`,
-  `runbooks`, `secret`, `secrets`, `security`, `trading`, `workflow`, and
-  `workflows`. Renames and deletions are also outside the allowlist.
-- `blocked`, `self-heal-exhausted`, `needs-qa`, `security-review`,
-  `trading-safety`, and `ready-for-human-review` block the autonomous exception.
-  A `docs-sync` label on a PR without the `[docs-sync] ` title is also blocking.
-- Every other path requires an approval from a trusted human reviewer on the
-  current head. A current human change request keeps the merge policy pending.
+- `implement-ticket` validates one claim and uses `assign-to-agent`; it never
+  edits code or creates a PR itself.
+- The lifecycle reconciler enrolls only a same-repository
+  `copilot-swe-agent[bot]` PR whose `[ai-dev] ` title, issue reference, claim
+  marker, and nonce all match the controller claim.
+- `needs-qa`, `security-review`, and `trading-safety` are persistent
+  review-requirement labels, not lifecycle state. Their current-head checks are
+  the merge signals and rerun after every new head.
+- Routine PRs require baseline CI and code review. Sensitive PRs additionally
+  require `QA verification` and every path-selected specialist check.
+  Boundary PRs require all of those plus current-head human approval.
+- A current human change request always vetoes merge.
 - Required contexts are `Quality and evidence gates`,
   `PostgreSQL migrations and execution`, `Agentic code review`, and
   `Agentic merge policy`; required conversation resolution still applies.
-- Self-heal uses the same low-risk boundary, never treats missing or held checks
-  as repairable failures, and stops after two trusted `[self-heal]` commits or
-  a completed no-change repair run.
+- Self-heal never treats missing or held checks as failures. It stops after two
+  routine attempts, one sensitive attempt, or zero boundary attempts, and
+  never edits factory, production, live, permission, or unrelated scope.
 
 ## Proactive opportunity discovery
 
-`opportunity-discovery.md` is the self-starting PM/research intake path. It runs
-weekly and can also be triggered manually or with `/discover`.
+`opportunity-discovery.md` runs weekly or through `/discover`, but it may create
+work only inside one active human-approved goal.
 
 - It calls `noop` immediately when there are at least 20 open `opportunity`
   issues without `blocked`.
+- It also calls `noop` when no goal is approved or the goal's queue/WIP or
+  assignment budget is full.
 - It creates at most one `[opportunity]` issue per run.
 - Every created issue receives `agentic-factory`, `opportunity`, and
   `needs-rubber-duck`; discovery must not apply `ready-for-planning` or
   `ready-for-ai-dev`.
-- Allowed scope is v2.1 safety/correctness foundations, v2.2 evidence
-  foundations, and factory/QA/observability improvements.
+- Allowed scope is the intersection of the active goal, its milestone, v2.1/
+  v2.2 governance, and its maximum risk tier.
 - Strategy experiments such as ATR, MACD, volume signals, regime classifiers,
   EMA filters, and dynamic sizing are deferred and must produce `noop`.
 - Trading-strategy, guardrail, portfolio, risk, or live-adjacent opportunities must include safety notes and require rubber-duck/trading-safety review before implementation.
@@ -149,6 +172,8 @@ weekly and can also be triggered manually or with `/discover`.
 - Keep routine automatic review to `code-review` on opened, synchronized,
   reopened, and ready-for-review PRs; automatic trading-safety review remains
   limited to its configured path filter.
-- Run QA, security, docs-sync, and implementation through labels or explicit commands unless a path-based safety trigger is required.
+- Run QA, security, and trading-safety through requirement labels or
+  deterministic path dispatch. Implementation is queue-only; `/implement` is
+  not an authority bypass.
 - Configure `noop.report-as-issue: false` unless a no-op should become visible repository work.
 - Prefer CODEOWNERS and human branch protection for high-risk surfaces.

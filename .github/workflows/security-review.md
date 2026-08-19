@@ -60,6 +60,9 @@ Find high-confidence, exploitable security issues.
 - For every pull request, create exactly one `Security review` check on the current head.
 - Set the check to `failure` when any high-confidence exploitable issue is present or the review cannot be completed safely.
 - Set the check to `success` only when no high-confidence exploitable issue remains.
+- Keep the non-lifecycle `security-review` requirement label so the reconciler
+  reruns security review on every new head. The exact-current-head check clears
+  the merge gate.
 
 ## Safe outputs
 
