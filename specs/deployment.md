@@ -1,10 +1,13 @@
 # Deployment runbook (Azure)
 
-> **Live state (2026-08-15): both Azure releases deployed.** Dev is
+> **Live state (2026-08-19): both Azure releases remain deployed.** Dev is
 > `shadow` with monitored hourly/daily schedules. Production is `disabled`
-> with all jobs `Manual`. Migration, provider/email/admin target smoke,
-> restore-verified production backup, alert delivery, and exact-digest checks
-> passed. No production promotion is shipped or authorized.
+> with all jobs `Manual`. The exact-SHA dev evidence retry for
+> `00481ac26ea2da3dce8600207add5a7376abca38` is blocked on operational
+> Foundry workload access; do not call that access complete until protected
+> read-only verification proves local authentication is disabled, four exact
+> workload bindings, no extra effective access, and zero scheduler access. No production
+> promotion is shipped or authorized.
 >
 > **Paper/live safety is unchanged.** `ROLLOUT_MODE` supports only
 > `disabled`, `shadow`, and `paper`. Nothing in this runbook authorizes
@@ -27,6 +30,7 @@ and must not be used for a new release.
 | Region | `westus3` |
 | Platform resource group | `rg-krypto-platform` |
 | Dev/prod resource groups | `rg-krypto-dev` / `rg-krypto-prod` |
+| Operational Foundry resource group | `ghcp-foundry-models` |
 | Operational Foundry account | Established `ghcp-foundry-eastus2` (temporary shared model host) |
 | Dedicated future account | `ai-krypto-westus3` (live, local auth disabled, model-empty after `715-123420`) |
 | Model | OpenAI `gpt-5.6-luna`, version `2026-07-09` |
@@ -53,8 +57,8 @@ those values without making them public documentation.
 | Providers/bootstrap | Required providers are registered; platform/dev/prod resource groups and four GitHub OIDC identities exist | Complete |
 | GitHub controls | Environments, branch restrictions, variables, and release secrets are configured. `production-deploy`, `production-promotion`, `platform`, and `development-promotion` carry human required-reviewer protection (verified via the GitHub API); `development` carries only a branch policy and is the sole environment the factory mutates automatically, behind branch, exact-SHA, and CI gates. | Live; reviewer enforcement active on human-gated environments |
 | Foundry platform | Dedicated account remains model-empty after `715-123420`; fallback dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra plain/structured smokes. | Operational fallback complete |
-| Workload access | Dev/prod runtime and ops identities have Cognitive Services OpenAI User on the operational account | Complete |
-| Dev release | Live in shadow; manual activation and first scheduled execution passed with zero trades | Retained exact-SHA evidence |
+| Workload access | Read-only inspection found no inherited Cognitive Services OpenAI User assignment for the dev runtime or ops identity on the operational account; all four workload bindings plus both scheduler-zero checks require exact verification | **Not complete; human-only operational apply required** |
+| Dev release | Prior release remains live in shadow; automatic run `32311854032` for exact SHA `00481ac26ea2da3dce8600207add5a7376abca38` reached target smoke and failed provider connectivity with `PermissionDenied` | Retry exact-SHA evidence after access verification |
 | Prod release | Live disabled/manual; migration, restore-verified backup, target smoke, and no-schedule checks passed | Release `ce7acc872f05899691ae44d4d826c9c8c94355c7` |
 | Release/rollout | Dev Schedule active; production has no schedule or promotion workflow | Complete for approved deployment scope |
 
@@ -156,7 +160,8 @@ configured for all of the following.
 
 | Environment | Workflows | Required variables | Required secrets | Branch policy |
 |---|---|---|---|---|
-| `platform` | `azure-platform.yml`, `azure-platform-access.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none | `develop/azure`, `main` |
+| `platform` | `azure-platform.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PLATFORM_RESOURCE_GROUP_NAME`, `FOUNDRY_RESOURCE_NAME`, `PLATFORM_IDENTITY_PRINCIPAL_ID` | none | `develop/azure`, `main` |
+| `platform` | `azure-platform-access.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`; operation and Foundry account/resource group are exact reviewed dispatch choices | none | `develop/azure`, `main` |
 | `development` | `azure-deploy-dev.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `DEV_RESOURCE_GROUP_NAME`, `DEV_IDENTITY_NAME` | `POSTGRES_ADMIN_PASSWORD`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`, `POSTHOG_API_KEY`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `RUNTIME_DATABASE_PASSWORD`, `DEPLOYMENT_APPROVAL_SECRET` | `develop/azure`, `main` |
 | `production-deploy` | `azure-deploy-prod.yml`, release portion of `azure-rotate-secrets.yml` | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME`, `PROD_DEPLOY_IDENTITY_NAME`, `PROD_PROMOTION_IDENTITY_NAME` | same names as development, with independent prod values | `develop/azure`, `main` |
 | `production-promotion` | Forced-disable portions of `azure-deploy-prod.yml` and `azure-rotate-secrets.yml` only | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `PROD_RESOURCE_GROUP_NAME` | none | `develop/azure`, `main` |
@@ -183,6 +188,18 @@ Requirements:
 - Locks Contributor remains resource-group-scoped: platform uses it for the
   Foundry account lock; prod deploy uses it for the prod PostgreSQL, Key Vault,
   and evidence-storage locks created by `environment.bicep`.
+
+The platform identity's bootstrap roles in `rg-krypto-platform` do not extend
+to the operational account in `ghcp-foundry-models`. Before the access
+workflow targets that account, an authorized human must arrange the minimum
+reviewed permissions for the identity that actually applies the template:
+resource-group deployment permission at the selected group and
+`Microsoft.Authorization/roleAssignments/write` at the selected account scope,
+plus the corresponding read permissions required by exact verification. A
+human approval of the GitHub `platform` environment does not lend the
+reviewer's Azure permissions to the workflow OIDC identity. Do not widen
+bootstrap or subscription RBAC automatically.
+
 - `POSTHOG_ENVIRONMENT` must be `dev` or `prod` and is attached to every event.
   The temporary shared key is accepted for dev validation only; separate
   projects remain required before future production promotion.
@@ -200,15 +217,19 @@ Requirements:
 
 ## 3. Provision the Foundry model platform
 
-**Current status: operational fallback live.** The
+**Current status: operational fallback models live; workload access
+remediation pending.** The
 [platform run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884)
 created and verified `ai-krypto-westus3`, disabled local auth, verified the
 `CanNotDelete` lock, and passed exact catalog/quota validation. Azure rejected
 model deployment with error `715-123420` (“unusual activity”). The exact dev
 and prod Luna deployments were then created serially on the established
-`ghcp-foundry-eastus2` account, granted to the four workload identities with
-**Cognitive Services OpenAI User**, and passed Entra plain plus strict
-structured `HOLD` smokes. Keep the dedicated account for a future migration.
+`ghcp-foundry-eastus2` account and passed platform Entra plain plus strict
+structured `HOLD` smokes. Those platform smokes do not prove workload-identity
+authorization. Automatic dev deploy run `32311854032` later failed target
+smoke provider connectivity with `PermissionDenied`, and read-only inspection
+found zero inherited **Cognitive Services OpenAI User** assignments for the dev
+runtime and ops identities. Keep the dedicated account for a future migration.
 
 `azure-platform.yml` remains the dedicated-account migration workflow. It has
 separate what-if/apply mutation boundaries:
@@ -288,31 +309,150 @@ ops identities, and ACS Email resources. It publishes nonsecret principal IDs,
 ACS sender, evidence metadata, and monitoring IDs. It does not build images,
 create a release, or enable a schedule.
 
-Both foundations are mandatory because the next step binds all four workload
-principal IDs in one account-scoped access deployment.
+Both foundations are mandatory because Bicep resolves the four fixed
+runtime/ops UAMIs and binds them in one account-scoped access deployment; the
+protected verifier separately resolves both schedulers for zero-access proof.
 
 ## 5. Bind Foundry workload access
 
-**Current status: complete.** Dev/prod runtime and ops identities each have
-exactly one Cognitive Services OpenAI User assignment. This does not make a
-release ready while the model deployments are absent.
+**Current status: not complete.** The operational account is the active model
+host, but exact assignment verification has not passed. The known dev
+runtime/ops assignments are absent; the prod pair must also be verified rather
+than inferred from older prose or platform-level smokes.
 
-Run `azure-platform-access.yml` only after both foundation artifacts exist.
-Supply exactly the retained principal IDs for:
+Select exactly one reviewed account/resource-group pair:
 
-- dev runtime;
-- dev ops;
-- prod runtime; and
-- prod ops.
+| Target | Foundry account | Resource group |
+|---|---|---|
+| Operational (current) | `ghcp-foundry-eastus2` | `ghcp-foundry-models` |
+| Dedicated (future migration) | `ai-krypto-westus3` | `rg-krypto-platform` |
 
-The workflow format-validates them, runs an environment-scoped what-if job,
-publishes the what-if artifact, then runs a separate apply job. The operational fallback has exactly one **Cognitive Services OpenAI User**
-assignment per runtime/ops principal at the established account scope.
-Scheduler identities receive no Foundry role.
+The workflow allows only those exact account/resource-group pairs. Bicep
+allowlists the account name and resolves that existing account in the actual
+deployment resource group, so a direct cross-combined invocation cannot resolve
+the reviewed account and fails before role assignment.
+
+Principal IDs are not inputs. Bicep resolves the four runtime/ops identities,
+and the protected workflow independently resolves those four plus:
+
+- `id-krypto-dev-scheduler` in `rg-krypto-dev`; and
+- `id-krypto-prod-scheduler` in `rg-krypto-prod`.
+
+Workflow verification must match all six exact UAMI resource IDs and produce
+six distinct service-principal object IDs. Only runtime and ops receive
+**Cognitive Services OpenAI User**. Direct Bicep apply does not prove scheduler
+state; the protected verification step must prove both schedulers have zero
+Foundry access.
+
+`azure-platform-access.yml` has two operations:
+
+- `verify` is read-only and may target either reviewed account pair;
+- `apply-dedicated` runs what-if, rejects deletes, publishes the artifact, and
+  applies only `ai-krypto-westus3` / `rg-krypto-platform` behind the protected
+  `platform` environment.
+
+The workflow rejects an operational apply before Azure login. Do not grant
+`id-github-oidc-platform` `Microsoft.Authorization/roleAssignments/write` on
+`ghcp-foundry-eastus2`, `ghcp-foundry-models`, or any ancestor. Operational
+mutation is an explicit human-only fallback.
+
+The read-only workflow identity requires only:
+
+- `Microsoft.CognitiveServices/accounts/read` and
+  `Microsoft.Authorization/roleAssignments/read` at the selected account; and
+- `Microsoft.ManagedIdentity/userAssignedIdentities/read` on the six exact
+  UAMIs listed above.
+
+These are human-managed prerequisites. Do not add them to bootstrap or widen
+them to subscription scope. Azure verification enumerates direct/inherited
+assignments at the account and direct assignments below it. Because Azure CLI's
+`--include-groups` is user-specific and does not prove managed-identity group
+inheritance, a separate human Microsoft Graph check must prove all six UAMIs
+have zero transitive group memberships.
+It first fails closed unless the selected account reports
+`properties.disableLocalAuth == true`; role assignments are not a complete
+keyless boundary while local key authentication remains enabled.
+Each workload UAMI must have exactly one result: a direct account-scoped
+**Cognitive Services OpenAI User** assignment with principal type
+`ServicePrincipal`. Any inherited, child-scope, custom, or broader extra result
+fails closed. Both scheduler UAMIs must return zero.
 
 Do not proceed to a full release until the live assignment verification
 passes. This is the dependency bridge between the application foundations and
 keyless model access.
+
+### Operational remediation and dev-evidence retry order
+
+1. An authorized human signs in interactively with Azure CLI. Confirm
+   `az account show --query user.type --output tsv` returns `user`; do not use
+   the platform OIDC identity. The human must already have resource-group
+   deployment permission, identity/account/assignment read, and
+   `Microsoft.Authorization/roleAssignments/write` at only the exact
+   operational account scope.
+2. From a reviewed commit, run `az deployment group what-if` for
+   `infra/platform-access/main.bicep` in `ghcp-foundry-models` with
+   `infra/params/platform-access.bicepparam`. Retain the full result and refuse
+   any delete or any resource other than the four deterministic
+   account-scoped assignments.
+
+   ```bash
+   az deployment group what-if \
+     --resource-group ghcp-foundry-models \
+     --template-file infra/platform-access/main.bicep \
+     --parameters infra/params/platform-access.bicepparam \
+     --result-format FullResourcePayloads \
+     --no-pretty-print \
+     --output json
+   ```
+
+3. The same human runs `az deployment group create` with the same resource
+   group, template, and parameter file. The account and fixed UAMI references
+   must resolve in their reviewed scopes. Do not paste principal IDs into documentation,
+   issues, chat, or command parameters.
+
+   ```bash
+   az deployment group create \
+     --resource-group ghcp-foundry-models \
+     --name platform-access-operational-human \
+     --template-file infra/platform-access/main.bicep \
+     --parameters infra/params/platform-access.bicepparam \
+     --output none
+   ```
+
+4. From the same interactive human Azure CLI session, verify all six fixed
+   UAMIs have zero transitive Entra group memberships. This requires the
+   directory read permission needed by Microsoft Graph; do not grant that
+   permission to the platform OIDC identity.
+
+   ```bash
+   scripts/azure/verify-foundry-uami-groups.sh \
+     --subscription "Visual Studio Enterprise Subscription"
+   ```
+
+5. Dispatch **Azure platform workload access** with `operation=verify` and the
+   operational account/resource-group pair. Approve the protected `platform`
+   environment. Require **Verify exact direct and inherited Foundry access** to
+   prove local authentication is disabled, four exact workload assignments, no
+   extras, and zero scheduler assignments. Only the human Graph proof plus this
+   completed read-only verification makes workload access complete.
+
+   ```bash
+   gh workflow run azure-platform-access.yml \
+     --ref main \
+     -f operation=verify \
+     -f foundry_account_name=ghcp-foundry-eastus2 \
+     -f foundry_resource_group_name=ghcp-foundry-models \
+     -f reviewed_source_sha=<exact-reviewed-main-sha>
+   ```
+
+6. Retry dev evidence for exact SHA
+   `00481ac26ea2da3dce8600207add5a7376abca38`. Prefer **Re-run failed jobs** on
+   automatic run `32311854032`, which preserves the original CI-bound SHA. If
+   that rerun is unavailable, manually dispatch **Azure deploy dev** with that
+   exact `commit_sha` and `deployment_stage=full`; its gate must find the
+   existing successful push-triggered CI run.
+7. Require the `Dev deployment evidence` status on that exact SHA to succeed.
+   Do not substitute a moving branch ref or a newer SHA for this retry.
 
 ## 6. Dev full release and schedule activation
 

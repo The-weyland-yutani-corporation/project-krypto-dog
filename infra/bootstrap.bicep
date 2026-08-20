@@ -15,7 +15,7 @@
 //                            roleAssignments/write since rollout.bicep
 //                            never creates a role assignment)
 //   - platform            -> platform resource group (platform.bicep and
-//                            platform-access.bicep only; the one-time account
+//                            platform-access/main.bicep only; the one-time account
 //                            template includes a delete lock and is deployed
 //                            by the bootstrap operator; this identity is never
 //                            given any right in the dev or prod resource
@@ -24,7 +24,7 @@
 //                            group)
 //
 // Run this once (or whenever environment/repo names change) before
-// platform-account.bicep, platform.bicep, platform-access.bicep,
+// platform-account.bicep, platform.bicep, platform-access/main.bicep,
 // environment.bicep, release.bicep, or rollout.bicep.
 //
 // NOTE: only the dev/prod-vs-platform resource group scoping above is an
@@ -93,7 +93,7 @@ param prodDeployGithubEnvironmentName string = 'production-deploy'
 @description('GitHub repository Environment name federated to the prod promotion identity (runs rollout.bicep for prod only — the one template that flips ROLLOUT_MODE/trigger types).')
 param prodPromotionGithubEnvironmentName string = 'production-promotion'
 
-@description('GitHub repository Environment name federated to the platform identity (runs platform.bicep and platform-access.bicep only).')
+@description('GitHub repository Environment name federated to the platform identity (runs platform.bicep and platform-access/main.bicep only).')
 param platformGithubEnvironmentName string = 'platform'
 
 @description('Dev GitHub OIDC identity name.')
@@ -191,7 +191,7 @@ module prodPromotionOidcIdentity 'modules/oidc-identity.bicep' = {
   }
 }
 
-// Platform: runs ONLY the dedicated platform templates. platform-access.bicep
+// Platform: runs ONLY the dedicated platform templates. platform-access/main.bicep
 // creates the four reviewed Cognitive Services OpenAI User bindings for the
 // dev/prod runtime and ops identities, so this identity needs the current
 // RBAC-granting built-in role in addition to Contributor.

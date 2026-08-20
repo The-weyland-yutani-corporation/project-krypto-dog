@@ -71,7 +71,7 @@ jobs:
       - name: Build every Bicep entry point
         run: |
           set -euo pipefail
-          for f in infra/*.bicep; do
+          for f in infra/*.bicep infra/platform-access/*.bicep; do
             echo "::group::az bicep build --file ${f}"
             az bicep build --file "${f}"
             echo "::endgroup::"

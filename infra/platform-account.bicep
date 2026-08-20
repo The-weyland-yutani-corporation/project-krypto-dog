@@ -5,7 +5,7 @@
 //
 // The inference endpoint is public at the network layer, but local/API-key
 // authentication is disabled. Workload authorization is granted separately
-// and narrowly at account scope by platform-access.bicep.
+// and narrowly at account scope by platform-access/main.bicep.
 //
 // Deploy this one-time lifecycle template with the bootstrap operator:
 // Contributor plus Role Based Access Control Administrator can create the

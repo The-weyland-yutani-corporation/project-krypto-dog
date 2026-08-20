@@ -3,10 +3,14 @@
 This tree implements the Azure-native target accepted by
 [`specs/decisions/0008-azure-native-deployment-architecture.md`](../specs/decisions/0008-azure-native-deployment-architecture.md).
 
-> **Deployment state (2026-08-15): FOUNDATIONS + FALLBACK LUNA + RELEASES
-> DEPLOYED.** Bootstrap, both environment foundations, operational Luna
-> deployments, workload access, and dev/prod releases exist. Dev is
-> shadow/scheduled; production is disabled/manual.
+> **Deployment state (2026-08-19): FOUNDATIONS + FALLBACK LUNA + RELEASES
+> DEPLOYED; WORKLOAD ACCESS REMEDIATION PENDING.** Bootstrap, both environment
+> foundations, operational Luna deployments, and dev/prod releases exist. Dev
+> is shadow/scheduled; production is disabled/manual. Operational Foundry
+> access is not complete until a human Microsoft Graph check proves all six
+> UAMIs have zero transitive group memberships and protected read-only Azure
+> verification proves all four exact runtime/ops assignments, no additional
+> direct/inherited Foundry access, and zero scheduler access.
 >
 > **Paper only.** Templates support `disabled`, `shadow`, and `paper`.
 > Nothing provisions or authorizes live-money execution.
@@ -19,7 +23,8 @@ This tree implements the Azure-native target accepted by
 - Resource groups: `rg-krypto-platform`, `rg-krypto-dev`,
   `rg-krypto-prod`.
 - Dedicated future Foundry account: `ai-krypto-westus3`.
-- Operational model host: established `ghcp-foundry-eastus2`.
+- Operational model host: established `ghcp-foundry-eastus2` in
+  `ghcp-foundry-models`.
 - Model: OpenAI `gpt-5.6-luna`, version `2026-07-09`,
   `GlobalStandard`.
 - Deployments: `krypto-dev-luna` and `krypto-prod-luna`, capacity 10 each.
@@ -38,9 +43,9 @@ provision PostgreSQL there. It is not a current target.
 | Surface | Live state | Evidence |
 |---|---|---|
 | Subscription/bootstrap | Required providers registered; three resource groups and four GitHub OIDC identities exist | Bootstrap complete |
-| GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a separate dev PostHog key; required-reviewer rules are unsupported by the private-repo billing plan, so mutation workflows are manual/paused behind branch, exact-SHA, and CI gates | Configuration staged; reviewer enforcement unavailable |
+| GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a separate dev PostHog key; `platform`, `production-deploy`, `production-promotion`, and `development-promotion` retain human required-reviewer protection | Reviewer enforcement active on human-gated environments |
 | Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
-| Foundry workload access | Dev/prod runtime and ops identities each have Cognitive Services OpenAI User on the operational account | Applied |
+| Foundry workload access | Dev runtime/ops are confirmed missing the operational account role; four workload-only bindings and both scheduler-zero checks require exact verification | **Not complete** |
 | Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
 | Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
 | Releases | Dev/prod web Container Apps and scheduler/ops jobs are deployed; dev completed target-smoke and scheduled-run evidence; production remains disabled/manual | Deployed with safety state |
@@ -72,7 +77,7 @@ infra/
   bootstrap.bicep          subscription scope: three RGs, four OIDC identities, minimal read-only roles
   platform-account.bicep   rg-krypto-platform: dedicated Foundry account + delete lock
   platform.bicep           rg-krypto-platform: pinned dev/prod Luna deployments
-  platform-access.bicep    rg-krypto-platform: runtime/ops inference role bindings
+  platform-access/         allowlisted selected-account workload access template
   environment.bicep        per environment: foundation resources and identities
   release.bicep            per environment: disabled/manual app, jobs, and Key Vault secrets
   rollout.bicep            per environment: rollout mode and job trigger state
@@ -88,7 +93,7 @@ infra/
 | `bootstrap.bicep` | Platform/dev/prod resource groups; four OIDC identities and RG roles; one-action provider-state reader role/assignments; platform **Cognitive Services Usages Reader** | Other subscription permissions, application resources, model deployments, secrets |
 | `platform-account.bicep` | Dedicated Foundry account and `CanNotDelete` lock | Model deployments or workload access |
 | `platform.bicep` | Exact dev/prod model deployments and platform smoke role | Account lifecycle or application identities |
-| `platform-access.bicep` | Four account-scoped workload role assignments | Model/account mutation |
+| `platform-access/main.bicep` | Resolve four fixed runtime/ops UAMIs and create four account-scoped workload role assignments | Model/account mutation, caller-selected principals, scheduler access; scheduler-zero proof belongs to the protected verifier |
 | `environment.bicep` | Network, ACR, Container Apps environment, PostgreSQL, Key Vault, evidence storage, ACS Email, Log Analytics, Action Group/failed-job alert, runtime/scheduler/ops identities, and prod PostgreSQL/Key Vault/storage delete locks | App release, schedule activation, application secret payloads |
 | `release.bicep` | Web app, scheduler jobs, five ops jobs, application Key Vault secrets/RBAC | Any schedule; it hardcodes disabled/manual |
 | `rollout.bicep` | Web rollout mode and scheduler trigger state | Monitoring, new images, Key Vault values, role assignments, ops-job definitions |
@@ -103,7 +108,7 @@ Foundry workload access exists; releases are not.
 
 | Identity | GitHub Environment | Resource-group roles | Subscription read-only roles | Intended templates |
 |---|---|---|---|---|
-| `id-github-oidc-platform` | `platform` | `rg-krypto-platform`: Contributor, Role Based Access Control Administrator, Locks Contributor | **Project Krypto Provider Registration Reader**; **Cognitive Services Usages Reader** | `platform-account.bicep`, `platform.bicep`, `platform-access.bicep` |
+| `id-github-oidc-platform` | `platform` | `rg-krypto-platform`: Contributor, Role Based Access Control Administrator, Locks Contributor | **Project Krypto Provider Registration Reader**; **Cognitive Services Usages Reader** | `platform-account.bicep`, `platform.bicep`, dedicated-target `platform-access/main.bicep`; read-only access verification |
 | `id-github-oidc-dev` | `development` | `rg-krypto-dev`: Contributor, Role Based Access Control Administrator | **Project Krypto Provider Registration Reader** | `environment.bicep`, `release.bicep`, `rollout.bicep`, `schedule-monitoring.bicep` |
 | `id-github-oidc-prod-deploy` | `production-deploy` | `rg-krypto-prod`: Contributor, Role Based Access Control Administrator, Locks Contributor | **Project Krypto Provider Registration Reader** | `environment.bicep`, `release.bicep` |
 | `id-github-oidc-prod-promotion` | `production-promotion` | `rg-krypto-prod`: Contributor | none | Forced-disable jobs in prod deploy/rotation only: `rollout.bicep`, then `schedule-monitoring.bicep` |
@@ -118,10 +123,10 @@ receive it.
 Azure enforces resource-group scope, not the intended template list. A
 resource-group Contributor can deploy other resources in that group.
 Template separation therefore also depends on protected workflow files,
-GitHub Environment reviewers, branch rules, and CODEOWNERS. Required-reviewer
-rules are not available on the current private-repo billing plan, so the
-current workflows remain manual/paused with branch, exact-SHA, and CI gates;
-reviewer-backed automation must not be assumed.
+GitHub Environment reviewers, branch rules, and CODEOWNERS. The `platform`,
+`production-deploy`, `production-promotion`, and `development-promotion`
+environments retain required-reviewer protection; `development` remains the
+branch- and exact-SHA-gated autonomous dev boundary.
 
 No executable production promotion workflow is shipped or approved. The
 `production-promotion` name denotes the separately reviewed forced-disable
@@ -130,14 +135,29 @@ boundary used only by `azure-deploy-prod.yml` and
 future production promotion requires a new evidence-bound design and review.
 
 The platform, dev, and prod-deploy identities can create their reviewed role
-assignments and therefore have Role Based Access Control Administrator at
-their own resource-group scope. The platform identity has Locks Contributor in
-`rg-krypto-platform` for the Foundry account lock. The prod-deploy identity has
-Locks Contributor in `rg-krypto-prod` because `environment.bicep` creates the
-prod PostgreSQL, Key Vault, and evidence-storage locks. Role Based Access
-Control Administrator is powerful within those resource groups; it is not a
-role-assignment allow-list. Keep mutation workflows manual/paused until an
-equivalent reviewer-enforced boundary is available.
+assignments only inside their own resource-group scope. The platform identity
+has Locks Contributor in `rg-krypto-platform` for the Foundry account lock.
+The prod-deploy identity has Locks Contributor in `rg-krypto-prod` because
+`environment.bicep` creates the prod PostgreSQL, Key Vault, and evidence-
+storage locks. Role Based Access Control Administrator is powerful within those
+resource groups; it is not a role-assignment allow-list. Keep mutation
+workflows behind reviewer-protected environments and exact reviewed templates.
+
+Those bootstrap roles do not cross into `ghcp-foundry-models`, and they must
+not be widened there. `azure-platform-access.yml` rejects an operational apply
+before Azure login. An authorized human using an interactive Azure CLI login
+is the only operational fallback applier and must already have resource-group
+deployment permission plus
+`Microsoft.Authorization/roleAssignments/write` at the exact operational
+account. Never grant that write action to `id-github-oidc-platform` on the
+operational account or its ancestors.
+
+The workflow's operational `verify` path is read-only. Its narrow prerequisites
+are `Microsoft.CognitiveServices/accounts/read` and
+`Microsoft.Authorization/roleAssignments/read` at the exact account, plus
+`Microsoft.ManagedIdentity/userAssignedIdentities/read` on the six exact
+runtime/ops/scheduler UAMIs. Those read grants are human-managed prerequisites;
+the repository does not add or widen them automatically.
 
 All mutation permissions remain resource-group-scoped. Subscription scope is
 read-only: the minimal provider-state role above, plus **Cognitive Services
@@ -198,15 +218,25 @@ invents a fallback.
 
 `platform.bicep` grants the protected platform smoke principal
 **Cognitive Services OpenAI User** for attended no-trade verification.
-`platform-access.bicep` independently grants the same one role at account
-scope to:
+`platform-access/main.bicep` independently grants the same one role at account
+scope on exactly one reviewed target pair: operational
+`ghcp-foundry-eastus2` / `ghcp-foundry-models`, or dedicated
+`ai-krypto-westus3` / `rg-krypto-platform`. The allowlisted existing account is
+resolved in the actual deployment resource group, so a cross-combined account
+and resource group fails before role assignment. The template resolves fixed UAMI resources rather than
+accepting principal IDs. It binds only:
 
 - dev runtime;
 - dev ops;
 - prod runtime; and
 - prod ops.
 
-Schedulers invoke the application and receive no direct Foundry access.
+Schedulers invoke the application and receive no Foundry access. Live workload
+access remains incomplete until verification proves local authentication is
+disabled, finds exactly one effective assignment—the direct account-scoped
+built-in role-definition ID—for each workload UAMI, no additional
+direct/inherited/child-scope assignment, and zero such assignment for both
+scheduler UAMIs.
 Runtime configuration is:
 
 ```text
@@ -253,19 +283,26 @@ required.
    `azure-platform.yml` path remains available for a future migration.
 4. `azure-deploy-dev.yml` with `deployment_stage=foundation`.
 5. `azure-deploy-prod.yml` with `deployment_stage=foundation`.
-6. Environment-scoped manual `azure-platform-access.yml` with the four retained
-   runtime/ops principal IDs.
-7. Full dev release and monitored shadow activation.
-8. Full prod release, ending disabled/manual. No production promotion
+6. An authorized human runs operational `platform-access/main.bicep` what-if and
+   apply using an interactive Azure CLI login; the GitHub OIDC workflow refuses
+   that mutation.
+7. Human-gated `azure-platform-access.yml` with `operation=verify` and the
+   operational pair; require local-auth-disabled, exact effective-access, and
+   scheduler-zero verification.
+8. Retry full dev evidence at the exact CI-passed SHA, then retain monitored
+   shadow activation evidence.
+9. Full prod release, ending disabled/manual. No production promotion
    workflow is shipped or approved.
 
-Current checkpoint: steps 1 through 8 are complete. Dev is shadow/scheduled
-with monitored activation evidence, and prod is deployed disabled/manual.
+Current checkpoint: foundations, models, and prior dev/prod releases exist,
+but steps 6–7 are pending and exact-SHA dev evidence must be retried after they
+pass. The prior dev release remains shadow/scheduled; prod remains deployed
+disabled/manual.
 
 Both foundation workflows publish a nonsecret handoff artifact containing
-identity IDs, evidence metadata, ACS sender, and monitoring IDs. The access
-workflow consumes the principal IDs through explicit reviewed inputs; it
-does not guess them.
+identity IDs, evidence metadata, ACS sender, and monitoring IDs. Access binding
+does not consume caller-supplied IDs: Bicep and the verification workflow
+resolve the six fixed UAMIs by exact resource-group/name pair.
 
 Manual workflows support `foundation` and `full`; the workflow definition maps
 `workflow_run` events to `full`. Automatic mutation is currently paused because
@@ -505,7 +542,7 @@ availability or create live evidence:
 az bicep build --file infra/bootstrap.bicep
 az bicep build --file infra/platform-account.bicep
 az bicep build --file infra/platform.bicep
-az bicep build --file infra/platform-access.bicep
+az bicep build --file infra/platform-access/main.bicep
 az bicep build --file infra/environment.bicep
 az bicep build --file infra/release.bicep
 az bicep build --file infra/rollout.bicep

@@ -56,7 +56,7 @@ Six Azure workflow surfaces implement or validate the target:
 |---|---|---|
 | `azure-infra-validate.yml` | Source validation for Bicep, parameters, workflow contracts, and Azure helper tests | Validation-only; cannot produce live deployment evidence |
 | `azure-platform.yml` | Dedicated Foundry account/model plan, apply, exact catalog/quota check, and no-trade smoke | Dedicated account/model attempt failed after account/catalog/quota; operational fallback models and smokes were completed separately |
-| `azure-platform-access.yml` | Separate plan/apply for four runtime/ops account-role bindings | Applied; dev/prod runtime and ops each have Cognitive Services OpenAI User |
+| `azure-platform-access.yml` | Read-only effective-access verification for either approved target; protected plan/apply only for the dedicated target | Operational apply is human-only; dev runtime/ops are confirmed missing and all workload/scheduler checks remain pending |
 | `azure-deploy-dev.yml` | Dev `foundation` or `full` release and monitored shadow activation | Live equivalent operator path completed; dev shadow/scheduled |
 | `azure-deploy-prod.yml` | Prod `foundation` or `full` release ending disabled/manual | Live equivalent operator path completed; prod disabled/manual |
 | `azure-rotate-secrets.yml` | Safe prod secret rotation with current-release disable/backup controls | Not run; production release exists and is currently disabled/manual |
@@ -130,14 +130,22 @@ credential downgrade.
       smokes against both fallback deployments.
 - [x] Deploy the dev foundation.
 - [x] Deploy the prod foundation.
-- [x] Retain both foundation handoffs and bind the exact dev/prod runtime and
-  ops principal IDs through `azure-platform-access.yml`.
-- [x] Verify exactly one Cognitive Services OpenAI User assignment per
-  workload principal before any full release.
+- [ ] An authorized human applies operational access after a reviewed what-if;
+  the platform OIDC workflow must refuse this mutation.
+- [ ] Run `azure-platform-access.yml` with `operation=verify`; prove local
+  authentication is disabled, exactly one direct account-scoped Cognitive
+  Services OpenAI User assignment, and no other direct/inherited Foundry assignment
+  per fixed runtime/ops UAMI.
+- [ ] As an authorized human with the required Microsoft Graph directory-read
+  permission, run `scripts/azure/verify-foundry-uami-groups.sh` and prove all
+  six fixed UAMIs have zero transitive group memberships.
+- [ ] Prove both fixed scheduler UAMIs have zero direct, inherited, or
+  child-scope Foundry assignments before retrying exact-SHA dev evidence.
 
-Both foundations are mandatory before the access workflow because the four
-principal IDs are created by those foundations. A full release before access
-binding is not an approved shortcut.
+Both foundations are mandatory before access binding because they create the
+four workload UAMIs resolved by Bicep and the two scheduler UAMIs resolved by
+protected verification. A full release before access binding is not an approved
+shortcut.
 
 Dev full runs deploy automatically after every successful push-triggered `CI`
 run on `main` (the `azure-deploy-dev.yml` `workflow_run` trigger, gated on
@@ -337,6 +345,7 @@ No provider is ready until retained live evidence proves all applicable rows:
 |---|---|---|
 | Azure resource providers | Owner registration completed; applicable deployment workflow `--check-only` checks passed | **Passed** |
 | Foundry | Exact account/model/version/SKU/capacity and Entra plain + structured `HOLD` smokes | **Passed on operational fallback:** both deployments live; no model API key used |
+| Foundry workload access | Local authentication is disabled; all six fixed UAMIs have zero transitive group memberships; four runtime/ops UAMIs each have only the exact direct account-scoped Cognitive Services OpenAI User role; both schedulers have zero direct/inherited access | **Pending:** dev runtime/ops are confirmed missing; human-only operational apply, Graph proof, and protected read-only verification have not passed |
 | Quota | One exact catalog `usageName`, one exact quota dimension, and sufficient incremental capacity after subtracting only exact replaceable target deployments | **Passed** in the failed platform run |
 | Coinbase | Authenticated provider smoke from the deployed target | **Passed in dev and prod target smoke** |
 | ACS Email | Environment-specific sender; actual `sent` result and persisted delivery audit | **Passed in dev and prod** |
