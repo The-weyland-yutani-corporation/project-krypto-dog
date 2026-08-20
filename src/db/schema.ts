@@ -82,6 +82,10 @@ export const agentState = kryptoSchema.table("AgentState", {
     precision: 20,
     scale: 8,
   }),
+  portfolioValuationPriceUSD: numeric("portfolioValuationPriceUSD", {
+    precision: 20,
+    scale: 8,
+  }),
   weightedCostBasisUSD: numeric("weightedCostBasisUSD", {
     precision: 20,
     scale: 8,

@@ -194,6 +194,11 @@ lock so forced-disable and secret mutations cannot overlap.
 
 ## Operator checks after release deployment
 
+Before deploying the portfolio valuation provenance migration, existing open ETH
+positions will be quarantined on first run after upgrade due to NULL valuation
+price provenance — operators must close open positions before deploying, or
+accept immediate quarantine.
+
 These commands inspect the live jobs:
 
 ```bash
