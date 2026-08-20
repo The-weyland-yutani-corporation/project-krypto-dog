@@ -135,6 +135,12 @@ const GOAL_REQUIRED_NARRATIVE_HEADINGS = Object.freeze([
   GOAL_FORM_HEADINGS.pauseConditions,
 ]);
 
+const GOAL_BOUNDARY_STATEMENTS = Object.freeze([
+  "Production deployment remains human-approved.",
+  "Live-trading enablement remains human-approved.",
+  "Automation may pause itself but may not unpause itself.",
+]);
+
 // ---------------------------------------------------------------------------
 // Generic, pure issue-form parsing helpers
 // ---------------------------------------------------------------------------
@@ -319,30 +325,133 @@ function areAllCheckboxesChecked(sectionText) {
 }
 
 /**
- * Finds the most recent `"labeled"` timeline event for a given label name.
- * Pure: operates only on an already-fetched events array. Multiple
- * label/unlabel cycles are possible over an issue's lifetime; only the
- * latest application of the label is authoritative for "who currently
- * authorized this."
+ * Requires the rendered goal boundary section to contain exactly the three
+ * canonical statements, each checked exactly once. Any non-checkbox content,
+ * renamed/extra statement, unchecked item, missing item, or duplicate fails
+ * closed.
+ *
+ * @param {unknown} sectionText
+ * @returns {{valid: boolean, reason: string, statements: string[]}}
+ */
+function validateCanonicalGoalBoundaries(sectionText) {
+  if (typeof sectionText !== "string") {
+    return { valid: false, reason: "missing-boundaries", statements: [] };
+  }
+
+  const lines = sectionText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  if (lines.length !== GOAL_BOUNDARY_STATEMENTS.length) {
+    return {
+      valid: false,
+      reason: "boundary-count-mismatch",
+      statements: [],
+    };
+  }
+
+  const statements = [];
+  for (const line of lines) {
+    const match = /^-\s*\[([ xX])\]\s+(.+?)\s*$/.exec(line);
+    if (!match) {
+      return {
+        valid: false,
+        reason: "boundary-line-malformed",
+        statements: [],
+      };
+    }
+    if (match[1].toLowerCase() !== "x") {
+      return {
+        valid: false,
+        reason: "boundary-unchecked",
+        statements: [],
+      };
+    }
+    statements.push(match[2]);
+  }
+
+  if (new Set(statements).size !== statements.length) {
+    return {
+      valid: false,
+      reason: "boundary-duplicate",
+      statements: [],
+    };
+  }
+
+  const actual = new Set(statements);
+  if (
+    GOAL_BOUNDARY_STATEMENTS.some((statement) => !actual.has(statement)) ||
+    statements.some((statement) => !GOAL_BOUNDARY_STATEMENTS.includes(statement))
+  ) {
+    return {
+      valid: false,
+      reason: "boundary-statement-mismatch",
+      statements: [],
+    };
+  }
+
+  return {
+    valid: true,
+    reason: "ok",
+    statements: [...GOAL_BOUNDARY_STATEMENTS],
+  };
+}
+
+/**
+ * Resolves the most recent `"labeled"` timeline event for a given label name
+ * using timestamp first and numeric event ID as the deterministic tie-breaker.
+ * Missing/invalid ordering fields or duplicate top ordering keys are ambiguous
+ * and fail closed.
  *
  * @param {unknown} events
  * @param {string} labelName
- * @returns {{event: string, label: {name: string}, actor?: {type?: string, login?: string}}|undefined}
+ * @returns {{valid: boolean, reason: string, event?: object}}
  */
-function findLatestLabelApplicationEvent(events, labelName) {
-  return (Array.isArray(events) ? events : [])
+function resolveLatestLabelApplicationEvent(events, labelName) {
+  const matching = (Array.isArray(events) ? events : [])
     .filter(
       (event) =>
         event &&
         event.event === "labeled" &&
         event.label &&
         event.label.name === labelName,
-    )
-    .sort(
-      (left, right) =>
-        Date.parse(right.created_at || "") -
-        Date.parse(left.created_at || ""),
-    )[0];
+    );
+  if (matching.length === 0) {
+    return { valid: false, reason: "missing-label-event" };
+  }
+
+  const ordered = [];
+  for (const event of matching) {
+    const timestamp = Date.parse(event.created_at || "");
+    const id = Number(event.id);
+    if (
+      !Number.isFinite(timestamp) ||
+      !Number.isSafeInteger(id) ||
+      id <= 0
+    ) {
+      return { valid: false, reason: "invalid-label-event-ordering" };
+    }
+    ordered.push({ event, timestamp, id });
+  }
+
+  ordered.sort(
+    (left, right) =>
+      right.timestamp - left.timestamp || right.id - left.id,
+  );
+  if (
+    ordered.length > 1 &&
+    ordered[0].timestamp === ordered[1].timestamp &&
+    ordered[0].id === ordered[1].id
+  ) {
+    return { valid: false, reason: "ambiguous-label-event-ordering" };
+  }
+
+  return { valid: true, reason: "ok", event: ordered[0].event };
+}
+
+function findLatestLabelApplicationEvent(events, labelName) {
+  const resolution = resolveLatestLabelApplicationEvent(events, labelName);
+  return resolution.valid ? resolution.event : undefined;
 }
 
 /**
@@ -452,9 +561,10 @@ function resolveActiveGoal(goalIssues) {
 
   const sections = extractIssueFormSections(issue.body);
 
-  // A goal is only a complete, human-derived authorization when every
-  // narrative section is actually filled in and all three "Human-only
-  // boundaries" checkboxes are checked. These are structural prerequisites
+  // A goal is only structurally complete when every narrative section is
+  // filled in and the "Human-only boundaries" section exactly matches the
+  // canonical checked statements. This parser does not itself prove human
+  // provenance. These are structural prerequisites
   // (unlike the numeric/dropdown fields below, which fail closed per-field
   // instead of invalidating the whole goal) -- an incomplete goal
   // authorizes nothing at all.
@@ -465,11 +575,11 @@ function resolveActiveGoal(goalIssues) {
     return { valid: false, reason: "goal-incomplete-narrative", goal: null };
   }
 
-  const boundariesChecked = areAllCheckboxesChecked(
+  const boundaries = validateCanonicalGoalBoundaries(
     getIssueFormSection(sections, GOAL_FORM_HEADINGS.boundaries),
   );
-  if (!boundariesChecked) {
-    return { valid: false, reason: "goal-boundaries-not-fully-checked", goal: null };
+  if (!boundaries.valid) {
+    return { valid: false, reason: "goal-boundaries-invalid", goal: null };
   }
 
   // "Allowed paths" is the goal's machine-readable scope ceiling: every
@@ -998,6 +1108,7 @@ async function buildCandidate({ github, owner, repo, issue, activeGoalNumber, co
     labels: parsed.labels,
     milestone: parsed.milestone,
     parentGoalNumber: parsed.parentGoalNumber,
+    nativeParentGoalNumber,
     parentGoalApproved: parsed.parentGoalApproved && nativeParentGoalApproved,
     dependencyStates,
     state: parsed.state,
@@ -1642,6 +1753,10 @@ module.exports = {
   CLAIM_MARKER_PATTERN,
   PRIORITY_LABELS,
   PRIORITY_LABEL_TO_PRIORITY,
+  CANDIDATE_FORM_HEADINGS,
+  GOAL_FORM_HEADINGS,
+  GOAL_REQUIRED_NARRATIVE_HEADINGS,
+  GOAL_BOUNDARY_STATEMENTS,
   // Pure parsing helpers.
   extractIssueFormSections,
   getIssueFormSection,
@@ -1651,10 +1766,17 @@ module.exports = {
   normalizeLabels,
   isValidTimestamp,
   areAllCheckboxesChecked,
+  validateCanonicalGoalBoundaries,
+  resolveLatestLabelApplicationEvent,
   findLatestLabelApplicationEvent,
   isHumanActorType,
   determineFactoryMode,
   resolveActiveGoal,
   parseCandidateSections,
   buildClaimCommentBody,
+  // Read-only adapter helpers shared by deterministic preflight tooling.
+  listIssuesWithLabels,
+  countInFlight,
+  countBudgetConsumption,
+  buildCandidate,
 };

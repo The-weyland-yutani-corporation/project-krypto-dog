@@ -1,0 +1,129 @@
+name: Agentic Factory Readiness
+
+# Deterministic, read-only preflight. issue_comment workflows are loaded from
+# the repository default branch, and checkout is pinned to that event SHA.
+# This workflow never checks out or executes issue/PR-authored code.
+#
+# Human setup prerequisites (configuration, not authority granted here):
+# - protect the repository default branch;
+# - configure the dedicated `factory-control` Environment with required
+#   reviewers, prevent self-review and administrator bypass, and restrict
+#   deployments to protected branches; and
+# - retain `development` as the autonomous dev-only target with no required
+#   reviewer and exactly the reviewed `main` + `develop/azure` branch policies.
+#
+# Commands must be a single line on the singleton open factory-control issue:
+# /factory-readiness mode=baseline gh-aw-token-attested=true actions-pr-attested=true
+# /factory-readiness mode=canary goal=700 canary=701 goal-digest=<64-hex> gh-aw-token-attested=true actions-pr-attested=true
+# If the factory is already active, also provide active-event=<latest-label-event-id>;
+# the protected approval then binds to that exact deterministically ordered event.
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: agentic-factory-readiness-${{ github.event.comment.id }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+  deployments: read
+  issues: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  route:
+    name: Validate readiness command target
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      allowed: ${{ steps.route.outputs.allowed }}
+    steps:
+      - name: Verify singleton control issue and authorized commenter
+        id: route
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const comment = context.payload.comment;
+            const trustedAssociations = new Set([
+              "OWNER",
+              "MEMBER",
+              "COLLABORATOR",
+            ]);
+            const command =
+              typeof comment?.body === "string" &&
+              comment.body.trimStart().startsWith("/factory-readiness");
+            const actorAllowed =
+              comment?.user?.type === "User" &&
+              trustedAssociations.has(comment.author_association);
+            const controls = await github.paginate(
+              github.rest.issues.listForRepo,
+              {
+                ...context.repo,
+                state: "open",
+                labels: "factory-control",
+                per_page: 100,
+              },
+            );
+            const singleton =
+              controls.length === 1 &&
+              controls[0].number === issue?.number &&
+              !issue?.pull_request;
+            core.setOutput(
+              "allowed",
+              String(Boolean(command && actorAllowed && singleton)),
+            );
+
+  preflight:
+    name: Evaluate deterministic factory readiness
+    needs: route
+    if: needs.route.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: factory-control
+    env:
+      READINESS_APPROVAL_ENVIRONMENT: factory-control
+    steps:
+      - name: Check out exact trusted default-head readiness scripts
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Run read-only factory readiness preflight
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { execFileSync } = require("node:child_process");
+            const path = require("node:path");
+            const trustedScriptSha = execFileSync(
+              "git",
+              ["rev-parse", "HEAD"],
+              {
+                cwd: process.env.GITHUB_WORKSPACE,
+                encoding: "utf8",
+              },
+            ).trim();
+            const scriptPath = path.join(
+              process.env.GITHUB_WORKSPACE,
+              ".github/scripts/agentic-factory-readiness.cjs",
+            );
+            const { runFactoryReadinessPreflight } = require(scriptPath);
+            await runFactoryReadinessPreflight({
+              github,
+              context,
+              core,
+              trustedScriptSha,
+              runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              runId: Number(process.env.GITHUB_RUN_ID),
+              approvalEnvironmentName:
+                process.env.READINESS_APPROVAL_ENVIRONMENT,
+              protectedGatePassed: true,
+            });
