@@ -257,6 +257,142 @@ a successful HTTP response without the persisted delivery audit.
 | Model retry/latency | Attempts >1 or material latency increase | Inspect Luna deployment health, quota, and timeout frequency |
 | Token spike | Material increase over recent baseline | Inspect prompt/context growth |
 
+## Clearing the drawdown lock
+
+When a drawdown lock fires, the agent stops trading and a `guardrail_triggered`
+PostHog event is emitted. The lock must be cleared manually via
+`POST /api/admin/unlock` — **never auto-unlock**.
+
+### Prerequisites
+
+Before calling the route:
+
+1. Confirm `accountingStatus === RECONCILED` in the admin dashboard or via
+   `cron.job_run_details`. The route rejects with `409 Conflict` and mutates
+   nothing if the account is not in `RECONCILED` state.
+2. Confirm no run lease is active. An active owned lease blocks unlock with
+   `409 Conflict`. Wait for the current run to complete or use the
+   expired-lease recovery procedure.
+3. Review the ledger and journal to understand the lock cause before
+   proceeding.
+
+### Calling the unlock route
+
+```http
+POST /api/admin/unlock
+Content-Type: application/json
+
+{
+  "confirm": "UNLOCK",
+  "reason": "<at least 10 characters explaining why the lock is being cleared>"
+}
+```
+
+**Required fields:**
+
+| Field | Type | Constraint |
+|---|---|---|
+| `confirm` | string | Must be the literal value `"UNLOCK"` |
+| `reason` | string | 10–500 characters; logged in the audit journal |
+
+**Response codes:**
+
+| Code | Meaning |
+|---|---|
+| `200 OK` | Lock cleared; `isOperatorPaused` set to `true` |
+| `400 Bad Request` | Missing or malformed body |
+| `401` / `403` | No valid admin session |
+| `409 Conflict` | Not locked, active run lease, or `accountingStatus !== RECONCILED` |
+| `500` | AgentState singleton not found |
+
+### What the route does (atomically)
+
+The route executes a single `SELECT … FOR UPDATE → UPDATE` DB transaction:
+
+1. **Accounting gate** — aborts with `409` (no mutation, no journal) if
+   `accountingStatus !== "RECONCILED"`.
+2. **Position classification** — reads `currentPositionETHDecimal`:
+   - **Flat** (`currentPositionETHDecimal == 0`): nulls `referencePriceUSD`.
+     Returns an explicit error (no mutation) if `lastBuyPriceUSD` is not
+     already `null` — this would indicate an inconsistent state that requires
+     a Supabase Studio correction first (see [below](#when-a-supabase-studio-edit-is-still-needed)).
+   - **Open** (`currentPositionETHDecimal > 0`): nulls `lastBuyPriceUSD`;
+     retains `referencePriceUSD`.
+3. **State update** — sets `isLocked = false`, `isOperatorPaused = true`,
+   clears `lockReason` and `lockedAt`. All other fields — balances, DCA
+   count, weighted cost basis, peak/drawdown state, accounting state, lease
+   state — are unchanged.
+4. **Audit journal** — inserts an entry containing the flat/open
+   classification, before/after anchor values, `accountingStatus`,
+   `currentPositionETHDecimal`, prior lock metadata, and the operator reason.
+   If the journal insert fails the entire transaction rolls back.
+
+> **The agent does not resume automatically.** After unlock the agent is
+> paused (`isOperatorPaused = true`) and will remain so until you explicitly
+> resume it.
+
+### Resuming the agent
+
+Once you have verified the unlock and are satisfied the root cause is
+understood, resume via:
+
+```http
+POST /api/admin/pause
+Content-Type: application/json
+
+{ "paused": false }
+```
+
+This toggles `isOperatorPaused` only. It does not touch the lock state.
+
+### Flat-rebase behavior on first post-resume run
+
+When the position was flat at unlock time, `referencePriceUSD` is `null`
+after the route completes. The first reconciled, unpaused run that reaches
+the policy evaluator will:
+
+1. Detect flat position + null `referencePriceUSD`.
+2. Initialize `referencePriceUSD` to the current spot price and journal the
+   rebase event.
+3. Return a deterministic **`HOLD`** — the LLM is not invoked and the paper
+   executor is not called.
+4. All subsequent runs evaluate normally against the new reference price.
+
+This single-run rebase is expected behavior; one `HOLD` with no trade is the
+correct outcome.
+
+### Open exit-only behavior on first post-resume run
+
+When the position was open at unlock time, `lastBuyPriceUSD` is `null` after
+the route completes. While it remains `null`:
+
+- **BUY / DCA is explicitly blocked.** The DCA/buy trigger requires a finite
+  reference price; a null `lastBuyPriceUSD` makes BUY ineligible regardless
+  of market movement.
+- **Optional SELL remains active.** The take-profit trigger uses
+  `weightedCostBasisUSD`, which is retained. If the price rises above the
+  take-profit threshold and the position is non-zero, SELL is eligible.
+- **Mandatory stop-loss is evaluated with unchanged precedence.** Stop-loss
+  runs before all other policy checks, including the pause guard.
+- A partial SELL does not write a non-null `lastBuyPriceUSD` — the position
+  remains exit-only until the position is fully closed.
+
+### When a Supabase Studio edit is still needed
+
+The unlock route handles anchor nulling automatically in the normal flow.
+Direct Supabase Studio edits on `agent_state` are only needed in these
+exceptional cases:
+
+| Situation | Required manual fix |
+|---|---|
+| Flat position but `lastBuyPriceUSD` is non-null (inconsistent state) | Null `lastBuyPriceUSD` in `agent_state` before calling the route |
+| Accounting status stuck in non-`RECONCILED` state after ledger reconciliation | Investigate root cause; contact on-call if `accountingStatus` cannot be repaired through normal run flow |
+| Any other field inconsistency surfaced by a failed unlock | Investigate journal and ledger; do not edit fields other than the specific inconsistency confirmed above |
+
+> **All direct DB edits must be audited.** Document the change, reason, and
+> timestamp in the operator journal via the admin UI or a manual journal
+> insert before and after the edit.
+
 ## Daily and weekly review
 
 Daily:
