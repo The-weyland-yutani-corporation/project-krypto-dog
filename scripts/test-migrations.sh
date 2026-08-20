@@ -792,7 +792,7 @@ azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
           (SELECT ("portfolioValuationPriceUSD" IS NULL)::text FROM "krypto"."AgentState"
             WHERE "id" = '\''singleton'\'');')"
 if [[ "$azure_upgrade_result" != "9|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true|true" ]]; then
-  echo "0006-to-0007 upgrade did not preserve rows, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
+  echo "0006-to-current upgrade did not preserve rows, leave nullable valuation provenance empty, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
   exit 1
 fi
 
