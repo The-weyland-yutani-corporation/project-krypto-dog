@@ -74,7 +74,8 @@ At the authoring baseline:
 - no protected approval record authorizes target mutation, shadow, or PAPER;
 - target, recovery, alert, absolute-stop, and accounting-attestation evidence
   is incomplete; and
-- the only safe posture is rollout `disabled` with Krypto cron unscheduled.
+- the only safe posture is rollout `disabled` with Container Apps Jobs Manual
+  and unscheduled.
 
 This section records the baseline used to design the contract. Current
 disposition belongs in `readiness.md` and issue #76 rather than being updated
@@ -108,7 +109,9 @@ does not prove strategy value and must not be hidden, retuned, or reframed.
 - Deterministic `HOLD`, `BUY`, and `SELL` authorization.
 - Simulated fills and an internal immutable paper ledger.
 - Disabled, shadow, and PAPER rollout modes.
-- Vercel, Supabase, Foundry, PostHog, and Resend production-paper operation.
+- Azure Container Apps, Container Apps Jobs, per-environment ACR, Key Vault,
+  private Azure Database for PostgreSQL, Foundry, PostHog, and Azure
+  Communication Services Email production-paper operation.
 - Security, reliability, recovery, rollout, and evaluation evidence.
 
 ### Out of scope
@@ -200,9 +203,12 @@ production alias is not sufficient provenance.
 
 ### 7.3 Database
 
-Ownership, migration, scheduler/function ownership, runtime DML, and operator
-recovery are distinct roles. Runtime cannot own application objects, migrate,
-read Vault, manage cron, or assume privileged roles.
+Ownership, migration, legacy scheduler/function ownership, runtime DML, and
+operator recovery are distinct roles. Runtime may resolve only its explicitly
+scoped application secrets from Key Vault. It cannot own application objects,
+migrate, access `DIRECT_URL`, owner/migrator credentials, deployment-approval
+secrets, broader vault contents or permissions, manage Container Apps Jobs, or
+assume privileged roles.
 
 ### 7.4 Admin identity
 
@@ -212,9 +218,9 @@ and audited.
 
 ### 7.5 Scheduler identity
 
-Cron requests are signed, route-scoped, time-bound, nonce-bound,
-release/target-bound, and replay-protected. A reusable static bearer secret is
-not sufficient.
+Container Apps Jobs scheduler requests are signed, route-scoped, time-bound,
+nonce-bound, release/target-bound, and replay-protected. A reusable static
+bearer secret is not sufficient.
 
 ### 7.6 Model and provider data
 
@@ -304,7 +310,8 @@ The following changes invalidate approval and restart the applicable window:
 
 ### Entry
 
-- The current safe posture is rollout disabled and cron unscheduled.
+- The current safe posture is rollout disabled with Container Apps Jobs
+  unscheduled.
 - The release candidate is identified but not approved for target mutation.
 
 ### Exit
@@ -332,13 +339,14 @@ PR-G0 does not authorize a target mutation.
 
 1. Bind the frozen artifact, deployment, target, migration, and configuration.
 2. Run read-only target inventory and preflight.
-3. Confirm zero active Krypto cron, zero queued Krypto HTTP work, no unsafe
-   lease, and no unresolved position/accounting condition.
+3. Confirm zero active Container Apps Jobs schedules, zero running or retrying
+   recurring Krypto Job executions, zero queued legacy Krypto HTTP work, no
+   unsafe lease, and no unresolved position/accounting condition.
 4. Verify RPO/RTO backup and clean-target restore evidence.
 5. Apply migration/init through the protected migrator lane with rollout
    disabled.
-6. Configure reviewed provider, admin, Vault, and telemetry values without
-   scheduling cron.
+6. Configure reviewed provider, admin, Key Vault, and telemetry values without
+   enabling Container Apps Jobs schedules.
 7. Run post-migration preflight and exact-deployment disabled smoke.
 8. Observe the disabled target for 30 minutes with independent monitoring.
 
@@ -349,11 +357,12 @@ PR-G0 does not authorize a target mutation.
   identity match the approval.
 - Preflight reports zero blockers.
 - Smoke proves auth, mode binding, database binding, providers, daily email,
-  admin access, no trade mutation, no active cron, no queued work, and lease
-  release.
+  admin access, no trade mutation, no active Job schedule or recurring Job
+  execution, no queued legacy work, and lease release.
 - During observation:
   - readiness remains healthy;
-  - Krypto cron and queues remain empty;
+  - Container Apps Jobs schedules remain absent, recurring Job executions remain
+    terminal, and legacy queues remain empty;
   - no active lease remains;
   - trade count does not change;
   - no unexpected scheduled AgentRun appears; and
@@ -433,10 +442,12 @@ The baseline records:
 
 ### Exit
 
-- The exact approved deployment enters PAPER with cron still disabled.
+- The exact approved deployment enters PAPER with Container Apps Jobs still
+  Manual and unscheduled.
 - The first invocation is attended.
-- Its hold or execution is immediately reconciled before cron activation.
-- Cron is enabled only through the approved fixed-path operation.
+- Its hold or execution is immediately reconciled before schedule activation.
+- Container Apps Jobs schedules are enabled only through the approved
+  fixed-path operation.
 - Named responders cover the first 24 hours and acknowledge all alerts.
 - A production-equivalent isolated drill proves absolute stop with an open
   paper position, preserved ledger/position truth, and reconciled or
@@ -519,7 +530,9 @@ After stop acknowledgment:
 - no new run may acquire a lease;
 - no invocation authorized under an older stop fence may commit;
 - no delayed/replayed request may mutate state;
-- cron and queued work are disabled/drained;
+- Container Apps Jobs schedules are disabled; running or retrying recurring Job
+  executions are stopped or reach a terminal state within a bounded wait;
+  legacy queued work is drained;
 - active ownership is safely resolved; and
 - all evidence is preserved.
 
@@ -560,13 +573,15 @@ Recovery includes:
 - application data and immutable paper evidence;
 - migrations and canonical functions;
 - database ownership, roles, grants, and extensions;
-- Vault/cron reconstruction definitions without exporting secret values;
+- Key Vault and Container Apps Jobs reconstruction definitions without
+  exporting secret values;
 - deployment/environment configuration;
 - frozen release provenance; and
 - disabled scheduling/readiness verification.
 
-Restore completes into a clean isolated target. Cron remains disabled until
-post-restore preflight and exact-deployment smoke pass.
+Restore completes into a clean isolated target. Container Apps Jobs remain
+Manual and unscheduled until post-restore preflight and exact-deployment smoke
+pass.
 
 Retention rules MUST preserve:
 
@@ -604,7 +619,7 @@ current gate disposition in `readiness.md`.
 |---|---|
 | Policy prose differs from executable GitHub controls | SRC-01 and governance attestation |
 | Production alias moves after smoke | DEP-01 immutable deployment binding |
-| Shared admin or cron credential leaks | IAM-01 and M2M-01 |
+| Shared admin or scheduler credential leaks | IAM-01 and M2M-01 |
 | Runtime holds migration/owner privilege | DB-01 |
 | Provider retries exceed request/lease budget | RUN-01 absolute deadline |
 | App cannot alert on its own absence | OPS-01 external missing-run monitor |
@@ -651,7 +666,7 @@ Implementation issues identify the required decisions:
 - source/AI trust and review model;
 - deployment environments and immutable promotion;
 - admin identity;
-- machine-to-machine cron authentication;
+- machine-to-machine scheduler authentication;
 - database ownership and role topology;
 - runtime/worker/deadline boundary;
 - absolute stop semantics;
@@ -687,7 +702,7 @@ Merging this document, creating its issues, or completing an implementation
 ticket authorizes no production action by itself. The safe default remains:
 
 - rollout mode `disabled`;
-- Krypto cron unscheduled;
+- Container Apps Jobs Manual and unscheduled;
 - no queued Krypto HTTP work;
 - no target mutation without protected approval; and
 - no live-money capability.
