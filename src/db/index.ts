@@ -4,7 +4,8 @@ import * as schema from "./schema";
 
 const connectionString = process.env.DATABASE_URL!;
 
-// Connection pool for serverless — max 1 connection per instance
+// Bound each Container Apps replica to one database connection, including
+// during scale-out.
 const client = postgres(connectionString, {
   max: 1,
   idle_timeout: 20,

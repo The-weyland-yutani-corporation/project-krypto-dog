@@ -25,7 +25,7 @@ template and identity detail lives in
 | Email | Dev and prod ACS Email target smokes returned `sent` and persisted delivery audits. | **Passed** |
 | Analytics | Dev and prod target smokes flushed environment-tagged events. A separate production project remains a future promotion gate. | **Deployment smoke passed; promotion isolation pending** |
 | Azure evidence | Exact-SHA migration, preflight/smoke, activation, scheduled-run, and backup reports are retained. Production retention is 90 days and remains `Unlocked` pending irreversible approval. | **Release evidence retained** |
-| Historical host | An older Vercel build and a fresh Supabase PostgreSQL replacement were observed previously. Neither is the Azure release candidate. | Historical baseline only |
+| Retired hosting baseline | An older hosted build and managed PostgreSQL replacement were observed previously. Neither participates in the Azure release candidate; the retired procedure remains in the [historical runbook](./archive/deployment.vercel-supabase.md). | Historical evidence only |
 | Scheduling | Dev hourly/daily jobs are `Schedule`; production and all ops jobs remain `Manual`. | **Dev shadow only** |
 
 GitHub Environments, branch restrictions, and protected values are configured.

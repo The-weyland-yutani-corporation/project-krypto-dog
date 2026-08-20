@@ -169,7 +169,7 @@ drizzle/                  # Generated migrations
 infra/                     # Bicep platform account/model/access, dev/prod foundation,
                            # release, rollout, and schedule monitoring
 .github/workflows/azure-* # OIDC platform/access, validation, deploy, and rotation flows
-supabase/operations/      # Historical Vercel/Supabase cron operations
+supabase/operations/      # Immutable legacy scheduler operations (historical only)
 specs/                    # Product spec, ADRs, RFCs, deployment runbook
 scripts/                  # One-shot scripts (seed, etc.)
 tests/                    # Jest unit + integration tests
@@ -183,10 +183,12 @@ tests/                    # Jest unit + integration tests
 > full release/evidence/rollout gate remains for future promotions. See
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
-> **Target platform: Azure-native; dev and production releases deployed.**
-> The approved deployment plan supersedes Vercel/Supabase with a fully
-> Azure-native target (ADR
-> [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
+> **Sole active repository target: Azure Container Apps + Jobs; dev and
+> production releases are live.** The active deployment path builds application
+> images in each environment's ACR and deploys them with exact-image-digest
+> GitHub Actions workflows; Key Vault supplies runtime secrets. This is the
+> Azure-native target accepted by ADR
+> [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md).
 > The Bicep templates, GitHub Actions workflows, and application-side
 > deployment code for that target all exist in this repo — see
 > [`infra/README.md`](./infra/README.md) and
@@ -236,11 +238,11 @@ restore-verified before target smoke. The
 steps in prod deploy and rotation. Any future production promotion requires a
 new evidence-bound design and trading-safety review. Follow
 [`specs/deployment.md`](./specs/deployment.md) (the implemented Azure
-runbook). The prior Vercel/Supabase runbook is preserved, unmodified
-except for its archive banner, at
+runbook). The retired hosting runbook is preserved, unmodified except for its
+archive banner, at
 [`specs/archive/deployment.vercel-supabase.md`](./specs/archive/deployment.vercel-supabase.md)
-for historical/safety reference only -- do not follow it to start a new
-Vercel/Supabase production deployment.
+for historical/safety reference only -- do not follow it for a current
+deployment.
 
 ## Local testing
 

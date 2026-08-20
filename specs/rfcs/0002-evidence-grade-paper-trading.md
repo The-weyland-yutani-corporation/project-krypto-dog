@@ -8,15 +8,16 @@
 > acceptance thresholds, and authorization are governed by
 > [`../production-readiness-prd.v1.md`](../production-readiness-prd.v1.md).
 
-Implementation note (2026-07-14): the v2.1 deterministic policy, structured
+Implementation note (updated 2026-08-15): the v2.1 deterministic policy, structured
 decision boundary, exact transactional paper executor, AgentRun ledger, and
 owned lease orchestration, operations controls/health, production-aligned
 backtesting, expanded CI gates, and v2.2 preflight/backup/disabled-target-smoke
-tooling are implemented and locally verified. This RFC remains Draft because
-the clean target still needs migration, backup, Vault, disabled deployment and
-smoke; shadow/paper observation and financial evidence are not complete. The
-imported walk-forward evidence foundation is engineering-only and cannot satisfy
-the production evidence gates in this RFC.
+tooling are implemented. Azure dev is deployed in shadow with monitored
+Container Apps Jobs schedules; production is deployed disabled with all Jobs
+Manual after migration, restore-verified backup, and target smoke. This RFC
+remains Draft because PAPER promotion, its observation window, and financial
+evidence are not complete. The imported walk-forward evidence foundation is
+engineering-only and cannot satisfy the production evidence gates in this RFC.
 
 ## Summary
 
@@ -105,10 +106,10 @@ Three modes control execution behavior:
 | `paper` | Full loop runs and approved trades ARE recorded. This is the production paper-trading mode. |
 
 `ROLLOUT_MODE` is a validated server-side environment variable and defaults to
-`disabled` outside local development. Promotion from `shadow` to `paper`
-requires an explicit Vercel environment change and deployment. The database
-operator-pause flag remains a separate emergency control; the public/admin API
-cannot promote rollout mode.
+`disabled` outside local development. Any future promotion from `shadow` to
+`paper` requires a separately approved, evidence-bound GitHub Actions deployment
+of the exact image digest. The database operator-pause flag remains a separate
+emergency control; the public/admin API cannot promote rollout mode.
 
 ### v2.1 additional correctness changes
 
@@ -129,8 +130,8 @@ Beyond the authorization architecture, v2.1 must also:
 - Surface LLM retry count and latency in PostHog `llm_token_usage` events.
 - Paginate Coinbase candle requests within the 300-candle limit, align complete
   four-hour buckets to UTC, and add freshness, finite-value, and timeout checks.
-- Align PostHog event schema, Resend email paths, and admin dashboard state across
-  all code paths.
+- Align PostHog event schema, Azure Communication Services Email paths, and
+  admin dashboard state across all code paths.
 
 ## Revised strategy parameters
 
@@ -165,38 +166,40 @@ artifacts must be retained outside source control:
       Runtime/direct database name and system identifier must match; private
       schema completeness with no extra Krypto relation, required Drizzle
       history fingerprint, migration/layout consistency, protected public
-      wrapper checks, canonical
-      cron-function integrity, absence of queued Krypto HTTP requests,
-      table/column ACLs, and Vault
+      wrapper checks, legacy cron-function retirement integrity, absence of
+      queued legacy Krypto HTTP requests, table/column ACLs, and legacy Vault
       schema/relation/routine privilege checks must pass.
 - [ ] Provider backup identifier plus a verified `deployment:backup` manifest.
 - [ ] Successful restore/count comparison for preserve-required data.
       Legacy public-schema evidence must prove restoration of the required enum
       bootstrap as well as all application tables.
 - [ ] Reviewed migration and singleton-initialization logs.
-- [ ] Deployment configured with `ROLLOUT_MODE=disabled`, cron unscheduled,
-      and no matching `pg_net` request queued.
+- [ ] Deployment configured with `ROLLOUT_MODE=disabled`, Container Apps Jobs
+      Manual and unscheduled, no running or retrying recurring Job execution,
+      and no matching legacy `pg_net` request queued.
 - [ ] Passing `smoke:target` report, including unchanged trade count, two
       persisted disabled runs, a runtime/direct database-binding challenge,
       an authenticated no-mutation mismatched-mode rejection that cannot enter
       orchestration, per-request disabled-mode enforcement, idle lease, sent
       email audit, admin auth, no-trade Foundry/Coinbase/PostHog checks, and an
       immutable target-origin/cron-secret-fingerprint approval.
-- [ ] PostHog event, mailbox delivery, Vercel logs, and admin health manually
-      confirmed.
+- [ ] PostHog event, mailbox delivery, Azure Monitor/Container App logs, and
+      admin health manually confirmed.
 - [ ] At least 30 minutes of disabled observation after the smoke with no
       unexplained 5xx, configuration, lease, or database errors.
 
 ### Gate 1 -- shadow mode eligible
 
 - [ ] Gate 0 satisfied.
-- [ ] Operator records the exact commit, deployment ID, strategy version,
-      model deployment, migration count, and promotion timestamp.
-- [ ] Rollout mode changes only through a reviewed Vercel environment update
-      and fresh deployment; APIs cannot promote it.
+- [ ] Operator records the exact commit, image digest, deployment ID, strategy
+      version, model deployment, migration count, and promotion timestamp.
+- [ ] Any future rollout-mode change occurs only through a separately approved,
+      evidence-bound exact-image-digest GitHub Actions deployment; APIs cannot
+      promote it.
 - [ ] First manual shadow invocation completes as `SHADOW`, writes no
       `TradeExecution`, releases its lease, and produces a coherent journal.
-- [ ] Fixed cron jobs are enabled only after that manual invocation.
+- [ ] Container Apps Jobs schedules are enabled only after that manual
+      invocation.
 - [ ] Shadow runs for at least 72 consecutive hours with at least 95% of
       expected scheduled invocations persisted and no unexplained gaps.
 - [ ] Every shadow run is terminal; zero executions are recorded; accounting
@@ -214,14 +217,18 @@ artifacts must be retained outside source control:
       proposal/authorization counts, error taxonomy, market-data freshness,
       alert delivery, reconciliation, and zero trade-count delta.
 - [ ] A fresh pre-promotion preflight confirms no active lease, quarantine,
-      open position, unsafe function, exposed role, or active cron.
-- [ ] Cron is paused for the mode-changing deployment.
+      open position, unsafe function, exposed role, active Container Apps Jobs
+      schedule, running or retrying recurring Job execution, or active legacy
+      database cron.
+- [ ] Container Apps Jobs are Manual and unscheduled for the mode-changing
+      deployment; any prior recurring execution is terminal and the run lease is
+      idle before mutation.
 - [ ] Named operator approval records accepted risk, rollback owner, and the
       exact paper evidence-window start.
 - [ ] Paper mode begins with a 24-hour attended observation period. Any
       execution is reconciled immediately against balances and ledger history.
-- [ ] Cron is re-enabled only after the paper deployment reports the expected
-      mode and the account remains reconciled.
+- [ ] Container Apps Jobs schedules are enabled only after the paper deployment
+      reports the expected mode and the account remains reconciled.
 
 ### Gate 3 -- v3 RFC eligible (requires paper mode results)
 
@@ -242,7 +249,11 @@ artifacts must be retained outside source control:
 ### Immediate rollback triggers
 
 Any one of the following ends the current observation/evidence window and
-requires cron disablement plus `ROLLOUT_MODE=disabled`:
+requires Container Apps Jobs schedule disablement plus `ROLLOUT_MODE=disabled`:
+
+Running or retrying recurring Job executions must then be stopped or reach a
+terminal state within a bounded wait. The run lease must be idle and all journal
+evidence preserved before rollback is declared complete.
 
 - any `TradeExecution` in disabled or shadow mode;
 - negative balance, duplicate execution, ledger/state mismatch, or accounting
@@ -276,7 +287,8 @@ rewrites history; remediation and re-promotion require a new operator approval.
 - **Prompt-only rules (status quo):** rejected -- not auditable, not reliable for
   real-money execution, cannot be unit-tested independently.
 - **Skip shadow mode, deploy directly to paper:** rejected -- shadow mode provides
-  a safety buffer while the production cron loop is validated under real traffic.
+  a safety buffer while the scheduled Container Apps Jobs loop is validated
+  under real traffic.
 - **Move directly to v3 live trading:** rejected -- no production paper data exists;
   live execution requires statistically significant evidence per `specs/readiness.md`.
 

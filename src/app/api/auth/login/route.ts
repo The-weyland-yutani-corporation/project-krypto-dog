@@ -8,10 +8,10 @@ import { timingSafeStringEqual } from "@/lib/secure-compare";
 
 // ---------------------------------------------------------------------------
 // In-memory rate limit (per-instance). 5 attempts / 15 min per source IP.
-// Limitation: each Vercel function instance has its own counter, so a
-// determined attacker hitting many cold-started instances could exceed the
-// nominal limit. Acceptable for a single-user single-region paper-trading
-// deployment. For multi-instance hardening, swap for an Upstash/Redis store.
+// Limitation: each Container Apps replica has its own counter, so a determined
+// attacker reaching multiple active replicas could exceed the nominal limit.
+// Acceptable for this bounded single-region paper-trading deployment. Use a
+// shared rate-limit store if stronger cross-replica enforcement is required.
 // ---------------------------------------------------------------------------
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const RATE_LIMIT_MAX_ATTEMPTS = 5;
