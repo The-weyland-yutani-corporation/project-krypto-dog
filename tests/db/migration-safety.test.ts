@@ -328,7 +328,7 @@ describe("production migration safety", () => {
       type: "numeric(20, 8)",
       notNull: false,
     });
-    expect(column).not.toHaveProperty("default");
+    expect(column.default ?? null).toBeNull();
   });
 
   it("keeps Supabase reset from loading application fixtures", () => {
