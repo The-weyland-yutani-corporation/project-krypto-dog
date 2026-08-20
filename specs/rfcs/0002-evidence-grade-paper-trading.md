@@ -13,8 +13,7 @@ decision boundary, exact transactional paper executor, AgentRun ledger, and
 owned lease orchestration, operations controls/health, production-aligned
 backtesting, expanded CI gates, and v2.2 preflight/backup/disabled-target-smoke
 tooling are implemented and locally verified. This RFC remains Draft because
-the clean target still needs migration, backup, Vault, disabled deployment and
-smoke; shadow/paper observation and financial evidence are not complete. The
+shadow/paper observation and financial evidence are not complete. The
 imported walk-forward evidence foundation is engineering-only and cannot satisfy
 the production evidence gates in this RFC.
 
@@ -36,9 +35,8 @@ identified the following blocking issues (full list in `specs/readiness.md` §3)
 - Trade execution is not wrapped in a DB transaction; a crash between the two
   writes (`TradeExecution` INSERT + `AgentState` UPDATE) leaves the database in
   an inconsistent state.
-- The seed migration (`supabase/migrations/20260322000001_seed_data.sql`) is
-  destructive: re-running it against a database with existing trading data resets
-  live state.
+- The legacy seed flow is destructive: re-running it against a database with
+  existing trading data resets live state.
 - PnL is anchored to the most recent BUY price, not a weighted-average cost basis;
   DCA chains produce incorrect realised PnL.
 - 80 npm audit findings in the dependency tree.
@@ -106,7 +104,7 @@ Three modes control execution behavior:
 
 `ROLLOUT_MODE` is a validated server-side environment variable and defaults to
 `disabled` outside local development. Promotion from `shadow` to `paper`
-requires an explicit Vercel environment change and deployment. The database
+requires an explicit reviewed Azure rollout deployment. The database
 operator-pause flag remains a separate emergency control; the public/admin API
 cannot promote rollout mode.
 
@@ -165,24 +163,23 @@ artifacts must be retained outside source control:
       Runtime/direct database name and system identifier must match; private
       schema completeness with no extra Krypto relation, required Drizzle
       history fingerprint, migration/layout consistency, protected public
-      wrapper checks, canonical
-      cron-function integrity, absence of queued Krypto HTTP requests,
-      table/column ACLs, and Vault
-      schema/relation/routine privilege checks must pass.
+      wrapper checks, absence of obsolete database-side invocation functions
+      and queued Krypto HTTP requests, table/column ACLs, and restricted-schema
+      relation/routine privilege checks must pass.
 - [ ] Provider backup identifier plus a verified `deployment:backup` manifest.
 - [ ] Successful restore/count comparison for preserve-required data.
       Legacy public-schema evidence must prove restoration of the required enum
       bootstrap as well as all application tables.
 - [ ] Reviewed migration and singleton-initialization logs.
-- [ ] Deployment configured with `ROLLOUT_MODE=disabled`, cron unscheduled,
-      and no matching `pg_net` request queued.
+- [ ] Deployment configured with `ROLLOUT_MODE=disabled`, Container Apps Jobs
+      set to `Manual`, and no queued legacy Krypto HTTP request.
 - [ ] Passing `smoke:target` report, including unchanged trade count, two
       persisted disabled runs, a runtime/direct database-binding challenge,
       an authenticated no-mutation mismatched-mode rejection that cannot enter
       orchestration, per-request disabled-mode enforcement, idle lease, sent
       email audit, admin auth, no-trade Foundry/Coinbase/PostHog checks, and an
       immutable target-origin/cron-secret-fingerprint approval.
-- [ ] PostHog event, mailbox delivery, Vercel logs, and admin health manually
+- [ ] PostHog event, mailbox delivery, Container Apps logs, and admin health manually
       confirmed.
 - [ ] At least 30 minutes of disabled observation after the smoke with no
       unexplained 5xx, configuration, lease, or database errors.
@@ -192,11 +189,12 @@ artifacts must be retained outside source control:
 - [ ] Gate 0 satisfied.
 - [ ] Operator records the exact commit, deployment ID, strategy version,
       model deployment, migration count, and promotion timestamp.
-- [ ] Rollout mode changes only through a reviewed Vercel environment update
-      and fresh deployment; APIs cannot promote it.
+- [ ] Rollout mode changes only through the reviewed Azure rollout deployment;
+      APIs cannot promote it.
 - [ ] First manual shadow invocation completes as `SHADOW`, writes no
       `TradeExecution`, releases its lease, and produces a coherent journal.
-- [ ] Fixed cron jobs are enabled only after that manual invocation.
+- [ ] Recurring Container Apps Jobs move to `Schedule` only after that manual
+      invocation.
 - [ ] Shadow runs for at least 72 consecutive hours with at least 95% of
       expected scheduled invocations persisted and no unexplained gaps.
 - [ ] Every shadow run is terminal; zero executions are recorded; accounting
@@ -214,13 +212,14 @@ artifacts must be retained outside source control:
       proposal/authorization counts, error taxonomy, market-data freshness,
       alert delivery, reconciliation, and zero trade-count delta.
 - [ ] A fresh pre-promotion preflight confirms no active lease, quarantine,
-      open position, unsafe function, exposed role, or active cron.
-- [ ] Cron is paused for the mode-changing deployment.
+      open position, unsafe function, exposed role, legacy schedule, or queued
+      request; recurring Container Apps Jobs are `Manual`.
+- [ ] Recurring jobs remain `Manual` for the mode-changing deployment.
 - [ ] Named operator approval records accepted risk, rollback owner, and the
       exact paper evidence-window start.
 - [ ] Paper mode begins with a 24-hour attended observation period. Any
       execution is reconciled immediately against balances and ledger history.
-- [ ] Cron is re-enabled only after the paper deployment reports the expected
+- [ ] `Schedule` is enabled only after the paper deployment reports the expected
       mode and the account remains reconciled.
 
 ### Gate 3 -- v3 RFC eligible (requires paper mode results)
@@ -242,7 +241,7 @@ artifacts must be retained outside source control:
 ### Immediate rollback triggers
 
 Any one of the following ends the current observation/evidence window and
-requires cron disablement plus `ROLLOUT_MODE=disabled`:
+requires recurring jobs to return to `Manual` plus `ROLLOUT_MODE=disabled`:
 
 - any `TradeExecution` in disabled or shadow mode;
 - negative balance, duplicate execution, ledger/state mismatch, or accounting
@@ -276,7 +275,7 @@ rewrites history; remediation and re-promotion require a new operator approval.
 - **Prompt-only rules (status quo):** rejected -- not auditable, not reliable for
   real-money execution, cannot be unit-tested independently.
 - **Skip shadow mode, deploy directly to paper:** rejected -- shadow mode provides
-  a safety buffer while the production cron loop is validated under real traffic.
+  a safety buffer while the scheduled-job loop is validated under real traffic.
 - **Move directly to v3 live trading:** rejected -- no production paper data exists;
   live execution requires statistically significant evidence per `specs/readiness.md`.
 

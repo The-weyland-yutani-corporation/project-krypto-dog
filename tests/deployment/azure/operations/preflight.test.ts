@@ -20,7 +20,7 @@ describe("scripts/azure/operations/preflight", () => {
     mockedRunCli.mockReset();
   });
 
-  it("invokes deployment-preflight with an explicit --provider azure argument", async () => {
+  it("invokes the inherently Azure-only deployment preflight", async () => {
     mockedRunCli.mockResolvedValueOnce({
       exitCode: 0,
       stdout: JSON.stringify({ passed: true }),
@@ -31,7 +31,7 @@ describe("scripts/azure/operations/preflight", () => {
 
     expect(mockedRunCli).toHaveBeenCalledWith(
       "npx",
-      ["tsx", "scripts/deployment-preflight.ts", "--provider", "azure"],
+      ["tsx", "scripts/deployment-preflight.ts"],
       process.env,
     );
   });

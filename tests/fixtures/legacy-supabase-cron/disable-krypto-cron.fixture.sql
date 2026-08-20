@@ -1,3 +1,8 @@
+-- TEST FIXTURE ONLY - LEGACY PRE-0007 INPUT.
+-- DO NOT RUN THIS FILE AGAINST A REAL, SHARED, OR PRODUCTION DATABASE.
+-- It preserves the retired hosted-baseline cron cleanup solely for disposable
+-- migration tests that reproduce the state before Drizzle migration 0007.
+--
 BEGIN;
 
 DO $$

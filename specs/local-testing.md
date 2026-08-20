@@ -37,10 +37,6 @@ deterministic backtest/scenario harness is described in
   ```bash
   export PATH="$(brew --prefix postgresql@17)/bin:$PATH"
   ```
-- Supabase CLI 2.109.1 or newer only for legacy-baseline compatibility tests
-  that read `supabase/config.toml`. It is not part of the Azure target. Older
-  1.x clients reject the PostgreSQL 17 setting; use
-  `npx --yes supabase@2.109.1 <command>` when those tests require it.
 - Dependencies installed:
   ```bash
   npm install
@@ -183,7 +179,7 @@ npm run typecheck:scripts
 npm run test:coverage
 npm run build
 npm run test:integration
-npm run deployment:preflight -- --provider azure
+npm run deployment:preflight
 npm run deployment:backup -- --out deployment-evidence/local-backup
 npm run smoke:target -- --base-url http://localhost:3000 --confirm-host localhost
 npm run backtest:all
@@ -195,16 +191,16 @@ market-data/indicator, admin-auth/route-auth/operations-health, accounting,
 policy, strategy configuration, and shared paper-execution modules. Global and
 critical per-module thresholds are enforced in `jest.config.ts`.
 
-`deployment:preflight -- --provider azure` is read-only and accepts
+`deployment:preflight` is Azure-only, read-only, and accepts
 `DIRECT_URL` plus `DATABASE_URL`. It requires both URLs to identify the same
 database cluster and reports schema, row-count, position, lease, migration,
 table/column ACL, protected-view, executable `SECURITY DEFINER`, and legacy
-scheduler/Vault-object retirement evidence used by the Azure pre-migration
-gate. It also fingerprints the ordered Drizzle history.
+database-side retirement evidence used by the Azure pre-migration gate. It also
+fingerprints the ordered Drizzle history.
 
 `deployment:backup` requires `DIRECT_URL` and `DATABASE_URL`, proves they name
 the same PostgreSQL database and cluster, writes that binding into the
-manifest, and refuses active Krypto cron, queued endpoint requests, or an
+manifest, and refuses active legacy Krypto schedules, queued endpoint requests, or an
 existing output path. Add
 `--restore-test-url postgresql://postgres@127.0.0.1:<port>/postgres` to prove
 the bundle in a disposable loopback database and compare critical row counts.
@@ -232,8 +228,8 @@ npm run db:init
 ```
 
 `db:migrate` uses `DIRECT_URL`. `db:init` inserts the singleton only when it is
-absent and never deletes trade or journal history. Do not use `db:push` or
-`supabase db push` for application schema changes.
+absent and never deletes trade or journal history. Do not use `db:push` for
+application schema changes.
 
 To verify both a fresh install and adoption of the existing v2 schema against
 temporary local PostgreSQL clusters:
