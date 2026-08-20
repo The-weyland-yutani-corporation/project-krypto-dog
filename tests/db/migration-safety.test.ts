@@ -311,6 +311,26 @@ describe("production migration safety", () => {
     );
   });
 
+  it("adds nullable portfolio valuation price provenance non-destructively", () => {
+    const migration = read("drizzle/0008_foamy_black_knight.sql");
+    const snapshot = JSON.parse(read("drizzle/meta/0008_snapshot.json"));
+    const column =
+      snapshot.tables["krypto.AgentState"].columns.portfolioValuationPriceUSD;
+
+    expect(migration.trim()).toBe(
+      'ALTER TABLE "krypto"."AgentState" ADD COLUMN "portfolioValuationPriceUSD" numeric(20, 8) DEFAULT NULL;',
+    );
+    expect(migration).not.toMatch(/\bUPDATE\b/i);
+    expect(migration).not.toMatch(/\bDELETE\s+FROM\b/i);
+    expect(migration).not.toMatch(/\bTRUNCATE\b/i);
+    expect(column).toMatchObject({
+      name: "portfolioValuationPriceUSD",
+      type: "numeric(20, 8)",
+      notNull: false,
+    });
+    expect(column.default ?? null).toBeNull();
+  });
+
   it("keeps Supabase reset from loading application fixtures", () => {
     const config = read("supabase/config.toml");
 

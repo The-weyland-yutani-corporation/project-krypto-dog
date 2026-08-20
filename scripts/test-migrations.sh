@@ -675,7 +675,7 @@ fi
 # carry a row-removal, table-clearing, TRIGGER, or REFERENCES privilege for
 # krypto_runtime, and the schema has no sequences to grant.
 
-azure_0007_hash="fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71"
+latest_migration_hash="6b393d6ea01caf3a5b5addf8e939e7e22f3b38706b088caee6f0eb304b7e10d7"
 
 create_database azure_target
 DIRECT_URL="$azure_target_url" npx drizzle-kit migrate >/dev/null
@@ -715,7 +715,7 @@ azure_fresh_result="$(psql "$azure_target_url" -Atc \
           has_schema_privilege('\''public'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
           has_schema_privilege('\''anon'\'', '\''krypto'\'', '\''USAGE'\'')::text || '\''|'\'' ||
           has_schema_privilege('\''authenticated'\'', '\''krypto'\'', '\''USAGE'\'')::text;')"
-if [[ "$azure_fresh_result" != "8|$azure_0007_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false" ]]; then
+if [[ "$azure_fresh_result" != "9|$latest_migration_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false" ]]; then
   echo "Fresh Azure migration did not retire obsolete cron functions or establish the exact krypto_runtime privilege matrix: $azure_fresh_result" >&2
   exit 1
 fi
@@ -788,9 +788,11 @@ azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentState"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
-          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text;')"
-if [[ "$azure_upgrade_result" != "8|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true" ]]; then
-  echo "0006-to-0007 upgrade did not preserve rows, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          (SELECT ("portfolioValuationPriceUSD" IS NULL)::text FROM "krypto"."AgentState"
+            WHERE "id" = '\''singleton'\'');')"
+if [[ "$azure_upgrade_result" != "9|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true|true" ]]; then
+  echo "0006-to-current upgrade did not preserve rows, leave nullable valuation provenance empty, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
   exit 1
 fi
 
@@ -1015,6 +1017,9 @@ create_database operations
 # permanently retires.
 DIRECT_URL="$operations_url" \
   npx drizzle-kit migrate --config "$through_0006_config" >/dev/null
+psql "$operations_url" -v ON_ERROR_STOP=1 \
+  -c 'ALTER TABLE "krypto"."AgentState" ADD COLUMN "portfolioValuationPriceUSD" numeric(20, 8) DEFAULT NULL;' \
+  >/dev/null
 DIRECT_URL="$operations_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$operations_url" npx tsx scripts/test-operations-routes.ts
 DIRECT_URL="$operations_url" npx tsx scripts/test-target-smoke-evidence.ts

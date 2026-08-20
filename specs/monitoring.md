@@ -194,6 +194,19 @@ lock so forced-disable and secret mutations cannot overlap.
 
 ## Operator checks after release deployment
 
+### Portfolio valuation provenance migration
+
+Migration `0008_foamy_black_knight.sql` adds nullable valuation-price provenance
+for portfolio accounting. Before deploying it, existing open ETH positions will
+be quarantined on first run after upgrade due to NULL valuation price provenance
+— operators must close open positions before deploying, or accept immediate
+quarantine.
+
+If quarantine occurs, keep trading blocked and follow the reconciliation failure
+response below: review the immutable ledger/journal, resolve the open-position
+provenance gap through an explicit operator action, and use only the audited
+recovery/unlock paths after the account reconciles.
+
 These commands inspect the live jobs:
 
 ```bash

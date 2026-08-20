@@ -1,0 +1,1 @@
+ALTER TABLE "krypto"."AgentState" ADD COLUMN "portfolioValuationPriceUSD" numeric(20, 8) DEFAULT NULL;
