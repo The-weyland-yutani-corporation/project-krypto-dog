@@ -356,9 +356,13 @@ User and use Entra tokens.
   Monitoring is enabled and validated before Schedule; disable paths verify
   Manual jobs before disabling monitoring.
 - **Foundation/access dependency:** deploy environment foundations for dev and
-  prod, then bind both runtime/ops identity pairs through the protected
-  `azure-platform-access.yml` workflow before full releases. This checkpoint is
-  complete.
+  prod, then have an authorized human apply the operational binding template;
+  the protected OIDC workflow may mutate only the dedicated account. This
+  checkpoint is not complete until read-only verification proves local
+  authentication is disabled, the four fixed runtime/ops UAMIs have only the
+  exact direct account-scoped role, all six UAMIs have zero transitive Entra
+  group memberships, and both fixed schedulers have zero direct/inherited
+  Foundry access.
 - **Dev rollout:** disabled/manual evidence → shadow/manual →
   one unique `manual-shadow:` hourly execution → post-run activation-check
   proving the exact safe no-trade `AgentRun` and released lease → monitored

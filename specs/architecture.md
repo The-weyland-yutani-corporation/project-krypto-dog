@@ -94,9 +94,11 @@ flowchart TB
 
 Runtime and ops user-assigned managed identities authenticate to Foundry
 through Microsoft Entra ID. Each receives exactly **Cognitive Services
-OpenAI User** at the account scope. Scheduler identities call the app and
-receive no direct model role. Foundry local authentication/API keys are
-disabled.
+OpenAI User** directly at the account scope and no other effective Foundry
+assignment. A separate human Microsoft Graph check proves all six UAMIs have
+zero transitive group memberships. Scheduler identities call the app and
+receive zero direct, inherited, or child-scope Foundry access. Foundry local
+authentication/API keys are disabled.
 
 ### Deployment identity security boundary
 
@@ -148,9 +150,15 @@ It passes both target deployment-name/capacity pairs and subtracts only exact
 existing target capacity on the same format/model/version/SKU dimension,
 making exact reruns idempotent without crediting unrelated capacity. It has
 separate environment-scoped what-if/apply jobs for the account and model
-deployments. `azure-platform-access.yml` has its own pair for workload role
-bindings. They are currently manual/paused; no required-reviewer enforcement is
-available on this repository plan.
+deployments. `platform-access/main.bicep` allowlists the reviewed account name,
+resolves the four fixed runtime/ops UAMIs, and creates no scheduler assignment.
+`azure-platform-access.yml` is read-only for the operational account and
+plan/apply-capable only for the dedicated account inside `rg-krypto-platform`.
+Its final verification independently resolves all six workload/scheduler UAMIs
+and fails closed unless the selected account has local authentication disabled
+before it evaluates effective role assignments.
+Operational role mutation is human-only; platform workflow mutations remain
+manual and protected by the `platform` environment's human required reviewer.
 
 ## Resource map and live state
 

@@ -53,6 +53,7 @@ interface MockTimelineActor {
 }
 
 interface MockTimelineEvent {
+  id?: number;
   event: string;
   created_at?: string;
   label?: { name: string };
@@ -151,6 +152,15 @@ interface RuntimeModule {
   parseCandidateSections(issue: unknown, activeGoalNumber: number | undefined): CandidateSections;
   isValidTimestamp(value: unknown): boolean;
   areAllCheckboxesChecked(sectionText: unknown): boolean;
+  validateCanonicalGoalBoundaries(sectionText: unknown): {
+    valid: boolean;
+    reason: string;
+    statements: string[];
+  };
+  resolveLatestLabelApplicationEvent(
+    events: unknown,
+    labelName: string,
+  ): { valid: boolean; reason: string; event?: MockTimelineEvent };
   findLatestLabelApplicationEvent(
     events: unknown,
     labelName: string,
@@ -520,8 +530,10 @@ function createHarness(options: HarnessOptions) {
     ];
     return issue.labels
       .filter((label) => relevantLabels.includes(label))
-      .map((label) => ({
+      .map((label, index) => ({
+        id: number * 100 + index + 1,
         event: "labeled",
+        created_at: "2026-08-19T00:00:00Z",
         label: { name: label },
         actor: { type: "User", login: "human-operator" },
       }));
@@ -820,7 +832,7 @@ describe("factory queue-controller runtime: goal completeness must be human-deri
       ],
     });
 
-    expect(result.activeGoalReason).toBe("goal-boundaries-not-fully-checked");
+    expect(result.activeGoalReason).toBe("goal-boundaries-invalid");
   });
 
   it("fails closed when the Human-only boundaries section is missing entirely", async () => {
@@ -831,7 +843,7 @@ describe("factory queue-controller runtime: goal completeness must be human-deri
       ],
     });
 
-    expect(result.activeGoalReason).toBe("goal-boundaries-not-fully-checked");
+    expect(result.activeGoalReason).toBe("goal-boundaries-invalid");
   });
 
   it("fails closed when the goal's own 'Allowed paths' section is missing", async () => {
@@ -931,6 +943,7 @@ describe("factory queue-controller runtime: goal completeness must be human-deri
       timelineByNumber: {
         1: [
           {
+            id: 1,
             event: "labeled",
             created_at: "2026-08-19T01:00:00Z",
             label: { name: runtime.GOAL_APPROVED_LABEL },
@@ -974,6 +987,7 @@ describe("factory queue-controller runtime: goal completeness must be human-deri
       timelineByNumber: {
         1: [
           {
+            id: 1,
             event: "labeled",
             created_at: "2026-08-19T01:00:00Z",
             label: { name: runtime.GOAL_APPROVED_LABEL },
@@ -981,6 +995,7 @@ describe("factory queue-controller runtime: goal completeness must be human-deri
           },
           { event: "unlabeled", label: { name: runtime.GOAL_APPROVED_LABEL }, actor: { type: "Bot" } },
           {
+            id: 2,
             event: "labeled",
             created_at: "2026-08-19T03:00:00Z",
             label: { name: runtime.GOAL_APPROVED_LABEL },
@@ -1002,7 +1017,9 @@ describe("factory queue-controller runtime: 'factory-mode:active' must be human-
       timelineByNumber: {
         10: [
           {
+            id: 1,
             event: "labeled",
+            created_at: "2026-08-19T01:00:00Z",
             label: { name: "factory-mode:active" },
             actor: { type: "Bot", login: "some-workflow[bot]" },
           },
@@ -1104,6 +1121,7 @@ describe("factory queue-controller runtime: native sub-issue goal ancestry", () 
     });
 
     expect(result.selected?.number).toBe(100);
+    expect(result.selected?.nativeParentGoalNumber).toBe(1);
   });
 
   it("fails closed even when the issue body text claims the correct parent goal but native ancestry disagrees", async () => {
@@ -1125,10 +1143,10 @@ describe("factory queue-controller runtime: native sub-issue goal ancestry", () 
 describe("factory queue-controller runtime: human-authorization pure helpers", () => {
   it("findLatestLabelApplicationEvent returns the most recent matching 'labeled' event", () => {
     const events = [
-      { event: "labeled", created_at: "2026-08-19T03:00:00Z", label: { name: "factory:goal-approved" }, actor: { type: "User" } },
+      { id: 2, event: "labeled", created_at: "2026-08-19T03:00:00Z", label: { name: "factory:goal-approved" }, actor: { type: "User" } },
       { event: "unlabeled", label: { name: "factory:goal-approved" }, actor: { type: "Bot" } },
       { event: "labeled", label: { name: "some-other-label" }, actor: { type: "User" } },
-      { event: "labeled", created_at: "2026-08-19T01:00:00Z", label: { name: "factory:goal-approved" }, actor: { type: "Bot" } },
+      { id: 1, event: "labeled", created_at: "2026-08-19T01:00:00Z", label: { name: "factory:goal-approved" }, actor: { type: "Bot" } },
     ];
 
     const latest = runtime.findLatestLabelApplicationEvent(events, "factory:goal-approved");
@@ -1153,6 +1171,66 @@ describe("factory queue-controller runtime: human-authorization pure helpers", (
     expect(runtime.areAllCheckboxesChecked("- [x] a\n- [ ] b")).toBe(false);
     expect(runtime.areAllCheckboxesChecked("")).toBe(false);
     expect(runtime.areAllCheckboxesChecked(undefined)).toBe(false);
+  });
+
+  it("orders equal-time label events by numeric ID and rejects duplicate top keys", () => {
+    const events = [
+      {
+        id: 1,
+        event: "labeled",
+        created_at: "2026-08-19T03:00:00Z",
+        label: { name: "factory:goal-approved" },
+      },
+      {
+        id: 2,
+        event: "labeled",
+        created_at: "2026-08-19T03:00:00Z",
+        label: { name: "factory:goal-approved" },
+      },
+    ];
+    expect(
+      runtime.resolveLatestLabelApplicationEvent(
+        events,
+        "factory:goal-approved",
+      ).event?.id,
+    ).toBe(2);
+    events.push({ ...events[1] });
+    expect(
+      runtime.resolveLatestLabelApplicationEvent(
+        events,
+        "factory:goal-approved",
+      ),
+    ).toMatchObject({
+      valid: false,
+      reason: "ambiguous-label-event-ordering",
+    });
+  });
+
+  it("requires exactly the canonical checked boundary statements", () => {
+    const canonical = [
+      "- [x] Production deployment remains human-approved.",
+      "- [x] Live-trading enablement remains human-approved.",
+      "- [x] Automation may pause itself but may not unpause itself.",
+    ].join("\n");
+    expect(runtime.validateCanonicalGoalBoundaries(canonical).valid).toBe(
+      true,
+    );
+    for (const invalid of [
+      canonical.replace("- [x]", "- [ ]"),
+      `${canonical}\n- [x] Extra.`,
+      canonical.replace(
+        "Live-trading enablement remains human-approved.",
+        "Live trading may be automated.",
+      ),
+      canonical.replace(
+        "- [x] Live-trading enablement remains human-approved.",
+        "- [x] Production deployment remains human-approved.",
+      ),
+    ]) {
+      expect(runtime.validateCanonicalGoalBoundaries(invalid).valid).toBe(
+        false,
+      );
+    }
   });
 });
 
