@@ -1,7 +1,7 @@
 ---
 description: High-signal automated PR review for correctness and maintainability.
 on:
-  bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       pr:
