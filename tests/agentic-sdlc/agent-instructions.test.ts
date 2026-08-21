@@ -89,13 +89,36 @@ describe("progressive agent instructions", () => {
   it("states the accepted merge and human-only authority policy in the root map", () => {
     const rootDoc = read(ROOT_AGENTS);
     expect(rootDoc).toContain("Agentic code review");
+    expect(rootDoc).toContain("QA verification");
     expect(rootDoc).toContain("Security review");
     expect(rootDoc).toContain("Trading safety review");
+    expect(rootDoc).toContain("Human boundary approval");
     expect(rootDoc).toContain("Agentic merge policy");
     expect(rootDoc.toLowerCase()).toContain("fork");
     expect(rootDoc.toLowerCase()).toContain("human approval");
     expect(rootDoc).toContain("live-trading enablement");
     expect(rootDoc).toContain("production deployment");
+  });
+
+  it("allows agent-authored boundary implementations without delegating authority", () => {
+    const rootDoc = read(ROOT_AGENTS);
+    const agentDoc = read("src/agent/AGENTS.md");
+    const workflowDoc = read(".github/workflows/AGENTS.md");
+    const dbDoc = read("src/db/AGENTS.md");
+
+    expect(rootDoc).toContain("agents may author `risk:boundary` changes");
+    expect(agentDoc).toContain(
+      "Agents may author control-plane implementation changes",
+    );
+    expect(workflowDoc).toContain(
+      "Reconciler and merge-policy implementation changes may be agent-authored",
+    );
+    expect(workflowDoc).not.toContain(
+      "Reconciler/merge-policy logic and secrets are human-only",
+    );
+    expect(dbDoc).toContain(
+      "Agents may implement and test database, backup, and inventory automation",
+    );
   });
 
   it("directs agents from the Copilot shim to the root and scoped instructions", () => {

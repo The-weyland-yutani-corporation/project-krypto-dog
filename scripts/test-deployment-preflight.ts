@@ -13,7 +13,8 @@ const report = await runDeploymentPreflight({
   now: new Date("2026-07-14T22:30:00.000Z"),
 });
 
-assert.equal(report.schemaVersion, "1.4.0");
+assert.equal(report.schemaVersion, "2.0.0");
+assert.equal(report.provider, "azure");
 assert.equal(report.databasePreflightPassed, true);
 assert.equal(report.blockers.length, 0);
 assert.equal(report.inventory.agentState?.schema, "krypto");
@@ -35,7 +36,7 @@ assert.equal(
 );
 assert.equal(
   report.checks.find(
-    (check) => check.id === "fixed-cron-function-integrity",
+    (check) => check.id === "obsolete-invocation-functions",
   )?.status,
   "pass",
 );
@@ -45,7 +46,22 @@ assert.equal(
   )?.status,
   "pass",
 );
+assert.equal(
+  report.checks.find((check) => check.id === "runtime-role")?.status,
+  "pass",
+);
+assert.equal(
+  report.checks.find((check) => check.id === "connection-roles-distinct")
+    ?.status,
+  "pass",
+);
+assert.equal(
+  report.checks.find((check) => check.id === "runtime-login-role-boundary")
+    ?.status,
+  "pass",
+);
+assert.deepEqual(report.inventory.obsoleteInvocationFunctions, []);
 
 console.log(
-  "Deployment preflight tests passed for target identity, exact schema inventory, singleton state, positions, leases, migrations, cron integrity, and privileges.",
+  "Azure deployment preflight passed for target identity, current migrations, retired invocation functions, singleton state, positions, leases, restricted ACLs, distinct roles, and the exact runtime privilege boundary.",
 );
