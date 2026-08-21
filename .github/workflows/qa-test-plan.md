@@ -1,6 +1,7 @@
 ---
 description: QA workflow for test plans, regression gaps, and acceptance validation.
 on:
+  bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]
   workflow_dispatch:
     inputs:
       target:
@@ -54,6 +55,9 @@ safe-outputs:
     labels: [agentic-factory, needs-qa]
     max: 5
     deduplicate-by-title: 1
+  create-check-run:
+    name: QA verification
+    max: 1
   noop:
     report-as-issue: false
 max-ai-credits: 1600
@@ -63,17 +67,30 @@ timeout-minutes: 25
 
 # QA Test Plan
 
-Create a test plan or test-gap review for the target issue or PR.
+Create a test plan for an issue or perform a current-head QA verification for a
+pull request.
 
 ## Task
 
 - Map requirements and changed files to expected behavior.
 - Identify missing unit, integration, route, guardrail, and regression tests.
-- For PRs, inspect CI status and relevant test files.
+- Resolve the target from the triggering item or `target` input. For a manually
+  dispatched PR, verify the workflow ref is the PR's current head.
+- For PRs, inspect the implementation issue, acceptance criteria, diff, CI
+  status, tests, and retained evidence.
 - Recommend the smallest set of tests needed for confidence.
+- For every PR, create exactly one `QA verification` check on the current head.
+- Set the check to `success` only when the acceptance criteria are covered by
+  executable tests/evidence and no material regression gap remains.
+- Set the check to `failure` when required coverage is missing, CI evidence is
+  incomplete, or verification cannot be completed safely.
+- Keep the non-lifecycle `needs-qa` requirement label so the reconciler reruns
+  QA on every new head. The exact-current-head check, not label removal, clears
+  the merge gate.
 
 ## Safe outputs
 
 - Use `add-comment` with the QA plan or PR review.
 - Use `create-issue` for test gaps that should be tracked separately.
-- Use `noop` when no actionable QA gap exists.
+- Use `create-check-run` for every pull-request result.
+- Use `noop` only for a non-PR target with no actionable QA gap.
