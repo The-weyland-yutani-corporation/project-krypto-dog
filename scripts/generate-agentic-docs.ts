@@ -26,7 +26,7 @@ const END_MARKER = "<!-- generated:workflow-inventory:end -->";
 const REMEDIATION = "npm run agentic:docs";
 
 function escapeCell(value: string): string {
-  return value.replace(/\|/g, "\\|");
+  return value.replace(/[\\|]/g, "\\$&");
 }
 
 function importsCell(inv: WorkflowInventory): string {
