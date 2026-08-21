@@ -28,6 +28,7 @@ template and identity detail lives in
 | Historical host | An older Vercel build and a fresh Supabase PostgreSQL replacement were observed previously. Neither is the Azure release candidate. | Historical baseline only |
 | Scheduling | Dev hourly/daily jobs are `Schedule`; production and all ops jobs remain `Manual`. | **Dev shadow only** |
 | OPS-01 incident control plane | [ADR 0013](./decisions/0013-durable-safety-incidents-and-independent-alerts.md) accepts append-only database incident/outbox evidence plus a separate relay and external Azure alerts. | **Accepted contract; source/CI and target proof remain separately gated** |
+| IAM-01 admin identity | [ADR 0015](./decisions/0015-entra-admin-identity-boundary.md) selects Container Apps built-in Entra authentication, named operator/app-role authorization, recent step-up, and append-only operator evidence. | **Source-complete; live Entra registration, assignments, Conditional Access, alerts, and drill remain blocking** |
 
 GitHub Environments, branch restrictions, and protected values are configured.
 Enterprise-hosted Actions are active ([proof run
@@ -183,11 +184,32 @@ Inside the 180-second application window, providers receive 125 seconds, databas
 
 The web app has at most three replicas, `DATABASE_POOL_MAX=1` and one admitted run per replica, while the private PostgreSQL 17 `krypto_app` login has `CONNECTION LIMIT 20`. Runtime connections use connect/statement/lock/idle-in-transaction timeouts of 5/10/2/15 seconds.
 
-Liveness is dependency-free. Readiness is a four-second, non-mutating, provider-free query using only runtime `DATABASE_URL`. It proves release SHA/image digest, bounded runtime configuration, PostgreSQL 17 and current login/membership/denials/connection limit, current schema fingerprint `0011_ledger_attestation_anchors_v1`/contract `3`, singleton reconciliation, unresolved-critical incident state, lease sanity, rollout mode, roster, and local admission. It returns only `ready`/`not_ready` plus opaque reason codes.
+Liveness is dependency-free. Readiness is a four-second, non-mutating, provider-free query using only runtime `DATABASE_URL`. It proves release SHA/image digest, bounded runtime configuration, PostgreSQL 17 and current login/membership/denials/connection limit, current schema fingerprint `0012_operator_admin_identity_v1`/contract `4`, singleton reconciliation, unresolved-critical incident state, lease sanity, rollout mode, roster, and local admission. It returns only `ready`/`not_ready` plus opaque reason codes.
 
 Daily operator safety ceilings are Coinbase 1,000, version-pinned Foundry 200, PostHog 2,000, and ACS 100 requests per UTC day. Engineering owns the application/runtime contract; release/operator owns provider-plan, quota, and cost reconciliation before rollout; operator owns alert response. The ceilings must be reconciled against contracted provider quotas and costs and lowered when required.
 
 **Evidence status:** this contract is implemented in the issue #132 source change but has not been released to Azure. The verified live platform facts above remain valid; they do not constitute timing, readiness, capacity, quota, or deadline evidence for #132. Source/CI and future exact-release target evidence must be separately indexed in issue #76. Nothing in this contract authorizes live-money execution.
+
+### Named admin identity boundary
+
+[ADR 0015](./decisions/0015-entra-admin-identity-boundary.md) removes the
+application password and HMAC-cookie path. Azure Container Apps built-in
+authentication validates the single-tenant Microsoft Entra session and strips
+external attempts to spoof its identity headers. Central authorization then
+binds the mapped principal to the reviewed tenant, issuer, audience, immutable
+object-ID allowlist, app role, MFA context, and action-specific recent step-up.
+
+Applied mutations append `OperatorAuditEvent` evidence with stable operator and
+subject IDs, reviewed name/role, redacted authentication evidence, hashed
+session ID, policy version, request/release/deployment correlation, and UTC
+times. Runtime can only select/insert; update/delete are rejected by a database
+trigger. No provider token or raw claim set is stored.
+
+The Bicep contract is source-complete. It does not claim the live Entra app
+registration, app-role assignments, Conditional Access authentication contexts,
+sign-in alerts, normal named-operator flow, or two-custodian emergency-account
+drill. Those exact-release records remain blocking issue #129/#76 evidence.
+Production remains disabled/manual.
 
 ### Immutable-ledger attestation boundary
 

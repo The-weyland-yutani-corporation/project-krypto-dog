@@ -5,7 +5,7 @@ jest.mock("@/agent/run-flow", () => ({
   executeAgentRun: jest.fn(),
 }));
 jest.mock("@/lib/admin-route-auth", () => ({
-  requireAdminSession: jest.fn().mockResolvedValue(null),
+  requireAdminOperator: jest.fn(),
 }));
 
 import { POST as runAgent } from "@/app/api/admin/run-agent/route";
@@ -13,14 +13,27 @@ import { POST as pause } from "@/app/api/admin/pause/route";
 import { POST as releaseLease } from "@/app/api/admin/release-run-lease/route";
 import { POST as unlock } from "@/app/api/admin/unlock/route";
 import { executeAgentRun } from "@/agent/run-flow";
-import { requireAdminSession } from "@/lib/admin-route-auth";
+import { requireAdminOperator } from "@/lib/admin-route-auth";
 import { RequiredRolloutModeError } from "@/trading/errors";
 
 const mockedExecuteAgentRun = executeAgentRun as jest.MockedFunction<
   typeof executeAgentRun
 >;
-const mockedRequireAdminSession =
-  requireAdminSession as jest.MockedFunction<typeof requireAdminSession>;
+const TEST_OPERATOR = {
+  operatorId: "33333333-3333-4333-8333-333333333333",
+  operatorName: "Release Owner Test",
+  subjectId: "subject-operator",
+  role: "RELEASE_OWNER" as const,
+  authenticationMethod: "ENTRA_MFA" as const,
+  authenticationContext: "c1,c2",
+  mfaEvidence: "amr:mfa",
+  authenticatedAt: new Date("2026-08-17T19:59:00.000Z"),
+  tokenIssuedAt: new Date("2026-08-17T19:59:00.000Z"),
+  sessionId: "55555555-5555-4555-8555-555555555555",
+  policyVersion: "entra-admin-v1",
+};
+const mockedRequireAdminOperator =
+  requireAdminOperator as jest.MockedFunction<typeof requireAdminOperator>;
 
 function makeReq(
   url: string,
@@ -76,14 +89,21 @@ beforeEach(() => {
       leaseExpiresAt: null,
     },
   ]);
-  mockedRequireAdminSession.mockResolvedValue(null);
+  mockedRequireAdminOperator.mockResolvedValue({
+    ok: true,
+    operator: TEST_OPERATOR,
+  });
 });
 
 describe("POST /api/admin/run-agent", () => {
   it("rejects a same-origin request without a valid admin session", async () => {
-    mockedRequireAdminSession.mockResolvedValueOnce(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
-    );
+    mockedRequireAdminOperator.mockResolvedValueOnce({
+      ok: false,
+      response: NextResponse.json(
+        { error: "Authentication required" },
+        { status: 401 },
+      ),
+    });
 
     const res = await runAgent(
       makeReq("http://localhost:3000/api/admin/run-agent"),
@@ -109,6 +129,14 @@ describe("POST /api/admin/run-agent", () => {
 
     expect(mockedExecuteAgentRun).toHaveBeenCalledWith(
       expect.objectContaining({ triggerSource: "admin" }),
+    );
+    expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "RUN_AGENT",
+        operatorId: TEST_OPERATOR.operatorId,
+        operatorRole: "RELEASE_OWNER",
+        outcome: "REQUESTED",
+      }),
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -203,7 +231,14 @@ describe("POST /api/admin/pause", () => {
     });
     expect(mockDb._insertChain.values).toHaveBeenCalledWith(
       expect.objectContaining({
-        entryText: "Operator paused the agent.",
+        action: "PAUSE_AGENT",
+        operatorId: TEST_OPERATOR.operatorId,
+        outcome: "APPLIED",
+      }),
+    );
+    expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entryText: "Release Owner Test paused the agent.",
         marketConditions: expect.objectContaining({
           event: "operator-pause",
           paused: true,
@@ -222,6 +257,12 @@ describe("POST /api/admin/pause", () => {
     expect(mockDb._updateChain.set).toHaveBeenCalledWith({
       isOperatorPaused: false,
     });
+    expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "RESUME_AGENT",
+        operatorId: TEST_OPERATOR.operatorId,
+      }),
+    );
   });
 
   it("rejects body without `paused` with 400", async () => {
@@ -301,7 +342,15 @@ describe("POST /api/admin/release-run-lease", () => {
     });
     expect(mockDb._insertChain.values).toHaveBeenCalledWith(
       expect.objectContaining({
-        entryText: "Operator recovered an expired or legacy run lease.",
+        action: "RECOVER_RUN_LEASE",
+        operatorId: TEST_OPERATOR.operatorId,
+        outcome: "APPLIED",
+      }),
+    );
+    expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entryText:
+          "Release Owner Test recovered an expired or legacy run lease.",
         marketConditions: expect.objectContaining({
           event: "lease-recovery",
           priorLeaseOwner: "expired-run",
@@ -397,6 +446,13 @@ describe("POST /api/admin/release-run-lease", () => {
         lockedAt: null,
         isOperatorPaused: true,
       });
+      expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "UNLOCK_AGENT",
+          operatorId: TEST_OPERATOR.operatorId,
+          outcome: "APPLIED",
+        }),
+      );
       expect(mockDb._insertChain.values).toHaveBeenCalledWith(
         expect.objectContaining({
           entryText: expect.stringContaining(

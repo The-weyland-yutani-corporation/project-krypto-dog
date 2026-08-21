@@ -1,78 +1,79 @@
-import { POST as login } from "@/app/api/auth/login/route";
-import { verifyAdminSessionToken } from "@/lib/admin-auth";
+import {
+  GET as loginGet,
+  POST as loginPost,
+} from "@/app/api/auth/login/route";
 
-function makeLoginReq(password: string, ip: string): Request {
-  return new Request("http://localhost:3000/api/auth/login", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-forwarded-for": ip,
-    },
-    body: JSON.stringify({ password }),
-  });
-}
-
-describe("POST /api/auth/login", () => {
-  const originalNodeEnv = process.env.NODE_ENV;
-  const originalAdminPassword = process.env.ADMIN_PASSWORD;
-  const originalAdminSessionSecret = process.env.ADMIN_SESSION_SECRET;
+describe("admin Entra login boundary", () => {
+  const originalMode = process.env.ADMIN_IDENTITY_MODE;
+  const originalPlatform = process.env.ADMIN_PLATFORM_AUTH;
+  const originalStepUpContext =
+    process.env.ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT;
 
   beforeEach(() => {
-    process.env.NODE_ENV = "production";
-    process.env.ADMIN_PASSWORD = "correct-password";
-    process.env.ADMIN_SESSION_SECRET = "test-admin-session-secret";
+    process.env.ADMIN_IDENTITY_MODE = "entra";
+    process.env.ADMIN_PLATFORM_AUTH = "azure-container-apps";
+    process.env.ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT = "c2";
   });
 
-  afterEach(() => {
-    process.env.NODE_ENV = originalNodeEnv;
-    if (originalAdminPassword === undefined) {
-      delete process.env.ADMIN_PASSWORD;
-    } else {
-      process.env.ADMIN_PASSWORD = originalAdminPassword;
-    }
-    if (originalAdminSessionSecret === undefined) {
-      delete process.env.ADMIN_SESSION_SECRET;
-    } else {
-      process.env.ADMIN_SESSION_SECRET = originalAdminSessionSecret;
-    }
+  afterAll(() => {
+    process.env.ADMIN_IDENTITY_MODE = originalMode;
+    process.env.ADMIN_PLATFORM_AUTH = originalPlatform;
+    process.env.ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT = originalStepUpContext;
   });
 
-  it("sets the admin session cookie on successful login", async () => {
-    const res = await login(makeLoginReq("correct-password", "203.0.113.10"));
-
-    expect(res.status).toBe(200);
-    const cookie = res.headers.get("set-cookie");
-    expect(cookie).toContain("krypto-admin-token=");
-    const token = /krypto-admin-token=([^;]+)/.exec(cookie ?? "")?.[1];
-    expect(token).toBeDefined();
-    await expect(
-      verifyAdminSessionToken(
-        token as string,
-        "test-admin-session-secret",
+  it("delegates browser sign-in to Container Apps and bounds return paths", async () => {
+    const response = await loginGet(
+      new Request(
+        "https://krypto.example/api/auth/login?returnTo=/admin/journal",
       ),
-    ).resolves.toBe(true);
+    );
+    expect(response.status).toBe(307);
+    const location = new URL(response.headers.get("location")!);
+    expect(location.pathname).toBe("/.auth/login/aad");
+    expect(location.searchParams.get("post_login_redirect_uri")).toBe(
+      "/admin/journal",
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
+
+    const stepUp = await loginGet(
+      new Request(
+        "https://krypto.example/api/auth/login?stepUp=1&returnTo=/admin",
+      ),
+    );
+    expect(stepUp.status).toBe(307);
+    expect(new URL(stepUp.headers.get("location")!).pathname).toBe(
+      "/.auth/login/aad",
+    );
+    expect(new URL(stepUp.headers.get("location")!).searchParams.get(
+      "prompt",
+    )).toBe("login");
+    expect(new URL(stepUp.headers.get("location")!).searchParams.get(
+      "claims",
+    )).toContain('"value":"c2"');
+
+    const unsafe = await loginGet(
+      new Request(
+        "https://krypto.example/api/auth/login?returnTo=//evil.example",
+      ),
+    );
+    expect(new URL(unsafe.headers.get("location")!).searchParams.get(
+      "post_login_redirect_uri",
+    )).toBe("/admin");
   });
 
-  it("does not count successful logins toward the failed-attempt rate limit", async () => {
-    const ip = "203.0.113.20";
-    for (let i = 0; i < 6; i += 1) {
-      const res = await login(makeLoginReq("correct-password", ip));
-      expect(res.status).toBe(200);
-    }
-
-    const failed = await login(makeLoginReq("wrong-password", ip));
-    expect(failed.status).toBe(401);
+  it("rejects password-only routine authentication without a cookie", async () => {
+    const response = await loginPost();
+    expect(response.status).toBe(401);
+    expect(response.headers.has("set-cookie")).toBe(false);
+    expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
   });
 
-  it("rate-limits repeated failed logins", async () => {
-    const ip = "203.0.113.30";
-    for (let i = 0; i < 5; i += 1) {
-      const res = await login(makeLoginReq("wrong-password", ip));
-      expect(res.status).toBe(401);
-    }
-
-    const limited = await login(makeLoginReq("wrong-password", ip));
-    expect(limited.status).toBe(429);
-    expect(limited.headers.get("retry-after")).toBeTruthy();
+  it("keeps local disabled mode fail closed", async () => {
+    process.env.ADMIN_IDENTITY_MODE = "disabled";
+    const response = await loginGet(
+      new Request("http://localhost:3000/api/auth/login"),
+    );
+    expect(response.status).toBe(503);
+    expect(response.headers.has("set-cookie")).toBe(false);
   });
 });

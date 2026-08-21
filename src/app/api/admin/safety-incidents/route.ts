@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod/v4";
-import { requireAdminSession } from "@/lib/admin-route-auth";
+import { requireAdminOperator } from "@/lib/admin-route-auth";
 import { checkSameOrigin } from "@/lib/csrf";
 import {
   SAFETY_INCIDENT_SEVERITIES,
@@ -10,6 +10,7 @@ import {
 import {
   SAFETY_ACTOR_ROLES,
 } from "@/lib/safety-roster";
+import { recordOperatorAuditEvent } from "@/lib/operator-audit";
 
 const EvidencePrimitive = z.union([
   z.string().max(240),
@@ -58,8 +59,8 @@ const ListQuery = z
   .strict();
 
 export async function GET(request: NextRequest) {
-  const auth = await requireAdminSession(request);
-  if (auth) return auth;
+  const auth = await requireAdminOperator(request, "READ_SAFETY_INCIDENTS");
+  if (!auth.ok) return auth.response;
 
   const parsed = ListQuery.safeParse(
     Object.fromEntries(request.nextUrl.searchParams.entries()),
@@ -78,8 +79,8 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const csrf = checkSameOrigin(request);
   if (csrf) return csrf;
-  const auth = await requireAdminSession(request);
-  if (auth) return auth;
+  const auth = await requireAdminOperator(request, "CHANGE_SAFETY_INCIDENT");
+  if (!auth.ok) return auth.response;
 
   let body: unknown;
   try {
@@ -97,10 +98,16 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
+  await recordOperatorAuditEvent({
+    operator: auth.operator,
+    action: "CHANGE_SAFETY_INCIDENT",
+    requestHeaders: request.headers,
+    outcome: "REQUESTED",
+  });
   return NextResponse.json(
     {
       error:
-        "Human lifecycle changes are unavailable through the shared admin session; use the protected signed owner/migrator operation.",
+        "Human lifecycle changes remain unavailable through the web runtime; use the protected signed owner/migrator operation.",
     },
     { status: 503 },
   );

@@ -85,6 +85,13 @@
       "when": 1787009045958,
       "tag": "0011_ledger_attestation_anchors",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787015085502,
+      "tag": "0012_operator_admin_identity",
+      "breakpoints": true
     }
   ]
 }

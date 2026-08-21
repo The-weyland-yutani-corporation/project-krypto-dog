@@ -28,6 +28,24 @@ async function postJson(url: string, body?: unknown): Promise<Response> {
   });
 }
 
+async function responseBody(response: Response): Promise<Record<string, unknown>> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return { error: text };
+  }
+}
+
+function redirectForStepUp(body: Record<string, unknown>): boolean {
+  if (body.code !== "STEP_UP_REQUIRED") return false;
+  const returnTo = `${window.location.pathname}${window.location.search}`;
+  window.location.assign(
+    `/api/auth/login?stepUp=1&returnTo=${encodeURIComponent(returnTo)}`,
+  );
+  return true;
+}
+
 export function OperationsPanel({
   isRunning,
   isLocked,
@@ -49,13 +67,7 @@ export function OperationsPanel({
     setStatus({ kind: "info", message: "Starting agent run…" });
     try {
       const res = await postJson("/api/admin/run-agent");
-      const text = await res.text();
-      let body: Record<string, unknown> = {};
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = { error: text };
-      }
+      const body = await responseBody(res);
 
       if (res.ok) {
         const summary =
@@ -64,6 +76,7 @@ export function OperationsPanel({
           "completed";
         setStatus({ kind: "success", message: `Run ${summary}` });
       } else {
+        if (redirectForStepUp(body)) return;
         setStatus({
           kind: "error",
           message: `HTTP ${res.status}: ${body.error ?? body.status ?? "unknown"}`,
@@ -94,7 +107,8 @@ export function OperationsPanel({
           message: next ? "Agent paused" : "Agent resumed",
         });
       } else {
-        const body = await res.json().catch(() => ({}));
+        const body = await responseBody(res);
+        if (redirectForStepUp(body)) return;
         setStatus({
           kind: "error",
           message: `HTTP ${res.status}: ${body.error ?? "failed"}`,
@@ -125,7 +139,8 @@ export function OperationsPanel({
       if (res.ok) {
         setStatus({ kind: "success", message: "Run lease released" });
       } else {
-        const body = await res.json().catch(() => ({}));
+        const body = await responseBody(res);
+        if (redirectForStepUp(body)) return;
         setStatus({
           kind: "error",
           message: `HTTP ${res.status}: ${body.error ?? "failed"}`,
@@ -172,7 +187,8 @@ export function OperationsPanel({
           message: "Safety lock cleared; agent remains paused",
         });
       } else {
-        const body = await res.json().catch(() => ({}));
+        const body = await responseBody(res);
+        if (redirectForStepUp(body)) return;
         setStatus({
           kind: "error",
           message: `HTTP ${res.status}: ${body.error ?? "failed"}`,

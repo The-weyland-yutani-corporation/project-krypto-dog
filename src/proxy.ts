@@ -1,42 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { ProxyConfig } from "next/server";
-import {
-  getAdminSessionSecret,
-  verifyAdminSessionToken,
-} from "@/lib/admin-auth";
+import { authorizeAdminRequest } from "@/lib/admin-auth";
+import { applyAdminSecurityHeaders } from "@/lib/admin-security-headers";
 
-function unauthorized(request: NextRequest): NextResponse {
-  // Pages get a redirect to the login screen; API endpoints get JSON so the
-  // client fetch can surface a structured error rather than receiving HTML.
+function rejected(request: NextRequest, status: 401 | 403 | 503): NextResponse {
   if (request.nextUrl.pathname.startsWith("/api/")) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return applyAdminSecurityHeaders(
+      NextResponse.json(
+        {
+          error:
+            status === 503
+              ? "Admin identity boundary is unavailable"
+              : "Authentication required",
+        },
+        { status },
+      ),
+    );
   }
-  return NextResponse.redirect(new URL("/admin/login", request.url));
+  if (status === 503) {
+    return applyAdminSecurityHeaders(
+      new NextResponse("Admin identity boundary is unavailable", {
+        status: 503,
+      }),
+    );
+  }
+  const login = new URL("/admin/login", request.url);
+  login.searchParams.set(
+    "returnTo",
+    `${request.nextUrl.pathname}${request.nextUrl.search}`,
+  );
+  return applyAdminSecurityHeaders(NextResponse.redirect(login));
 }
 
 export async function proxy(request: NextRequest) {
-  const { pathname } = request.nextUrl;
-
-  if (pathname === "/admin/login") {
-    return NextResponse.next();
+  if (request.nextUrl.pathname === "/admin/login") {
+    return applyAdminSecurityHeaders(NextResponse.next());
   }
 
-  const token = request.cookies.get("krypto-admin-token")?.value;
-  const secret = getAdminSessionSecret();
-
-  if (!token) {
-    return unauthorized(request);
+  const authorization = authorizeAdminRequest(
+    request.headers,
+    "READ_ADMIN",
+  );
+  if (!authorization.ok) {
+    return rejected(request, authorization.status);
   }
-
-  try {
-    if (!(await verifyAdminSessionToken(token, secret))) {
-      return unauthorized(request);
-    }
-  } catch {
-    return unauthorized(request);
-  }
-
-  return NextResponse.next();
+  return applyAdminSecurityHeaders(NextResponse.next());
 }
 
 export const config: ProxyConfig = {

@@ -71,12 +71,74 @@ export type TargetSmokeReport = {
   ledgerAttestation: LedgerAttestationReport | null;
 };
 
+export type TargetSmokeAdminIdentity = {
+  tenantId: string;
+  audience: string;
+  issuer: string;
+  operatorId: string;
+  operatorRole: "OPERATOR" | "RELEASE_OWNER" | "SAFETY_APPROVER";
+  mfaAuthContext: string;
+  stepUpAuthContext: string;
+};
+
+export function resolveTargetSmokeAdminIdentity(
+  env: Record<string, string | undefined>,
+): TargetSmokeAdminIdentity {
+  const tenantId = env.ADMIN_ENTRA_TENANT_ID;
+  const audience = env.ADMIN_ENTRA_AUDIENCE;
+  const issuer = env.ADMIN_ENTRA_ISSUER;
+  const allowlist = env.ADMIN_ENTRA_OPERATOR_ALLOWLIST;
+  const mfaAuthContext = env.ADMIN_ENTRA_MFA_AUTH_CONTEXT;
+  const stepUpAuthContext = env.ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT;
+  if (
+    !tenantId ||
+    !audience ||
+    !issuer ||
+    !allowlist ||
+    !mfaAuthContext ||
+    !stepUpAuthContext
+  ) {
+    throw new Error("ADMIN_ENTRA_* target-smoke configuration is required.");
+  }
+  let operator: unknown;
+  try {
+    const parsed = JSON.parse(allowlist);
+    operator = Array.isArray(parsed) ? parsed[0] : undefined;
+  } catch {
+    throw new Error(
+      "ADMIN_ENTRA_OPERATOR_ALLOWLIST is invalid for target smoke.",
+    );
+  }
+  if (
+    !operator ||
+    typeof operator !== "object" ||
+    !("id" in operator) ||
+    typeof operator.id !== "string" ||
+    !("role" in operator) ||
+    !["OPERATOR", "RELEASE_OWNER", "SAFETY_APPROVER"].includes(
+      String(operator.role),
+    )
+  ) {
+    throw new Error(
+      "ADMIN_ENTRA_OPERATOR_ALLOWLIST has no valid target-smoke operator.",
+    );
+  }
+  return {
+    tenantId,
+    audience,
+    issuer,
+    operatorId: operator.id,
+    operatorRole: String(operator.role) as TargetSmokeAdminIdentity["operatorRole"],
+    mfaAuthContext,
+    stepUpAuthContext,
+  };
+}
+
 export type TargetSmokeOptions = {
   baseUrl: string;
   expectedHost: string;
   databaseUrl: string;
   cronSecret: string;
-  adminPassword: string;
   /** Exact lowercase 40-hex commit SHA of the deployed release. Required, validated, never guessed. */
   releaseSha: string;
   /** Exact `sha256:<64-hex>` digest of the deployed image. Required, validated, never guessed. */
@@ -89,6 +151,7 @@ export type TargetSmokeOptions = {
    * forged by anything that only knows CRON_SECRET.
    */
   approvalSecret: string;
+  adminIdentity: TargetSmokeAdminIdentity;
 };
 
 type PreSmokeEvidence = {
@@ -388,21 +451,63 @@ export function constantTimeEqual(
   return timingSafeEqual(expectedBuffer, actualBuffer);
 }
 
-export function extractSessionCookie(headers: Headers): string {
-  const values =
-    "getSetCookie" in headers &&
-    typeof headers.getSetCookie === "function"
-      ? headers.getSetCookie()
-      : [headers.get("set-cookie")].filter(
-          (value): value is string => value !== null,
-        );
-  const cookie = values
-    .map((value) => value.split(";", 1)[0])
-    .find((value) => value.startsWith("krypto-admin-token="));
-  if (!cookie || cookie === "krypto-admin-token=") {
-    throw new Error("Admin login did not return a session cookie.");
+function spoofedAdminPrincipalHeaders(
+  identity: TargetSmokeOptions["adminIdentity"],
+  now: Date,
+): HeadersInit {
+  const guidPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const safeClaimPattern = /^[A-Za-z0-9._:/@+-]{1,240}$/;
+  if (
+    !guidPattern.test(identity.tenantId) ||
+    !guidPattern.test(identity.operatorId) ||
+    !safeClaimPattern.test(identity.audience) ||
+    !safeClaimPattern.test(identity.issuer) ||
+    !safeClaimPattern.test(identity.mfaAuthContext) ||
+    !safeClaimPattern.test(identity.stepUpAuthContext) ||
+    identity.mfaAuthContext === identity.stepUpAuthContext
+  ) {
+    throw new Error("Admin smoke identity is malformed.");
   }
-  return cookie;
+  const roleClaim = {
+    OPERATOR: "Krypto.Admin.Operator",
+    RELEASE_OWNER: "Krypto.Admin.ReleaseOwner",
+    SAFETY_APPROVER: "Krypto.Admin.SafetyApprover",
+  }[identity.operatorRole];
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  const principal = Buffer.from(
+    JSON.stringify({
+      auth_typ: "aad",
+      name_typ: "name",
+      role_typ: "roles",
+      claims: [
+        { typ: "aud", val: identity.audience },
+        { typ: "iss", val: identity.issuer },
+        { typ: "iat", val: String(nowSeconds - 30) },
+        { typ: "nbf", val: String(nowSeconds - 30) },
+        { typ: "exp", val: String(nowSeconds + 3600) },
+        { typ: "oid", val: identity.operatorId },
+        { typ: "sub", val: `target-smoke-${identity.operatorId}` },
+        { typ: "tid", val: identity.tenantId },
+        {
+          typ: "sid",
+          val: "00000000-0000-4000-8000-000000000129",
+        },
+        { typ: "auth_time", val: String(nowSeconds - 30) },
+        { typ: "amr", val: "mfa" },
+        { typ: "acrs", val: identity.mfaAuthContext },
+        { typ: "acrs", val: identity.stepUpAuthContext },
+        { typ: "roles", val: roleClaim },
+      ],
+    }),
+    "utf8",
+  ).toString("base64");
+  return {
+    "x-ms-client-principal": principal,
+    "x-ms-client-principal-id": identity.operatorId,
+    "x-ms-client-principal-idp": "aad",
+    "x-forwarded-for": "203.0.113.129",
+  };
 }
 
 export async function readOnly<T>(
@@ -737,14 +842,8 @@ export async function runTargetSmoke(
     options.baseUrl,
     options.expectedHost,
   );
-  if (
-    !options.databaseUrl ||
-    !options.cronSecret ||
-    !options.adminPassword
-  ) {
-    throw new Error(
-      "DIRECT_URL, CRON_SECRET, and ADMIN_PASSWORD are required.",
-    );
+  if (!options.databaseUrl || !options.cronSecret) {
+    throw new Error("DIRECT_URL and CRON_SECRET are required.");
   }
   if (!options.releaseSha || !options.imageDigest) {
     throw new Error("RELEASE_SHA and IMAGE_DIGEST are required.");
@@ -755,13 +854,6 @@ export async function runTargetSmoke(
   const releaseSha = validateReleaseSha(options.releaseSha);
   const imageDigest = validateImageDigest(options.imageDigest);
   const approvalSecret = validateApprovalSecret(options.approvalSecret);
-  const safetyReleaseOwner = process.env.SAFETY_RELEASE_OWNER?.trim();
-  if (!safetyReleaseOwner) {
-    throw new Error(
-      "SAFETY_RELEASE_OWNER is required for the non-trading safety test-fire contract.",
-    );
-  }
-
   const now = dependencies.now ?? (() => new Date());
   const randomUuid = dependencies.randomUuid ?? (() => crypto.randomUUID());
   const fetchImpl = dependencies.fetchImpl ?? fetch;
@@ -1094,9 +1186,9 @@ export async function runTargetSmoke(
 
   const adminAuth = await check(
     "admin-auth-rejection",
-    "Protected admin API rejects a missing session",
+    "Protected admin API rejects anonymous and externally spoofed identity headers",
     async () => {
-      const response = await request(
+      const anonymous = await request(
         fetchImpl,
         new URL("/api/admin/run-agent", baseUrl),
         {
@@ -1107,22 +1199,52 @@ export async function runTargetSmoke(
           },
         },
       );
-      if (response.status !== 401) {
+      const spoofed = await request(
+        fetchImpl,
+        new URL("/api/admin/safety-incidents?limit=1", baseUrl),
+        {
+          method: "GET",
+          headers: {
+            ...spoofedAdminPrincipalHeaders(
+              options.adminIdentity,
+              startedAt,
+            ),
+          },
+        },
+      );
+      if (anonymous.status !== 401 || spoofed.status !== 401) {
         throw new Error("Unauthenticated admin request was not rejected.");
       }
-      return response.status;
+      for (const response of [anonymous, spoofed]) {
+        if (
+          response.headers.get("cache-control") !== "no-store, max-age=0" ||
+          response.headers.get("x-frame-options") !== "DENY" ||
+          response.headers.get("x-content-type-options") !== "nosniff" ||
+          response.headers.get("referrer-policy") !== "no-referrer" ||
+          !response.headers.get("content-security-policy") ||
+          !response.headers.get("permissions-policy") ||
+          !response.headers.get("strict-transport-security") ||
+          response.headers.has("x-powered-by")
+        ) {
+          throw new Error("Admin security response headers are incomplete.");
+        }
+      }
+      return {
+        anonymousStatus: anonymous.status,
+        spoofedStatus: spoofed.status,
+      };
     },
-    (status) => ({ status }),
+    (value) => value,
   );
   if (!adminAuth.passed) {
     return blockedReport(
-      "Repair admin-route authentication before creating a session.",
+      "Repair the platform-backed admin identity rejection boundary.",
     );
   }
 
-  const login = await check(
-    "admin-login",
-    "Admin login issues a secure session",
+  const passwordFallback = await check(
+    "admin-password-fallback-rejection",
+    "Password-only routine admin authentication is unavailable",
     async () => {
       const response = await request(
         fetchImpl,
@@ -1133,168 +1255,79 @@ export async function runTargetSmoke(
             "content-type": "application/json",
             origin: baseUrl.origin,
           },
-          body: JSON.stringify({ password: options.adminPassword }),
+          body: JSON.stringify({ password: "must-never-authenticate" }),
         },
       );
-      if (response.status !== 200) {
-        throw new Error("Admin login failed.");
+      if (
+        response.status !== 401 ||
+        response.headers.has("set-cookie") ||
+        response.headers.get("cache-control") !== "no-store, max-age=0"
+      ) {
+        throw new Error("Password-only admin authentication was not rejected.");
       }
-      return extractSessionCookie(response.headers);
-    },
-    () => ({ authenticated: true }),
-  );
-
-  if (!login.passed || !login.value) {
-    checks.push({
-      id: "admin-session-flow",
-      status: "block",
-      summary: "Admin run and logout checks were skipped because login failed.",
-    });
-    return blockedReport(
-      "Repair admin login before any further target smoke actions.",
-    );
-  }
-
-  const adminRun = await check(
-    "admin-session-run",
-    "Authenticated admin session reaches a disabled run",
-    async () => {
-      const page = await request(fetchImpl, new URL("/admin", baseUrl), {
-        method: "GET",
-        headers: { cookie: login.value! },
-      });
-      if (page.status !== 200) {
-        throw new Error("Authenticated admin page was unavailable.");
-      }
-      const response = await request(
-        fetchImpl,
-        new URL("/api/admin/run-agent", baseUrl),
-        {
-          method: "POST",
-          headers: {
-            cookie: login.value!,
-            origin: baseUrl.origin,
-            "x-idempotency-key": evidenceIds.admin,
-            "x-required-rollout-mode": "disabled",
-          },
-        },
-      );
-      const body = await responseJson(response);
-      if (response.status !== 200 || body.action !== "disabled") {
-        throw new Error("Admin smoke did not return a disabled outcome.");
-      }
-      return { pageStatus: page.status, runStatus: response.status };
+      return { status: response.status, sessionIssued: false };
     },
     (value) => value,
   );
+  if (!passwordFallback.passed) {
+    return blockedReport(
+      "Remove the password fallback before producing rollout evidence.",
+    );
+  }
 
-  const safetyTestFire = await check(
-    "safety-incident-test-fire-dry-run",
-    "Protected warning test fire proves the non-trading incident contract without persistence",
+  const platformLogin = await check(
+    "admin-platform-login",
+    "Admin sign-in delegates to the Container Apps Microsoft Entra endpoint",
     async () => {
       const response = await request(
         fetchImpl,
-        new URL("/api/admin/safety-incidents/test-fire", baseUrl),
+        new URL("/api/auth/login?returnTo=/admin", baseUrl),
         {
-          method: "POST",
-          headers: {
-            cookie: login.value!,
-            origin: baseUrl.origin,
-            "content-type": "application/json",
-            "x-request-id": `target-smoke-${evidenceIds.admin}`,
-          },
-          body: JSON.stringify({
-            severity: "WARNING",
-            dryRun: true,
-            drill: false,
-            actorId: safetyReleaseOwner,
-            actorRole: "RELEASE_OWNER",
-            reason: "Target smoke non-trading warning test fire",
-          }),
+          method: "GET",
         },
       );
-      const body = await responseJson(response);
-      const roster =
-        body.roster !== null &&
-        typeof body.roster === "object" &&
-        !Array.isArray(body.roster)
-          ? (body.roster as Record<string, unknown>)
-          : null;
+      const location = response.headers.get("location");
       if (
-        response.status !== 200 ||
-        body.dryRun !== true ||
-        body.persisted !== false ||
-        body.incidentType !== "TEST_FIRE_WARNING" ||
-        roster?.complete !== true ||
-        roster?.authenticatorsConfigured !== true
+        response.status !== 307 ||
+        !location ||
+        new URL(location).pathname !== "/.auth/login/aad"
       ) {
-        throw new Error(
-          "Safety warning test fire was not a complete non-trading dry run.",
-        );
+        throw new Error("Admin login did not delegate to Container Apps auth.");
+      }
+      const easyAuth = await request(
+        fetchImpl,
+        new URL(location),
+        { method: "GET" },
+      );
+      const easyAuthLocation = easyAuth.headers.get("location");
+      const expectedIssuerHost = new URL(options.adminIdentity.issuer).hostname;
+      if (
+        ![302, 307].includes(easyAuth.status) ||
+        !easyAuthLocation ||
+        new URL(easyAuthLocation).hostname !== expectedIssuerHost
+      ) {
+        throw new Error("Container Apps Entra login endpoint is unavailable.");
+      }
+      const authMe = await request(
+        fetchImpl,
+        new URL("/.auth/me", baseUrl),
+        { method: "GET" },
+      );
+      if (authMe.status !== 401) {
+        throw new Error("Container Apps auth session endpoint was not enforced.");
       }
       return {
         status: response.status,
-        incidentType: body.incidentType,
-        persisted: body.persisted,
-        rosterComplete: roster.complete,
-        authenticatorsConfigured: roster.authenticatorsConfigured,
+        providerStatus: easyAuth.status,
+        anonymousSessionStatus: authMe.status,
+        provider: "azureactivedirectory",
       };
     },
     (value) => value,
   );
-  if (!safetyTestFire.passed) {
+  if (!platformLogin.passed) {
     return blockedReport(
-      "Complete the protected responder roster and non-trading test-fire contract before rollout evidence.",
-    );
-  }
-
-  const adminLogout = await check(
-      "admin-logout",
-      "Logout clears the admin cookie and protected access",
-      async () => {
-        const logout = await request(
-          fetchImpl,
-          new URL("/api/auth/logout", baseUrl),
-          {
-            method: "POST",
-            headers: {
-              cookie: login.value!,
-              origin: baseUrl.origin,
-            },
-          },
-        );
-        const clearCookie = logout.headers.get("set-cookie") ?? "";
-        if (
-          logout.status !== 303 ||
-          !clearCookie.startsWith("krypto-admin-token=") ||
-          !/max-age=0/i.test(clearCookie)
-        ) {
-          throw new Error("Logout did not clear the admin cookie.");
-        }
-        const afterLogout = await request(
-          fetchImpl,
-          new URL("/api/admin/run-agent", baseUrl),
-          {
-            method: "POST",
-            headers: {
-              origin: baseUrl.origin,
-              "x-required-rollout-mode": "disabled",
-            },
-          },
-        );
-        if (afterLogout.status !== 401) {
-          throw new Error("Protected admin access remained available.");
-        }
-        return {
-          logoutStatus: logout.status,
-          protectedStatus: afterLogout.status,
-        };
-      },
-      (value) => value,
-  );
-  if (!adminRun.passed || !adminLogout.passed) {
-    return blockedReport(
-      "Resolve the admin run/logout failure before daily-summary checks.",
+      "Configure the reviewed Container Apps Microsoft Entra provider before rollout evidence.",
     );
   }
 
@@ -1369,13 +1402,12 @@ export async function runTargetSmoke(
         idempotencyKeys: [
           evidenceIds.modeMismatch,
           evidenceIds.cron,
-          evidenceIds.admin,
         ],
         startedAt,
       });
       if (
-        value.runCount !== 2 ||
-        value.disabledRunCount !== 2 ||
+        value.runCount !== 1 ||
+        value.disabledRunCount !== 1 ||
         value.tradeCount !== before.value!.tradeCount ||
         !value.leaseReleased ||
         value.deliveryStatus !== "sent"
@@ -1412,13 +1444,12 @@ export async function runTargetSmoke(
         idempotencyKeys: [
           evidenceIds.modeMismatch,
           evidenceIds.cron,
-          evidenceIds.admin,
         ],
         startedAt,
       });
       if (
-        value.runCount !== 2 ||
-        value.disabledRunCount !== 2 ||
+        value.runCount !== 1 ||
+        value.disabledRunCount !== 1 ||
         value.tradeCount !== before.value!.tradeCount ||
         !value.leaseReleased ||
         value.deliveryStatus !== "sent"

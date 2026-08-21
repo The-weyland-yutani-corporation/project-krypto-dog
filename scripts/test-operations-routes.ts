@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { NextRequest } from "next/server";
 import postgres from "postgres";
 import { closeDatabase } from "../src/db";
-import { createAdminSessionToken } from "../src/lib/admin-auth";
 import { POST as pause } from "../src/app/api/admin/pause/route";
 import { POST as releaseLease } from "../src/app/api/admin/release-run-lease/route";
 import { POST as unlock } from "../src/app/api/admin/unlock/route";
@@ -11,13 +10,74 @@ import { POST as dailySummary } from "../src/app/api/agent/daily-summary/route";
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required");
 process.env.CRON_SECRET = "operations-route-test-secret";
-process.env.ADMIN_SESSION_SECRET = "operations-route-admin-secret";
+process.env.ADMIN_IDENTITY_MODE = "entra";
+process.env.ADMIN_PLATFORM_AUTH = "azure-container-apps";
+process.env.ADMIN_ENTRA_TENANT_ID =
+  "11111111-1111-4111-8111-111111111111";
+process.env.ADMIN_ENTRA_CLIENT_ID =
+  "22222222-2222-4222-8222-222222222222";
+process.env.ADMIN_ENTRA_AUDIENCE =
+  "22222222-2222-4222-8222-222222222222";
+process.env.ADMIN_ENTRA_ISSUER =
+  "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0";
+process.env.ADMIN_ENTRA_OPERATOR_ALLOWLIST = JSON.stringify([
+  {
+    id: "33333333-3333-4333-8333-333333333333",
+    name: "Operations Route Test",
+    role: "RELEASE_OWNER",
+  },
+]);
+process.env.ADMIN_ENTRA_MFA_AUTH_CONTEXT = "c1";
+process.env.ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT = "c2";
+process.env.ADMIN_AUTH_NOT_BEFORE = "1970-01-01T00:00:00.000Z";
+process.env.ADMIN_AUTH_POLICY_VERSION = "operations-route-test-v1";
 delete process.env.AZURE_COMMUNICATION_CONNECTION_STRING;
 delete process.env.AZURE_COMMUNICATION_EMAIL_SENDER;
 delete process.env.ALERT_EMAIL_TO;
 
 const sql = postgres(databaseUrl, { max: 1, prepare: false });
-let adminToken = "";
+function adminPrincipalHeader(): string {
+  const now = Math.floor(Date.now() / 1000);
+  return Buffer.from(
+    JSON.stringify({
+      auth_typ: "aad",
+      name_typ: "name",
+      role_typ: "roles",
+      claims: [
+        {
+          typ: "aud",
+          val: "22222222-2222-4222-8222-222222222222",
+        },
+        {
+          typ: "iss",
+          val: "https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0",
+        },
+        { typ: "iat", val: String(now - 30) },
+        { typ: "nbf", val: String(now - 30) },
+        { typ: "exp", val: String(now + 3600) },
+        {
+          typ: "oid",
+          val: "33333333-3333-4333-8333-333333333333",
+        },
+        { typ: "sub", val: "operations-route-test-subject" },
+        {
+          typ: "tid",
+          val: "11111111-1111-4111-8111-111111111111",
+        },
+        {
+          typ: "sid",
+          val: "55555555-5555-4555-8555-555555555555",
+        },
+        { typ: "auth_time", val: String(now - 30) },
+        { typ: "amr", val: "mfa" },
+        { typ: "acrs", val: "c1" },
+        { typ: "acrs", val: "c2" },
+        { typ: "roles", val: "Krypto.Admin.ReleaseOwner" },
+      ],
+    }),
+    "utf8",
+  ).toString("base64");
+}
 
 function adminRequest(path: string, body?: unknown): NextRequest {
   return new NextRequest(
@@ -26,7 +86,10 @@ function adminRequest(path: string, body?: unknown): NextRequest {
       headers: {
         origin: "http://localhost:3000",
         "content-type": "application/json",
-        cookie: `krypto-admin-token=${adminToken}`,
+        "x-ms-client-principal": adminPrincipalHeader(),
+        "x-ms-client-principal-id":
+          "33333333-3333-4333-8333-333333333333",
+        "x-ms-client-principal-idp": "aad",
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     }),
@@ -34,9 +97,6 @@ function adminRequest(path: string, body?: unknown): NextRequest {
 }
 
 async function main(): Promise<void> {
-  adminToken = await createAdminSessionToken(
-    "operations-route-admin-secret",
-  );
   let response = await pause(
     adminRequest("/api/admin/pause", { paused: true }),
   );

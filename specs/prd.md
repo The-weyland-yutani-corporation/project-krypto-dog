@@ -243,13 +243,16 @@ that would persist a paper trade.
   provider failures return HTTP 502.
 
 ### `POST /api/auth/login`, `GET|POST /api/auth/logout`
-- Timing-safe password check against `ADMIN_PASSWORD`. Sets an HMAC-signed
-  cookie containing issued-at and expiry values (HTTP-only, SameSite=Lax, 24h).
-  Expired/forged tokens are rejected by `src/proxy.ts`; logout is visible in the
-  protected shell and clears the cookie.
+- Password POSTs fail closed. Browser GET delegates to Container Apps
+  `/.auth/login/aad`; logout delegates to `/.auth/logout`. The application sets
+  no admin cookie.
+- Container Apps validates the Entra session. `src/proxy.ts` and every route
+  independently require the platform principal, exact tenant/issuer/audience,
+  immutable allowlist object ID, app role, MFA context, and bounded token/auth
+  times. Sensitive routes additionally require the recent step-up context.
 
 ### `POST /api/admin/run-agent`
-- **Auth:** admin cookie verified by both `src/proxy.ts` and the route handler,
+- **Auth:** named Entra operator verified by both `src/proxy.ts` and the route handler,
   plus same-origin check.
 - Manually invokes the same shared `executeAgentRun({ triggerSource: "admin" })` path used by scheduled Container Apps Jobs.
 
@@ -273,12 +276,12 @@ that would persist a paper trade.
 
 ### `GET|POST /api/admin/safety-incidents`
 
-- Protected by the admin session; lifecycle mutation also requires same-origin
+- Protected by named Entra operator authorization; lifecycle mutation also requires same-origin
   validation and an actor matching the fail-closed responder roster.
 - `GET` lists latest immutable incident events with redacted context excluded by
   default.
-- `POST` is deliberately fail closed for every human lifecycle change because
-  the current admin session is shared. `npm run incident:respond` appends
+- `POST` remains deliberately fail closed for every human lifecycle change.
+  `npm run incident:respond` appends
   signed acknowledge/escalate/resolve events through the protected owner/
   migrator lane. Resolution requires distinct release-owner/trading-safety
   confirmation and complete evidence; a successful retry never resolves.
@@ -374,8 +377,11 @@ also requires the workload identity client ID and complete ACS configuration.
 | `AZURE_COMMUNICATION_EMAIL_SENDER` | Azure-managed ACS sender emitted by the environment deployment | production |
 | `ALERT_EMAIL_TO` | Recipient for guardrail/daily emails | production |
 | `APP_ORIGIN` | Exact HTTPS public origin for admin CSRF validation | yes in production |
-| `ADMIN_PASSWORD` | Admin dashboard password | yes |
-| `ADMIN_SESSION_SECRET` | HMAC key for expiring admin cookies | yes in production |
+| `ADMIN_IDENTITY_MODE`, `ADMIN_PLATFORM_AUTH` | Fail-closed Entra/Container Apps boundary selection | yes in production |
+| `ADMIN_ENTRA_TENANT_ID`, `ADMIN_ENTRA_CLIENT_ID`, `ADMIN_ENTRA_AUDIENCE`, `ADMIN_ENTRA_ISSUER` | Exact Entra token boundary | yes in production |
+| `ADMIN_ENTRA_OPERATOR_ALLOWLIST` | Reviewed immutable object-ID/name/role list | yes in production |
+| `ADMIN_ENTRA_MFA_AUTH_CONTEXT`, `ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT` | Distinct routine MFA and sensitive step-up contexts | yes in production |
+| `ADMIN_AUTH_NOT_BEFORE`, `ADMIN_AUTH_POLICY_VERSION` | Session revocation cutoff and evidence policy version | yes in production |
 
 The provider values are operator safety ceilings, not plan entitlement or cost approval. Release/operator must reconcile them against contracted quotas, rate limits, and costs before rollout and lower them when required. Engineering owns application/runtime correctness; release/operator owns plan/quota/cost reconciliation; operator owns deadline/budget/capacity alert response.
 

@@ -3,8 +3,9 @@ import { eq } from "drizzle-orm";
 import { z } from "zod/v4";
 import { db } from "@/db";
 import { agentJournal, agentState } from "@/db/schema";
-import { requireAdminSession } from "@/lib/admin-route-auth";
+import { requireAdminOperator } from "@/lib/admin-route-auth";
 import { checkSameOrigin } from "@/lib/csrf";
+import { recordOperatorAuditEvent } from "@/lib/operator-audit";
 
 const UnlockBody = z.object({
   confirm: z.literal("UNLOCK"),
@@ -14,8 +15,8 @@ const UnlockBody = z.object({
 export async function POST(request: NextRequest) {
   const csrf = checkSameOrigin(request);
   if (csrf) return csrf;
-  const auth = await requireAdminSession(request);
-  if (auth) return auth;
+  const auth = await requireAdminOperator(request, "UNLOCK_AGENT");
+  if (!auth.ok) return auth.response;
 
   const parsed = UnlockBody.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
@@ -67,13 +68,22 @@ export async function POST(request: NextRequest) {
       });
     if (!updated) return { kind: "missing" as const };
 
+    const auditEventId = await recordOperatorAuditEvent({
+      writer: tx,
+      operator: auth.operator,
+      action: "UNLOCK_AGENT",
+      requestHeaders: request.headers,
+      outcome: "APPLIED",
+      occurredAt: now,
+    });
     await tx.insert(agentJournal).values({
-      entryText: `Operator cleared the drawdown safety lock and left the agent paused. Reason: ${parsed.data.reason}`,
+      entryText: `${auth.operator.operatorName} cleared the drawdown safety lock and left the agent paused. Reason: ${parsed.data.reason}`,
       marketConditions: {
         event: "operator-unlock",
         reason: parsed.data.reason,
         priorLockReason: state.lockReason,
         priorLockedAt: state.lockedAt?.toISOString() ?? null,
+        operatorAuditEventId: auditEventId,
         timestamp: now.toISOString(),
       },
     });

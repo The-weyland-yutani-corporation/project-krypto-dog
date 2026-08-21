@@ -1,4 +1,8 @@
-import { runTargetSmoke, validateImageDigest } from "@/deployment/target-smoke";
+import {
+  resolveTargetSmokeAdminIdentity,
+  runTargetSmoke,
+  validateImageDigest,
+} from "@/deployment/target-smoke";
 
 import type { AzureOperationContext, AzureOperationResult } from "./types";
 
@@ -14,7 +18,6 @@ export async function run(
   const expectedHost = process.env.TARGET_CONFIRM_HOST;
   const databaseUrl = process.env.DIRECT_URL;
   const cronSecret = process.env.CRON_SECRET;
-  const adminPassword = process.env.ADMIN_PASSWORD;
   const imageDigest = process.env.IMAGE_DIGEST;
   const approvalSecret = process.env.DEPLOYMENT_APPROVAL_SECRET;
   if (
@@ -22,21 +25,21 @@ export async function run(
     !expectedHost ||
     !databaseUrl ||
     !cronSecret ||
-    !adminPassword ||
     !imageDigest ||
     !approvalSecret
   ) {
     throw new Error(
-      "TARGET_BASE_URL, TARGET_CONFIRM_HOST, DIRECT_URL, CRON_SECRET, ADMIN_PASSWORD, IMAGE_DIGEST, and DEPLOYMENT_APPROVAL_SECRET are required for the target-smoke operation.",
+      "TARGET_BASE_URL, TARGET_CONFIRM_HOST, DIRECT_URL, CRON_SECRET, ADMIN_ENTRA_*, IMAGE_DIGEST, and DEPLOYMENT_APPROVAL_SECRET are required for the target-smoke operation.",
     );
   }
+  const adminIdentity = resolveTargetSmokeAdminIdentity(process.env);
 
   const report = await runTargetSmoke({
     baseUrl,
     expectedHost,
     databaseUrl,
     cronSecret,
-    adminPassword,
+    adminIdentity,
     releaseSha: context.releaseSha,
     imageDigest: validateImageDigest(imageDigest),
     approvalSecret,

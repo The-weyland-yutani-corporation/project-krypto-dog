@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { NextRequest, NextResponse } from "next/server";
+import { mockDb } from "../setup";
 
 jest.mock("@/lib/admin-route-auth", () => ({
-  requireAdminSession: jest.fn().mockResolvedValue(null),
+  requireAdminOperator: jest.fn(),
 }));
 jest.mock("@/lib/safety-incidents", () => {
   const actual = jest.requireActual("@/lib/safety-incidents");
@@ -31,19 +32,32 @@ import {
   POST as mutateSafetyIncident,
 } from "@/app/api/admin/safety-incidents/route";
 import { POST as testFire } from "@/app/api/admin/safety-incidents/test-fire/route";
-import { requireAdminSession } from "@/lib/admin-route-auth";
+import { requireAdminOperator } from "@/lib/admin-route-auth";
 import {
   safetyIncidentRepository,
 } from "@/lib/safety-incidents";
 
-const mockedRequireAdminSession =
-  requireAdminSession as jest.MockedFunction<typeof requireAdminSession>;
+const mockedRequireAdminOperator =
+  requireAdminOperator as jest.MockedFunction<typeof requireAdminOperator>;
 const mockedRepository = safetyIncidentRepository as jest.Mocked<
   typeof safetyIncidentRepository
 >;
 const actorAssertion = {
   signedAt: "2026-08-17T20:00:00.000Z",
   signature: `${"A".repeat(86)}==`,
+};
+const TEST_OPERATOR = {
+  operatorId: "33333333-3333-4333-8333-333333333333",
+  operatorName: "release-person",
+  subjectId: "subject-release-person",
+  role: "RELEASE_OWNER" as const,
+  authenticationMethod: "ENTRA_MFA" as const,
+  authenticationContext: "c1,c2",
+  mfaEvidence: "amr:mfa",
+  authenticatedAt: new Date("2026-08-17T19:59:00.000Z"),
+  tokenIssuedAt: new Date("2026-08-17T19:59:00.000Z"),
+  sessionId: "55555555-5555-4555-8555-555555555555",
+  policyVersion: "entra-admin-v1",
 };
 
 const ORIGINAL_ENV = {
@@ -127,7 +141,10 @@ beforeEach(() => {
   installRoster();
   process.env.ROLLOUT_MODE = "shadow";
   delete process.env.SAFETY_INCIDENT_DRILL_ENABLED;
-  mockedRequireAdminSession.mockResolvedValue(null);
+  mockedRequireAdminOperator.mockResolvedValue({
+    ok: true,
+    operator: TEST_OPERATOR,
+  });
   mockedRepository.listLatest.mockResolvedValue([]);
   mockedRepository.appendHumanLifecycle.mockResolvedValue({
     ...incidentEvent(),
@@ -144,9 +161,10 @@ afterAll(restoreEnvironment);
 
 describe("admin safety incident routes", () => {
   it("protects list and mutation with admin auth and same-origin checks", async () => {
-    mockedRequireAdminSession.mockResolvedValueOnce(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
-    );
+    mockedRequireAdminOperator.mockResolvedValueOnce({
+      ok: false,
+      response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
+    });
     const list = await listSafetyIncidents(
       request("http://localhost:3000/api/admin/safety-incidents"),
     );
@@ -210,7 +228,7 @@ describe("admin safety incident routes", () => {
     expect(mockedRepository.appendHumanLifecycle).not.toHaveBeenCalled();
   });
 
-  it("keeps human lifecycle changes out of the shared admin session", async () => {
+  it("keeps human lifecycle changes out of the web runtime", async () => {
     const response = await mutateSafetyIncident(
       request("http://localhost:3000/api/admin/safety-incidents", {
         action: "ACKNOWLEDGE",
@@ -223,9 +241,16 @@ describe("admin safety incident routes", () => {
       }),
     );
     expect(response.status).toBe(503);
+    expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "CHANGE_SAFETY_INCIDENT",
+        operatorId: TEST_OPERATOR.operatorId,
+        outcome: "REQUESTED",
+      }),
+    );
     await expect(response.json()).resolves.toEqual({
       error:
-        "Human lifecycle changes are unavailable through the shared admin session; use the protected signed owner/migrator operation.",
+        "Human lifecycle changes remain unavailable through the web runtime; use the protected signed owner/migrator operation.",
     });
     expect(mockedRepository.appendHumanLifecycle).not.toHaveBeenCalled();
   });
@@ -245,7 +270,7 @@ describe("admin safety incident routes", () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
       error:
-        "Human lifecycle changes are unavailable through the shared admin session; use the protected signed owner/migrator operation.",
+        "Human lifecycle changes remain unavailable through the web runtime; use the protected signed owner/migrator operation.",
     });
     expect(mockedRepository.appendHumanLifecycle).not.toHaveBeenCalled();
   });
@@ -274,6 +299,13 @@ describe("admin safety incident test fire", () => {
       rolloutMode: "shadow",
     });
     expect(mockedRepository.createOrGet).not.toHaveBeenCalled();
+    expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "TEST_FIRE_SAFETY_INCIDENT",
+        operatorId: TEST_OPERATOR.operatorId,
+        outcome: "NO_CHANGE",
+      }),
+    );
   });
 
   it("supports a critical dry-run fixture without persistence", async () => {

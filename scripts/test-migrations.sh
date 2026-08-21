@@ -742,6 +742,7 @@ azure_0008_hash="0f28fce3409b92986be1fe58a82b02a90dcbb48a0cab75a1bbfb6681e200638
 azure_0009_hash="289f3a32bdc4c47cd3c9d8c2c354226962fadc4ff5be80e9864574f8eebd42a5"
 azure_0010_hash="e81e8e38bcf2e32855a4d98dd3c76950c26d0e9aeecba536adb0f12278920095"
 azure_0011_hash="7c06289622f560a11de41e48acc37fafbdb1776a76436fffc17e739881fda0e8"
+azure_0012_hash="ef45d0acc0da4540f96cbaa656c5a73e20488d75e3c6eb0e63ea61941f8742bb"
 
 create_database azure_target
 azure_migrator_password="krypto-migrator-test-pw-$(random_test_password)"
@@ -825,14 +826,14 @@ azure_fresh_result="$(psql "$azure_target_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."RuntimeContract"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."RuntimeContract"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           has_schema_privilege('\''krypto_runtime'\'', '\''drizzle'\'', '\''USAGE'\'')::text || '\''|'\'' ||
-          (SELECT ("schemaFingerprint" = '\''0011_ledger_attestation_anchors_v1'\'')::text
+          (SELECT ("schemaFingerprint" = '\''0012_operator_admin_identity_v1'\'')::text
              FROM "krypto"."RuntimeContract" WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
           (SELECT (count(*) = 2)::text FROM pg_constraint
             WHERE conrelid = '\''krypto."AgentRun"'\''::regclass
               AND conname IN ('\''AgentRun_deadline_after_start_check'\'', '\''AgentRun_deadline_exact_check'\'')) || '\''|'\'' ||
           (SELECT (condeferrable AND condeferred)::text FROM pg_constraint
             WHERE conname = '\''TradeExecution_commit_deadline_fence'\'');')"
-if [[ "$azure_fresh_result" != "12|$azure_0011_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false|true|true|true|false|true|false|false|false|true|true|true" ]]; then
+if [[ "$azure_fresh_result" != "13|$azure_0012_hash|true|true|true|true|true|true|false|false|true|true|true|false|true|true|false|false|false|false|false|true|true|false|false|true|false|false|false|true|true|true|false|true|false|false|false|true|true|true" ]]; then
   echo "Fresh Azure migration did not retire obsolete cron functions or establish the exact krypto_runtime privilege matrix: $azure_fresh_result" >&2
   exit 1
 fi
@@ -875,7 +876,7 @@ safety_fresh_result="$(psql "$azure_target_url" -Atc \
             WHERE table_schema = '\''krypto'\''
               AND table_name = '\''AgentRun'\''
               AND column_name = '\''providerAttemptId'\'')::text || '\''|'\'' ||
-          (SELECT ("schemaFingerprint" = '\''0011_ledger_attestation_anchors_v1'\'' AND "contractVersion" = 3)::text
+          (SELECT ("schemaFingerprint" = '\''0012_operator_admin_identity_v1'\'' AND "contractVersion" = 4)::text
              FROM "krypto"."RuntimeContract"
             WHERE "id" = '\''singleton'\'') || '\''|'\'' ||
           (SELECT count(*) = 1
@@ -900,6 +901,54 @@ if [[ "$safety_fresh_result" != "true|true|true|true|true|false|false|false|fals
   echo "Fresh 0010 migration did not establish the safety outbox, correlations, fingerprint, trigger, or exact privileges: $safety_fresh_result" >&2
   exit 1
 fi
+
+operator_fresh_result="$(psql "$azure_target_url" -Atc \
+  'SELECT
+          (to_regclass('\''krypto."OperatorAuditEvent"'\'') IS NOT NULL)::text || '\''|'\'' ||
+          (SELECT relowner::regrole::text = '\''krypto_schema_owner'\''
+             FROM pg_class
+            WHERE oid = '\''krypto."OperatorAuditEvent"'\''::regclass)::text || '\''|'\'' ||
+          (NOT EXISTS (
+             SELECT 1
+             FROM information_schema.table_privileges
+             WHERE table_schema = '\''krypto'\''
+               AND table_name = '\''OperatorAuditEvent'\''
+               AND grantee = '\''PUBLIC'\''
+          ))::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."OperatorAuditEvent"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."OperatorAuditEvent"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."OperatorAuditEvent"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."OperatorAuditEvent"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."OperatorAuditEvent"'\'', '\''TRUNCATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."OperatorAuditEvent"'\'', '\''TRIGGER'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."OperatorAuditEvent"'\'', '\''REFERENCES'\'')::text || '\''|'\'' ||
+          (SELECT count(*) = 1
+             FROM pg_trigger
+            WHERE tgrelid = '\''krypto."OperatorAuditEvent"'\''::regclass
+              AND tgname = '\''OperatorAuditEvent_append_only'\''
+              AND tgenabled = '\''O'\''
+              AND NOT tgisinternal)::text;')"
+if [[ "$operator_fresh_result" != "true|true|true|true|true|false|false|false|false|false|true" ]]; then
+  echo "Fresh 0012 migration did not establish append-only operator evidence or exact runtime privileges: $operator_fresh_result" >&2
+  exit 1
+fi
+
+psql "$azure_target_url" -v ON_ERROR_STOP=1 -Atc '
+  INSERT INTO "krypto"."OperatorAuditEvent" (
+    "eventId", "requestId", "releaseId", "deploymentId", "action", "outcome",
+    "operatorId", "operatorName", "subjectId", "operatorRole",
+    "authenticationMethod", "authenticationContext", "mfaEvidence",
+    "authenticatedAt", "tokenIssuedAt", "sessionIdHash", "policyVersion",
+    "occurredAt"
+  ) VALUES (
+    '\''operator-audit-fixture'\'', '\''operator-request'\'', '\''release-test'\'',
+    '\''deployment-test'\'', '\''RUN_AGENT'\'', '\''REQUESTED'\'',
+    '\''33333333-3333-4333-8333-333333333333'\'', '\''Migration Operator'\'',
+    '\''subject-migration-operator'\'', '\''RELEASE_OWNER'\'', '\''ENTRA_MFA'\'',
+    '\''c1,c2'\'', '\''amr:mfa'\'', statement_timestamp() - interval '\''1 minute'\'',
+    statement_timestamp() - interval '\''30 seconds'\'',
+    repeat('\''a'\'', 64), '\''migration-test-v1'\'', statement_timestamp()
+  );' >/dev/null
 
 psql "$azure_target_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 BEGIN;
@@ -1161,12 +1210,12 @@ azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."TradeExecution"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           (SELECT count(*)::text FROM "krypto"."RuntimeContract"
-            WHERE "id" = '\''singleton'\'' AND "schemaFingerprint" = '\''0011_ledger_attestation_anchors_v1'\''
-              AND "contractVersion" = 3) || '\''|'\'' ||
+            WHERE "id" = '\''singleton'\'' AND "schemaFingerprint" = '\''0012_operator_admin_identity_v1'\''
+              AND "contractVersion" = 4) || '\''|'\'' ||
           (SELECT count(*)::text FROM "krypto"."ProviderDailyUsage") || '\''|'\'' ||
           (SELECT count(*)::text FROM "krypto"."AgentRun"
             WHERE "deadlineAt" = "startedAt" + interval '\''180 seconds'\'');')"
-if [[ "$azure_upgrade_result" != "12|1|1|1|1|0.123456789012345678|legacy-migration-0011|true|true|true|false|false|false|true|1|0|1" ]]; then
+if [[ "$azure_upgrade_result" != "13|1|1|1|1|0.123456789012345678|legacy-migration-0011|true|true|true|false|false|false|true|1|0|1" ]]; then
   echo "0006-to-0007 upgrade did not preserve rows, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
   exit 1
 fi
@@ -1258,7 +1307,7 @@ safety_upgrade_result="$(psql "$safety_upgrade_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."SafetyIncidentOutbox"'\'', '\''DELETE'\'')::text;')"
-if [[ "$safety_upgrade_result" != "12|$azure_0011_hash|1|1|1|legacy-agent-run:safety-upgrade-run|legacy-pre-0010|legacy-pre-0010|true|0|0011_ledger_attestation_anchors_v1:3|true|true|false|false" ]]; then
+if [[ "$safety_upgrade_result" != "13|$azure_0012_hash|1|1|1|legacy-agent-run:safety-upgrade-run|legacy-pre-0010|legacy-pre-0010|true|0|0012_operator_admin_identity_v1:4|true|true|false|false" ]]; then
   echo "0009-to-0010 upgrade did not preserve rows, backfill safe correlations, or establish the exact safety outbox contract: $safety_upgrade_result" >&2
   exit 1
 fi
@@ -1460,6 +1509,23 @@ INSERT INTO "krypto"."SafetyIncidentOutbox" (
   statement_timestamp(),
   'operations', 'incident-commander', 'runbooks/safety-incidents'
 );
+INSERT INTO "krypto"."OperatorAuditEvent" (
+  "eventId", "requestId", "releaseId", "deploymentId", "action", "outcome",
+  "operatorId", "operatorName", "subjectId", "operatorRole",
+  "authenticationMethod", "authenticationContext", "mfaEvidence",
+  "authenticatedAt", "tokenIssuedAt", "sessionIdHash", "policyVersion",
+  "occurredAt"
+) VALUES (
+  'runtime-permission-operator', 'runtime-permission-request',
+  'runtime-permission-release', 'runtime-permission-deployment', 'RUN_AGENT',
+  'REQUESTED', '33333333-3333-4333-8333-333333333333',
+  'Runtime Permission Operator', 'runtime-permission-subject', 'RELEASE_OWNER',
+  'ENTRA_MFA', 'c1,c2', 'amr:mfa', statement_timestamp() - interval '1 minute',
+  statement_timestamp() - interval '30 seconds', repeat('b', 64),
+  'runtime-permission-v1', statement_timestamp()
+);
+SELECT "eventId" FROM "krypto"."OperatorAuditEvent"
+ WHERE "eventId" = 'runtime-permission-operator';
 SELECT "eventId" FROM "krypto"."SafetyIncidentOutbox"
  WHERE "eventId" = 'runtime-permission-event';
 SELECT "schemaFingerprint" FROM "krypto"."RuntimeContract"
@@ -1482,6 +1548,26 @@ if psql "$azure_runtime_url_current" \
 fi
 if ! grep -qi "permission denied" "$TEMP_DIR/runtime-safety-update.log"; then
   echo "Runtime safety incident UPDATE failed for an unexpected reason: $(cat "$TEMP_DIR/runtime-safety-update.log")" >&2
+  exit 1
+fi
+if psql "$azure_runtime_url_current" \
+  -Atc 'UPDATE "krypto"."OperatorAuditEvent" SET "outcome" = '\''APPLIED'\'' WHERE "eventId" = '\''operator-audit-fixture'\'';' \
+  >/dev/null 2>"$TEMP_DIR/runtime-operator-update.log"; then
+  echo "Runtime login role updated append-only operator evidence" >&2
+  exit 1
+fi
+if ! grep -Eqi "permission denied|append-only" "$TEMP_DIR/runtime-operator-update.log"; then
+  echo "Runtime operator audit UPDATE failed for an unexpected reason: $(cat "$TEMP_DIR/runtime-operator-update.log")" >&2
+  exit 1
+fi
+if psql "$azure_runtime_url_current" \
+  -Atc 'DELETE FROM "krypto"."OperatorAuditEvent" WHERE "eventId" = '\''operator-audit-fixture'\'';' \
+  >/dev/null 2>"$TEMP_DIR/runtime-operator-delete.log"; then
+  echo "Runtime login role deleted append-only operator evidence" >&2
+  exit 1
+fi
+if ! grep -Eqi "permission denied|append-only" "$TEMP_DIR/runtime-operator-delete.log"; then
+  echo "Runtime operator audit DELETE failed for an unexpected reason: $(cat "$TEMP_DIR/runtime-operator-delete.log")" >&2
   exit 1
 fi
 if psql "$azure_runtime_url_current" -Atc '

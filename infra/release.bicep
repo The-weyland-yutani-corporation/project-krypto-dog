@@ -16,14 +16,14 @@
 // key the existing routes require are always attached correctly. The ops
 // identity (shared, for now, across all five manual jobs) is granted only
 // the secrets at least one of those jobs actually reads — DATABASE_URL,
-// DIRECT_URL, MIGRATION_URL, CRON_SECRET, ADMIN_PASSWORD, plus POSTHOG_API_KEY
+// DIRECT_URL, MIGRATION_URL, and CRON_SECRET, plus POSTHOG_API_KEY
 // (target-smoke only, since src/deployment/target-smoke.ts's
 // runTargetSmoke() directly exercises that provider) and
 // migrator-database-password / KRYPTO_MIGRATOR_LOGIN_PASSWORD and
 // runtime-database-password /
 // AZURE_RUNTIME_LOGIN_PASSWORD (migrate-init only, for the fresh-
 // deployment runtime login role bootstrap) — never the ACS connection
-// string or ADMIN_SESSION_SECRET, which no operation reads. Foundry uses
+// string or the Entra client secret, which no operation reads. Foundry uses
 // the ops job's managed identity rather than a model API key. Each job
 // resource's own env/secret list is narrowed further still to just what
 // that one operation reads (see scripts/azure/ops-job.ts and
@@ -101,6 +101,40 @@ param communicationEmailSender string
 
 @description('Web Container App name.')
 param webAppName string = 'ca-${environmentName}-web'
+
+@description('Reviewed single-tenant Microsoft Entra directory ID for admin authentication.')
+@minLength(36)
+@maxLength(36)
+param adminEntraTenantId string
+
+@description('Reviewed Microsoft Entra web app registration client ID for this environment.')
+@minLength(36)
+@maxLength(36)
+param adminEntraClientId string
+
+@description('Exact reviewed token audience for the admin Entra app registration.')
+@minLength(1)
+param adminEntraAudience string
+
+@description('Reviewed named operator allowlist. Each object contains immutable Entra object ID, operator name, and OPERATOR, RELEASE_OWNER, or SAFETY_APPROVER role.')
+@minLength(1)
+param adminEntraOperatorAllowlist array
+
+@description('Conditional Access authentication context proving routine MFA-backed admin access.')
+@minLength(1)
+param adminEntraMfaAuthContext string
+
+@description('Distinct Conditional Access authentication context proving recent sensitive-operation step-up.')
+@minLength(1)
+param adminEntraStepUpAuthContext string
+
+@description('ISO timestamp revoking all Entra admin tokens issued before this instant.')
+@minLength(20)
+param adminAuthNotBefore string
+
+@description('Reviewed immutable admin authorization policy version persisted with operator evidence.')
+@minLength(1)
+param adminAuthPolicyVersion string
 
 @description('Hourly agent-run job name.')
 param hourlyJobName string = 'caj-${environmentName}-agent-run'
@@ -261,13 +295,9 @@ param cronSecret string
 @secure()
 param posthogApiKey string
 
-@description('Admin dashboard password. Supplied at deploy time; never committed. Also required by the target-smoke operations job.')
+@description('Microsoft Entra confidential web client secret for Container Apps built-in authentication. Supplied at deploy time, stored in Key Vault, and never exposed to the application container environment.')
 @secure()
-param adminPassword string
-
-@description('Dedicated HMAC key for admin session cookies. Supplied at deploy time; never committed. Granted to the runtime identity only — no operations job needs it.')
-@secure()
-param adminSessionSecret string
+param adminEntraClientSecret string
 
 @description('Fresh-deployment Azure PostgreSQL runtime login role password (AZURE_RUNTIME_LOGIN_PASSWORD — see src/deployment/bootstrap-runtime-role.ts). Supplied at deploy time; never committed. Granted only to the migrate-init operations job — no other job or identity needs it, since it exists solely to create/rotate the runtime login role\'s own credential on a fresh environment.')
 @secure()
@@ -289,6 +319,13 @@ param tags object = {
 var envTags = union(tags, { environment: environmentName })
 var webImageDigestRef = '${registryLoginServer}/${webImageName}@${imageDigest}'
 var opsImageDigestRef = '${registryLoginServer}/${opsImageName}@${opsImageDigest}'
+var validatedAdminEntraStepUpAuthContext = adminEntraStepUpAuthContext == adminEntraMfaAuthContext
+  ? fail('Admin routine MFA and sensitive step-up authentication contexts must be distinct.')
+  : adminEntraStepUpAuthContext
+var adminEntraAllowedPrincipalIds = [
+  for operator in adminEntraOperatorAllowlist: string(operator.id)
+]
+var adminEntraIssuer = '${environment().authentication.loginEndpoint}${adminEntraTenantId}/v2.0'
 
 resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' existing = {
   name: keyVaultName
@@ -359,19 +396,11 @@ resource communicationConnectionStringSecret 'Microsoft.KeyVault/vaults/secrets@
   }
 }
 
-resource adminPasswordSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
+resource adminEntraClientSecretResource 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   parent: keyVault
-  name: 'admin-password'
+  name: 'admin-entra-client-secret'
   properties: {
-    value: adminPassword
-  }
-}
-
-resource adminSessionSecretSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
-  parent: keyVault
-  name: 'admin-session-secret'
-  properties: {
-    value: adminSessionSecret
+    value: adminEntraClientSecret
   }
 }
 
@@ -443,19 +472,9 @@ resource runtimeCommunicationConnectionStringAccess 'Microsoft.Authorization/rol
   }
 }
 
-resource runtimeAdminPasswordAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, 'admin-password', runtimeIdentityPrincipalId, 'runtime')
-  scope: adminPasswordSecret
-  properties: {
-    principalId: runtimeIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
-  }
-}
-
-resource runtimeAdminSessionSecretAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, 'admin-session-secret', runtimeIdentityPrincipalId, 'runtime')
-  scope: adminSessionSecretSecret
+resource runtimeAdminEntraClientSecretAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, 'admin-entra-client-secret', runtimeIdentityPrincipalId, 'runtime')
+  scope: adminEntraClientSecretResource
   properties: {
     principalId: runtimeIdentityPrincipalId
     principalType: 'ServicePrincipal'
@@ -482,14 +501,14 @@ resource schedulerCronSecretAccess 'Microsoft.Authorization/roleAssignments@2022
 // DATABASE_URL), plus the fresh-deployment runtime-login-role credential
 // (runtime-database-password, AZURE_RUNTIME_LOGIN_PASSWORD). preflight
 // and verified-backup: DATABASE_URL + DIRECT_URL. target-smoke:
-// CRON_SECRET + ADMIN_PASSWORD + DIRECT_URL, plus POSTHOG_API_KEY because
+// CRON_SECRET + DIRECT_URL, plus POSTHOG_API_KEY because
 // src/deployment/target-smoke.ts's runTargetSmoke() calls
 // runProviderSmoke(), which directly exercises PostHog (see
 // src/deployment/provider-smoke.ts). Foundry uses this identity's Entra
 // token, and target smoke asks the runtime app to send email, so the ops
 // identity needs neither a model key nor the ACS connection string.
 // activation-check: CRON_SECRET + DIRECT_URL. None of the five ops scripts
-// need ADMIN_SESSION_SECRET.
+// receive the Entra confidential-client credential.
 resource opsDatabaseUrlAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, 'database-url', opsIdentityPrincipalId, 'ops')
   scope: databaseUrlSecret
@@ -523,16 +542,6 @@ resource opsMigrationUrlAccess 'Microsoft.Authorization/roleAssignments@2022-04-
 resource opsCronSecretAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, 'cron-secret', opsIdentityPrincipalId, 'ops')
   scope: cronSecretSecret
-  properties: {
-    principalId: opsIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
-  }
-}
-
-resource opsAdminPasswordAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, 'admin-password', opsIdentityPrincipalId, 'ops')
-  scope: adminPasswordSecret
   properties: {
     principalId: opsIdentityPrincipalId
     principalType: 'ServicePrincipal'
@@ -596,8 +605,29 @@ module webApp 'modules/container-app-web.bicep' = {
     imageDigestRef: webImageDigestRef
     runtimeIdentityId: runtimeIdentityId
     rolloutMode: 'disabled'
+    adminEntraClientSecretKeyVaultUrl: adminEntraClientSecretResource.properties.secretUri
+    adminEntraClientId: adminEntraClientId
+    adminEntraAudience: adminEntraAudience
+    adminEntraIssuer: adminEntraIssuer
+    adminEntraAllowedPrincipalIds: adminEntraAllowedPrincipalIds
+    adminEntraMfaAuthContext: adminEntraMfaAuthContext
+    adminEntraStepUpAuthContext: validatedAdminEntraStepUpAuthContext
     nonSecretEnv: [
       { name: 'NODE_ENV', value: 'production' }
+      { name: 'ADMIN_IDENTITY_MODE', value: 'entra' }
+      { name: 'ADMIN_PLATFORM_AUTH', value: 'azure-container-apps' }
+      { name: 'ADMIN_ENTRA_TENANT_ID', value: adminEntraTenantId }
+      { name: 'ADMIN_ENTRA_CLIENT_ID', value: adminEntraClientId }
+      { name: 'ADMIN_ENTRA_AUDIENCE', value: adminEntraAudience }
+      { name: 'ADMIN_ENTRA_ISSUER', value: adminEntraIssuer }
+      { name: 'ADMIN_ENTRA_OPERATOR_ALLOWLIST', value: string(adminEntraOperatorAllowlist) }
+      { name: 'ADMIN_ENTRA_MFA_AUTH_CONTEXT', value: adminEntraMfaAuthContext }
+      { name: 'ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT', value: validatedAdminEntraStepUpAuthContext }
+      { name: 'ADMIN_ENTRA_TOKEN_MAX_AGE_SECONDS', value: '3600' }
+      { name: 'ADMIN_ENTRA_AUTH_MAX_AGE_SECONDS', value: '28800' }
+      { name: 'ADMIN_ENTRA_STEP_UP_MAX_AGE_SECONDS', value: '300' }
+      { name: 'ADMIN_AUTH_NOT_BEFORE', value: adminAuthNotBefore }
+      { name: 'ADMIN_AUTH_POLICY_VERSION', value: adminAuthPolicyVersion }
       { name: 'AZURE_FOUNDRY_PROJECT_ENDPOINT', value: azureFoundryProjectEndpoint }
       { name: 'AZURE_FOUNDRY_AGENT_NAME', value: azureFoundryAgentName }
       { name: 'AZURE_FOUNDRY_AGENT_VERSION', value: azureFoundryAgentVersion }
@@ -635,8 +665,6 @@ module webApp 'modules/container-app-web.bicep' = {
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }
       { name: 'POSTHOG_API_KEY', keyVaultUrl: posthogApiKeySecret.properties.secretUri }
       { name: 'AZURE_COMMUNICATION_CONNECTION_STRING', keyVaultUrl: communicationConnectionStringSecret.properties.secretUri }
-      { name: 'ADMIN_PASSWORD', keyVaultUrl: adminPasswordSecret.properties.secretUri }
-      { name: 'ADMIN_SESSION_SECRET', keyVaultUrl: adminSessionSecretSecret.properties.secretUri }
     ]
     tags: envTags
   }
@@ -645,8 +673,7 @@ module webApp 'modules/container-app-web.bicep' = {
     runtimeCronSecretAccess
     runtimePosthogApiKeyAccess
     runtimeCommunicationConnectionStringAccess
-    runtimeAdminPasswordAccess
-    runtimeAdminSessionSecretAccess
+    runtimeAdminEntraClientSecretAccess
   ]
 }
 
@@ -968,6 +995,12 @@ module targetSmokeJob 'modules/container-app-job.bicep' = {
       // src/deployment/target-smoke.ts's runTargetSmoke() hard-requires
       // ROLLOUT_MODE=disabled before it will run at all.
       { name: 'ROLLOUT_MODE', value: 'disabled' }
+      { name: 'ADMIN_ENTRA_TENANT_ID', value: adminEntraTenantId }
+      { name: 'ADMIN_ENTRA_AUDIENCE', value: adminEntraAudience }
+      { name: 'ADMIN_ENTRA_ISSUER', value: adminEntraIssuer }
+      { name: 'ADMIN_ENTRA_OPERATOR_ALLOWLIST', value: string(adminEntraOperatorAllowlist) }
+      { name: 'ADMIN_ENTRA_MFA_AUTH_CONTEXT', value: adminEntraMfaAuthContext }
+      { name: 'ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT', value: validatedAdminEntraStepUpAuthContext }
       // runTargetSmoke() -> runProviderSmoke() exercises Foundry and
       // PostHog directly. Foundry authenticates as the ops user-assigned
       // identity selected by AZURE_CLIENT_ID in opsCommonNonSecretEnv.
@@ -979,7 +1012,6 @@ module targetSmokeJob 'modules/container-app-job.bicep' = {
     ])
     keyVaultSecretEnv: [
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }
-      { name: 'ADMIN_PASSWORD', keyVaultUrl: adminPasswordSecret.properties.secretUri }
       { name: 'DIRECT_URL', keyVaultUrl: directUrlSecret.properties.secretUri }
       { name: 'POSTHOG_API_KEY', keyVaultUrl: posthogApiKeySecret.properties.secretUri }
       { name: 'DEPLOYMENT_APPROVAL_SECRET', keyVaultUrl: deploymentApprovalSecretSecret.properties.secretUri }
@@ -988,7 +1020,6 @@ module targetSmokeJob 'modules/container-app-job.bicep' = {
   }
   dependsOn: [
     opsCronSecretAccess
-    opsAdminPasswordAccess
     opsDirectUrlAccess
     opsPosthogApiKeyAccess
     opsDeploymentApprovalSecretAccess

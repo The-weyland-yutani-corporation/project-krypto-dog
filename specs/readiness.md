@@ -197,8 +197,7 @@ DIRECT_URL
 MIGRATION_URL
 CRON_SECRET
 POSTHOG_API_KEY
-ADMIN_PASSWORD
-ADMIN_SESSION_SECRET
+ADMIN_ENTRA_CLIENT_SECRET
 RUNTIME_DATABASE_PASSWORD
 MIGRATOR_DATABASE_PASSWORD
 DEPLOYMENT_APPROVAL_SECRET
@@ -310,7 +309,7 @@ No provider is ready until retained live evidence proves all applicable rows:
 | PostHog | Mandatory environment tagging now; distinct projects before promotion | **Tagged ingestion passed; separate projects pending** |
 | Database | Migration/init report, private target validation, app/owner role separation | **Passed in dev and prod** for the deployed `krypto_app`/`krypto_owner` split. The extended `krypto_schema_owner`/`krypto_migrator`/`krypto_scheduler` trust boundary and dedicated `MIGRATION_URL` ([ADR 0011](./decisions/0011-postgresql-trust-boundary-roles.md), issue [#133](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/133)) are source-implemented; the attended per-environment upgrade (§13 of `deployment.md`) has not been run — **pending** |
 | Backup | Restore-verified backup bound to exact target SHA/digest | **Passed in dev proof and production baseline** |
-| Admin/auth | Target-smoke proof without disclosing credentials | **Passed in dev and prod** |
+| Admin/auth | Source/CI plus exact-release target and attended IAM-01 evidence | **Source-complete; live Entra app/role/Conditional Access/alert/operator/emergency drill evidence pending** |
 | Scheduler | Unique manual-shadow proof, post-run activation report, digest/generation-namespaced scheduled success, and cross-mode replay rejection | **Passed in dev; production intentionally Manual** |
 | RUN-01 bounded execution | Source tests for deadline/provider/readiness/capacity behavior; future exact-release target proof remains required | **Source implemented; no live issue #132 evidence** |
 | Monitoring | Historical terminal job-failure and activation-bound missing-hourly-success alerts | **Limited baseline passed; not OPS-01 proof.** Earlier Action Group tests dispatched successfully, but the catalog/outbox/roster/drills remain pending |
@@ -328,6 +327,31 @@ independent download validation remain mandatory.
 The execution helper must reject any template volume or container/init-container
 volume mount because Azure `JobExecutionTemplate` cannot preserve them through
 this override path. Current Project Krypto jobs use none.
+
+### IAM-01 evidence contract (issue #129 / ADR 0015)
+
+**Source/CI evidence to index in #76:** frozen source ref and merge SHA; ADR
+0015 and runbook versions; migration `0012` inventory/hash/drift result;
+PostgreSQL 17 fresh/upgrade and append-only denial/grant proof; centralized
+action/role matrix; wrong tenant/audience/issuer, anonymous, unauthorized,
+missing MFA, missing/stale step-up, malformed/spoofed principal, expired,
+revoked/not-before, stale-token, password-only, local-disabled, CSRF/origin, and
+security-header tests; route evidence proving every sensitive mutation writes a
+named `OperatorAuditEvent`; Bicep/authConfig/parameter/workflow compilation; and
+target-smoke source tests classified as engineering-only.
+
+**Future exact-release target evidence to index in #76:** exact Entra
+tenant/client/audience/app-registration and Container Apps `authConfigs/current`
+resource identity; Key Vault secret reference without web/ops environment
+exposure; reviewed non-placeholder named object-ID allowlist and three app-role
+assignments; Conditional Access policy exports proving distinct phishing-
+resistant MFA and step-up contexts; sign-in/risk/credential-concern alert
+receipts; a normal named operator flow over run, pause/resume, unlock, lease
+recovery, and incident test-fire with immutable audit rows and no unexpected
+trade delta; revocation/not-before and stale-step-up rejection; and a
+two-custodian, at-most-30-minute Entra emergency-account assignment/use/removal
+drill with post-use revocation and review. No live IAM-01 evidence is claimed by
+this source change.
 
 ### DB-01 evidence contract (issue #133 / ADR 0011)
 

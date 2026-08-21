@@ -58,3 +58,4 @@ What did we choose, in one or two paragraphs?
 | [0012](./0012-bounded-synchronous-execution.md) | Bounded synchronous execution | Accepted |
 | [0013](./0013-durable-safety-incidents-and-independent-alerts.md) | Durable safety incidents and independent external alerts | Accepted |
 | [0014](./0014-deterministic-ledger-attestation.md) | Deterministic immutable-ledger attestation | Accepted |
+| [0015](./0015-entra-admin-identity-boundary.md) | Microsoft Entra admin identity boundary | Accepted |

@@ -4,6 +4,7 @@ import {
   readSafetyRoster,
   safetyActorPublicKeysConfigured,
 } from "@/lib/safety-roster";
+import { isExpectedEntraIssuer } from "@/lib/admin-auth";
 
 // ---------------------------------------------------------------------------
 // Optional direct Azure OpenAI v1 diagnostic endpoint validation
@@ -147,8 +148,23 @@ const envSchema = z
     AZURE_COMMUNICATION_CONNECTION_STRING: z.string().min(1).optional(),
     AZURE_COMMUNICATION_EMAIL_SENDER: z.email().optional(),
     ALERT_EMAIL_TO: z.email().optional(),
-    ADMIN_PASSWORD: z.string().min(1),
-    ADMIN_SESSION_SECRET: z.string().min(1).optional(),
+    ADMIN_IDENTITY_MODE: z.enum(["entra", "disabled"]).optional(),
+    ADMIN_PLATFORM_AUTH: z.literal("azure-container-apps").optional(),
+    ADMIN_ENTRA_TENANT_ID: z.string().uuid().optional(),
+    ADMIN_ENTRA_CLIENT_ID: z.string().uuid().optional(),
+    ADMIN_ENTRA_AUDIENCE: z.string().min(1).max(240).optional(),
+    ADMIN_ENTRA_ISSUER: z.string().url().optional(),
+    ADMIN_ENTRA_OPERATOR_ALLOWLIST: z.string().min(1).max(8_192).optional(),
+    ADMIN_ENTRA_MFA_AUTH_CONTEXT: z.string().min(1).max(64).optional(),
+    ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT: z.string().min(1).max(64).optional(),
+    ADMIN_ENTRA_TOKEN_MAX_AGE_SECONDS:
+      boundedEnvironmentInteger(28_800).optional(),
+    ADMIN_ENTRA_AUTH_MAX_AGE_SECONDS:
+      boundedEnvironmentInteger(86_400).optional(),
+    ADMIN_ENTRA_STEP_UP_MAX_AGE_SECONDS:
+      boundedEnvironmentInteger(900).optional(),
+    ADMIN_AUTH_NOT_BEFORE: z.string().min(20).max(40).optional(),
+    ADMIN_AUTH_POLICY_VERSION: z.string().min(1).max(64).optional(),
     NODE_ENV: z.enum(["development", "test", "production"]).optional(),
     AGENT_RUN_ADMISSION_CAPACITY: z
       .string()
@@ -243,12 +259,83 @@ const envSchema = z
           input: ctx.value,
         });
       }
-      if (!env.ADMIN_SESSION_SECRET) {
+      const missingAdminIdentityConfig = [
+        !env.ADMIN_IDENTITY_MODE && "ADMIN_IDENTITY_MODE",
+        !env.ADMIN_PLATFORM_AUTH && "ADMIN_PLATFORM_AUTH",
+        !env.ADMIN_ENTRA_TENANT_ID && "ADMIN_ENTRA_TENANT_ID",
+        !env.ADMIN_ENTRA_CLIENT_ID && "ADMIN_ENTRA_CLIENT_ID",
+        !env.ADMIN_ENTRA_AUDIENCE && "ADMIN_ENTRA_AUDIENCE",
+        !env.ADMIN_ENTRA_ISSUER && "ADMIN_ENTRA_ISSUER",
+        !env.ADMIN_ENTRA_OPERATOR_ALLOWLIST &&
+          "ADMIN_ENTRA_OPERATOR_ALLOWLIST",
+        !env.ADMIN_ENTRA_MFA_AUTH_CONTEXT &&
+          "ADMIN_ENTRA_MFA_AUTH_CONTEXT",
+        !env.ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT &&
+          "ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT",
+        !env.ADMIN_AUTH_NOT_BEFORE && "ADMIN_AUTH_NOT_BEFORE",
+        !env.ADMIN_AUTH_POLICY_VERSION && "ADMIN_AUTH_POLICY_VERSION",
+      ].filter(Boolean);
+      if (
+        env.ADMIN_IDENTITY_MODE !== "entra" ||
+        missingAdminIdentityConfig.length > 0
+      ) {
         ctx.issues.push({
           code: "custom",
-          message: "ADMIN_SESSION_SECRET is required in production.",
+          message: `Production Entra admin identity configuration is incomplete: ${missingAdminIdentityConfig.join(", ")}.`,
           input: ctx.value,
         });
+      }
+      if (
+        env.ADMIN_ENTRA_TENANT_ID &&
+        (!env.ADMIN_ENTRA_ISSUER ||
+          !isExpectedEntraIssuer(
+            env.ADMIN_ENTRA_ISSUER,
+            env.ADMIN_ENTRA_TENANT_ID,
+          ))
+      ) {
+        ctx.issues.push({
+          code: "custom",
+          message:
+            "ADMIN_ENTRA_ISSUER must exactly bind the configured tenant v2 issuer.",
+          input: ctx.value,
+        });
+      }
+      if (
+        env.ADMIN_ENTRA_MFA_AUTH_CONTEXT &&
+        env.ADMIN_ENTRA_MFA_AUTH_CONTEXT ===
+          env.ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT
+      ) {
+        ctx.issues.push({
+          code: "custom",
+          message:
+            "Routine MFA and sensitive step-up authentication contexts must be distinct.",
+          input: ctx.value,
+        });
+      }
+      if (
+        env.ADMIN_AUTH_NOT_BEFORE &&
+        Number.isNaN(new Date(env.ADMIN_AUTH_NOT_BEFORE).getTime())
+      ) {
+        ctx.issues.push({
+          code: "custom",
+          message: "ADMIN_AUTH_NOT_BEFORE must be an ISO timestamp.",
+          input: ctx.value,
+        });
+      }
+      if (env.ADMIN_ENTRA_OPERATOR_ALLOWLIST) {
+        try {
+          const allowlist = JSON.parse(env.ADMIN_ENTRA_OPERATOR_ALLOWLIST);
+          if (!Array.isArray(allowlist) || allowlist.length === 0) {
+            throw new Error("empty");
+          }
+        } catch {
+          ctx.issues.push({
+            code: "custom",
+            message:
+              "ADMIN_ENTRA_OPERATOR_ALLOWLIST must be a non-empty JSON array.",
+            input: ctx.value,
+          });
+        }
       }
       if (!env.POSTHOG_ENVIRONMENT) {
         ctx.issues.push({

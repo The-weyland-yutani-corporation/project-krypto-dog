@@ -9,7 +9,7 @@
 // string embedded) — see scripts/azure/lib/evidence-upload.ts.
 //
 // Every @secure() parameter (databaseUrl, directUrl, cronSecret,
-// posthogApiKey, adminPassword, adminSessionSecret, runtimeDatabasePassword,
+// posthogApiKey, adminEntraClientSecret, runtimeDatabasePassword,
 // deploymentApprovalSecret) is
 // deliberately NOT set with a literal value. Each
 // is resolved from an environment variable at deploy time via
@@ -42,6 +42,14 @@ param communicationServiceName = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationS
 param communicationEmailSender = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender'
 
 param webAppName = 'ca-dev-web'
+param adminEntraTenantId = readEnvironmentVariable('ADMIN_ENTRA_TENANT_ID_DEV')
+param adminEntraClientId = readEnvironmentVariable('ADMIN_ENTRA_CLIENT_ID_DEV')
+param adminEntraAudience = readEnvironmentVariable('ADMIN_ENTRA_AUDIENCE_DEV')
+param adminEntraOperatorAllowlist = json(readEnvironmentVariable('ADMIN_ENTRA_OPERATOR_ALLOWLIST_DEV'))
+param adminEntraMfaAuthContext = readEnvironmentVariable('ADMIN_ENTRA_MFA_AUTH_CONTEXT_DEV')
+param adminEntraStepUpAuthContext = readEnvironmentVariable('ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT_DEV')
+param adminAuthNotBefore = readEnvironmentVariable('ADMIN_AUTH_NOT_BEFORE_DEV')
+param adminAuthPolicyVersion = readEnvironmentVariable('ADMIN_AUTH_POLICY_VERSION_DEV')
 param hourlyJobName = 'caj-dev-agent-run'
 param dailyJobName = 'caj-dev-daily-summary'
 param migrateInitJobName = 'caj-dev-migrate-init'
@@ -97,8 +105,7 @@ param directUrl = readEnvironmentVariable('DIRECT_URL_DEV')
 param migrationUrl = readEnvironmentVariable('MIGRATION_URL_DEV')
 param cronSecret = readEnvironmentVariable('CRON_SECRET_DEV')
 param posthogApiKey = readEnvironmentVariable('POSTHOG_API_KEY_DEV')
-param adminPassword = readEnvironmentVariable('ADMIN_PASSWORD_DEV')
-param adminSessionSecret = readEnvironmentVariable('ADMIN_SESSION_SECRET_DEV')
+param adminEntraClientSecret = readEnvironmentVariable('ADMIN_ENTRA_CLIENT_SECRET_DEV')
 param runtimeDatabasePassword = readEnvironmentVariable('RUNTIME_DATABASE_PASSWORD_DEV')
 param migratorDatabasePassword = readEnvironmentVariable('MIGRATOR_DATABASE_PASSWORD_DEV')
 // Mounted only on target-smoke and activation-check (see release.bicep).

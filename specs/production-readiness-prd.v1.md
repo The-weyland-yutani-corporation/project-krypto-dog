@@ -213,9 +213,24 @@ only runtime `DATABASE_URL`; owner and migrator connections remain ops-only.
 
 ### 7.4 Admin identity
 
-Routine administration uses named MFA-backed identities. A shared password, if
-retained, is break-glass only and independently rate-limited, alerted, rotated,
-and audited.
+Routine administration uses Azure Container Apps built-in Microsoft Entra
+authentication with a single-tenant issuer/audience, immutable object-ID
+allowlist, app roles, MFA authentication context, and centralized route
+authorization. Run, pause/resume, unlock, lease recovery, incident test-fire,
+and equivalent protected mutations require a distinct recent step-up context.
+Every applied mutation appends redacted immutable operator/authentication and
+request/release/deployment provenance. Raw tokens and mutable identity claims
+are not evidence.
+
+The application issues no admin session and accepts no password fallback.
+Container Apps owns the secure host-bound session, nonce, provider key rotation,
+and refresh; application policy adds token/authentication age bounds, allowlist
+revocation, and a reviewed not-before cutoff. Emergency access, if enabled,
+uses two separately held phishing-resistant Entra emergency accounts, a
+second-custodian approval, time-bounded app-role assignment, independent alerts,
+post-use revocation, an incident, and review. Reintroducing an application
+password requires a new ADR and a distributed atomic fail-closed limiter; it
+must never be a fallback from Entra.
 
 ### 7.5 Scheduler identity
 

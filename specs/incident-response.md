@@ -35,8 +35,8 @@ Each named role also registers a distinct Ed25519 public key. Acknowledge and
 escalate API requests are accepted only when their canonical action, incident,
 actor, reason, evidence, and five-minute timestamp are signed by that role's
 private key. Private keys never enter Project Krypto configuration or evidence.
-The shared admin session alone cannot impersonate a responder. Resolution is
-not exposed through that shared session and remains a protected owner/migrator
+Named Entra admin identity alone cannot impersonate a signed responder role.
+Resolution is not exposed through the web runtime and remains a protected owner/migrator
 operation with the database transition checks described below.
 
 ## Severity and authority
@@ -142,7 +142,7 @@ owner/operator lane with `DIRECT_URL`, sets the fixed `krypto_schema_owner` role
 inside one transaction, verifies a fresh Ed25519 role assertion, enforces the
 role/action matrix, requires the complete evidence set for resolution, and
 relies on the database transition trigger for distinct complementary-role
-confirmation. Runtime credentials and the shared admin session cannot append
+confirmation. Runtime credentials and the named Entra web operator cannot append
 human lifecycle events.
 The required `SAFETY_*` environment names are visible in the script and the
 protected operator handoff; real identities, signatures, and private keys are
@@ -165,6 +165,26 @@ never committed.
 | Credential concern | Stop schedules and affected access, preserve nonsecret audit evidence, notify security/release/safety roles, rotate or revoke only through an approved path, and re-prove identity and provenance. Never copy the credential into an incident or issue. |
 | Readiness or capacity loss | Prevent activation/admission, correlate opaque readiness reasons with protected target evidence, and use the normative readiness SLO to determine critical escalation. |
 | Recovery-objective concern | Keep the target disabled/manual, restore into a clean isolated target, verify ledger/incident/outbox completeness and disabled scheduling, and treat an objective breach as critical. |
+
+### Entra emergency admin access
+
+There is no application password break-glass endpoint. Emergency web access,
+when the release owner has explicitly enabled it, uses two separately
+custodied, predeclared Entra emergency accounts with phishing-resistant MFA.
+The accounts are not routinely assigned an admin app role. One custodian
+requests an at-most-30-minute assignment and the distinct security/safety
+custodian approves it. A missing approver, MFA/authentication context, named
+allowlist entry, alert path, or exact disabled/manual target blocks use.
+
+Before use, open a `CREDENTIAL_CONCERN` incident and record request, intended
+mutation, release/deployment, approval, expiry, and rollback owner. During use,
+retain Entra sign-in/PIM evidence and the immutable `OperatorAuditEvent`; never
+copy a token, cookie, secret, or raw principal. After use, remove the assignment,
+advance `ADMIN_AUTH_NOT_BEFORE`, revoke sessions, verify disabled/manual and
+zero unexpected trade delta, rotate/recover the emergency authenticators as
+required, close the incident through the signed owner lane, and obtain release
+and security post-use review. Index the complete redacted drill/use record in
+issue #76.
 
 ### Ledger attestation quarantine
 
@@ -251,6 +271,12 @@ Index source/CI evidence separately from future exact-release target evidence.
   recovery-objective proof; and
 - evidence-custodian attestation and immutable/checksum-addressed issue #76
   links.
+
+For IAM-01, the same issue #76 index must separately retain the exact Entra app,
+role assignment, Conditional Access, sign-in/incident alert, named normal-flow,
+revocation, and two-custodian emergency drill evidence defined in
+`readiness.md`. Source auth tests and Bicep compilation are never labeled as
+live MFA or break-glass proof.
 
 This source documentation does not claim live drills, Action Group delivery, a
 completed on-call roster, or Azure OPS-01 evidence.

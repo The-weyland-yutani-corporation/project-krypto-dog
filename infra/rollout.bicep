@@ -65,6 +65,40 @@ param schedulerIdentityId string
 @description('Web Container App name. Must match the name release.bicep deployed.')
 param webAppName string = 'ca-${environmentName}-web'
 
+@description('Reviewed single-tenant Microsoft Entra directory ID. Must match release.bicep.')
+@minLength(36)
+@maxLength(36)
+param adminEntraTenantId string
+
+@description('Reviewed Microsoft Entra web app registration client ID. Must match release.bicep.')
+@minLength(36)
+@maxLength(36)
+param adminEntraClientId string
+
+@description('Exact admin token audience. Must match release.bicep.')
+@minLength(1)
+param adminEntraAudience string
+
+@description('Reviewed named operator allowlist. Must match release.bicep.')
+@minLength(1)
+param adminEntraOperatorAllowlist array
+
+@description('Routine MFA Conditional Access authentication context. Must match release.bicep.')
+@minLength(1)
+param adminEntraMfaAuthContext string
+
+@description('Sensitive-operation step-up Conditional Access authentication context. Must match release.bicep.')
+@minLength(1)
+param adminEntraStepUpAuthContext string
+
+@description('ISO token revocation cutoff. Must match the reviewed release value.')
+@minLength(20)
+param adminAuthNotBefore string
+
+@description('Immutable admin authorization policy version. Must match release.bicep.')
+@minLength(1)
+param adminAuthPolicyVersion string
+
 @description('Hourly agent-run job name. Must match the name release.bicep deployed.')
 param hourlyJobName string = 'caj-${environmentName}-agent-run'
 
@@ -219,6 +253,13 @@ param tags object = {
 
 var envTags = union(tags, { environment: environmentName })
 var webImageDigestRef = '${registryLoginServer}/${webImageName}@${imageDigest}'
+var validatedAdminEntraStepUpAuthContext = adminEntraStepUpAuthContext == adminEntraMfaAuthContext
+  ? fail('Admin routine MFA and sensitive step-up authentication contexts must be distinct.')
+  : adminEntraStepUpAuthContext
+var adminEntraAllowedPrincipalIds = [
+  for operator in adminEntraOperatorAllowlist: string(operator.id)
+]
+var adminEntraIssuer = '${environment().authentication.loginEndpoint}${adminEntraTenantId}/v2.0'
 var parsedScheduleGeneration = int(scheduleGenerationUnixSeconds)
 var validatedScheduleGeneration = hourlyTriggerType == 'Schedule' && parsedScheduleGeneration <= 0
   ? fail('scheduleGenerationUnixSeconds must be positive when the hourly trigger is Schedule.')
@@ -266,14 +307,9 @@ resource communicationConnectionStringSecret 'Microsoft.KeyVault/vaults/secrets@
   name: 'azure-communication-connection-string'
 }
 
-resource adminPasswordSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' existing = {
+resource adminEntraClientSecretResource 'Microsoft.KeyVault/vaults/secrets@2024-11-01' existing = {
   parent: keyVault
-  name: 'admin-password'
-}
-
-resource adminSessionSecretSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' existing = {
-  parent: keyVault
-  name: 'admin-session-secret'
+  name: 'admin-entra-client-secret'
 }
 
 module webApp 'modules/container-app-web.bicep' = {
@@ -286,8 +322,29 @@ module webApp 'modules/container-app-web.bicep' = {
     imageDigestRef: webImageDigestRef
     runtimeIdentityId: runtimeIdentityId
     rolloutMode: rolloutMode
+    adminEntraClientSecretKeyVaultUrl: adminEntraClientSecretResource.properties.secretUri
+    adminEntraClientId: adminEntraClientId
+    adminEntraAudience: adminEntraAudience
+    adminEntraIssuer: adminEntraIssuer
+    adminEntraAllowedPrincipalIds: adminEntraAllowedPrincipalIds
+    adminEntraMfaAuthContext: adminEntraMfaAuthContext
+    adminEntraStepUpAuthContext: validatedAdminEntraStepUpAuthContext
     nonSecretEnv: concat([
       { name: 'NODE_ENV', value: 'production' }
+      { name: 'ADMIN_IDENTITY_MODE', value: 'entra' }
+      { name: 'ADMIN_PLATFORM_AUTH', value: 'azure-container-apps' }
+      { name: 'ADMIN_ENTRA_TENANT_ID', value: adminEntraTenantId }
+      { name: 'ADMIN_ENTRA_CLIENT_ID', value: adminEntraClientId }
+      { name: 'ADMIN_ENTRA_AUDIENCE', value: adminEntraAudience }
+      { name: 'ADMIN_ENTRA_ISSUER', value: adminEntraIssuer }
+      { name: 'ADMIN_ENTRA_OPERATOR_ALLOWLIST', value: string(adminEntraOperatorAllowlist) }
+      { name: 'ADMIN_ENTRA_MFA_AUTH_CONTEXT', value: adminEntraMfaAuthContext }
+      { name: 'ADMIN_ENTRA_STEP_UP_AUTH_CONTEXT', value: validatedAdminEntraStepUpAuthContext }
+      { name: 'ADMIN_ENTRA_TOKEN_MAX_AGE_SECONDS', value: '3600' }
+      { name: 'ADMIN_ENTRA_AUTH_MAX_AGE_SECONDS', value: '28800' }
+      { name: 'ADMIN_ENTRA_STEP_UP_MAX_AGE_SECONDS', value: '300' }
+      { name: 'ADMIN_AUTH_NOT_BEFORE', value: adminAuthNotBefore }
+      { name: 'ADMIN_AUTH_POLICY_VERSION', value: adminAuthPolicyVersion }
       { name: 'AZURE_FOUNDRY_PROJECT_ENDPOINT', value: azureFoundryProjectEndpoint }
       { name: 'AZURE_FOUNDRY_AGENT_NAME', value: azureFoundryAgentName }
       { name: 'AZURE_FOUNDRY_AGENT_VERSION', value: azureFoundryAgentVersion }
@@ -325,8 +382,6 @@ module webApp 'modules/container-app-web.bicep' = {
       { name: 'CRON_SECRET', keyVaultUrl: cronSecretSecret.properties.secretUri }
       { name: 'POSTHOG_API_KEY', keyVaultUrl: posthogApiKeySecret.properties.secretUri }
       { name: 'AZURE_COMMUNICATION_CONNECTION_STRING', keyVaultUrl: communicationConnectionStringSecret.properties.secretUri }
-      { name: 'ADMIN_PASSWORD', keyVaultUrl: adminPasswordSecret.properties.secretUri }
-      { name: 'ADMIN_SESSION_SECRET', keyVaultUrl: adminSessionSecretSecret.properties.secretUri }
     ]
     tags: envTags
   }

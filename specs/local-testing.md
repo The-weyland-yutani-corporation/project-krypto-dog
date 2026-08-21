@@ -100,8 +100,7 @@ POSTHOG_HOST=https://us.i.posthog.com
 
 CRON_SECRET=local-cron-secret
 
-ADMIN_PASSWORD=local-admin-password
-ADMIN_SESSION_SECRET=local-admin-session-secret
+ADMIN_IDENTITY_MODE=disabled
 ```
 
 For **live local shadow/paper mode**, authenticate interactively and select
@@ -265,11 +264,15 @@ Open:
 open http://localhost:3000/admin/login
 ```
 
-Log in with `ADMIN_PASSWORD`.
+The browser admin surface intentionally returns unavailable in the default local
+configuration. There is no password fallback. Route integration uses the
+explicit synthetic Container Apps principal seam in
+`scripts/test-operations-routes.ts`; normal browser identity testing belongs in
+the deployed dev Entra boundary.
 
 Check:
 
-- Dashboard loads with portfolio state.
+- In deployed dev, dashboard loads only for a named allowlisted Entra operator.
 - Status badge shows the disabled rollout state after the no-LLM smoke setup.
 - `Resume Agent` toggles `isOperatorPaused` to false.
 - `Pause Agent` toggles it back to true.

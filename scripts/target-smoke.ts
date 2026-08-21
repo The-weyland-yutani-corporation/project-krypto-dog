@@ -3,7 +3,10 @@ import "dotenv/config";
 import { mkdir, open, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-import { runTargetSmoke } from "@/deployment/target-smoke";
+import {
+  resolveTargetSmokeAdminIdentity,
+  runTargetSmoke,
+} from "@/deployment/target-smoke";
 
 type Arguments = {
   baseUrl: string;
@@ -72,11 +75,10 @@ async function main(): Promise<void> {
   const arguments_ = parseArguments(process.argv.slice(2));
   const databaseUrl = process.env.DIRECT_URL;
   const cronSecret = process.env.CRON_SECRET;
-  const adminPassword = process.env.ADMIN_PASSWORD;
   const approvalSecret = process.env.DEPLOYMENT_APPROVAL_SECRET;
-  if (!databaseUrl || !cronSecret || !adminPassword || !approvalSecret) {
+  if (!databaseUrl || !cronSecret || !approvalSecret) {
     throw new Error(
-      "DIRECT_URL, CRON_SECRET, ADMIN_PASSWORD, and DEPLOYMENT_APPROVAL_SECRET are required.",
+      "DIRECT_URL, CRON_SECRET, and DEPLOYMENT_APPROVAL_SECRET are required.",
     );
   }
   const outputPath = arguments_.out
@@ -96,7 +98,7 @@ async function main(): Promise<void> {
       expectedHost: arguments_.confirmHost,
       databaseUrl,
       cronSecret,
-      adminPassword,
+      adminIdentity: resolveTargetSmokeAdminIdentity(process.env),
       releaseSha: arguments_.releaseSha,
       imageDigest: arguments_.imageDigest,
       approvalSecret,
