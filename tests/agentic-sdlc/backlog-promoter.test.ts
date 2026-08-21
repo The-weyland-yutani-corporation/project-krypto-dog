@@ -307,3 +307,96 @@ describe("backlog promoter planning", () => {
     expect(plan.counts["authoring-incomplete"]).toBe(1);
   });
 });
+
+interface PromoterRuntimeModule {
+  buildCandidate(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+const promoterRuntime: PromoterRuntimeModule = require("../../.github/scripts/agentic-backlog-promoter-runtime.cjs");
+
+function runtimeCore() {
+  return { warning: () => {}, info: () => {}, notice: () => {}, setFailed: () => {} };
+}
+
+function githubStub({ openPullRequests = [] as unknown[] } = {}) {
+  return {
+    request: async (route: string) => {
+      if (route.includes("sub_issues")) {
+        return { data: [] };
+      }
+      return { data: { sub_issue_parent: { number: GOAL_NUMBER } } };
+    },
+    rest: {
+      issues: { get: async () => ({ data: { state: "closed" } }) },
+      search: { issuesAndPullRequests: async () => ({ data: { items: openPullRequests } }) },
+    },
+  };
+}
+
+const RUNTIME_ISSUE = {
+  number: 300,
+  title: "Harden the thing",
+  state: "open",
+  labels: [{ name: "agentic-factory" }, { name: "ready-for-planning" }],
+  milestone: null,
+  assignees: [],
+  created_at: "2026-08-01T00:00:00.000Z",
+  body: [
+    "### Approved parent goal",
+    "",
+    `#${GOAL_NUMBER}`,
+    "",
+    "### Risk tier",
+    "",
+    "risk:routine",
+  ].join("\n"),
+};
+
+describe("backlog promoter runtime candidate", () => {
+  // Regression: the open-PR guard in evaluatePromotion is only reachable when
+  // buildCandidate actually resolves hasOpenPullRequest. It was previously
+  // never set, making that guard dead code.
+  it("resolves hasOpenPullRequest to false when no linked pull request is open", async () => {
+    const candidate = await promoterRuntime.buildCandidate({
+      github: githubStub(),
+      owner: "acme",
+      repo: "widgets",
+      issue: RUNTIME_ISSUE,
+      activeGoalNumber: GOAL_NUMBER,
+      core: runtimeCore(),
+    });
+
+    expect(candidate.hasOpenPullRequest).toBe(false);
+  });
+
+  it("resolves hasOpenPullRequest to true when a pull request already refs the issue", async () => {
+    const candidate = await promoterRuntime.buildCandidate({
+      github: githubStub({ openPullRequests: [{ body: "Refs #300" }] }),
+      owner: "acme",
+      repo: "widgets",
+      issue: RUNTIME_ISSUE,
+      activeGoalNumber: GOAL_NUMBER,
+      core: runtimeCore(),
+    });
+
+    expect(candidate.hasOpenPullRequest).toBe(true);
+  });
+
+  it("blocks promotion of a candidate that already has an open pull request", async () => {
+    const candidate = await promoterRuntime.buildCandidate({
+      github: githubStub({ openPullRequests: [{ body: "Refs #300" }] }),
+      owner: "acme",
+      repo: "widgets",
+      issue: RUNTIME_ISSUE,
+      activeGoalNumber: GOAL_NUMBER,
+      core: runtimeCore(),
+    });
+
+    const result = promoter.evaluatePromotion(
+      { ...candidate, allowedPaths: ["src/lib/**"], hasAcceptanceCriteria: true, hasValidationPlan: true, hasScopeDefinition: true, hasRollbackPlan: true },
+      baseConfig(),
+    );
+
+    expect(result.promotable).toBe(false);
+  });
+});

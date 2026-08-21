@@ -1657,4 +1657,6 @@ module.exports = {
   resolveActiveGoal,
   parseCandidateSections,
   buildClaimCommentBody,
+  // Shared GitHub reads reused by the backlog promoter runtime.
+  resolveHasOpenPullRequest,
 };

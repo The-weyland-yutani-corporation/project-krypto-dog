@@ -7,7 +7,7 @@
  * Reads the factory control mode and the single approved goal, evaluates every
  * open `agentic-factory` backlog issue with the pure core
  * (`agentic-backlog-promoter.cjs`), and — only in `factory-mode:active` —
- * applies `factory:ready` (plus the human-declared risk label and the goal's
+ * applies `ready-for-ai-dev` (plus the human-declared risk label and the goal's
  * milestone) so the existing queue controller can select the issue.
  *
  * This workflow never executes issue-authored code. Issue and comment content
@@ -34,6 +34,7 @@ const {
   determineFactoryMode,
   resolveActiveGoal,
   parseCandidateSections,
+  resolveHasOpenPullRequest,
 } = require("./agentic-queue-runtime.cjs");
 
 const { planPromotions } = require("./agentic-backlog-promoter.cjs");
@@ -190,6 +191,17 @@ async function buildCandidate({ github, owner, repo, issue, activeGoalNumber, co
     ? issue.assignees.map((assignee) => assignee && assignee.login).filter(Boolean)
     : [];
 
+  // Mirrors the queue runtime: an issue that already has an open pull request
+  // must never be re-promoted into the ready queue. A search failure inside
+  // this helper fails closed to `true`.
+  const hasOpenPullRequest = await resolveHasOpenPullRequest({
+    github,
+    owner,
+    repo,
+    issueNumber: issue.number,
+    core,
+  });
+
   return {
     number: issue.number,
     title: typeof issue.title === "string" ? issue.title : "",
@@ -208,6 +220,7 @@ async function buildCandidate({ github, owner, repo, issue, activeGoalNumber, co
     state: parsed.state,
     isLeaf,
     assignees,
+    hasOpenPullRequest,
     hasOpenSession: assignees.length > 0,
     createdAt: parsed.createdAt,
   };
@@ -215,7 +228,7 @@ async function buildCandidate({ github, owner, repo, issue, activeGoalNumber, co
 
 /**
  * Applies the promotion plan for one issue: milestone binding, the declared
- * risk label, and `factory:ready`.
+ * risk label, and `ready-for-ai-dev`.
  */
 async function applyPromotion({ github, owner, repo, promotion, goalMilestoneNumber, core }) {
   const issueNumber = promotion.number;
