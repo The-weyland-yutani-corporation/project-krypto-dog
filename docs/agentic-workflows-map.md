@@ -63,6 +63,7 @@ flowchart TD
     doctor["ci-doctor<br/>CI incident issue/comment"]
     reconcile["agentic-pr-reconciler<br/>checks / dispatch / policy"]
     lifecycle["agentic-lifecycle-reconciler<br/>claim / PR / merge / dev state"]
+    sweeper["agentic-automerge-sweeper<br/>re-arms native auto-merge, never merges"]
     heal["pr-self-heal<br/>2 routine / 1 sensitive / 0 boundary"]
     e2e["agentic-sdlc-e2e<br/>manual docs canary"]
     evals["agentic-evals<br/>deterministic scorer"]
@@ -145,6 +146,10 @@ flowchart TD
   trade --> policy
   docs --> policy
   policy --> automerge
+  policy --> sweeper
+  sweeper --> automerge
+  reconcile --> sweeper
+  schedule --> sweeper
   policy --> human
   human --> automerge
   automerge --> lifecycle
@@ -172,9 +177,15 @@ flowchart TD
 
 This is why workflow markdown is the source of truth, while lock files are committed generated artifacts for transparency.
 
-`agentic-pr-reconciler.yml`, `factory-queue-controller.yml`, and
-`agentic-lifecycle-reconciler.yml` are traditional deterministic workflows.
+`agentic-pr-reconciler.yml`, `factory-queue-controller.yml`,
+`agentic-lifecycle-reconciler.yml`, and `agentic-automerge-sweeper.yml` are
+traditional deterministic workflows.
 Each loads only trusted default-branch scripts and never executes PR code.
+`agentic-automerge-sweeper.yml` is a backstop that re-arms GitHub's native
+auto-merge for enrolled pull requests whose required contexts are already
+green on the current head; it holds no permission to merge, to push, or to
+publish the `Agentic merge policy` verdict it reads, so branch protection
+remains the enforcement point.
 `agentic-sdlc-e2e.yml` is the narrow manual merge/review/self-heal canary;
 `agentic-factory-full-e2e.yml` exercises the full goal-authorized issue-to-dev
 path. `agentic-evals.yml` runs deterministic, read-only SDLC evaluation on a

@@ -32,6 +32,12 @@ describe("agentic SDLC workflow contracts", () => {
   const lifecycleWorkflow = read(
     ".github/workflows/agentic-lifecycle-reconciler.yml",
   );
+  const autoMergeSweeper = read(
+    ".github/workflows/agentic-automerge-sweeper.yml",
+  );
+  const autoMergeSweeperScript = read(
+    ".github/scripts/agentic-automerge-sweeper.cjs",
+  );
   const fullE2e = read(
     ".github/workflows/agentic-factory-full-e2e.yml",
   );
@@ -78,6 +84,52 @@ describe("agentic SDLC workflow contracts", () => {
     expect(workflow).toContain("sparse-checkout: .github/scripts");
     expect(workflow).toContain(script);
     expect(workflow).not.toContain("ref: ${{ github.event.pull_request.head");
+  });
+
+  it("loads the auto-merge sweeper only from the trusted default branch", () => {
+    expect(autoMergeSweeper).toContain(
+      "ref: ${{ github.event.repository.default_branch }}",
+    );
+    expect(autoMergeSweeper).toContain("persist-credentials: false");
+    expect(autoMergeSweeper).toContain("sparse-checkout: |");
+    expect(autoMergeSweeper).toContain(".github/scripts");
+    expect(autoMergeSweeper).toContain(".github/agentic-policy.json");
+    expect(autoMergeSweeper).toContain(
+      '".github/scripts/agentic-automerge-sweeper.cjs"',
+    );
+    expect(autoMergeSweeper).toContain(
+      "await sweepAutoMergeReadyPullRequests({ github, context, core });",
+    );
+    expect(autoMergeSweeper).not.toContain(
+      "ref: ${{ github.event.pull_request.head",
+    );
+  });
+
+  it("keeps the auto-merge sweeper unable to merge or forge evidence", () => {
+    // The sweeper only queues a merge that branch protection still gates. It
+    // must never hold a scope that lets it push, publish the verdict it reads,
+    // or bypass a required context.
+    expect(autoMergeSweeper).toContain("pull-requests: write");
+    expect(autoMergeSweeper).toContain("contents: read");
+    expect(autoMergeSweeper).not.toContain("contents: write");
+    expect(autoMergeSweeper).not.toContain("checks: write");
+    expect(autoMergeSweeper).not.toContain("statuses: write");
+    // Never checks out an untrusted head.
+    expect(autoMergeSweeper).not.toContain("pull_request_target:");
+    expect(autoMergeSweeper).toContain("group: agentic-automerge-sweeper");
+    expect(autoMergeSweeper).toContain("cancel-in-progress: false");
+
+    for (const forbidden of [
+      "pulls.merge",
+      "pulls.updateBranch",
+      "checks.create",
+      "createCommitStatus",
+      "addLabels",
+    ]) {
+      expect(autoMergeSweeperScript).not.toContain(forbidden);
+    }
+    expect(autoMergeSweeperScript).toContain("enablePullRequestAutoMerge");
+    expect(autoMergeSweeperScript).toContain("mergeMethod: SQUASH");
   });
 
   it("serializes deterministic queue and lifecycle mutation", () => {
