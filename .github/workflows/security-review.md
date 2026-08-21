@@ -181,8 +181,24 @@ pre-agent-steps:
   - name: Verify dispatched PR head
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
     env:
+      GH_TOKEN: ${{ github.token }}
+      GH_AW_REPOSITORY: ${{ github.repository }}
+      EXPECTED_PR_NUMBER: ${{ inputs.target }}
       EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
-    run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
+    run: |
+      set -euo pipefail
+      case "${EXPECTED_PR_NUMBER}" in
+        ''|*[!0-9]*)
+          echo "Dispatched target '${EXPECTED_PR_NUMBER}' is not a pull-request number." >&2
+          exit 1
+          ;;
+      esac
+      actual="$(gh api "repos/${GH_AW_REPOSITORY}/pulls/${EXPECTED_PR_NUMBER}" --jq '.head.sha')"
+      if [ "${actual}" != "${EXPECTED_HEAD_SHA}" ]; then
+        echo "PR #${EXPECTED_PR_NUMBER} head is now ${actual}, not the dispatched ${EXPECTED_HEAD_SHA}." >&2
+        exit 1
+      fi
+      echo "Verified PR #${EXPECTED_PR_NUMBER} head is still ${EXPECTED_HEAD_SHA}."
 ---
 
 # Security Review
