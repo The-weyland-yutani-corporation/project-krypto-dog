@@ -1,11 +1,20 @@
 ---
 description: QA workflow for test plans, regression gaps, and acceptance validation.
+run-name: "${{ inputs.correlation_id || 'QA Test Plan' }}"
 on:
   bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]
   workflow_dispatch:
     inputs:
       target:
         description: Issue, PR, or feature to test
+        required: false
+        type: string
+      head_sha:
+        description: Exact pull request head to verify
+        required: false
+        type: string
+      correlation_id:
+        description: Reconciler run correlation
         required: false
         type: string
   issues:
@@ -63,6 +72,17 @@ safe-outputs:
 max-ai-credits: 1600
 max-daily-ai-credits: 3500
 timeout-minutes: 25
+pre-agent-steps:
+  - name: Restore trusted agent instructions
+    if: ${{ github.event.pull_request || (github.event_name == 'workflow_dispatch' && inputs.head_sha != '') }}
+    env:
+      TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+    run: node .github/scripts/restore-trusted-agent-instructions.cjs
+  - name: Verify dispatched PR head
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+    env:
+      EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+    run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
 ---
 
 # QA Test Plan
@@ -75,7 +95,9 @@ pull request.
 - Map requirements and changed files to expected behavior.
 - Identify missing unit, integration, route, guardrail, and regression tests.
 - Resolve the target from the triggering item or `target` input. For a manually
-  dispatched PR, verify the workflow ref is the PR's current head.
+  dispatched PR, verify the checked-out PR head matches the `head_sha` input.
+- Agent instruction files in the workspace are restored from the trusted base;
+  inspect proposed `AGENTS.md` changes through the PR diff.
 - For PRs, inspect the implementation issue, acceptance criteria, diff, CI
   status, tests, and retained evidence.
 - Recommend the smallest set of tests needed for confidence.

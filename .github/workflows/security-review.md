@@ -1,5 +1,6 @@
 ---
 description: Security review for PRs and labeled issues.
+run-name: "${{ inputs.correlation_id || 'Security Review' }}"
 on:
   bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]
   workflow_dispatch:
@@ -7,6 +8,14 @@ on:
       target:
         description: Issue, PR, or scope to review
         required: true
+        type: string
+      head_sha:
+        description: Exact pull request head to review
+        required: false
+        type: string
+      correlation_id:
+        description: Reconciler run correlation
+        required: false
         type: string
   pull_request:
     types: [labeled]
@@ -44,6 +53,17 @@ safe-outputs:
     report-as-issue: false
 max-ai-credits: 1500
 max-daily-ai-credits: 3500
+pre-agent-steps:
+  - name: Restore trusted agent instructions
+    if: ${{ github.event.pull_request || (github.event_name == 'workflow_dispatch' && inputs.head_sha != '') }}
+    env:
+      TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+    run: node .github/scripts/restore-trusted-agent-instructions.cjs
+  - name: Verify dispatched PR head
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+    env:
+      EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+    run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
 ---
 
 # Security Review
@@ -52,7 +72,9 @@ Find high-confidence, exploitable security issues.
 
 ## Task
 
-- Resolve whether the target is an issue or pull request. For manual PR dispatch, use the `target` input, verify the workflow ref is that PR's current head, and use its number as `item_number` in comments.
+- Resolve whether the target is an issue or pull request. For manual PR dispatch, use the `target` input, verify the checked-out PR head matches the `head_sha` input, and use its number as `item_number` in comments.
+- Agent instruction files in the workspace are restored from the trusted base;
+  inspect proposed `AGENTS.md` changes through the PR diff.
 - Inspect the target issue or PR and relevant repository files.
 - Focus on auth, CSRF, secrets, injection, unsafe tool access, dependency risks, GitHub Actions permissions, and prompt/tool injection.
 - Include severity, exploit path, affected files, and concrete remediation.

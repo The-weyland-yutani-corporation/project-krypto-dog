@@ -1,11 +1,20 @@
 ---
 description: Repairs failed checks on eligible agent-created pull requests.
+run-name: "${{ inputs.correlation_id || 'PR Self Heal' }}"
 on:
   workflow_dispatch:
     inputs:
       pr:
         description: Pull request number
         required: true
+        type: string
+      head_sha:
+        description: Exact pull request head to repair
+        required: false
+        type: string
+      correlation_id:
+        description: Reconciler run correlation
+        required: false
         type: string
 permissions:
   contents: read
@@ -71,6 +80,8 @@ safe-outputs:
       - "drizzle/**"
       - "supabase/migrations/**"
     excluded-files:
+      - "AGENTS.md"
+      - "**/AGENTS.md"
       - "docs/**/*agentic*"
       - "docs/**/*auth*"
       - "docs/**/*backup*"
@@ -114,6 +125,17 @@ safe-outputs:
 max-ai-credits: 2200
 max-daily-ai-credits: 5000
 timeout-minutes: 30
+pre-agent-steps:
+  - name: Restore trusted agent instructions
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+    env:
+      TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+    run: node .github/scripts/restore-trusted-agent-instructions.cjs
+  - name: Verify dispatched PR head
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+    env:
+      EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+    run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
 ---
 
 # PR Self Heal
@@ -124,6 +146,10 @@ Repair failed checks on an eligible routine or sensitive agent pull request
 ## Eligibility
 
 - Confirm the PR is open, comes from this repository, has both `agentic-factory` and `agentic-automerge`, and has an `[ai-dev] ` or `[docs-sync] ` title.
+- For reconciler dispatch, require the checked-out PR head to match the
+  `head_sha` input; use `noop` if the PR advanced.
+- Agent instruction files in the workspace are restored from the trusted
+  workflow SHA; never modify an `AGENTS.md` file.
 - Resolve the shared factory risk tier from the changed paths and PR risk label.
   Do not repair `risk:boundary`, unknown, malformed, renamed, or destructive
   migration scope.

@@ -11,6 +11,10 @@ describe("agentic SDLC workflow contracts", () => {
   const reconciler = read(
     ".github/workflows/agentic-pr-reconciler.yml",
   );
+  const reconcilerScript = read(
+    ".github/scripts/agentic-pr-reconciler.cjs",
+  );
+  const ci = read(".github/workflows/ci.yml");
   const e2e = read(".github/workflows/agentic-sdlc-e2e.yml");
   const codeReview = read(".github/workflows/code-review.md");
   const implementTicket = read(".github/workflows/implement-ticket.md");
@@ -50,6 +54,12 @@ describe("agentic SDLC workflow contracts", () => {
       "await reconcileAgenticPullRequests({ github, context, core });",
     );
     expect(reconciler).toContain("checks: write");
+    expect(reconciler).toContain("pull-requests: write");
+    expect(reconcilerScript).toContain("run.display_title === correlationId");
+    expect(reconcilerScript).toContain(
+      "dispatch(workflowId, defaultBranch",
+    );
+    expect(reconcilerScript).not.toContain("approveWorkflowRun");
     expect(reconciler).not.toContain("statuses: write");
   });
 
@@ -130,6 +140,28 @@ describe("agentic SDLC workflow contracts", () => {
     expect(securityReview).toContain("reruns");
     expect(tradingSafetyReview).toContain("reruns");
     expect(reconciler).toContain("QA Test Plan");
+  });
+
+  it("correlates trusted workflow dispatches to an exact pull-request head", () => {
+    expect(ci).toContain("correlation_id:");
+    expect(ci).toContain("head_sha:");
+    expect(ci).toContain("Verify dispatched head");
+    expect(ci).toContain(
+      "github.event_name == 'workflow_dispatch' && inputs.head_sha != ''",
+    );
+    for (const workflow of [
+      codeReview,
+      qaReview,
+      securityReview,
+      tradingSafetyReview,
+      selfHeal,
+    ]) {
+      expect(workflow).toContain("correlation_id:");
+      expect(workflow).toContain("head_sha:");
+      expect(workflow).toContain("pre-agent-steps:");
+      expect(workflow).toContain("Restore trusted agent instructions");
+      expect(workflow).toContain("Verify dispatched PR head");
+    }
   });
 
   it("automates only exact-SHA dev delivery from main", () => {
