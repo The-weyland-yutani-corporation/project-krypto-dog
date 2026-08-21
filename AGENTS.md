@@ -36,9 +36,11 @@ its lists in prose; reference it.
 | Monitoring | [`specs/monitoring.md`](./specs/monitoring.md) |
 | Readiness gates | [`specs/readiness.md`](./specs/readiness.md) |
 | Agentic SDLC evaluation | [`specs/agentic-sdlc-evaluation.md`](./specs/agentic-sdlc-evaluation.md) |
+| Factory autonomy contract | [`specs/agentic-factory-contract.md`](./specs/agentic-factory-contract.md) |
 | Architecture decisions | [`specs/decisions/`](./specs/decisions/) |
 | Future proposals | [`specs/rfcs/`](./specs/rfcs/) |
 | Merge / self-heal / routing policy data | [`.github/agentic-policy.json`](./.github/agentic-policy.json) |
+| Factory risk / lifecycle policy core | [`.github/scripts/agentic-factory-policy.cjs`](./.github/scripts/agentic-factory-policy.cjs) |
 | Merge-authorization rationale | [`specs/decisions/0008-agentic-merge-authorization.md`](./specs/decisions/0008-agentic-merge-authorization.md) |
 
 ## Instruction discovery
@@ -101,13 +103,22 @@ Path classification is data in
 
 ## Merge & authority policy
 
-For **same-repository** pull requests, current-head agent checks authorize a
-merge (no blanket per-change human approval):
+The factory light switch is explicit and fail-closed: `active` permits bounded
+dispatch and merge actions, `shadow` evaluates without dispatching or merging,
+and `paused` performs neither. A missing or ambiguous mode resolves to `paused`.
+See [`specs/agentic-factory-contract.md`](./specs/agentic-factory-contract.md).
+
+For **same-repository** pull requests, current-head checks authorize routine and
+sensitive merges without blanket per-change human approval:
 
 - every PR requires a passing **Agentic code review**;
+- sensitive and boundary work also requires passing **QA verification**;
 - security-sensitive paths also require a passing **Security review**;
 - trading/guardrail/agent/backtest/db/migration/RFC paths also require a passing
   **Trading safety review**;
+- agents may author `risk:boundary` changes, but those changes are never
+  auto-repaired or auto-merged; **Human boundary approval** is required on the
+  current head;
 - a current trusted human change request or blocking review label keeps the
   **Agentic merge policy** pending (human veto is fail-closed).
 
