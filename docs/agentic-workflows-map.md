@@ -63,6 +63,7 @@ flowchart TD
     doctor["ci-doctor<br/>CI incident issue/comment"]
     reconcile["agentic-pr-reconciler<br/>checks / dispatch / policy"]
     lifecycle["agentic-lifecycle-reconciler<br/>claim / PR / merge / dev state"]
+    sweeper["agentic-automerge-sweeper<br/>re-arms native auto-merge, never merges"]
     heal["pr-self-heal<br/>2 routine / 1 sensitive / 0 boundary"]
     e2e["agentic-sdlc-e2e<br/>manual docs canary"]
     evals["agentic-evals<br/>deterministic scorer"]
@@ -145,6 +146,10 @@ flowchart TD
   trade --> policy
   docs --> policy
   policy --> automerge
+  policy --> sweeper
+  sweeper --> automerge
+  reconcile --> sweeper
+  schedule --> sweeper
   policy --> human
   human --> automerge
   automerge --> lifecycle
@@ -172,9 +177,15 @@ flowchart TD
 
 This is why workflow markdown is the source of truth, while lock files are committed generated artifacts for transparency.
 
-`agentic-pr-reconciler.yml`, `factory-queue-controller.yml`, and
-`agentic-lifecycle-reconciler.yml` are traditional deterministic workflows.
+`agentic-pr-reconciler.yml`, `factory-queue-controller.yml`,
+`agentic-lifecycle-reconciler.yml`, and `agentic-automerge-sweeper.yml` are
+traditional deterministic workflows.
 Each loads only trusted default-branch scripts and never executes PR code.
+`agentic-automerge-sweeper.yml` is a backstop that re-arms GitHub's native
+auto-merge for enrolled pull requests whose required contexts are already
+green on the current head; it holds no permission to merge, to push, or to
+publish the `Agentic merge policy` verdict it reads, so branch protection
+remains the enforcement point.
 `agentic-sdlc-e2e.yml` is the narrow manual merge/review/self-heal canary;
 `agentic-factory-full-e2e.yml` exercises the full goal-authorized issue-to-dev
 path. `agentic-evals.yml` runs deterministic, read-only SDLC evaluation on a
@@ -285,7 +296,7 @@ _Generated from `.github/workflows/*.md` frontmatter by `scripts/generate-agenti
 | `agentic-corrections` | `Built-in prompt` | manual; schedule: weekly on monday | `create-issue`, `noop` | 1000 / 2500 |
 | `agentic-governance` | `Built-in prompt` | manual; schedule: weekly on monday | `create-issue`, `noop`, `update-issue` | 1000 / 2500 |
 | `ci-doctor` | `Built-in prompt` | manual; workflow_run: CI | `add-comment`, `create-issue`, `noop` | 1200 / 3000 |
-| `code-review` | `Built-in prompt` | manual; PR: opened, ready_for_review, reopened, synchronize | `add-comment`, `add-labels`, `create-check-run`, `create-issue`, `noop` | 1500 / 5000 |
+| `code-review` | `Built-in prompt` | manual; PR: opened, ready_for_review, reopened, synchronize | `add-comment`, `add-labels`, `create-issue`, `jobs`, `noop` | 1500 / 5000 |
 | `daily-repo-status` | `Built-in prompt` | manual; schedule: daily | `create-issue`, `noop`, `update-issue` | 1000 / 2500 |
 | `docs-sync` | `docs-spec-writer.md` | manual; issue label: docs-sync; PR: labeled | `add-comment`, `create-issue`, `create-pull-request`, `noop`, `remove-labels` | 1400 / 3000 |
 | `em-planning` | `engineering-manager.md` | manual; /plan; issue label: ready-for-planning | `add-comment`, `add-labels`, `create-issue`, `noop`, `remove-labels` | 1200 / 3000 |
@@ -294,12 +305,12 @@ _Generated from `.github/workflows/*.md` frontmatter by `scripts/generate-agenti
 | `opportunity-discovery` | `trading-growth-pm.md` | manual; schedule: weekly; /discover | `add-comment`, `create-issue`, `noop` | 1000 / 2000 |
 | `pm-triage` | `product-manager.md` | manual; issue: labeled, opened, reopened | `add-comment`, `add-labels`, `create-issue`, `noop`, `remove-labels` | 1000 / 3000 |
 | `pr-self-heal` | `project-krypto-dev.md` | manual | `add-comment`, `add-labels`, `noop`, `push-to-pull-request-branch` | 2200 / 5000 |
-| `qa-test-plan` | `qa-engineer.md` | manual; issue label: needs-qa; PR: labeled | `add-comment`, `create-check-run`, `create-issue`, `noop` | 1600 / 3500 |
+| `qa-test-plan` | `qa-engineer.md` | manual; issue label: needs-qa; PR: labeled | `add-comment`, `create-issue`, `jobs`, `noop` | 1600 / 3500 |
 | `release-readiness` | `release-manager.md` | manual; /release-readiness; PR: labeled | `add-comment`, `create-issue`, `noop` | 1200 / 3000 |
 | `research-brief` | `researcher.md` | manual; /research; issue label: ai:research | `add-comment`, `create-issue`, `noop`, `remove-labels` | 1500 / 4000 |
 | `rubber-duck-architecture` | `rubber-duck.md` | manual; /rubber-duck; issue label: needs-rubber-duck; PR: labeled | `add-comment`, `add-labels`, `noop`, `remove-labels` | 1200 / 3000 |
-| `security-review` | `security-reviewer.md` | manual; issue label: security-review; PR: labeled | `add-comment`, `create-check-run`, `create-issue`, `noop` | 1500 / 3500 |
-| `trading-safety-review` | `trading-safety-reviewer.md` | manual; issue label: trading-safety; PR: labeled, opened, reopened, synchronize (path-scoped) | `add-comment`, `add-labels`, `create-check-run`, `create-issue`, `noop` | 1600 / 4000 |
+| `security-review` | `security-reviewer.md` | manual; issue label: security-review; PR: labeled | `add-comment`, `create-issue`, `jobs`, `noop` | 1500 / 3500 |
+| `trading-safety-review` | `trading-safety-reviewer.md` | manual; issue label: trading-safety; PR: labeled, opened, reopened, synchronize (path-scoped) | `add-comment`, `add-labels`, `create-issue`, `jobs`, `noop` | 1600 / 4000 |
 
 <!-- generated:workflow-inventory:end -->
 

@@ -1,0 +1,74 @@
+name: Agentic Auto-merge Sweeper
+
+# Backstop that re-arms GitHub's *native* auto-merge for enrolled pull
+# requests whose merge evidence is already complete on the current head.
+#
+# Why this exists: arming is otherwise one-shot. `[docs-sync]` pull requests
+# are armed by the gh-aw `auto_merge: true` safe output at creation time, and
+# `[ai-dev]` pull requests are armed by the lifecycle reconciler only along
+# the issue-driven path. A pull request whose issue path returns early (for
+# example an ambiguous or blocked lifecycle label), or whose one-shot arming
+# hit a transient mergeable-state error, can sit fully green and never merge.
+#
+# Authority boundary (deliberate, do not weaken): this workflow NEVER merges.
+# It only queues a merge that branch protection still gates in full. Its
+# permissions block below grants no write access to repository contents, to
+# check runs, or to commit statuses, so it cannot push, cannot publish or
+# overwrite the `Agentic merge policy` verdict it reads, and cannot bypass a
+# required context. Deliberately no `pull_request_target` trigger: this
+# workflow never needs PR-authored content, so it never checks out an
+# untrusted head.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Conservative cadence: every 10 minutes. This is a backstop, not the
+    # primary path, so it never needs to be faster than the reconcilers.
+    - cron: "*/10 * * * *"
+  workflow_run:
+    # The PR reconciler publishes the `Agentic merge policy` verdict, so its
+    # completion is the highest-signal moment to re-check arming.
+    workflows: ["Agentic PR Reconciler"]
+    types: [completed]
+
+concurrency:
+  # Serialize sweeps so two passes cannot race on the same pull request and
+  # issue duplicate `enablePullRequestAutoMerge` mutations. Never cancel an
+  # in-flight pass.
+  group: agentic-automerge-sweeper
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Required by `enablePullRequestAutoMerge`; this is the only write scope.
+  pull-requests: write
+  issues: read
+  checks: read
+
+jobs:
+  sweep:
+    name: Re-arm native auto-merge for ready pull requests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out trusted sweeper implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/agentic-policy.json
+
+      - name: Re-arm native auto-merge
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const path = require("node:path");
+            const sweeperPath = path.join(
+              process.env.GITHUB_WORKSPACE,
+              ".github/scripts/agentic-automerge-sweeper.cjs",
+            );
+            const { sweepAutoMergeReadyPullRequests } = require(sweeperPath);
+            await sweepAutoMergeReadyPullRequests({ github, context, core });

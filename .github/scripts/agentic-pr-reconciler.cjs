@@ -739,6 +739,17 @@ function countRepairAttempts(commits, copilotIdentity) {
   ).length;
 }
 
+function dispatchCorrelationId(workflowId, number, sha) {
+  return `agentic-pr:${number}:${sha}:${workflowId}`;
+}
+
+function dispatchMetadata(workflowId, number, sha) {
+  return {
+    head_sha: sha,
+    correlation_id: dispatchCorrelationId(workflowId, number, sha),
+  };
+}
+
 function pullRequestDispatchInputs(number) {
   return {
     pr: String(number),
@@ -799,6 +810,14 @@ async function reconcileAgenticPullRequests({
 }) {
   const { owner, repo } = context.repo;
   const repository = `${owner}/${repo}`;
+  const defaultBranch =
+    (context.payload &&
+      context.payload.repository &&
+      context.payload.repository.default_branch) ||
+    context.repo.default_branch;
+  if (!defaultBranch) {
+    throw new Error("Repository default branch is unavailable");
+  }
 
   const allPullRequests = await github.paginate(github.rest.pulls.list, {
     owner,
@@ -869,18 +888,28 @@ async function reconcileAgenticPullRequests({
     );
   }
 
-  const listRuns = async (workflowId, headSha) => {
+  const listRuns = async (workflowId, headSha, pullNumber) => {
     try {
       const response = await github.rest.actions.listWorkflowRuns({
         owner,
         repo,
         workflow_id: workflowId,
-        head_sha: headSha,
         per_page: 100,
       });
-      return response.data.workflow_runs.sort(
-        (left, right) => right.id - left.id,
+      const correlationId = dispatchCorrelationId(
+        workflowId,
+        pullNumber,
+        headSha,
       );
+      return response.data.workflow_runs
+        .filter(
+          (run) =>
+            run.head_sha === headSha ||
+            (run.display_title === correlationId &&
+              run.head_branch === defaultBranch &&
+              run.event === "workflow_dispatch"),
+        )
+        .sort((left, right) => right.id - left.id);
     } catch (error) {
       if (getErrorStatus(error) === 404) {
         core.warning(`Workflow ${workflowId} is not available yet.`);
@@ -898,15 +927,6 @@ async function reconcileAgenticPullRequests({
       workflow_id: workflowId,
       ref,
       inputs,
-    });
-  };
-
-  const approveHeldRun = async (run) => {
-    core.info(`Approving held ${run.name} run ${run.id}.`);
-    await github.rest.actions.approveWorkflowRun({
-      owner,
-      repo,
-      run_id: run.id,
     });
   };
 
@@ -942,31 +962,93 @@ async function reconcileAgenticPullRequests({
   ) => {
     const status = state === "success" ? "completed" : "in_progress";
     const conclusion = state === "success" ? "success" : null;
-    const current = latestNamedCheck(checkRuns, contextName);
-
-    if (
+    const namedChecks = checkRuns
+      .filter((check) => check.name === contextName)
+      .sort((left, right) => right.id - left.id);
+    const current = namedChecks[0];
+    const currentMatches =
       current &&
       current.status === status &&
       (current.conclusion || null) === conclusion &&
       current.output &&
-      current.output.summary === description
-    ) {
-      return;
-    }
+      current.output.summary === description;
 
-    await github.rest.checks.create({
-      owner,
-      repo,
+    const desiredCheck = {
       name: contextName,
-      head_sha: sha,
       status,
-      ...(conclusion ? { conclusion } : {}),
+      conclusion,
       details_url: targetUrl,
       output: {
         title: contextName,
         summary: description,
       },
-    });
+    };
+    const input = {
+      owner,
+      repo,
+      name: desiredCheck.name,
+      status,
+      ...(conclusion ? { conclusion } : {}),
+      details_url: targetUrl,
+      output: desiredCheck.output,
+    };
+
+    let resolvedCurrent = current;
+    if (currentMatches) {
+      resolvedCurrent = current;
+    } else if (!current || current.status === "completed") {
+      const response = await github.rest.checks.create({
+        ...input,
+        head_sha: sha,
+      });
+      const created =
+        response && response.data
+          ? response.data
+          : {
+              id:
+                Math.max(0, ...checkRuns.map((check) => Number(check.id) || 0)) +
+                1,
+              ...desiredCheck,
+            };
+      checkRuns.push(created);
+      resolvedCurrent = created;
+    } else {
+      const response = await github.rest.checks.update({
+        ...input,
+        check_run_id: current.id,
+      });
+      Object.assign(current, desiredCheck, response && response.data);
+      resolvedCurrent = current;
+    }
+
+    for (const stale of namedChecks.slice(1)) {
+      if (stale.status === "completed") {
+        continue;
+      }
+      await github.rest.checks.update({
+        owner,
+        repo,
+        check_run_id: stale.id,
+        name: contextName,
+        status: "completed",
+        conclusion: "cancelled",
+        details_url: stale.details_url || targetUrl,
+        output: {
+          title: contextName,
+          summary: "Superseded by a newer reconciliation for this head",
+        },
+      });
+      Object.assign(stale, {
+        status: "completed",
+        conclusion: "cancelled",
+        output: {
+          title: contextName,
+          summary: "Superseded by a newer reconciliation for this head",
+        },
+      });
+    }
+
+    return resolvedCurrent;
   };
 
   const addLabels = async (pullRequest, labels) => {
@@ -1066,6 +1148,13 @@ async function reconcileAgenticPullRequests({
     }
   }
 
+  const reconciliationErrors = [];
+  const recordReconciliationError = (pullRequest, error) => {
+    const message = `Failed to reconcile PR #${pullRequest.number}: ${getErrorMessage(error)}`;
+    core.warning(message);
+    reconciliationErrors.push(new Error(message));
+  };
+
   for (const pullRequest of pullRequests) {
     try {
       const number = pullRequest.number;
@@ -1098,13 +1187,14 @@ async function reconcileAgenticPullRequests({
             owner,
             repo,
             ref: sha,
+            filter: "all",
             per_page: 100,
           }),
-          listRuns("ci.yml", sha),
-          listRuns("code-review.lock.yml", sha),
-          listRuns("qa-test-plan.lock.yml", sha),
-          listRuns("security-review.lock.yml", sha),
-          listRuns("trading-safety-review.lock.yml", sha),
+          listRuns("ci.yml", sha, number),
+          listRuns("code-review.lock.yml", sha, number),
+          listRuns("qa-test-plan.lock.yml", sha, number),
+          listRuns("security-review.lock.yml", sha, number),
+          listRuns("trading-safety-review.lock.yml", sha, number),
         ]);
       const dispatchedRuns = (runs) =>
         runs.filter((run) => run.event === "workflow_dispatch");
@@ -1139,26 +1229,6 @@ async function reconcileAgenticPullRequests({
         copilotIdentity,
       });
 
-      await ensureCheckRun(
-        sha,
-        policy.state,
-        policy.description,
-        pullRequest.html_url,
-        checkRuns,
-      );
-      if (implementationProvenance.pauseFactory) {
-        await pauseFactoryControl(
-          factoryControlIssue,
-          `PR #${number} has invalid assignment/PR provenance (${implementationProvenance.reason || "unknown"}).`,
-        );
-        continue;
-      }
-      if (
-        policy.requiresVerifiedAgentProvenance &&
-        !implementationProvenance.valid
-      ) {
-        continue;
-      }
       if (policy.requiresHumanBoundaryApproval) {
         await ensureCheckRun(
           sha,
@@ -1175,17 +1245,88 @@ async function reconcileAgenticPullRequests({
         );
       }
 
-      if (
-        !policy.sameRepository ||
-        pullRequest.draft ||
-        policy.factoryModeBlocksAction
-      ) {
+      if (implementationProvenance.pauseFactory) {
+        await ensureCheckRun(
+          sha,
+          policy.state,
+          policy.description,
+          pullRequest.html_url,
+          checkRuns,
+        );
+        await pauseFactoryControl(
+          factoryControlIssue,
+          `PR #${number} has invalid assignment/PR provenance (${implementationProvenance.reason || "unknown"}).`,
+        );
         continue;
       }
-      if (policy.requiresHumanBoundaryApproval) {
-        await addLabels(pullRequest, ["ready-for-human-review"]);
+      if (
+        policy.requiresVerifiedAgentProvenance &&
+        !implementationProvenance.valid
+      ) {
+        await ensureCheckRun(
+          sha,
+          policy.state,
+          policy.description,
+          pullRequest.html_url,
+          checkRuns,
+        );
+        continue;
       }
+
+      const policyOperationsBlocked =
+        !policy.sameRepository ||
+        pullRequest.draft ||
+        policy.factoryModeBlocksAction;
+      if (policyOperationsBlocked) {
+        await ensureCheckRun(
+          sha,
+          policy.state,
+          policy.description,
+          pullRequest.html_url,
+          checkRuns,
+        );
+        continue;
+      }
+
+      let policyWriteFailed = false;
+      const runPolicyOperation = async (operation) => {
+        try {
+          await operation();
+          return true;
+        } catch (error) {
+          policyWriteFailed = true;
+          recordReconciliationError(pullRequest, error);
+          return false;
+        }
+      };
+      const humanBoundaryLabelNeeded =
+        policy.requiresHumanBoundaryApproval &&
+        !getLabels(pullRequest).has("ready-for-human-review");
+      const addHumanBoundaryLabel = async () => {
+        if (!humanBoundaryLabelNeeded) {
+          return true;
+        }
+        return runPolicyOperation(() =>
+          addLabels(pullRequest, ["ready-for-human-review"]),
+        );
+      };
+      const dispatchForPullRequest = async (workflowId, inputs = {}) => {
+        return runPolicyOperation(() =>
+          dispatch(workflowId, defaultBranch, {
+            ...inputs,
+            ...dispatchMetadata(workflowId, number, sha),
+          }),
+        );
+      };
       if (policy.riskExceedsGoal) {
+        await ensureCheckRun(
+          sha,
+          policy.state,
+          policy.description,
+          pullRequest.html_url,
+          checkRuns,
+        );
+        await addHumanBoundaryLabel();
         await pauseFactoryControl(
           factoryControlIssue,
           `PR #${number} risk ${policy.riskTier} exceeds its approved goal ceiling.`,
@@ -1198,6 +1339,7 @@ async function reconcileAgenticPullRequests({
         reviewRuns.length === 0 &&
         policy.agentCheckStates[REVIEW_CHECK_NAME] === "missing";
       const ciHeld = ciRuns[0] && ciRuns[0].conclusion === "action_required";
+      const ciShouldDispatch = ciNeedsDispatch || ciHeld;
       const reviewHeld =
         reviewRuns[0] && reviewRuns[0].conclusion === "action_required";
       const reviewShouldDispatch = reviewNeedsDispatch || reviewHeld;
@@ -1229,45 +1371,70 @@ async function reconcileAgenticPullRequests({
           policy.agentCheckStates[name] === "missing" ||
           policy.agentCheckStates[name] === "pending",
       );
+      const hasPendingPolicyOperations =
+        ciShouldDispatch ||
+        reviewShouldDispatch ||
+        securityShouldDispatch ||
+        qaShouldDispatch ||
+        tradingSafetyShouldDispatch ||
+        humanBoundaryLabelNeeded;
 
-      if (ciNeedsDispatch) {
-        await dispatch("ci.yml", pullRequest.head.ref);
+      await ensureCheckRun(
+        sha,
+        policy.state === "success" && hasPendingPolicyOperations
+          ? "pending"
+          : policy.state,
+        policy.state === "success" && hasPendingPolicyOperations
+          ? "Finalizing required reconciliation operations"
+          : policy.description,
+        pullRequest.html_url,
+        checkRuns,
+      );
+
+      if (ciShouldDispatch) {
+        await dispatchForPullRequest("ci.yml");
       }
 
       if (reviewShouldDispatch) {
-        await dispatch(
+        await dispatchForPullRequest(
           "code-review.lock.yml",
-          pullRequest.head.ref,
           pullRequestDispatchInputs(number),
         );
       }
 
       if (securityShouldDispatch) {
-        await dispatch(
+        await dispatchForPullRequest(
           "security-review.lock.yml",
-          pullRequest.head.ref,
           targetDispatchInputs(number),
         );
       }
 
       if (qaShouldDispatch) {
-        await dispatch(
+        await dispatchForPullRequest(
           "qa-test-plan.lock.yml",
-          pullRequest.head.ref,
           targetDispatchInputs(number),
         );
       }
 
       if (tradingSafetyShouldDispatch) {
-        await dispatch(
+        await dispatchForPullRequest(
           "trading-safety-review.lock.yml",
-          pullRequest.head.ref,
           targetDispatchInputs(number),
         );
       }
 
-      if (policy.trustedAgent && ciHeld) {
-        await approveHeldRun(ciRuns[0]);
+      await addHumanBoundaryLabel();
+
+      if (policy.state === "success" && hasPendingPolicyOperations) {
+        await ensureCheckRun(
+          sha,
+          policyWriteFailed ? "pending" : "success",
+          policyWriteFailed
+            ? "Reconciler operation failed; retrying"
+            : policy.description,
+          pullRequest.html_url,
+          checkRuns,
+        );
       }
 
       if (
@@ -1311,11 +1478,14 @@ async function reconcileAgenticPullRequests({
         continue;
       }
 
-      const healRuns = await listRuns("pr-self-heal.lock.yml", sha);
+      const healRuns = await listRuns(
+        "pr-self-heal.lock.yml",
+        sha,
+        number,
+      );
       if (healRuns.length === 0) {
-        await dispatch(
+        await dispatchForPullRequest(
           "pr-self-heal.lock.yml",
-          pullRequest.head.ref,
           pullRequestDispatchInputs(number),
         );
         continue;
@@ -1329,10 +1499,15 @@ async function reconcileAgenticPullRequests({
         );
       }
     } catch (error) {
-      core.warning(
-        `Failed to reconcile PR #${pullRequest.number}: ${getErrorMessage(error)}`,
-      );
+      recordReconciliationError(pullRequest, error);
     }
+  }
+
+  if (reconciliationErrors.length > 0) {
+    throw new AggregateError(
+      reconciliationErrors,
+      `Failed to reconcile ${reconciliationErrors.length} pull request operation(s)`,
+    );
   }
 }
 

@@ -15,6 +15,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import postgres from "postgres";
 
 import { redactPostgresUrl } from "@/deployment/preflight";
+import {
+  isLoopbackPostgresHostname,
+  isLoopbackPostgresUrl,
+} from "@/lib/postgres-url";
 
 const APPLICATION_TABLES = [
   "AgentState",
@@ -22,11 +26,7 @@ const APPLICATION_TABLES = [
   "TradeExecution",
   "AgentJournal",
 ] as const;
-const PRIVATE_SCHEMAS = [
-  "krypto",
-  "drizzle",
-  "supabase_migrations",
-] as const;
+const PRIVATE_SCHEMAS = ["krypto", "drizzle"] as const;
 const FORBIDDEN_CONNECTION_PARAMETERS = new Set([
   "dbname",
   "database",
@@ -84,7 +84,7 @@ export type RestoreVerification = {
 };
 
 export type BackupManifest = {
-  schemaVersion: "1.3.0";
+  schemaVersion: "1.4.0";
   createdAt: string;
   source: {
     runtimeTarget: string;
@@ -223,9 +223,7 @@ function parsePostgresUrl(value: string): URL {
 }
 
 export function isLoopbackHostname(hostname: string): boolean {
-  return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(
-    hostname.toLowerCase(),
-  );
+  return isLoopbackPostgresHostname(hostname);
 }
 
 export function passwordlessPostgresUrl(value: string): string {
@@ -330,10 +328,6 @@ async function readSourceInventory(
         OR (
           table_schema = 'drizzle'
           AND table_name = '__drizzle_migrations'
-        )
-        OR (
-          table_schema = 'supabase_migrations'
-          AND table_name = 'schema_migrations'
         )
       )
     ORDER BY table_schema, table_name
@@ -603,7 +597,7 @@ async function verifyRestore(
   passwordFile: string,
 ): Promise<RestoreVerification> {
   const restoreUrl = parsePostgresUrl(restoreTestUrl);
-  if (!isLoopbackHostname(restoreUrl.hostname)) {
+  if (!isLoopbackPostgresUrl(restoreUrl.toString())) {
     throw new Error(
       "Restore verification is restricted to a loopback PostgreSQL server.",
     );
@@ -827,7 +821,7 @@ export async function createVerifiedBackup(
         )
       : null;
     const manifest: BackupManifest = {
-      schemaVersion: "1.3.0",
+      schemaVersion: "1.4.0",
       createdAt: new Date().toISOString(),
       source: {
         runtimeTarget:
@@ -854,9 +848,9 @@ export async function createVerifiedBackup(
           ? ["public.TradeDirection"]
           : [],
         exclusions: [
-          "Supabase-managed auth, storage, realtime, vault, and cron schemas",
-          "Vault secret values",
-          "Database roles and provider-level configuration",
+          "Provider-managed service schemas and extension state",
+          "External secret values and secret-store contents",
+          "Database roles and server-level configuration",
         ],
       },
       bootstrapFiles,

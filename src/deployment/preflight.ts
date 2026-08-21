@@ -1,46 +1,8 @@
-import { createHash } from "node:crypto";
 import postgres from "postgres";
 
-export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "1.4.0";
+export const DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION = "2.0.0";
 
 export type PreflightStatus = "pass" | "warn" | "block";
-
-/**
- * The database provider a preflight run targets. Explicit only: callers
- * (for example Azure deployment workflows) must pass this rather than
- * relying on inference from connection strings, and there is no silent
- * fallback for an unrecognized value — {@link parseDeploymentProvider}
- * throws instead of guessing.
- */
-export type DeploymentProvider = "supabase" | "azure";
-
-const KNOWN_DEPLOYMENT_PROVIDERS: readonly DeploymentProvider[] = [
-  "supabase",
-  "azure",
-];
-
-/**
- * Validates an explicit provider value (for example from a CLI flag or
- * environment variable). Returns `undefined` only when no value was given
- * at all; an unrecognized non-empty value always throws so a typo or
- * misconfigured workflow never silently falls back to legacy behavior.
- */
-export function parseDeploymentProvider(
-  value: string | undefined | null,
-): DeploymentProvider | undefined {
-  if (value === undefined || value === null || value.trim() === "") {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (
-    (KNOWN_DEPLOYMENT_PROVIDERS as readonly string[]).includes(normalized)
-  ) {
-    return normalized as DeploymentProvider;
-  }
-  throw new Error(
-    `Unknown deployment provider: ${value}. Expected one of ${KNOWN_DEPLOYMENT_PROVIDERS.join(", ")}.`,
-  );
-}
 
 export interface PreflightCheck {
   id: string;
@@ -85,18 +47,13 @@ export interface DeploymentInventory {
   agentState: AgentStateInventory | null;
   openPaperPosition: boolean | null;
   drizzleMigrationCount: number | null;
-  supabaseMigrationCount: number | null;
   kryptoCronJobs: Array<{
     jobName: string;
     schedule: string;
     active: boolean;
   }>;
   pendingKryptoHttpRequests: number;
-  fixedFunctions: {
-    agentRun: boolean;
-    dailySummary: boolean;
-    integrityVerified: boolean;
-  };
+  obsoleteInvocationFunctions: string[];
   legacyArbitraryFunction: boolean;
   restrictedRolePrivileges: Array<{
     role: string;
@@ -107,7 +64,6 @@ export interface DeploymentInventory {
     vaultObjects: string[];
     vaultAccess: boolean;
   }>;
-  vaultSecretNames: string[];
   runtimeRole: RuntimeRoleInventory | null;
   runtimeLoginRole: RuntimeLoginRoleInventory | null;
 }
@@ -148,7 +104,7 @@ export interface RuntimeLoginRoleInventory {
 export interface DeploymentPreflightReport {
   schemaVersion: string;
   generatedAt: string;
-  provider: DeploymentProvider | null;
+  provider: "azure";
   target: {
     directUrl: string | null;
     runtimeUrl: string | null;
@@ -164,15 +120,6 @@ export interface DeploymentPreflightInput {
   directUrl?: string;
   runtimeUrl?: string;
   now?: Date;
-  /**
-   * Explicit deployment provider. Pass `"azure"` from Azure workflows so
-   * Azure-specific expectations apply (obsolete Supabase HTTP cron
-   * functions must be absent once current; absent Vault secrets are
-   * expected rather than a warning). Omit for the legacy/default
-   * (Supabase-shaped) behavior — there is no inference from the
-   * connection strings themselves.
-   */
-  provider?: DeploymentProvider;
 }
 
 const APPLICATION_TABLES = [
@@ -220,21 +167,6 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
     hash: "fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71",
   },
 ] as const;
-/**
- * Migration count at which 0006 (the last migration that still installs
- * the fixed, parameterless Supabase HTTP-invocation cron functions) is
- * current. Below this count the functions may legitimately not exist yet;
- * at or above it (once 0007 applies) they are retired and must be absent.
- */
-const NULL_SAFE_CRON_FUNCTIONS_MIGRATION_COUNT = 7;
-const MODE_BOUND_NULLABLE_CRON_FUNCTIONS_MIGRATION_COUNT = 6;
-/**
- * Migration count at which 0007 (drizzle/0007_azure_retire_supabase_http_functions.sql)
- * is applied and the obsolete Supabase HTTP-invocation cron functions are
- * dropped in favor of Azure Container Apps Jobs calling the application's
- * HTTP routes directly. See specs/decisions/0008-azure-native-deployment-architecture.md.
- */
-const CRON_FUNCTIONS_RETIRED_MIGRATION_COUNT = 8;
 const RUNTIME_ROLE_NAME = "krypto_runtime";
 /**
  * Exact, fail-closed per-table privilege matrix for krypto_runtime (and,
@@ -418,31 +350,6 @@ async function scanRuntimeRolePrivileges(
     excessSequencePrivileges,
   };
 }
-const EXPECTED_FUNCTION_HASHES = {
-  invoke_agent_run:
-    "6b4d47233622db9cbdc453735f8287f665fe9b4552fa1e68bc1dfbf31891a69b",
-  invoke_daily_summary:
-    "67630778c4a679858d4a94e69ceb61dbf258eab34a4b3ff9ada90517c9a205d8",
-} as const;
-const NULLABLE_MODE_BOUND_FUNCTION_HASHES: Record<
-  keyof typeof EXPECTED_FUNCTION_HASHES,
-  string
-> = {
-  invoke_agent_run:
-    "285886232696f74e79de21b9b3b305d4016d01902bdeefc583db76598e47a80d",
-  invoke_daily_summary:
-    "e2cdbc1608903e7147734c9b51a79130c2a41fc47575c8979300a0f7640e78a5",
-};
-const LEGACY_FUNCTION_HASHES: Record<
-  keyof typeof EXPECTED_FUNCTION_HASHES,
-  string
-> = {
-  invoke_agent_run:
-    "d50bca04b44a2cb0a93b3639884cc6547f3e58263cf2ab631b5e93e4ba974704",
-  invoke_daily_summary:
-    "7767cb8a5599b6e3173742658999ef33e0cab565b2a75347aa766caa66f26f6f",
-};
-
 function errorCode(error: unknown): string {
   if (
     error !== null &&
@@ -470,10 +377,6 @@ function nonZeroDecimal(value: string | null): boolean | null {
   if (value === null) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed !== 0 : null;
-}
-
-function functionHash(source: string): string {
-  return createHash("sha256").update(source).digest("hex");
 }
 
 export function redactPostgresUrl(value?: string): string | null {
@@ -556,17 +459,11 @@ function baseInventory(): DeploymentInventory {
     agentState: null,
     openPaperPosition: null,
     drizzleMigrationCount: null,
-    supabaseMigrationCount: null,
     kryptoCronJobs: [],
     pendingKryptoHttpRequests: 0,
-    fixedFunctions: {
-      agentRun: false,
-      dailySummary: false,
-      integrityVerified: false,
-    },
+    obsoleteInvocationFunctions: [],
     legacyArbitraryFunction: false,
     restrictedRolePrivileges: [],
-    vaultSecretNames: [],
     runtimeRole: null,
     runtimeLoginRole: null,
   };
@@ -589,7 +486,6 @@ export async function runDeploymentPreflight(
   input: DeploymentPreflightInput,
 ): Promise<DeploymentPreflightReport> {
   const now = input.now ?? new Date();
-  const provider = input.provider;
   const checks: PreflightCheck[] = [];
   const inventory = baseInventory();
   const directUrl = input.directUrl?.trim();
@@ -868,33 +764,21 @@ export async function runDeploymentPreflight(
                 summary:
                   "Complete private krypto application schema is present.",
               }
-            : exactLegacyLayout
-              ? {
-                  id: "schema-layout",
-                  status: "warn",
-                  summary:
-                    "Complete legacy public application schema requires the reviewed adoption migration.",
-                }
-              : emptyLayout
-                ? {
-                    id: "schema-layout",
-                    status: "warn",
-                    summary:
-                      "No application tables exist; confirm this is an intentionally fresh database.",
-                  }
-                : {
-                    id: "schema-layout",
-                    status: "block",
-                    summary:
-                      "Application tables do not match a complete fresh, legacy, or private layout.",
-                    evidence: {
-                      schemas: [...applicationSchemas].sort(),
-                      duplicateTables: duplicateTables.sort(),
-                      missingKryptoTables,
-                      missingPublicTables,
-                      kryptoRelations,
-                    },
-                  },
+            : {
+                id: "schema-layout",
+                status: "block",
+                summary:
+                  "Azure deployment requires the complete private krypto application schema.",
+                evidence: {
+                  schemas: [...applicationSchemas].sort(),
+                  duplicateTables: duplicateTables.sort(),
+                  exactLegacyLayout,
+                  emptyLayout,
+                  missingKryptoTables,
+                  missingPublicTables,
+                  kryptoRelations,
+                },
+              },
         );
 
         for (const table of inventory.applicationTables) {
@@ -1062,14 +946,10 @@ export async function runDeploymentPreflight(
               matchesKnownPrefix,
             },
           });
+          const migrationCurrent =
+            migrations.length === EXPECTED_DRIZZLE_MIGRATIONS.length;
           const migrationLayoutMatches =
-            (exactPrivateLayout &&
-              inventory.drizzleMigrationCount >= 4 &&
-              inventory.drizzleMigrationCount <=
-                EXPECTED_DRIZZLE_MIGRATIONS.length) ||
-            (exactLegacyLayout &&
-              inventory.drizzleMigrationCount <= 2) ||
-            (emptyLayout && inventory.drizzleMigrationCount === 0);
+            exactPrivateLayout && migrationCurrent;
           checks.push({
             id: "migration-schema-consistency",
             status:
@@ -1087,17 +967,15 @@ export async function runDeploymentPreflight(
               emptyLayout,
             },
           });
-          const migrationCurrent =
-            migrations.length === EXPECTED_DRIZZLE_MIGRATIONS.length;
           checks.push({
             id: "migration-current",
             status:
-              matchesKnownPrefix && migrationCurrent ? "pass" : "warn",
+              matchesKnownPrefix && migrationCurrent ? "pass" : "block",
             summary:
               matchesKnownPrefix && migrationCurrent
                 ? "All reviewed migrations are applied."
                 : matchesKnownPrefix
-                  ? "The database matches a known pre-current migration prefix."
+                  ? "Azure deployment requires all reviewed migrations; this database is pre-current."
                   : "Migration currency cannot be established until history integrity is repaired.",
             evidence: {
               applied: migrations.length,
@@ -1107,26 +985,10 @@ export async function runDeploymentPreflight(
         } else {
           checks.push({
             id: "drizzle-history",
-            status: exactPrivateLayout ? "block" : "warn",
-            summary: exactPrivateLayout
-              ? "Private application tables exist without Drizzle migration history."
-              : "Drizzle migration history is absent; determine whether this is a legacy or fresh database.",
+            status: "block",
+            summary:
+              "Azure deployment requires the reviewed Drizzle migration history.",
           });
-        }
-
-        const [supabaseRelation] = await sql<
-          Array<{ relation: string | null }>
-        >`
-          SELECT to_regclass(
-            'supabase_migrations.schema_migrations'
-          )::text AS relation
-        `;
-        if (supabaseRelation?.relation) {
-          const [row] = await sql<Array<{ count: string }>>`
-            SELECT count(*)::text AS count
-            FROM supabase_migrations.schema_migrations
-          `;
-          inventory.supabaseMigrationCount = Number(row?.count ?? 0);
         }
 
         const [cronRelation] = await sql<
@@ -1203,30 +1065,12 @@ export async function runDeploymentPreflight(
           },
         });
 
-        const functions = await sql<
-          Array<{
-            name: keyof typeof EXPECTED_FUNCTION_HASHES;
-            securityDefiner: boolean;
-            language: string;
-            ownerMatches: boolean;
-            configuration: string[] | null;
-            source: string;
-            resultType: string;
-          }>
-        >`
+        const obsoleteInvocationFunctions = await sql<Array<{ name: string }>>`
           SELECT
-            p.proname AS name,
-            p.prosecdef AS "securityDefiner",
-            language.lanname AS language,
-            pg_get_userbyid(p.proowner) = current_user AS "ownerMatches",
-            p.proconfig AS configuration,
-            p.prosrc AS source,
-            pg_get_function_result(p.oid) AS "resultType"
+            p.proname AS name
           FROM pg_proc AS p
           JOIN pg_namespace AS namespace
             ON namespace.oid = p.pronamespace
-          JOIN pg_language AS language
-            ON language.oid = p.prolang
           WHERE namespace.nspname = 'krypto'
             AND p.proname IN (
               'invoke_agent_run',
@@ -1235,38 +1079,23 @@ export async function runDeploymentPreflight(
             AND p.pronargs = 0
           ORDER BY p.proname
         `;
-        const functionByName = new Map(
-          functions.map((function_) => [function_.name, function_]),
-        );
-        const agentRunFunction =
-          functionByName.get("invoke_agent_run");
-        const dailySummaryFunction =
-          functionByName.get("invoke_daily_summary");
-        const expectedFunctionHashes =
-          inventory.drizzleMigrationCount ===
-          NULL_SAFE_CRON_FUNCTIONS_MIGRATION_COUNT
-            ? EXPECTED_FUNCTION_HASHES
-            : inventory.drizzleMigrationCount ===
-                MODE_BOUND_NULLABLE_CRON_FUNCTIONS_MIGRATION_COUNT
-              ? NULLABLE_MODE_BOUND_FUNCTION_HASHES
-              : LEGACY_FUNCTION_HASHES;
-        inventory.fixedFunctions = {
-          agentRun: agentRunFunction !== undefined,
-          dailySummary: dailySummaryFunction !== undefined,
-          integrityVerified: functions.every(
-            (function_) =>
-              function_.securityDefiner &&
-              function_.language === "plpgsql" &&
-              function_.ownerMatches &&
-              function_.resultType === "bigint" &&
-              function_.configuration?.length === 1 &&
-              function_.configuration[0] ===
-                "search_path=pg_catalog" &&
-              functionHash(function_.source) ===
-                expectedFunctionHashes[function_.name],
-          ) &&
-            functions.length === 2,
-        };
+        inventory.obsoleteInvocationFunctions =
+          obsoleteInvocationFunctions.map((function_) => function_.name);
+        checks.push({
+          id: "obsolete-invocation-functions",
+          status:
+            inventory.obsoleteInvocationFunctions.length === 0
+              ? "pass"
+              : "block",
+          summary:
+            inventory.obsoleteInvocationFunctions.length === 0
+              ? "Obsolete database-side HTTP invocation functions are absent."
+              : "Obsolete database-side HTTP invocation functions must be removed before Azure deployment.",
+          evidence: {
+            functions: inventory.obsoleteInvocationFunctions,
+          },
+        });
+
         const [legacyFunction] = await sql<
           Array<{ present: boolean }>
         >`
@@ -1276,77 +1105,6 @@ export async function runDeploymentPreflight(
         `;
         inventory.legacyArbitraryFunction =
           legacyFunction?.present ?? false;
-        const installedFunctionCount = functions.length;
-        const cronFunctionsRetired =
-          inventory.drizzleMigrationCount !== null &&
-          inventory.drizzleMigrationCount >=
-            CRON_FUNCTIONS_RETIRED_MIGRATION_COUNT;
-        const fixedFunctionsExpected =
-          inventory.drizzleMigrationCount !== null &&
-          inventory.drizzleMigrationCount >= 3 &&
-          !cronFunctionsRetired;
-        checks.push({
-          id: "fixed-cron-functions",
-          status: cronFunctionsRetired
-            ? installedFunctionCount === 0
-              ? "pass"
-              : "block"
-            : inventory.fixedFunctions.agentRun &&
-                inventory.fixedFunctions.dailySummary
-              ? "pass"
-              : fixedFunctionsExpected
-                ? "block"
-                : "warn",
-          summary: cronFunctionsRetired
-            ? installedFunctionCount === 0
-              ? "Obsolete Supabase HTTP cron functions were retired by the reviewed migration (0007)."
-              : "Applied migration history requires the obsolete Supabase HTTP cron functions to be retired, but at least one is still installed."
-            : inventory.fixedFunctions.agentRun &&
-                inventory.fixedFunctions.dailySummary
-              ? "Fixed parameterless Krypto cron functions are installed."
-              : fixedFunctionsExpected
-                ? "Applied migration history requires both fixed Krypto cron functions."
-                : "Fixed Krypto cron functions are not yet fully installed.",
-          evidence: inventory.fixedFunctions,
-        });
-        checks.push({
-          id: "fixed-cron-function-integrity",
-          status: cronFunctionsRetired
-            ? installedFunctionCount === 0
-              ? "pass"
-              : "block"
-            : installedFunctionCount === 0
-              ? fixedFunctionsExpected
-                ? "block"
-                : "warn"
-              : inventory.fixedFunctions.integrityVerified
-                ? "pass"
-                : "block",
-          summary: cronFunctionsRetired
-            ? installedFunctionCount === 0
-              ? "Fixed cron functions were retired by the reviewed migration; no legacy definition remains to verify."
-              : "A retired fixed cron function is still installed after the migration that should have dropped it."
-            : installedFunctionCount === 0
-              ? fixedFunctionsExpected
-                ? "Applied migration history requires canonical fixed cron functions."
-                : "Fixed cron function integrity is pending migration."
-              : inventory.fixedFunctions.integrityVerified
-                ? "Fixed cron functions match the reviewed owner, security, search-path, result, and body definitions."
-                : "An installed fixed cron function differs from the reviewed definition.",
-          evidence: {
-            installedFunctionCount,
-            integrityVerified:
-              inventory.fixedFunctions.integrityVerified,
-            definitionProfile: cronFunctionsRetired
-              ? "retired"
-              : expectedFunctionHashes === EXPECTED_FUNCTION_HASHES
-                ? "mode-bound-null-safe"
-                : expectedFunctionHashes ===
-                    NULLABLE_MODE_BOUND_FUNCTION_HASHES
-                  ? "mode-bound-nullable"
-                  : "pre-mode-binding",
-          },
-        });
         checks.push({
           id: "legacy-arbitrary-function",
           status: inventory.legacyArbitraryFunction ? "block" : "pass",
@@ -1354,36 +1112,6 @@ export async function runDeploymentPreflight(
             ? "Unsafe legacy arbitrary-path invocation function is still installed."
             : "Unsafe legacy arbitrary-path invocation function is absent.",
         });
-        if (provider === "azure") {
-          const azureFunctionsAbsent =
-            !inventory.fixedFunctions.agentRun &&
-            !inventory.fixedFunctions.dailySummary;
-          checks.push({
-            id: "azure-legacy-cron-functions-retired",
-            status:
-              inventory.drizzleMigrationCount === null
-                ? "warn"
-                : !cronFunctionsRetired
-                  ? "warn"
-                  : azureFunctionsAbsent
-                    ? "pass"
-                    : "block",
-            summary:
-              inventory.drizzleMigrationCount === null
-                ? "Migration history could not be determined for this Azure target."
-                : !cronFunctionsRetired
-                  ? "Azure target migration history predates the obsolete Supabase HTTP cron function retirement (0007); apply pending migrations."
-                  : azureFunctionsAbsent
-                    ? "Obsolete Supabase HTTP cron functions are absent, as required for a fully current Azure migration history."
-                    : "A fully current Azure migration history must not retain the obsolete Supabase HTTP cron functions.",
-            evidence: {
-              migrationCount: inventory.drizzleMigrationCount,
-              agentRunPresent: inventory.fixedFunctions.agentRun,
-              dailySummaryPresent: inventory.fixedFunctions.dailySummary,
-            },
-          });
-        }
-
 
         const roles = await sql<Array<{ role: string }>>`
           SELECT rolname AS role
@@ -1857,10 +1585,6 @@ export async function runDeploymentPreflight(
           schemaUsage: runtimeRoleRow?.schemaUsage ?? false,
           ...runtimeRoleScan,
         };
-        const runtimeRoleExpected =
-          inventory.drizzleMigrationCount !== null &&
-          inventory.drizzleMigrationCount >=
-            CRON_FUNCTIONS_RETIRED_MIGRATION_COUNT;
         const runtimeRoleCorrect =
           runtimeRolePresent &&
           inventory.runtimeRole.isGroupRole &&
@@ -1874,30 +1598,14 @@ export async function runDeploymentPreflight(
           runtimeRoleScan.excessSequencePrivileges.length > 0;
         checks.push({
           id: "runtime-role",
-          status: runtimeRoleCorrect
-            ? "pass"
-            // Excess privilege always blocks — it is a live security
-            // exposure regardless of the current environment's migration
-            // history. Missing-only privileges only block once the
-            // environment's own applied migration history requires
-            // krypto_runtime to exist (mid-rollout / not-yet-migrated
-            // targets legitimately have no grants yet, and warn instead —
-            // this also avoids false blocks when krypto_runtime happens to
-            // be visible cluster-wide from a sibling database/environment
-            // that shares the same PostgreSQL server but has not itself
-            // been granted anything).
-            : runtimeRoleHasExcess || runtimeRoleExpected
-              ? "block"
-              : "warn",
+          status: runtimeRoleCorrect ? "pass" : "block",
           summary: runtimeRoleCorrect
             ? "Least-privilege krypto_runtime group role has exactly the required NOLOGIN, schema, and per-table privilege matrix — nothing missing, nothing excess."
             : runtimeRolePresent
               ? runtimeRoleHasExcess
                 ? "krypto_runtime holds one or more privileges beyond the exact fail-closed matrix (excess privilege); this blocks regardless of whether required privileges are also present."
                 : "krypto_runtime is present but is missing an expected NOLOGIN, schema-usage, or per-table privilege."
-              : runtimeRoleExpected
-                ? "Applied migration history requires the least-privilege krypto_runtime group role."
-                : "The least-privilege krypto_runtime group role is not yet installed.",
+              : "Azure deployment requires the least-privilege krypto_runtime group role.",
           evidence: { ...inventory.runtimeRole },
         });
 
@@ -1906,8 +1614,7 @@ export async function runDeploymentPreflight(
         // group role itself — is a member of krypto_runtime and inherits
         // exactly the matrix's privileges, no more and no less. Both
         // current_user values are captured unconditionally above; the
-        // pass/warn/block severity of these proof checks is provider-
-        // gated so legacy (non-Azure) targets remain warn-only.
+        // Azure-only preflight treats an unproven boundary as blocking.
         const runtimeCurrentUser = inventory.runtimeCurrentUser;
         const directCurrentUser = inventory.directCurrentUser;
         const connectionRolesDistinct =
@@ -1916,11 +1623,7 @@ export async function runDeploymentPreflight(
           runtimeCurrentUser !== directCurrentUser;
         checks.push({
           id: "connection-roles-distinct",
-          status: connectionRolesDistinct
-            ? "pass"
-            : provider === "azure"
-              ? "block"
-              : "warn",
+          status: connectionRolesDistinct ? "pass" : "block",
           summary: connectionRolesDistinct
             ? "DATABASE_URL and DIRECT_URL authenticate as distinct database roles."
             : runtimeCurrentUser === null || directCurrentUser === null
@@ -1964,11 +1667,7 @@ export async function runDeploymentPreflight(
           runtimeLoginRoleScan.excessSequencePrivileges.length === 0;
         checks.push({
           id: "runtime-login-role-boundary",
-          status: runtimeLoginRoleBoundaryProven
-            ? "pass"
-            : provider === "azure"
-              ? "block"
-              : "warn",
+          status: runtimeLoginRoleBoundaryProven ? "pass" : "block",
           summary: runtimeLoginRoleBoundaryProven
             ? `DATABASE_URL's current_user (${runtimeCurrentUser}) is a member of krypto_runtime and inherits exactly the intended per-table privilege matrix, with no excess privilege.`
             : runtimeCurrentUser === null
@@ -1979,44 +1678,6 @@ export async function runDeploymentPreflight(
           evidence: (inventory.runtimeLoginRole ?? {
             currentUser: runtimeCurrentUser,
           }) as Record<string, unknown>,
-        });
-
-        const [vaultRelation] = await sql<
-          Array<{ relation: string | null }>
-        >`SELECT to_regclass('vault.secrets')::text AS relation`;
-        if (vaultRelation?.relation) {
-          const secrets = await sql<Array<{ name: string }>>`
-            SELECT name
-            FROM vault.secrets
-            WHERE name IN (
-              'krypto_cron_secret',
-              'krypto_vercel_url',
-              'krypto_rollout_mode'
-            )
-            ORDER BY name
-          `;
-          inventory.vaultSecretNames = secrets.map((secret) => secret.name);
-        }
-        const azureVaultAbsenceExpected =
-          provider === "azure" &&
-          !vaultRelation?.relation &&
-          inventory.vaultSecretNames.length === 0;
-        checks.push({
-          id: "vault-secrets",
-          status:
-            inventory.vaultSecretNames.length === 3 ||
-            azureVaultAbsenceExpected
-              ? "pass"
-              : "warn",
-          summary: azureVaultAbsenceExpected
-            ? "Supabase Vault is not part of the Azure target; its absence is expected, not missing configuration."
-            : inventory.vaultSecretNames.length === 3
-              ? "Required Krypto Vault secret names are present."
-              : "Required Krypto Vault secrets are not yet fully configured.",
-          evidence: {
-            configuredNames: inventory.vaultSecretNames,
-            vaultPresent: Boolean(vaultRelation?.relation),
-          },
         });
       });
     } catch (error) {
@@ -2048,7 +1709,7 @@ export async function runDeploymentPreflight(
   return {
     schemaVersion: DEPLOYMENT_PREFLIGHT_SCHEMA_VERSION,
     generatedAt: now.toISOString(),
-    provider: provider ?? null,
+    provider: "azure",
     target: {
       directUrl: redactPostgresUrl(directUrl),
       runtimeUrl: redactPostgresUrl(runtimeUrl),

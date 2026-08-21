@@ -596,9 +596,11 @@ function isCandidatePullRequest(pullRequest, issueNumber, nonce) {
 
 /**
  * A candidate is *valid* only when every conservative correlation
- * requirement holds: same-repository head, `[ai-dev] ` title prefix,
- * `copilot-swe-agent[bot]` author, and a base ref matching the exact
- * repository default branch. Title/author alone are never sufficient.
+ * requirement holds: same-repository head, `[ai-dev] ` title prefix, an
+ * author matching the resolved canonical Copilot actor identity, and a base
+ * ref matching the exact repository default branch. Title/author alone are
+ * never sufficient, and the author is matched by stable actor identity
+ * rather than by presentation login.
  *
  * @param {object} pullRequest
  * @param {string} repository

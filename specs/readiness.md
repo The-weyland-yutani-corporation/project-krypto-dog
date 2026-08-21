@@ -176,18 +176,15 @@ PostHog key remains environment-tagged deployment evidence only.
   existing-v2 adoption, row preservation, and idempotent singleton
   initialization pass against temporary real PostgreSQL clusters.
 - Application tables and the enum move into the private `krypto` schema.
-  `PUBLIC`/anonymous/authenticated table, column, schema, sequence, Krypto
-  routine, and Vault schema/relation/routine privileges are denied in real
-  migration tests and inventoried across every protected relation by preflight.
-  Protected public views and every executable public `SECURITY DEFINER`
-  routine are also blocked. The migration removes the unsafe legacy
-  arbitrary-path helper. Cron scheduling is a separate
-  transactional reviewed operation that rejects canonical-function drift and
-  verifies the latest passing smoke approval against decrypted Vault URL/secret
-  values, rejects unexpected jobs or queued endpoint requests, and verifies
-  both final job definitions before commit. Every cron request carries its
-  Vault-selected shadow/paper mode, so delayed requests fail across promotion
-  boundaries.
+  `PUBLIC`/anonymous/authenticated table, column, schema, sequence, and routine
+  privileges are denied in real migration tests and inventoried across every
+  protected relation by preflight. Protected public views and every executable
+  public `SECURITY DEFINER` routine are also blocked. The current migration
+  removes the unsafe legacy arbitrary-path and database-side invocation
+  functions; preflight rejects any active legacy schedule or queued endpoint
+  request. Azure Container Apps Jobs own recurring scheduling, bind each
+  invocation to the deployed rollout mode and image generation, and remain
+  `Manual` until the reviewed activation flow enables `Schedule`.
 - Unused AgentKit/OpenAI packages and CDP requirements are removed. A same-major
   PostCSS override removes Next.js's vulnerable nested copy; `npm audit
   --omit=dev` reports zero production vulnerabilities.
@@ -239,13 +236,14 @@ PostHog key remains environment-tagged deployment evidence only.
   metrics, and emits deterministic JSON plus dark standalone HTML reports.
   Imported reports are always classified `engineering-only` and cannot satisfy
   v2.2 or v3 production evidence gates.
-- The cron rollout-mode NULL fix is an additive migration after the original
-  immutable `0005` history. Real-PostgreSQL tests prove an existing database at
-  `0005` receives the corrected functions through normal Drizzle migration.
+- The legacy rollout-mode NULL fix remains an additive migration after the
+  original immutable `0005` history. Real-PostgreSQL tests prove an existing
+  database at `0005` progresses through the corrected functions and current
+  Azure retirement migration through normal Drizzle migration.
 - Current local validation: lint passes with one pre-existing PostCSS config
   warning; the coverage-gated Jest suite, script/test typecheck, production
   build, and real-PostgreSQL suite pass;
-  deliberate cron-function tampering and `PUBLIC` table exposure are rejected;
+  deliberate obsolete-function tampering and `PUBLIC` table exposure are rejected;
   migration generation reports no drift; and the production dependency audit
   is clean. The 8-scenario aggregate reports 8 engineering assertion passes,
   3/8 beating cash, 2/8 beating buy-and-hold, and 0/8 beating both.

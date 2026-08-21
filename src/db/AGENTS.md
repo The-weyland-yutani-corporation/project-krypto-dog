@@ -6,8 +6,8 @@ first.
 ## Mission
 
 Own the Drizzle schema (`schema.ts`, `index.ts`), generated migrations under
-`drizzle/**`, `supabase/migrations/**`, and seed/reset flows. Preserve
-portfolio, trade, journal, and agent-state invariants.
+`drizzle/**`, and seed/reset flows. Preserve portfolio, trade, journal, and
+agent-state invariants.
 
 ## Non-negotiables (delta)
 
@@ -34,5 +34,7 @@ portfolio, trade, journal, and agent-state invariants.
 - Schema/migration paths route to **trading safety review** (see
   `specialistRouting.tradingSafety` in
   [`.github/agentic-policy.json`](../../.github/agentic-policy.json)).
-- Production database operations, backups, and inventory are human-only
-  operational steps — see [`specs/deployment.md`](../../specs/deployment.md).
+- Agents may implement and test database, backup, and inventory automation
+  against disposable/local targets. Executing any production database
+  operation remains human-only — see
+  [`specs/deployment.md`](../../specs/deployment.md).

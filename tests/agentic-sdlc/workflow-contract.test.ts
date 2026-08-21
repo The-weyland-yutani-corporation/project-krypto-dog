@@ -11,6 +11,10 @@ describe("agentic SDLC workflow contracts", () => {
   const reconciler = read(
     ".github/workflows/agentic-pr-reconciler.yml",
   );
+  const reconcilerScript = read(
+    ".github/scripts/agentic-pr-reconciler.cjs",
+  );
+  const ci = read(".github/workflows/ci.yml");
   const e2e = read(".github/workflows/agentic-sdlc-e2e.yml");
   const codeReview = read(".github/workflows/code-review.md");
   const implementTicket = read(".github/workflows/implement-ticket.md");
@@ -27,6 +31,12 @@ describe("agentic SDLC workflow contracts", () => {
   );
   const lifecycleWorkflow = read(
     ".github/workflows/agentic-lifecycle-reconciler.yml",
+  );
+  const autoMergeSweeper = read(
+    ".github/workflows/agentic-automerge-sweeper.yml",
+  );
+  const autoMergeSweeperScript = read(
+    ".github/scripts/agentic-automerge-sweeper.cjs",
   );
   const fullE2e = read(
     ".github/workflows/agentic-factory-full-e2e.yml",
@@ -50,6 +60,12 @@ describe("agentic SDLC workflow contracts", () => {
       "await reconcileAgenticPullRequests({",
     );
     expect(reconciler).toContain("checks: write");
+    expect(reconciler).toContain("pull-requests: write");
+    expect(reconcilerScript).toContain("run.display_title === correlationId");
+    expect(reconcilerScript).toContain(
+      "dispatch(workflowId, defaultBranch",
+    );
+    expect(reconcilerScript).not.toContain("approveWorkflowRun");
     expect(reconciler).not.toContain("statuses: write");
   });
 
@@ -68,6 +84,52 @@ describe("agentic SDLC workflow contracts", () => {
     expect(workflow).toContain(".github/scripts");
     expect(workflow).toContain(script);
     expect(workflow).not.toContain("ref: ${{ github.event.pull_request.head");
+  });
+
+  it("loads the auto-merge sweeper only from the trusted default branch", () => {
+    expect(autoMergeSweeper).toContain(
+      "ref: ${{ github.event.repository.default_branch }}",
+    );
+    expect(autoMergeSweeper).toContain("persist-credentials: false");
+    expect(autoMergeSweeper).toContain("sparse-checkout: |");
+    expect(autoMergeSweeper).toContain(".github/scripts");
+    expect(autoMergeSweeper).toContain(".github/agentic-policy.json");
+    expect(autoMergeSweeper).toContain(
+      '".github/scripts/agentic-automerge-sweeper.cjs"',
+    );
+    expect(autoMergeSweeper).toContain(
+      "await sweepAutoMergeReadyPullRequests({ github, context, core });",
+    );
+    expect(autoMergeSweeper).not.toContain(
+      "ref: ${{ github.event.pull_request.head",
+    );
+  });
+
+  it("keeps the auto-merge sweeper unable to merge or forge evidence", () => {
+    // The sweeper only queues a merge that branch protection still gates. It
+    // must never hold a scope that lets it push, publish the verdict it reads,
+    // or bypass a required context.
+    expect(autoMergeSweeper).toContain("pull-requests: write");
+    expect(autoMergeSweeper).toContain("contents: read");
+    expect(autoMergeSweeper).not.toContain("contents: write");
+    expect(autoMergeSweeper).not.toContain("checks: write");
+    expect(autoMergeSweeper).not.toContain("statuses: write");
+    // Never checks out an untrusted head.
+    expect(autoMergeSweeper).not.toContain("pull_request_target:");
+    expect(autoMergeSweeper).toContain("group: agentic-automerge-sweeper");
+    expect(autoMergeSweeper).toContain("cancel-in-progress: false");
+
+    for (const forbidden of [
+      "pulls.merge",
+      "pulls.updateBranch",
+      "checks.create",
+      "createCommitStatus",
+      "addLabels",
+    ]) {
+      expect(autoMergeSweeperScript).not.toContain(forbidden);
+    }
+    expect(autoMergeSweeperScript).toContain("enablePullRequestAutoMerge");
+    expect(autoMergeSweeperScript).toContain("mergeMethod: SQUASH");
   });
 
   it("serializes deterministic queue and lifecycle mutation", () => {
@@ -134,8 +196,8 @@ describe("agentic SDLC workflow contracts", () => {
   });
 
   it("emits machine-readable reviews and retains head-refresh requirements", () => {
-    expect(qaReview).toContain("name: QA verification");
-    expect(qaReview).toContain("create-check-run:");
+    expect(qaReview).toContain("CHECK_NAME: QA verification");
+    expect(qaReview).toContain("create-pr-check:");
     expect(qaReview).not.toContain("remove-labels:");
     expect(securityReview).not.toContain("remove-labels:");
     expect(tradingSafetyReview).not.toContain("remove-labels:");
@@ -143,6 +205,42 @@ describe("agentic SDLC workflow contracts", () => {
     expect(securityReview).toContain("reruns");
     expect(tradingSafetyReview).toContain("reruns");
     expect(reconciler).toContain("QA Test Plan");
+  });
+
+  it("correlates trusted workflow dispatches to an exact pull-request head", () => {
+    expect(ci).toContain("correlation_id:");
+    expect(ci).toContain("head_sha:");
+    expect(ci).toContain("Verify dispatched head");
+    expect(ci).toContain(
+      "github.event_name == 'workflow_dispatch' && inputs.head_sha != ''",
+    );
+    for (const workflow of [
+      codeReview,
+      qaReview,
+      securityReview,
+      tradingSafetyReview,
+    ]) {
+      expect(workflow).toContain("correlation_id:");
+      expect(workflow).toContain("head_sha:");
+      expect(workflow).toContain("pre-agent-steps:");
+      expect(workflow).toContain("Restore trusted agent instructions");
+      expect(workflow).toContain("Verify dispatched PR head");
+      expect(workflow).toContain("create-pr-check:");
+      expect(workflow).toContain("checks: write");
+      expect(workflow).toContain("pull-requests: read");
+      expect(workflow).toContain("EXPECTED_PR_NUMBER:");
+      expect(workflow).toContain("EXPECTED_HEAD_SHA:");
+      expect(workflow).toContain("Agent pull request number does not match trusted context");
+      expect(workflow).toContain(
+        "needs.detection.outputs.detection_success == 'true'",
+      );
+      expect(workflow).toContain("continue-on-error: false");
+    }
+    expect(selfHeal).toContain("correlation_id:");
+    expect(selfHeal).toContain("head_sha:");
+    expect(selfHeal).toContain("pre-agent-steps:");
+    expect(selfHeal).toContain("Restore trusted agent instructions");
+    expect(selfHeal).toContain("Verify dispatched PR head");
   });
 
   it("automates only exact-SHA dev delivery from main", () => {
@@ -266,12 +364,12 @@ describe("agentic SDLC workflow contracts", () => {
       expect(workflow).toContain(
         'bots: ["github-actions[bot]"]',
       );
-      expect(workflow).toContain("create-check-run:");
+      expect(workflow).toContain("create-pr-check:");
       expect(workflow).toContain("For every pull request");
     }
-    expect(securityReview).toContain("name: Security review");
+    expect(securityReview).toContain("CHECK_NAME: Security review");
     expect(tradingSafetyReview).toContain(
-      "name: Trading safety review",
+      "CHECK_NAME: Trading safety review",
     );
     expect(reconciler).toContain("Security Review");
     expect(reconciler).toContain("Trading Safety Review");

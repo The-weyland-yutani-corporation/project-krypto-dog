@@ -1,7 +1,17 @@
 name: CI
+run-name: ${{ inputs.correlation_id || github.workflow }}
 
 on:
   workflow_dispatch:
+    inputs:
+      head_sha:
+        description: Exact pull request head to validate
+        required: false
+        type: string
+      correlation_id:
+        description: Reconciler run correlation
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -30,6 +40,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+
+      - name: Verify dispatched head
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+        run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

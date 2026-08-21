@@ -33,5 +33,7 @@ Own deterministic trade policy and transactional paper execution:
 - **Every change here routes to trading safety review** (see
   `specialistRouting.tradingSafety` in
   [`.github/agentic-policy.json`](../../.github/agentic-policy.json)).
-- Live-trading enablement is human-only; stop and escalate.
+- Paper-only changes may be agent-authored and merged after their deterministic
+  and specialist checks pass. Live-trading enablement remains human-only; stop
+  and escalate.
 - UI/formatting of trading data belongs to the frontend under `DESIGN.md`.
