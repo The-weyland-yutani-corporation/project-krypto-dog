@@ -50,9 +50,9 @@ ADR `0001-drizzle-over-prisma.md` records the Drizzle decision (Prisma was remov
 
 Source of truth: [`src/db/schema.ts`](../src/db/schema.ts). Drizzle is the only
 application migration history. The Azure target does not use database-side
-scheduling. Legacy hosted-baseline cron operations remain under
-[`supabase/operations/`](../supabase/operations/) for historical compatibility
-and do not define the Azure release.
+scheduling. Retired hosted-baseline cron programs are outside product,
+operator, and migration paths and are exercised only by disposable
+legacy-upgrade tests.
 
 ### `AgentState` (singleton — `id = "singleton"`)
 
@@ -214,7 +214,7 @@ that would persist a paper trade.
 ### `POST /api/admin/run-agent`
 - **Auth:** admin cookie verified by both `src/proxy.ts` and the route handler,
   plus same-origin check.
-- Manually invokes the same shared `executeAgentRun({ triggerSource: "admin" })` path used by cron.
+- Manually invokes the same shared `executeAgentRun({ triggerSource: "admin" })` path used by the scheduler.
 
 ### `POST /api/admin/pause`
 - **Auth:** admin cookie verified by proxy and handler, plus same-origin check.
@@ -257,7 +257,7 @@ that would persist a paper trade.
 
 ### Email delivery (Azure Communication Services)
 
-- `sendDailySummary(...)` — fired from the daily-summary cron route.
+- `sendDailySummary(...)` — fired from the scheduled daily-summary route.
 - `sendGuardrailAlert(...)` remains wired to the legacy `checkDrawdown` helper,
   but the current `executeAgentRun` path does not call that helper. The current
   path persists drawdown locks and emits guardrail telemetry, so drawdown
@@ -393,7 +393,7 @@ current target.
 | Failure mode | Behaviour |
 |---|---|
 | Mid-trade crash | Database transaction rolls back; post-commit retries resolve by run idempotency instead of re-executing. |
-| Coinbase API unreachable | Abort run with HTTP 502; next cron tick retries naturally. |
+| Coinbase API unreachable | Abort run with HTTP 502; the next scheduled run retries naturally. |
 | Foundry Luna 429/timeout | At most 2 total attempts, 20 seconds per attempt, with attempt count and latency persisted/emitted. |
 | Drawdown breach | Lock + alert. Review immutable history, then use the audited admin unlock with an explicit reason; direct SQL unlock is not an operator path. |
 | Crashed run lease | A later invocation can recover an expired lease. The admin endpoint clears only expired/unowned leases and rejects active owners. |
@@ -407,7 +407,7 @@ current target.
   model retry/error classification, market data, route status mapping, admin
   controls, migrations, CSRF, and legacy guardrail behavior.
 - Real PostgreSQL: `npm run test:migrations` proves fresh install, existing-v2
-  upgrade, table/column/Krypto/Vault privileges, decimal round trips,
+  upgrade, table/column/restricted-schema privileges, decimal round trips,
   quarantine,
   transactional rollback, parallel idempotency, lease ownership/recovery,
   disabled/shadow/paper orchestration, required-mode fail-closed behavior,

@@ -23,7 +23,7 @@ import {
   deriveProjectName,
   deriveWorktreeId,
   findFreePorts,
-  isProductionLikeDbUrl,
+  isLoopbackDbUrl,
   markManifestStopped,
   parseManifest,
   parseSmokeOptions,
@@ -333,18 +333,40 @@ describe("production and credential refusal", () => {
     expect(() => assertHarnessRollout("weird")).toThrow(/Unknown rollout/);
   });
 
-  it("detects production-looking database URLs", () => {
+  it("accepts only loopback database URLs", () => {
     expect(
-      isProductionLikeDbUrl(
-        "postgresql://u:p@db.abc.supabase.co:5432/postgres",
+      isLoopbackDbUrl(
+        "postgresql://krypto@db.example.test:5432/krypto",
       ),
-    ).toBe(true);
-    expect(
-      isProductionLikeDbUrl("postgresql://u:p@x.rds.amazonaws.com/db"),
-    ).toBe(true);
-    expect(
-      isProductionLikeDbUrl("postgresql://krypto@127.0.0.1:5433/krypto"),
     ).toBe(false);
+    expect(
+      isLoopbackDbUrl("postgresql://u:p@db.example.test/db"),
+    ).toBe(false);
+    expect(
+      isLoopbackDbUrl("postgresql://krypto@127.0.0.1:5433/krypto"),
+    ).toBe(true);
+    expect(isLoopbackDbUrl("postgresql://krypto@localhost/krypto")).toBe(true);
+    expect(isLoopbackDbUrl("postgresql://krypto@[::1]/krypto")).toBe(true);
+    expect(
+      isLoopbackDbUrl(
+        "postgresql://krypto@127.0.0.1/krypto?host=db.example.test",
+      ),
+    ).toBe(false);
+    expect(
+      isLoopbackDbUrl(
+        "postgresql://krypto@localhost/krypto?hostaddr=203.0.113.1",
+      ),
+    ).toBe(false);
+    expect(
+      isLoopbackDbUrl(
+        "postgresql://krypto@localhost/krypto?service=remote-target",
+      ),
+    ).toBe(false);
+    expect(isLoopbackDbUrl("postgresql://krypto@127.1/krypto")).toBe(false);
+    expect(
+      isLoopbackDbUrl("postgresql://krypto@2130706433/krypto"),
+    ).toBe(false);
+    expect(isLoopbackDbUrl("not-a-url")).toBe(false);
   });
 
   const azureOpenAI = () => ({ baseURL: "x", deployment: "z" });
@@ -370,7 +392,7 @@ describe("production and credential refusal", () => {
     ).toThrow(/Azure OpenAI configuration/);
   });
 
-  it("refuses production node env and production databases for smoke", () => {
+  it("refuses production node env and non-loopback databases for smoke", () => {
     expect(() =>
       assertSmokeAllowed(
         { allowNetworkSmoke: true },
@@ -383,11 +405,11 @@ describe("production and credential refusal", () => {
         { allowNetworkSmoke: true },
         {
           NODE_ENV: "development",
-          DIRECT_URL: "postgresql://u:p@db.x.supabase.co:5432/postgres",
+          DIRECT_URL: "postgresql://krypto@db.example.test:5432/krypto",
         },
         azureOpenAI,
       ),
-    ).toThrow(/production-looking DIRECT_URL/);
+    ).toThrow(/non-loopback or invalid DIRECT_URL/);
   });
 
   it("passes smoke gating when opted in with real credentials", () => {

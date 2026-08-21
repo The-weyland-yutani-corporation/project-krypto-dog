@@ -54,7 +54,7 @@ under `.github/agents/` name the scoped file for their area.
 | --- | --- | --- |
 | Agent runtime / decision loop | `src/agent/**` | [`src/agent/AGENTS.md`](./src/agent/AGENTS.md) |
 | Trading policy / paper executor | `src/trading/**` | [`src/trading/AGENTS.md`](./src/trading/AGENTS.md) |
-| Schema / migrations / seed | `src/db/**`, `drizzle/**`, `supabase/migrations/**` | [`src/db/AGENTS.md`](./src/db/AGENTS.md) |
+| Schema / migrations / seed | `src/db/**`, `drizzle/**` | [`src/db/AGENTS.md`](./src/db/AGENTS.md) |
 | Agentic workflows (GH-AW) | `.github/workflows/**` | [`.github/workflows/AGENTS.md`](./.github/workflows/AGENTS.md) |
 | Frontend / admin UI | `src/app/**`, `src/components/**` | [`DESIGN.md`](./DESIGN.md) |
 | API routes / tools / lib | `src/app/api/**`, `src/tools/**`, `src/lib/**` | root + `src/agent`, `src/trading` |
@@ -97,7 +97,7 @@ Path classification is data in
 - **Security review** — `.github/**`, admin/auth API routes, deployment, auth/
   CSRF/secure-compare libs, `src/proxy.ts`, `.env.example`, build/manifest files.
 - **Trading safety review** — `src/agent|backtest|db|guardrails|tools|trading/`,
-  `src/app/api/agent/`, `drizzle/`, `supabase/migrations/`, `specs/rfcs/`.
+  `src/app/api/agent/`, `drizzle/`, `specs/rfcs/`.
 
 ## Merge & authority policy
 

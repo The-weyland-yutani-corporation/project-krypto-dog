@@ -1,6 +1,10 @@
--- Run only after the disabled target smoke and attended shadow promotion run pass.
--- Enable pg_cron and pg_net through the reviewed Supabase extension controls
--- before running this operation.
+-- TEST FIXTURE ONLY - LEGACY PRE-0007 INPUT.
+-- DO NOT RUN THIS FILE AGAINST A REAL, SHARED, OR PRODUCTION DATABASE.
+-- It preserves the retired hosted-baseline cron program solely for disposable
+-- migration tests that reproduce the state before Drizzle migration 0007.
+--
+-- The historical operator preconditions are intentionally not reproduced here;
+-- the migration test runner creates every dependency in a disposable database.
 BEGIN;
 
 DO $$

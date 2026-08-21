@@ -21,6 +21,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { isLoopbackPostgresUrl } from "../src/lib/postgres-url";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -268,16 +269,9 @@ export function assertHarnessRollout(mode: string): void {
   }
 }
 
-/** Heuristic for a managed/production database endpoint. */
-export function isProductionLikeDbUrl(url: string): boolean {
-  return (
-    /supabase\.co/i.test(url) ||
-    /amazonaws\.com/i.test(url) ||
-    /\.rds\./i.test(url) ||
-    /azure\.com/i.test(url) ||
-    /neon\.tech/i.test(url) ||
-    /render\.com/i.test(url)
-  );
+/** True only for a parsed PostgreSQL URL with an explicit loopback host. */
+export function isLoopbackDbUrl(url: string): boolean {
+  return isLoopbackPostgresUrl(url);
 }
 
 // ---------------------------------------------------------------------------
@@ -511,7 +505,7 @@ export function buildSmokeEnv(input: SmokeEnvInput): Record<string, string> {
 
 /**
  * Gate the smoke command: explicit opt-in, valid Azure OpenAI v1 configuration,
- * and never a production node env or a production-looking database.
+ * and never a production node env or a non-loopback database.
  */
 export function assertSmokeAllowed(
   options: SmokeOptions,
@@ -534,9 +528,9 @@ export function assertSmokeAllowed(
   }
   for (const key of ["DATABASE_URL", "DIRECT_URL"] as const) {
     const value = env[key];
-    if (value && isProductionLikeDbUrl(value)) {
+    if (value && !isLoopbackDbUrl(value)) {
       throw new Error(
-        `Refusing to smoke against a production-looking ${key}.`,
+        `Refusing to smoke against a non-loopback or invalid ${key}.`,
       );
     }
   }

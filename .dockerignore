@@ -30,7 +30,6 @@ tests
 
 # Local database / infra tooling not needed inside application images
 docker-compose.yml
-supabase
 infra
 
 # CI artifacts
