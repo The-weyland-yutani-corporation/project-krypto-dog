@@ -9,6 +9,7 @@ import {
   agentJournal,
 } from "../src/db/schema";
 import { INITIAL_CAPITAL_USD } from "../src/lib/config";
+import { isLoopbackPostgresUrl } from "../src/lib/postgres-url";
 
 async function main() {
   const url = process.env.DATABASE_URL;
@@ -16,13 +17,12 @@ async function main() {
     throw new Error("DATABASE_URL is not set");
   }
 
-  const looksLikeProd =
-    /supabase\.co/i.test(url) ||
-    /amazonaws\.com/i.test(url) ||
-    /azure\.com/i.test(url);
-  if (looksLikeProd && process.env.ALLOW_DESTRUCTIVE_RESET !== "yes") {
+  if (
+    !isLoopbackPostgresUrl(url) &&
+    process.env.ALLOW_DESTRUCTIVE_RESET !== "yes"
+  ) {
     throw new Error(
-      "Refusing to run destructive reset against what looks like a production DATABASE_URL. " +
+      "Refusing to run destructive reset against a non-loopback or invalid DATABASE_URL. " +
         "Set ALLOW_DESTRUCTIVE_RESET=yes to override.",
     );
   }

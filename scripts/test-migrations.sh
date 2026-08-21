@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LEGACY_CRON_FIXTURE_DIR="$ROOT_DIR/tests/fixtures/legacy-supabase-cron"
+ENABLE_LEGACY_CRON_FIXTURE="$LEGACY_CRON_FIXTURE_DIR/enable-krypto-cron.fixture.sql"
+DISABLE_LEGACY_CRON_FIXTURE="$LEGACY_CRON_FIXTURE_DIR/disable-krypto-cron.fixture.sql"
 TEMP_DIR="$(mktemp -d)"
 PORT="$(node -e "const net=require('net');const server=net.createServer();server.listen(0,'127.0.0.1',()=>{console.log(server.address().port);server.close();});")"
 PGDATA="$TEMP_DIR/postgres"
@@ -75,7 +78,7 @@ with_role_credentials() {
 # scenarios that intentionally exercise a specific historical migration
 # state (e.g. "current as of 0006") stay pinned to that state regardless of
 # which migrations have since been added to drizzle/ (such as 0007's
-# retirement of the obsolete Supabase HTTP cron functions). Echoes the path
+# retirement of obsolete hosted HTTP cron functions). Echoes the path
 # to the generated config file.
 build_through_config() {
   local max_idx="$1"
@@ -127,9 +130,10 @@ NODE
 }
 
 # Pinned to the pre-Azure-transition (0006-current) migration set. Several
-# scenarios below intentionally emulate a Supabase target still relying on
-# the now-retired pg_cron/pg_net HTTP-invocation functions; pinning keeps
-# that emulation valid regardless of what is newest in drizzle/.
+# scenarios below intentionally reproduce the retired hosted PostgreSQL state
+# that still relied on pg_cron/pg_net HTTP-invocation functions. The SQL comes
+# only from the conspicuously labeled test fixtures above and is run exclusively
+# against disposable databases pinned before migration 0007.
 through_0006_config="$(build_through_config 6 0006)"
 
 psql "$admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
@@ -372,7 +376,7 @@ SQL
 
 if absent_mode_error="$(PGOPTIONS="-c search_path=test_support,pg_catalog,public" \
   psql "$fresh_url" -v ON_ERROR_STOP=1 \
-  -f supabase/operations/enable-krypto-cron.sql 2>&1)"; then
+  -f "$ENABLE_LEGACY_CRON_FIXTURE" 2>&1)"; then
   echo "Cron enablement accepted an absent Vault rollout mode." >&2
   exit 1
 fi
@@ -410,7 +414,7 @@ SQL
 
 if null_mode_error="$(PGOPTIONS="-c search_path=test_support,pg_catalog,public" \
   psql "$fresh_url" -v ON_ERROR_STOP=1 \
-  -f supabase/operations/enable-krypto-cron.sql 2>&1)"; then
+  -f "$ENABLE_LEGACY_CRON_FIXTURE" 2>&1)"; then
   echo "Cron enablement accepted a NULL Vault rollout mode." >&2
   exit 1
 fi
@@ -667,7 +671,7 @@ fi
 # --- Azure PostgreSQL safety transition (drizzle/0007): fresh install ---
 #
 # A clean target migrated to the current (default, full) migration set must
-# have both obsolete Supabase HTTP cron functions absent and the
+# have both obsolete hosted HTTP cron functions absent and the
 # least-privilege krypto_runtime group role established with the exact,
 # fail-closed per-table privilege matrix (no more, no less): AgentState
 # SELECT+UPDATE only; AgentRun SELECT+INSERT+UPDATE; TradeExecution
@@ -679,6 +683,7 @@ azure_0007_hash="fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e7
 
 create_database azure_target
 DIRECT_URL="$azure_target_url" npx drizzle-kit migrate >/dev/null
+DIRECT_URL="$azure_target_url" npx tsx scripts/seed.ts >/dev/null
 
 azure_fresh_result="$(psql "$azure_target_url" -Atc \
   'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
@@ -809,6 +814,7 @@ azure_login_password_v1="krypto-test-pw-$(node -e 'console.log(Math.random().toS
 azure_login_password_v2="krypto-test-pw-$(node -e 'console.log(Math.random().toString(36).slice(2))')"
 azure_runtime_url_v1="$(with_role_credentials "$azure_target_url" "$azure_login_role" "$azure_login_password_v1")"
 azure_runtime_url_v2="$(with_role_credentials "$azure_target_url" "$azure_login_role" "$azure_login_password_v2")"
+azure_runtime_url_current="$azure_runtime_url_v1"
 
 DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_v1" \
   AZURE_RUNTIME_LOGIN_ROLE="$azure_login_role" \
@@ -921,6 +927,7 @@ HBA
     echo "Rotated password did not authenticate over TCP: $(cat "$TEMP_DIR/auth-v2.log")" >&2
     exit 1
   fi
+  azure_runtime_url_current="$azure_runtime_url_v2"
 
   # The runtime login role must inherit exactly the matrix via membership,
   # and nothing more: it must not be able to remove rows.
@@ -935,6 +942,88 @@ HBA
     exit 1
   fi
 fi
+
+# --- Azure-only deployment preflight on the fully migrated target ---
+#
+# The retired cron fixtures are never applied here. All current preflight
+# assertions use the fully migrated database, the distinct admin/runtime
+# connections, and the exact krypto_runtime membership boundary established
+# above.
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
+  npx tsx scripts/test-deployment-preflight.ts
+
+psql "$azure_target_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+GRANT SELECT ON TABLE "krypto"."AgentState" TO PUBLIC;
+CREATE OR REPLACE FUNCTION "krypto"."invoke_agent_run"()
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  RETURN 0;
+END
+$$;
+SQL
+azure_tampered_report="$TEMP_DIR/azure-tampered-preflight.json"
+set +e
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
+  npx tsx scripts/deployment-preflight.ts \
+  --out "$azure_tampered_report" >/dev/null
+azure_tampered_status=$?
+set -e
+if [[ "$azure_tampered_status" -ne 2 ]]; then
+  echo "Tampered Azure deployment preflight returned $azure_tampered_status, expected 2." >&2
+  exit 1
+fi
+node - "$azure_tampered_report" <<'NODE'
+const fs = require("node:fs");
+const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+for (const blocker of [
+  "obsolete-invocation-functions",
+  "restricted-role-privileges",
+]) {
+  if (!report.blockers.includes(blocker)) {
+    throw new Error(`Tampered Azure preflight did not report ${blocker}.`);
+  }
+}
+NODE
+psql "$azure_target_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+DROP FUNCTION "krypto"."invoke_agent_run"();
+REVOKE SELECT ON TABLE "krypto"."AgentState" FROM PUBLIC;
+SQL
+
+psql "$azure_target_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+CREATE SCHEMA net;
+CREATE TABLE net.http_request_queue (
+  id bigint GENERATED ALWAYS AS IDENTITY,
+  url text NOT NULL
+);
+INSERT INTO net.http_request_queue (url)
+VALUES ('https://example.test/api/agent/run');
+SQL
+azure_pending_report="$TEMP_DIR/azure-pending-http-preflight.json"
+set +e
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
+  npx tsx scripts/deployment-preflight.ts \
+  --out "$azure_pending_report" >/dev/null
+azure_pending_status=$?
+set -e
+if [[ "$azure_pending_status" -ne 2 ]]; then
+  echo "Pending-request Azure preflight returned $azure_pending_status, expected 2." >&2
+  exit 1
+fi
+node - "$azure_pending_report" <<'NODE'
+const fs = require("node:fs");
+const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (!report.blockers.includes("pending-http-requests")) {
+  throw new Error("Azure preflight accepted a queued Krypto HTTP request.");
+}
+NODE
+psql "$azure_target_url" -v ON_ERROR_STOP=1 \
+  -c "DELETE FROM net.http_request_queue;" >/dev/null
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
+  npx tsx scripts/test-deployment-preflight.ts
 
 # --- Azure PostgreSQL safety transition: idempotent, password-free membership bootstrap ---
 #
@@ -1009,17 +1098,14 @@ DATABASE_URL="$orchestration_url" npx tsx scripts/test-run-flow.ts
 
 create_database operations
 # Pinned to 0006 (see through_0006_config above): this database exercises
-# the legacy Supabase pg_cron/pg_net HTTP-invocation functions extensively
-# below (cron enable/disable SQL, function-integrity preflight checks, the
-# unowned scripts/test-deployment-preflight.ts harness), which 0007
-# permanently retires.
+# the retired hosted pg_cron/pg_net SQL fixtures and their integrity guards.
+# Current deployment preflight never runs here; it runs only against the fully
+# migrated Azure-shaped database above.
 DIRECT_URL="$operations_url" \
   npx drizzle-kit migrate --config "$through_0006_config" >/dev/null
 DIRECT_URL="$operations_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$operations_url" npx tsx scripts/test-operations-routes.ts
 DIRECT_URL="$operations_url" npx tsx scripts/test-target-smoke-evidence.ts
-DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
-  npx tsx scripts/test-deployment-preflight.ts
 
 create_database migration_only
 psql "$migration_only_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
@@ -1047,7 +1133,7 @@ psql "$operations_url" -v ON_ERROR_STOP=1 \
   -c "ALTER FUNCTION krypto.invoke_agent_run() SET statement_timeout = '1ms';" \
   >/dev/null
 if config_error="$(psql "$operations_url" -v ON_ERROR_STOP=1 \
-  -f supabase/operations/enable-krypto-cron.sql 2>&1)"; then
+  -f "$ENABLE_LEGACY_CRON_FIXTURE" 2>&1)"; then
   echo "Cron enablement accepted an additional function setting." >&2
   exit 1
 fi
@@ -1055,29 +1141,9 @@ if [[ "$config_error" != *"Agent-run cron function failed integrity verification
   echo "Cron enablement did not reject non-canonical function settings." >&2
   exit 1
 fi
-config_report="$TEMP_DIR/function-config-preflight.json"
-set +e
-DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
-  npx tsx scripts/deployment-preflight.ts \
-  --out "$config_report" >/dev/null
-config_status=$?
-set -e
-if [[ "$config_status" -ne 2 ]]; then
-  echo "Function-config preflight returned $config_status, expected 2." >&2
-  exit 1
-fi
-node - "$config_report" <<'NODE'
-const fs = require("node:fs");
-const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-if (!report.blockers.includes("fixed-cron-function-integrity")) {
-  throw new Error("Preflight accepted additional function settings.");
-}
-NODE
 psql "$operations_url" -v ON_ERROR_STOP=1 \
   -c "ALTER FUNCTION krypto.invoke_agent_run() RESET statement_timeout;" \
   >/dev/null
-DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
-  npx tsx scripts/test-deployment-preflight.ts
 
 psql "$operations_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 GRANT SELECT ON TABLE "krypto"."AgentState" TO PUBLIC;
@@ -1093,7 +1159,7 @@ END
 $$;
 SQL
 if tamper_error="$(psql "$operations_url" -v ON_ERROR_STOP=1 \
-  -f supabase/operations/enable-krypto-cron.sql 2>&1)"; then
+  -f "$ENABLE_LEGACY_CRON_FIXTURE" 2>&1)"; then
   echo "Cron enablement accepted a tampered invocation function." >&2
   exit 1
 fi
@@ -1101,35 +1167,10 @@ if [[ "$tamper_error" != *"Agent-run cron function failed integrity verification
   echo "Cron enablement failed before proving function-integrity rejection." >&2
   exit 1
 fi
-tampered_report="$TEMP_DIR/tampered-preflight.json"
-set +e
-DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
-  npx tsx scripts/deployment-preflight.ts \
-  --out "$tampered_report" >/dev/null
-tampered_status=$?
-set -e
-if [[ "$tampered_status" -ne 2 ]]; then
-  echo "Tampered deployment preflight returned $tampered_status, expected 2." >&2
-  exit 1
-fi
-node - "$tampered_report" <<'NODE'
-const fs = require("node:fs");
-const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-for (const blocker of [
-  "fixed-cron-function-integrity",
-  "restricted-role-privileges",
-]) {
-  if (!report.blockers.includes(blocker)) {
-    throw new Error(`Tampered preflight did not report ${blocker}.`);
-  }
-}
-NODE
 psql "$operations_url" -v ON_ERROR_STOP=1 \
   -f drizzle/0002_secure_private_schema.sql >/dev/null
 psql "$operations_url" -v ON_ERROR_STOP=1 \
   -f drizzle/0006_reject_null_cron_rollout_mode.sql >/dev/null
-DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
-  npx tsx scripts/test-deployment-preflight.ts
 
 psql "$operations_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 CREATE SCHEMA cron;
@@ -1174,24 +1215,6 @@ CREATE TABLE net.http_request_queue (
 INSERT INTO net.http_request_queue (url)
 VALUES ('https://example.test/api/agent/run');
 SQL
-pending_report="$TEMP_DIR/pending-http-preflight.json"
-set +e
-DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
-  npx tsx scripts/deployment-preflight.ts \
-  --out "$pending_report" >/dev/null
-pending_status=$?
-set -e
-if [[ "$pending_status" -ne 2 ]]; then
-  echo "Pending-request preflight returned $pending_status, expected 2." >&2
-  exit 1
-fi
-node - "$pending_report" <<'NODE'
-const fs = require("node:fs");
-const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-if (!report.blockers.includes("pending-http-requests")) {
-  throw new Error("Preflight accepted a queued Krypto HTTP request.");
-}
-NODE
 if DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
   npx tsx scripts/create-verified-backup.ts \
   --out "$TEMP_DIR/pending-http-backup" >/dev/null 2>&1; then
@@ -1199,7 +1222,7 @@ if DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
   exit 1
 fi
 psql "$operations_url" -v ON_ERROR_STOP=1 \
-  -f supabase/operations/disable-krypto-cron.sql >/dev/null
+  -f "$DISABLE_LEGACY_CRON_FIXTURE" >/dev/null
 disabled_result="$(psql "$operations_url" -Atc \
   'SELECT (SELECT count(*) FROM cron.job) || '\''|'\'' ||
           (SELECT count(*) FROM net.http_request_queue);')"
@@ -1209,7 +1232,7 @@ if [[ "$disabled_result" != "0|0" ]]; then
 fi
 
 backup_dir="$TEMP_DIR/verified-backup"
-DIRECT_URL="$operations_url" DATABASE_URL="$operations_url" \
+DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
   npx tsx scripts/create-verified-backup.ts \
   --out "$backup_dir" \
   --restore-test-url "$admin_url" >/dev/null
@@ -1217,7 +1240,7 @@ node - "$backup_dir/manifest.json" <<'NODE'
 const fs = require("node:fs");
 const manifest = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 if (
-  manifest.schemaVersion !== "1.3.0" ||
+  manifest.schemaVersion !== "1.4.0" ||
   manifest.verified !== true ||
   !manifest.source?.systemIdentifier ||
   !manifest.source?.runtimeTarget ||
@@ -1229,4 +1252,4 @@ if (
 }
 NODE
 
-echo "Migration tests passed for fresh install, original-0005-to-0006 rollout upgrade, private-schema security, cron rollout-mode fail-closed validation, decimal round-trip, idempotency constraints, v2 reconciliation, quarantine, transactional execution, run orchestration, operations routes, target-smoke evidence, deployment preflight, verified backup restoration, and the Azure PostgreSQL safety transition (0007 fresh install and 0006-to-0007 upgrade with row preservation, retirement of the obsolete Supabase HTTP cron functions, the exact fail-closed per-table krypto_runtime privilege matrix with no excess grants, idempotent password-based runtime-login bootstrap with real scram-sha-256 authentication and rotation proof where the cluster is self-managed, username-mismatch and elevated-role rejection, and the idempotent password-free membership-only bootstrap path)."
+echo "Migration tests passed for fresh install, original-0005-to-0006 rollout upgrade, private-schema security, retired cron-fixture fail-closed validation, decimal round-trip, idempotency constraints, v2 reconciliation, quarantine, transactional execution, run orchestration, operations routes, target-smoke evidence, Azure-only deployment preflight, verified backup restoration, and the Azure PostgreSQL safety transition (0007 fresh install and 0006-to-0007 upgrade with row preservation, retirement of obsolete hosted HTTP cron functions, the exact fail-closed per-table krypto_runtime privilege matrix with no excess grants, idempotent password-based runtime-login bootstrap with real scram-sha-256 authentication and rotation proof where the cluster is self-managed, username-mismatch and elevated-role rejection, and the idempotent password-free membership-only bootstrap path)."

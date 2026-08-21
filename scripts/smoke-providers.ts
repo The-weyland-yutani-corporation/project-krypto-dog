@@ -5,7 +5,6 @@ import { runReadOnlyProviderSmoke } from "@/deployment/provider-smoke";
 
 import {
   assertSmokeAllowed,
-  isProductionLikeDbUrl,
   parseSmokeOptions,
 } from "./agent-harness";
 
@@ -20,9 +19,6 @@ import {
 async function main(): Promise<void> {
   const options = parseSmokeOptions(process.argv.slice(2));
   assertSmokeAllowed(options, process.env, resolveAzureOpenAIConfig);
-  if (isProductionLikeDbUrl(process.env.DATABASE_URL ?? "")) {
-    throw new Error("Refusing to run against a production-looking DATABASE_URL.");
-  }
 
   // Force the shadow, read-only posture for provider selection.
   process.env.AGENT_HARNESS_MODE = "smoke";
