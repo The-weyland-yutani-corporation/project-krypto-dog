@@ -39,9 +39,128 @@ safe-outputs:
     target: "*"
     allowed: [needs-qa, security-review, trading-safety, docs-sync, ready-for-human-review]
     max: 5
-  create-check-run:
-    name: Agentic code review
-    max: 1
+  threat-detection:
+    continue-on-error: false
+  jobs:
+    create-pr-check:
+      description: Create the Agentic code review check on the reviewed PR head.
+      runs-on: ubuntu-latest
+      if: ${{ needs.agent.result == 'success' && needs.detection.result == 'success' && needs.detection.outputs.detection_success == 'true' }}
+      inputs:
+        pull_request_number:
+          description: Pull request number that was reviewed
+          required: true
+          type: string
+        head_sha:
+          description: Exact 40-character pull request head SHA that was reviewed
+          required: true
+          type: string
+        conclusion:
+          description: Check conclusion
+          required: true
+          type: string
+        title:
+          description: Check title
+          required: true
+          type: string
+        summary:
+          description: Markdown check summary
+          required: true
+          type: string
+      permissions:
+        checks: write
+        pull-requests: read
+      env:
+        CHECK_NAME: Agentic code review
+        EXPECTED_PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+        EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head_sha }}
+      steps:
+        - name: Create PR-head check
+          uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+          with:
+            script: |
+              const fs = require("node:fs");
+              const data = JSON.parse(
+                fs.readFileSync(process.env.GH_AW_AGENT_OUTPUT, "utf8"),
+              );
+              const items = (data.items || []).filter(
+                (item) => item.type === "create_pr_check",
+              );
+              if (items.length !== 1) {
+                core.setFailed(`Expected exactly one create_pr_check item; found ${items.length}`);
+                return;
+              }
+              const item = items[0];
+              const pullNumber = Number(process.env.EXPECTED_PR_NUMBER);
+              const expectedHeadSha = process.env.EXPECTED_HEAD_SHA || "";
+              const validConclusions = new Set([
+                "success",
+                "failure",
+                "neutral",
+                "cancelled",
+                "skipped",
+                "timed_out",
+                "action_required",
+              ]);
+              if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+                core.setFailed("Trusted pull request context is unavailable");
+                return;
+              }
+              if (Number(item.pull_request_number) !== pullNumber) {
+                core.setFailed("Agent pull request number does not match trusted context");
+                return;
+              }
+              if (
+                typeof item.head_sha !== "string" ||
+                !/^[0-9a-f]{40}$/.test(item.head_sha)
+              ) {
+                core.setFailed("head_sha must be a lowercase 40-character SHA");
+                return;
+              }
+              if (!validConclusions.has(item.conclusion)) {
+                core.setFailed(`Invalid conclusion: ${item.conclusion}`);
+                return;
+              }
+              if (
+                typeof item.title !== "string" ||
+                item.title.length === 0 ||
+                item.title.length > 256 ||
+                typeof item.summary !== "string" ||
+                item.summary.length === 0 ||
+                item.summary.length > 65535
+              ) {
+                core.setFailed("title or summary is empty or exceeds GitHub limits");
+                return;
+              }
+              const { data: pull } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullNumber,
+              });
+              const trustedHeadSha = expectedHeadSha || pull.head.sha;
+              if (
+                pull.head.sha !== trustedHeadSha ||
+                item.head_sha !== trustedHeadSha
+              ) {
+                core.setFailed(
+                  `PR #${pullNumber} head does not match trusted reviewed SHA`,
+                );
+                return;
+              }
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: process.env.CHECK_NAME,
+                head_sha: trustedHeadSha,
+                status: "completed",
+                conclusion: item.conclusion,
+                completed_at: new Date().toISOString(),
+                details_url: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+                output: {
+                  title: item.title,
+                  summary: item.summary,
+                },
+              });
   create-issue:
     title-prefix: "[review-followup] "
     labels: [agentic-factory, needs-ai-review]
@@ -80,7 +199,8 @@ Review the PR for real defects only.
 - For frontend/admin/chart changes, check that the PR follows root `DESIGN.md`, uses shadcn/ui + Tailwind primitives, and avoids default unstyled chart output.
 - Do not comment on style or formatting unless it causes a real defect.
 - Use `add-labels` to escalate trading, auth/security, QA, or docs/spec concerns to specialized review labels.
-- Always create exactly one `Agentic code review` check on the target PR's current head SHA.
+- Always call `create-pr-check` exactly once for a PR result, passing the PR
+  number, exact reviewed head SHA, conclusion, title, and summary.
 - Set the check to `success` when this code review finds no required fix or unresolved correctness concern. Adding a specialist label does not fail this check; the deterministic merge policy independently requires the corresponding specialist check.
 - Set the check to `failure` only for a required fix, unresolved correctness concern, incomplete review, or the deterministic E2E marker case above.
 
@@ -89,5 +209,5 @@ Review the PR for real defects only.
 - Use `add-comment` for PR findings.
 - Use `add-labels` for specialized review escalation.
 - Use `create-issue` only for cross-cutting follow-up beyond the PR.
-- Use `create-check-run` for the required pass/fail result.
+- Use `create-pr-check` for the required pass/fail result.
 - Use `noop` only when no open PR can be resolved from the trigger.

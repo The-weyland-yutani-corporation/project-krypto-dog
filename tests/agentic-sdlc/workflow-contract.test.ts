@@ -131,8 +131,8 @@ describe("agentic SDLC workflow contracts", () => {
   });
 
   it("emits machine-readable reviews and retains head-refresh requirements", () => {
-    expect(qaReview).toContain("name: QA verification");
-    expect(qaReview).toContain("create-check-run:");
+    expect(qaReview).toContain("CHECK_NAME: QA verification");
+    expect(qaReview).toContain("create-pr-check:");
     expect(qaReview).not.toContain("remove-labels:");
     expect(securityReview).not.toContain("remove-labels:");
     expect(tradingSafetyReview).not.toContain("remove-labels:");
@@ -154,14 +154,28 @@ describe("agentic SDLC workflow contracts", () => {
       qaReview,
       securityReview,
       tradingSafetyReview,
-      selfHeal,
     ]) {
       expect(workflow).toContain("correlation_id:");
       expect(workflow).toContain("head_sha:");
       expect(workflow).toContain("pre-agent-steps:");
       expect(workflow).toContain("Restore trusted agent instructions");
       expect(workflow).toContain("Verify dispatched PR head");
+      expect(workflow).toContain("create-pr-check:");
+      expect(workflow).toContain("checks: write");
+      expect(workflow).toContain("pull-requests: read");
+      expect(workflow).toContain("EXPECTED_PR_NUMBER:");
+      expect(workflow).toContain("EXPECTED_HEAD_SHA:");
+      expect(workflow).toContain("Agent pull request number does not match trusted context");
+      expect(workflow).toContain(
+        "needs.detection.outputs.detection_success == 'true'",
+      );
+      expect(workflow).toContain("continue-on-error: false");
     }
+    expect(selfHeal).toContain("correlation_id:");
+    expect(selfHeal).toContain("head_sha:");
+    expect(selfHeal).toContain("pre-agent-steps:");
+    expect(selfHeal).toContain("Restore trusted agent instructions");
+    expect(selfHeal).toContain("Verify dispatched PR head");
   });
 
   it("automates only exact-SHA dev delivery from main", () => {
@@ -283,12 +297,12 @@ describe("agentic SDLC workflow contracts", () => {
       expect(workflow).toContain(
         'bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]',
       );
-      expect(workflow).toContain("create-check-run:");
+      expect(workflow).toContain("create-pr-check:");
       expect(workflow).toContain("For every pull request");
     }
-    expect(securityReview).toContain("name: Security review");
+    expect(securityReview).toContain("CHECK_NAME: Security review");
     expect(tradingSafetyReview).toContain(
-      "name: Trading safety review",
+      "CHECK_NAME: Trading safety review",
     );
     expect(reconciler).toContain("Security Review");
     expect(reconciler).toContain("Trading Safety Review");
