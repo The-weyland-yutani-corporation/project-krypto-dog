@@ -46,6 +46,10 @@ interface WorkflowRun {
   name: string;
   status: string;
   conclusion: string | null;
+  head_sha?: string;
+  head_branch?: string;
+  event?: string;
+  display_title?: string;
 }
 
 interface CheckRun {
@@ -64,6 +68,7 @@ interface ApiParams {
   pull_number?: number;
   workflow_id?: string;
   head_sha?: string;
+  check_run_id?: number;
   ref?: string;
   run_id?: number;
   issue_number?: number;
@@ -79,6 +84,8 @@ interface HarnessOptions {
   checksBySha?: Record<string, CheckRun[]>;
   runs?: Record<string, WorkflowRun[]>;
   fileErrors?: number[];
+  addLabelErrors?: number[];
+  updateCheckErrors?: number[];
   controlIssues?: Array<{ labels: Array<{ name: string }> }>;
   controlTimeline?: Array<{
     event: string;
@@ -116,6 +123,16 @@ const { reconcileAgenticPullRequests } =
 
 const repository = "VeVarunSharma/project-krypto-dog";
 
+function reconcilerContext() {
+  return {
+    repo: {
+      owner: "VeVarunSharma",
+      repo: "project-krypto-dog",
+      default_branch: "main",
+    },
+  };
+}
+
 function pullRequest(
   number: number,
   overrides: Partial<PullRequest> = {},
@@ -150,23 +167,33 @@ function runKey(workflowId: string, sha: string): string {
   return `${workflowId}:${sha}`;
 }
 
-function pullRequestInputs(number: number) {
+function dispatchMetadata(workflowId: string, number: number) {
+  const sha = `sha-${number}`;
+  return {
+    head_sha: sha,
+    correlation_id: `agentic-pr:${number}:${sha}:${workflowId}`,
+  };
+}
+
+function pullRequestInputs(workflowId: string, number: number) {
   return {
     pr: String(number),
     aw_context: JSON.stringify({
       item_type: "pull_request",
       item_number: number,
     }),
+    ...dispatchMetadata(workflowId, number),
   };
 }
 
-function targetInputs(number: number) {
+function targetInputs(workflowId: string, number: number) {
   return {
     target: String(number),
     aw_context: JSON.stringify({
       item_type: "pull_request",
       item_number: number,
     }),
+    ...dispatchMetadata(workflowId, number),
   };
 }
 
@@ -187,6 +214,8 @@ function successRun(
 function createHarness(options: HarnessOptions = {}) {
   const pullRequests = options.pullRequests ?? [pullRequest(1)];
   const fileErrors = new Set(options.fileErrors ?? []);
+  const addLabelErrors = new Set(options.addLabelErrors ?? []);
+  const updateCheckErrors = new Set(options.updateCheckErrors ?? []);
 
   const listPulls = jest.fn();
   const listFiles = jest.fn();
@@ -261,7 +290,7 @@ function createHarness(options: HarnessOptions = {}) {
         return options.commitsByPull?.[params.pull_number ?? -1] ?? [];
       }
       if (method === listForRef) {
-        return options.checksBySha?.[params.ref ?? ""] ?? [
+        const checks = options.checksBySha?.[params.ref ?? ""] ?? [
           {
             id: 40,
             name: "Agentic code review",
@@ -269,6 +298,10 @@ function createHarness(options: HarnessOptions = {}) {
             conclusion: "success",
           },
         ];
+        return checks.map((check) => ({
+          ...check,
+          ...(check.output ? { output: { ...check.output } } : {}),
+        }));
       }
       throw new Error("Unexpected paginated method");
     },
@@ -276,19 +309,30 @@ function createHarness(options: HarnessOptions = {}) {
 
   const listWorkflowRuns = jest.fn(async (params: ApiParams) => {
     const workflowId = params.workflow_id ?? "";
-    const sha = params.head_sha ?? "";
-    const configured = options.runs?.[runKey(workflowId, sha)];
-    let workflowRuns: WorkflowRun[];
-
-    if (configured) {
-      workflowRuns = configured;
-    } else if (workflowId === "ci.yml") {
-      workflowRuns = [successRun(20, "CI")];
-    } else if (workflowId === "code-review.lock.yml") {
-      workflowRuns = [successRun(30, "Code Review")];
-    } else {
-      workflowRuns = [];
-    }
+    const workflowRuns = pullRequests.flatMap((pull, index) => {
+      const key = runKey(workflowId, pull.head.sha);
+      if (Object.hasOwn(options.runs ?? {}, key)) {
+        return (options.runs?.[key] ?? []).map((run) => ({
+          ...run,
+          head_sha: run.head_sha ?? pull.head.sha,
+        }));
+      }
+      if (workflowId === "ci.yml") {
+        return [
+          successRun(20 + index, "CI", {
+            head_sha: pull.head.sha,
+          }),
+        ];
+      }
+      if (workflowId === "code-review.lock.yml") {
+        return [
+          successRun(30 + index, "Code Review", {
+            head_sha: pull.head.sha,
+          }),
+        ];
+      }
+      return [];
+    });
 
     return {
       data: {
@@ -299,11 +343,22 @@ function createHarness(options: HarnessOptions = {}) {
 
   const listForRef = jest.fn();
   const createCheckRun = jest.fn(async (_params: ApiParams) => ({}));
+  const updateCheckRun = jest.fn(async (params: ApiParams) => {
+    if (updateCheckErrors.has(params.check_run_id ?? -1)) {
+      throw new Error("check update forbidden");
+    }
+    return {};
+  });
   const createWorkflowDispatch = jest.fn(
     async (_params: ApiParams) => ({}),
   );
   const approveWorkflowRun = jest.fn(async (_params: ApiParams) => ({}));
-  const addLabels = jest.fn(async (_params: ApiParams) => ({}));
+  const addLabels = jest.fn(async (params: ApiParams) => {
+    if (addLabelErrors.has(params.issue_number ?? -1)) {
+      throw new Error("label update forbidden");
+    }
+    return {};
+  });
   const removeLabel = jest.fn(async (_params: ApiParams) => ({}));
   const createComment = jest.fn(async (_params: ApiParams) => ({}));
   getIssue.mockImplementation(async (params: ApiParams) => ({
@@ -358,6 +413,7 @@ function createHarness(options: HarnessOptions = {}) {
       checks: {
         create: createCheckRun,
         listForRef,
+        update: updateCheckRun,
       },
       issues: {
         addLabels,
@@ -387,6 +443,7 @@ function createHarness(options: HarnessOptions = {}) {
       createComment,
       approveWorkflowRun,
       createCheckRun,
+      updateCheckRun,
       createWorkflowDispatch,
       listForRef,
       listForRepo,
@@ -405,12 +462,7 @@ async function reconcile(
   const harness = createHarness(options);
   await reconcileAgenticPullRequests({
     github: harness.github,
-    context: {
-      repo: {
-        owner: "VeVarunSharma",
-        repo: "project-krypto-dog",
-      },
-    },
+    context: reconcilerContext(),
     core: harness.core,
   });
   return harness;
@@ -792,9 +844,120 @@ describe("agentic PR reconciler integration", () => {
     });
 
     expect(mocks.createCheckRun).not.toHaveBeenCalled();
+    expect(mocks.updateCheckRun).not.toHaveBeenCalled();
   });
 
-  it("dispatches missing CI and agentic review on the PR head", async () => {
+  it("updates the active policy check and cancels superseded active checks", async () => {
+    const { mocks } = await reconcile({
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+            output: {
+              title: "Agentic merge policy",
+              summary: "Waiting for Agentic code review",
+            },
+          },
+          {
+            id: 42,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+            output: {
+              title: "Agentic merge policy",
+              summary: "Waiting for QA verification",
+            },
+          },
+        ],
+      },
+    });
+
+    expect(mocks.createCheckRun).not.toHaveBeenCalled();
+    expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        check_run_id: 41,
+        name: "Agentic merge policy",
+        status: "completed",
+        conclusion: "cancelled",
+        output: {
+          title: "Agentic merge policy",
+          summary: "Superseded by a newer reconciliation for this head",
+        },
+      }),
+    );
+    expect(mocks.updateCheckRun).toHaveBeenCalledWith({
+      owner: "VeVarunSharma",
+      repo: "project-krypto-dog",
+      check_run_id: 42,
+      name: "Agentic merge policy",
+      status: "completed",
+      conclusion: "success",
+      details_url: `https://github.com/${repository}/pull/1`,
+      output: {
+        title: "Agentic merge policy",
+        summary: "Current-head agent reviews approve this PR",
+      },
+    });
+    expect(mocks.paginate).toHaveBeenCalledWith(
+      mocks.listForRef,
+      expect.objectContaining({
+        ref: "sha-1",
+        filter: "all",
+      }),
+    );
+  });
+
+  it("creates a new pending check when a completed result is invalidated", async () => {
+    const { mocks } = await reconcile({
+      filesByPull: {
+        1: [{ filename: "src/agent/run.ts", status: "modified" }],
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "Agentic merge policy",
+            status: "completed",
+            conclusion: "success",
+            output: {
+              title: "Agentic merge policy",
+              summary: "Current-head agent reviews approve this PR",
+            },
+          },
+        ],
+      },
+    });
+
+    expect(mocks.updateCheckRun).not.toHaveBeenCalled();
+    expect(mocks.createCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Agentic merge policy",
+        head_sha: "sha-1",
+        status: "in_progress",
+        output: {
+          title: "Agentic merge policy",
+          summary: "Waiting for QA verification",
+        },
+      }),
+    );
+  });
+
+  it("dispatches missing CI and agentic review from the trusted default branch", async () => {
     const { mocks } = await reconcile({
       runs: {
         [runKey("ci.yml", "sha-1")]: [],
@@ -806,15 +969,15 @@ describe("agentic PR reconciler integration", () => {
       owner: "VeVarunSharma",
       repo: "project-krypto-dog",
       workflow_id: "ci.yml",
-      ref: "docs/agent-update-1",
-      inputs: {},
+      ref: "main",
+      inputs: dispatchMetadata("ci.yml", 1),
     });
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
       repo: "project-krypto-dog",
       workflow_id: "code-review.lock.yml",
-      ref: "docs/agent-update-1",
-      inputs: pullRequestInputs(1),
+      ref: "main",
+      inputs: pullRequestInputs("code-review.lock.yml", 1),
     });
     expect(
       dispatchedWorkflow(
@@ -853,23 +1016,97 @@ describe("agentic PR reconciler integration", () => {
       owner: "VeVarunSharma",
       repo: "project-krypto-dog",
       workflow_id: "qa-test-plan.lock.yml",
-      ref: "docs/agent-update-1",
-      inputs: targetInputs(1),
+      ref: "main",
+      inputs: targetInputs("qa-test-plan.lock.yml", 1),
     });
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
       repo: "project-krypto-dog",
       workflow_id: "security-review.lock.yml",
-      ref: "docs/agent-update-1",
-      inputs: targetInputs(1),
+      ref: "main",
+      inputs: targetInputs("security-review.lock.yml", 1),
     });
     expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
       repo: "project-krypto-dog",
       workflow_id: "trading-safety-review.lock.yml",
-      ref: "docs/agent-update-1",
-      inputs: targetInputs(1),
+      ref: "main",
+      inputs: targetInputs("trading-safety-review.lock.yml", 1),
     });
+  });
+
+  it("does not duplicate a correlated trusted workflow run", async () => {
+    const workflowId = "qa-test-plan.lock.yml";
+    const { mocks } = await reconcile({
+      filesByPull: {
+        1: [{ filename: "src/agent/run.ts", status: "modified" }],
+      },
+      runs: {
+        [runKey(workflowId, "sha-1")]: [
+          successRun(51, "QA Test Plan", {
+            status: "in_progress",
+            conclusion: null,
+            head_sha: "main-sha",
+            head_branch: "main",
+            event: "workflow_dispatch",
+            display_title: `agentic-pr:1:sha-1:${workflowId}`,
+          }),
+        ],
+      },
+    });
+
+    expect(
+      dispatchedWorkflow(mocks.createWorkflowDispatch, workflowId),
+    ).toBe(false);
+  });
+
+  it("dispatches QA despite a boundary-label failure and fails loud afterward", async () => {
+    const harness = createHarness({
+      pullRequests: [pullRequest(1), pullRequest(2)],
+      filesByPull: {
+        1: [
+          {
+            filename: ".github/workflows/ci.yml",
+            status: "modified",
+          },
+        ],
+      },
+      addLabelErrors: [1],
+    });
+
+    await expect(
+      reconcileAgenticPullRequests({
+        github: harness.github,
+        context: reconcilerContext(),
+        core: harness.core,
+      }),
+    ).rejects.toThrow("Failed to reconcile 1 pull request operation(s)");
+
+    expect(harness.core.warning).toHaveBeenCalledWith(
+      "Failed to reconcile PR #1: label update forbidden",
+    );
+    expect(
+      dispatchedWorkflow(
+        harness.mocks.createWorkflowDispatch,
+        "qa-test-plan.lock.yml",
+      ),
+    ).toBe(true);
+    const qaDispatchIndex =
+      harness.mocks.createWorkflowDispatch.mock.calls.findIndex(
+        ([params]: [ApiParams]) =>
+          params.workflow_id === "qa-test-plan.lock.yml",
+      );
+    expect(
+      harness.mocks.createWorkflowDispatch.mock.invocationCallOrder[
+        qaDispatchIndex
+      ],
+    ).toBeLessThan(harness.mocks.addLabels.mock.invocationCallOrder[0]);
+    expect(harness.mocks.createCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        head_sha: "sha-2",
+        name: "Agentic merge policy",
+      }),
+    );
   });
 
   it("approves sensitive reversible work after every required agent check passes", async () => {
@@ -1029,11 +1266,16 @@ describe("agentic PR reconciler integration", () => {
       checksBySha: { "sha-1": checks },
       runs,
     });
-    expectCheckRun(
-      withApproval.mocks.createCheckRun,
-      "Agentic merge policy",
-      "completed",
-      "Current-head human and agent reviews approve boundary PR",
+    expect(withApproval.mocks.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Agentic merge policy",
+        status: "completed",
+        conclusion: "success",
+        output: {
+          title: "Agentic merge policy",
+          summary: "Current-head human and agent reviews approve boundary PR",
+        },
+      }),
     );
     expectCheckRun(
       withApproval.mocks.createCheckRun,
@@ -1043,7 +1285,159 @@ describe("agentic PR reconciler integration", () => {
     );
   });
 
-  it("approves held CI only for a trusted enrolled agent PR", async () => {
+  it("keeps merge policy pending when a final boundary-label write fails", async () => {
+    const harness = createHarness({
+      filesByPull: {
+        1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+      },
+      reviewsByPull: {
+        1: [
+          {
+            state: "APPROVED",
+            commit_id: "sha-1",
+            author_association: "OWNER",
+            user: { login: "reviewer", type: "User" },
+          },
+        ],
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "QA verification",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 42,
+            name: "Security review",
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+      runs: {
+        [runKey("qa-test-plan.lock.yml", "sha-1")]: [
+          successRun(49, "QA Test Plan"),
+        ],
+        [runKey("security-review.lock.yml", "sha-1")]: [
+          successRun(50, "Security Review"),
+        ],
+      },
+      addLabelErrors: [1],
+    });
+
+    await expect(
+      reconcileAgenticPullRequests({
+        github: harness.github,
+        context: reconcilerContext(),
+        core: harness.core,
+      }),
+    ).rejects.toThrow("Failed to reconcile 1 pull request operation(s)");
+
+    expect(harness.mocks.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Agentic merge policy",
+        status: "in_progress",
+        output: {
+          title: "Agentic merge policy",
+          summary: "Reconciler operation failed; retrying",
+        },
+      }),
+    );
+    expect(harness.mocks.updateCheckRun).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Agentic merge policy",
+        status: "completed",
+        conclusion: "success",
+      }),
+    );
+  });
+
+  it("publishes the desired policy before stale-check cleanup", async () => {
+    const harness = createHarness({
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+          },
+          {
+            id: 42,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+          },
+        ],
+      },
+      updateCheckErrors: [41],
+    });
+
+    await expect(
+      reconcileAgenticPullRequests({
+        github: harness.github,
+        context: reconcilerContext(),
+        core: harness.core,
+      }),
+    ).rejects.toThrow("Failed to reconcile 1 pull request operation(s)");
+
+    expect(harness.core.warning).toHaveBeenCalledWith(
+      "Failed to reconcile PR #1: check update forbidden",
+    );
+    const desiredCallIndex = harness.mocks.updateCheckRun.mock.calls.findIndex(
+      ([params]: [ApiParams]) =>
+        params.check_run_id === 42 && params.conclusion === "success",
+    );
+    const cleanupCallIndex = harness.mocks.updateCheckRun.mock.calls.findIndex(
+      ([params]: [ApiParams]) => params.check_run_id === 41,
+    );
+    expect(desiredCallIndex).toBeGreaterThanOrEqual(0);
+    expect(
+      harness.mocks.updateCheckRun.mock.invocationCallOrder[desiredCallIndex],
+    ).toBeLessThan(
+      harness.mocks.updateCheckRun.mock.invocationCallOrder[cleanupCallIndex],
+    );
+  });
+
+  it("dispatches the trusted default workflow when the PR modifies its copy", async () => {
+    const { mocks } = await reconcile({
+      filesByPull: {
+        1: [
+          {
+            filename: ".github/workflows/code-review.lock.yml",
+            status: "modified",
+          },
+        ],
+      },
+      runs: {
+        [runKey("code-review.lock.yml", "sha-1")]: [],
+      },
+    });
+
+    expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
+      owner: "VeVarunSharma",
+      repo: "project-krypto-dog",
+      workflow_id: "code-review.lock.yml",
+      ref: "main",
+      inputs: pullRequestInputs("code-review.lock.yml", 1),
+    });
+  });
+
+  it("replaces held CI with trusted default-branch dispatches", async () => {
     const trusted = pullRequest(1);
     const untrusted = pullRequest(2, {
       user: {
@@ -1063,12 +1457,30 @@ describe("agentic PR reconciler integration", () => {
       },
     });
 
-    expect(mocks.approveWorkflowRun).toHaveBeenCalledTimes(1);
-    expect(mocks.approveWorkflowRun).toHaveBeenCalledWith({
-      owner: "VeVarunSharma",
-      repo: "project-krypto-dog",
-      run_id: 101,
-    });
+    const ciDispatches = mocks.createWorkflowDispatch.mock.calls.filter(
+      ([params]: [ApiParams]) => params.workflow_id === "ci.yml",
+    );
+    expect(ciDispatches).toEqual([
+      [
+        {
+          owner: "VeVarunSharma",
+          repo: "project-krypto-dog",
+          workflow_id: "ci.yml",
+          ref: "main",
+          inputs: dispatchMetadata("ci.yml", 1),
+        },
+      ],
+      [
+        {
+          owner: "VeVarunSharma",
+          repo: "project-krypto-dog",
+          workflow_id: "ci.yml",
+          ref: "main",
+          inputs: dispatchMetadata("ci.yml", 2),
+        },
+      ],
+    ]);
+    expect(mocks.approveWorkflowRun).not.toHaveBeenCalled();
     expect(
       dispatchedWorkflow(
         mocks.createWorkflowDispatch,
@@ -1108,8 +1520,8 @@ describe("agentic PR reconciler integration", () => {
           owner: "VeVarunSharma",
           repo: "project-krypto-dog",
           workflow_id: "code-review.lock.yml",
-          ref: "docs/agent-update-1",
-          inputs: pullRequestInputs(1),
+          ref: "main",
+          inputs: pullRequestInputs("code-review.lock.yml", 1),
         },
       ],
       [
@@ -1117,8 +1529,8 @@ describe("agentic PR reconciler integration", () => {
           owner: "VeVarunSharma",
           repo: "project-krypto-dog",
           workflow_id: "code-review.lock.yml",
-          ref: "docs/agent-update-2",
-          inputs: pullRequestInputs(2),
+          ref: "main",
+          inputs: pullRequestInputs("code-review.lock.yml", 2),
         },
       ],
     ]);
@@ -1163,8 +1575,8 @@ describe("agentic PR reconciler integration", () => {
         owner: "VeVarunSharma",
         repo: "project-krypto-dog",
         workflow_id: "pr-self-heal.lock.yml",
-        ref: "docs/agent-update-1",
-        inputs: pullRequestInputs(1),
+        ref: "main",
+        inputs: pullRequestInputs("pr-self-heal.lock.yml", 1),
       });
     },
   );
@@ -1233,7 +1645,10 @@ describe("agentic PR reconciler integration", () => {
       },
     });
 
-    expect(mocks.approveWorkflowRun).toHaveBeenCalledTimes(1);
+    expect(mocks.approveWorkflowRun).not.toHaveBeenCalled();
+    expect(
+      dispatchedWorkflow(mocks.createWorkflowDispatch, "ci.yml"),
+    ).toBe(true);
     expect(
       dispatchedWorkflow(
         mocks.createWorkflowDispatch,
@@ -1340,16 +1755,24 @@ describe("agentic PR reconciler integration", () => {
   });
 
   it("isolates a per-PR API failure and reconciles the next PR", async () => {
-    const { core, mocks } = await reconcile({
+    const harness = createHarness({
       pullRequests: [pullRequest(1), pullRequest(2)],
       fileErrors: [1],
     });
 
-    expect(core.warning).toHaveBeenCalledWith(
+    await expect(
+      reconcileAgenticPullRequests({
+        github: harness.github,
+        context: reconcilerContext(),
+        core: harness.core,
+      }),
+    ).rejects.toThrow("Failed to reconcile 1 pull request operation(s)");
+
+    expect(harness.core.warning).toHaveBeenCalledWith(
       "Failed to reconcile PR #1: file lookup failed for 1",
     );
-    expect(mocks.createCheckRun).toHaveBeenCalledTimes(1);
-    expect(mocks.createCheckRun).toHaveBeenCalledWith(
+    expect(harness.mocks.createCheckRun).toHaveBeenCalledTimes(1);
+    expect(harness.mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
         head_sha: "sha-2",
         name: "Agentic merge policy",
