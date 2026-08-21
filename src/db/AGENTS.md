@@ -6,8 +6,8 @@ first.
 ## Mission
 
 Own the Drizzle schema (`schema.ts`, `index.ts`), generated migrations under
-`drizzle/**`, `supabase/migrations/**`, and seed/reset flows. Preserve
-portfolio, trade, journal, and agent-state invariants.
+`drizzle/**`, and seed/reset flows. Preserve portfolio, trade, journal, and
+agent-state invariants.
 
 ## Non-negotiables (delta)
 

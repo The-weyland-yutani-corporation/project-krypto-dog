@@ -4,7 +4,13 @@ import { createHash } from "node:crypto";
 
 const root = path.resolve(__dirname, "../..");
 const drizzleDir = path.join(root, "drizzle");
-const supabaseMigrationDir = path.join(root, "supabase", "migrations");
+const retiredProjectDir = path.join(root, "supabase");
+const legacyCronFixtureDir = path.join(
+  root,
+  "tests",
+  "fixtures",
+  "legacy-supabase-cron",
+);
 
 function read(relativePath: string): string {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
@@ -17,14 +23,8 @@ describe("production migration safety", () => {
     .sort();
 
   it("uses only the Drizzle production migration history", () => {
-    const supabaseSqlFiles = fs.existsSync(supabaseMigrationDir)
-      ? fs
-          .readdirSync(supabaseMigrationDir)
-          .filter((file) => file.endsWith(".sql"))
-      : [];
-
     expect(migrationFiles.length).toBeGreaterThan(0);
-    expect(supabaseSqlFiles).toEqual([]);
+    expect(fs.existsSync(retiredProjectDir)).toBe(false);
   });
 
   it.each(migrationFiles)("%s contains no destructive data operation", (file) => {
@@ -110,8 +110,30 @@ describe("production migration safety", () => {
     expect(restrictedAccess).toContain("routine.prosecdef");
   });
 
-  it("keeps cron activation separate and fixed-path", () => {
-    const enableCron = read("supabase/operations/enable-krypto-cron.sql");
+  it("keeps retired cron programs quarantined as unmistakable test fixtures", () => {
+    const fixtureReadme = read(
+      "tests/fixtures/legacy-supabase-cron/README.md",
+    );
+    const enableCron = read(
+      "tests/fixtures/legacy-supabase-cron/enable-krypto-cron.fixture.sql",
+    );
+    const disableCron = read(
+      "tests/fixtures/legacy-supabase-cron/disable-krypto-cron.fixture.sql",
+    );
+
+    expect(fs.readdirSync(legacyCronFixtureDir).sort()).toEqual([
+      "README.md",
+      "disable-krypto-cron.fixture.sql",
+      "enable-krypto-cron.fixture.sql",
+    ]);
+    expect(fixtureReadme).toMatch(/test input only/i);
+    expect(fixtureReadme).toMatch(/outside every production migration and operator path/i);
+    for (const fixture of [enableCron, disableCron]) {
+      expect(fixture).toMatch(/^-- TEST FIXTURE ONLY - LEGACY PRE-0007 INPUT\./);
+      expect(fixture).toMatch(
+        /DO NOT RUN THIS FILE AGAINST A REAL, SHARED, OR PRODUCTION DATABASE\./,
+      );
+    }
 
     expect(enableCron).toContain("SELECT krypto.invoke_agent_run();");
     expect(enableCron).toContain("SELECT krypto.invoke_daily_summary();");
@@ -161,10 +183,7 @@ describe("production migration safety", () => {
       /SELECT\s+(?:public\.)?krypto_invoke_endpoint\s*\(/i,
     );
 
-    const disableCron = read(
-      "supabase/operations/disable-krypto-cron.sql",
-    );
-    expect(disableCron).toMatch(/^BEGIN;/);
+    expect(disableCron).toMatch(/^--[\s\S]*\nBEGIN;/);
     expect(disableCron.trimEnd()).toMatch(/COMMIT;$/);
     expect(disableCron).toContain(
       "~* '/api/agent/(run|daily-summary)'",
@@ -309,13 +328,6 @@ describe("production migration safety", () => {
     expect(retirement).toContain(
       "IF NOT EXISTS (\n\t\tSELECT 1 FROM pg_roles WHERE rolname = 'krypto_runtime'",
     );
-  });
-
-  it("keeps Supabase reset from loading application fixtures", () => {
-    const config = read("supabase/config.toml");
-
-    expect(config).toMatch(/\[db\.seed\][\s\S]*enabled = false/);
-    expect(config).not.toMatch(/sql_paths\s*=/);
   });
 
   it("keeps initialization idempotent and non-destructive", () => {

@@ -124,7 +124,7 @@ open http://localhost:3000/admin/login
 | `npm run test:migrations` | Real-PostgreSQL migration, privilege/tamper, decimal, transaction, lease, run-flow, preflight, and backup tests |
 | `npm run db:studio` | Drizzle Studio (browse the DB) |
 | `npm run smoke:llm` | Verify Foundry model access without tools or trading |
-| `npm run deployment:preflight -- --provider azure` | Prove runtime/direct DB identity, exact schema/migration state, leases, ACLs, and retirement of legacy scheduler/Vault objects |
+| `npm run deployment:preflight` | Prove the Azure runtime/direct DB identity, exact schema/migration state, leases, ACLs, and retirement of legacy database-side objects |
 | `npm run deployment:backup -- --out <dir>` | Bind `DATABASE_URL`/`DIRECT_URL`, refuse active legacy scheduler/queued HTTP state and migration-only targets, create checksummed archives, and optionally prove a local restore |
 | `npm run smoke:target -- --base-url <url> --confirm-host <host>` | Bind runtime/direct DB and scheduler auth, prove mismatched-mode rejection plus disabled runs, admin/postconditions, ACS Email, Luna/Entra, Coinbase, and PostHog |
 | `npm run backtest -- --scenario scenarios/dip-recovery.json` | Run deterministic paper scenario evaluation |
@@ -169,7 +169,6 @@ drizzle/                  # Generated migrations
 infra/                     # Bicep platform account/model/access, dev/prod foundation,
                            # release, rollout, and schedule monitoring
 .github/workflows/azure-* # OIDC platform/access, validation, deploy, and rotation flows
-supabase/operations/      # Historical Vercel/Supabase cron operations
 specs/                    # Product spec, ADRs, RFCs, deployment runbook
 scripts/                  # One-shot scripts (seed, etc.)
 tests/                    # Jest unit + integration tests
@@ -184,7 +183,7 @@ tests/                    # Jest unit + integration tests
 > [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
 
 > **Target platform: Azure-native; dev and production releases deployed.**
-> The approved deployment plan supersedes Vercel/Supabase with a fully
+> The approved deployment plan supersedes the retired hosted baseline with a fully
 > Azure-native target (ADR
 > [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
 > The Bicep templates, GitHub Actions workflows, and application-side
@@ -236,11 +235,11 @@ restore-verified before target smoke. The
 steps in prod deploy and rotation. Any future production promotion requires a
 new evidence-bound design and trading-safety review. Follow
 [`specs/deployment.md`](./specs/deployment.md) (the implemented Azure
-runbook). The prior Vercel/Supabase runbook is preserved, unmodified
+runbook). The prior hosted-baseline runbook is preserved, unmodified
 except for its archive banner, at
 [`specs/archive/deployment.vercel-supabase.md`](./specs/archive/deployment.vercel-supabase.md)
 for historical/safety reference only -- do not follow it to start a new
-Vercel/Supabase production deployment.
+hosted-baseline production deployment.
 
 ## Local testing
 

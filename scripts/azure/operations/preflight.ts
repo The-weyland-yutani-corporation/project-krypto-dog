@@ -2,18 +2,16 @@ import { runCli } from "../lib/run-cli";
 import type { AzureOperationContext, AzureOperationResult } from "./types";
 
 /**
- * Runs the reviewed `deployment:preflight` CLI, explicitly requesting the
- * Azure provider (`--provider azure`) rather than relying on any default.
+ * Runs the reviewed Azure-only `deployment:preflight` CLI.
  * `DIRECT_URL`/`DATABASE_URL` continue to flow through the environment,
- * matching the existing `scripts/deployment-preflight.ts` contract; this
- * operation only adds the explicit provider selection.
+ * matching the existing `scripts/deployment-preflight.ts` contract.
  */
 export async function run(
   context: AzureOperationContext,
 ): Promise<AzureOperationResult> {
   const result = await runCli(
     "npx",
-    ["tsx", "scripts/deployment-preflight.ts", "--provider", "azure"],
+    ["tsx", "scripts/deployment-preflight.ts"],
     process.env,
   );
 
