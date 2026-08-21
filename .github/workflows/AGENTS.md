@@ -17,9 +17,12 @@ the thin entry point is [`../agents/agentic-workflows.md`](../agents/agentic-wor
 - Least privilege: minimal `permissions`, explicit `network.allowed`
   (ecosystem IDs or FQDNs — not `npm`/`pypi` shorthands), no template injection.
 - Use **safe outputs** for any GitHub write; do not grant broad write scopes.
-- Do not change merge/authority semantics — those live as data in
-  [`../agentic-policy.json`](../agentic-policy.json) and code in
-  `.github/scripts/`, and are human-governed (see root merge policy).
+- Reconciler and merge-policy implementation changes may be agent-authored, but
+  they are `risk:boundary`: never auto-repaired or auto-merged, and gated by a
+  current-head **Human boundary approval**.
+- Do not change merge/authority semantics in
+  [`../agentic-policy.json`](../agentic-policy.json), handle secrets/external
+  accounts, or perform another human-only action from the root map.
 - Dependabot PRs against generated manifests are fixed at source `.md` +
   `gh aw compile --dependabot`, never merged directly.
 
@@ -32,4 +35,6 @@ the thin entry point is [`../agents/agentic-workflows.md`](../agents/agentic-wor
 
 - Changes here route to **security review** (`.github/**` in
   `specialistRouting.security`).
-- Reconciler/merge-policy logic and secrets are human-only; stop and escalate.
+- Escalate only for the human-only authority decisions in the root map or when a
+  requested change would weaken the safety kernel. Boundary implementation work
+  proceeds through the machine checks and final human boundary gate above.
