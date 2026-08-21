@@ -1,0 +1,82 @@
+name: Factory Backlog Promoter
+
+# Promotes ready, in-scope backlog issues into the factory queue by applying
+# `factory:ready` (plus the human-declared risk label and the approved goal's
+# milestone), so the existing Factory Queue Controller can select them.
+#
+# This workflow never executes issue/PR-authored code: it only reads issue,
+# label, and milestone state through the GitHub API and writes labels. It has
+# deliberately no `pull_request_target` and no code checkout from PR heads.
+#
+# Authority boundaries (see specs/agentic-factory-contract.md):
+# - It is a no-op unless a human has set `factory-mode:active`.
+# - It never widens the approved goal; out-of-scope issues are only reported.
+# - It never promotes `risk:boundary` work.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Evaluate and report without applying any labels
+        required: false
+        default: true
+        type: boolean
+      max_promotions:
+        description: Maximum issues to promote in this pass
+        required: false
+        default: "5"
+        type: string
+  schedule:
+    # Offset from the queue controller's */15 cadence so a promotion pass
+    # lands shortly before the next selection pass.
+    - cron: "7,37 * * * *"
+
+concurrency:
+  # Serialize promotion passes so two runs cannot promote the same issue.
+  group: factory-backlog-promoter
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  promote-backlog:
+    name: Promote eligible backlog issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out trusted promoter scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Run deterministic backlog promoter
+        uses: actions/github-script@v9
+        env:
+          # Scheduled passes apply labels; manual runs default to a preview.
+          PROMOTER_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          PROMOTER_MAX_PROMOTIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_promotions || '5' }}
+        with:
+          script: |
+            const path = require("node:path");
+            const runtimePath = path.join(
+              process.env.GITHUB_WORKSPACE,
+              ".github/scripts/agentic-backlog-promoter-runtime.cjs",
+            );
+            const { runBacklogPromoter } = require(runtimePath);
+
+            const parsedMax = Number.parseInt(process.env.PROMOTER_MAX_PROMOTIONS, 10);
+            await runBacklogPromoter({
+              github,
+              context,
+              core,
+              config: {
+                dryRun: process.env.PROMOTER_DRY_RUN === "true",
+                maxPromotions: Number.isInteger(parsedMax) ? parsedMax : undefined,
+              },
+            });
