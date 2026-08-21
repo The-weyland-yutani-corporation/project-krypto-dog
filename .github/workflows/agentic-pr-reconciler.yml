@@ -24,7 +24,8 @@ permissions:
   checks: write
   contents: read
   issues: write
-  pull-requests: read
+  # PR label mutations require Pull requests write even through the Issues API.
+  pull-requests: write
 
 jobs:
   reconcile:
