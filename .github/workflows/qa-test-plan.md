@@ -2,7 +2,7 @@
 description: QA workflow for test plans, regression gaps, and acceptance validation.
 run-name: "${{ inputs.correlation_id || 'QA Test Plan' }}"
 on:
-  bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target:

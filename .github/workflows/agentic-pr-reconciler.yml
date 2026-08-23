@@ -48,6 +48,8 @@ jobs:
 
       - name: Reconcile checks, policy, and repair
         uses: actions/github-script@v9
+        env:
+          FACTORY_ASSIGNMENT_ACTOR_NODE_ID: ${{ vars.FACTORY_ASSIGNMENT_ACTOR_NODE_ID }}
         with:
           script: |
             const path = require("node:path");
@@ -56,4 +58,10 @@ jobs:
               ".github/scripts/agentic-pr-reconciler.cjs",
             );
             const { reconcileAgenticPullRequests } = require(reconcilerPath);
-            await reconcileAgenticPullRequests({ github, context, core });
+            await reconcileAgenticPullRequests({
+              github,
+              context,
+              core,
+              assignmentActorNodeId:
+                process.env.FACTORY_ASSIGNMENT_ACTOR_NODE_ID,
+            });

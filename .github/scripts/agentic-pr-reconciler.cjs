@@ -19,7 +19,17 @@ const {
   normalizeAllowedPathPatterns,
   resolveFactoryModeFromLabels,
 } = require("./agentic-factory-policy.cjs");
-const { parseClaimPayload } = require("./agentic-queue-controller.cjs");
+const {
+  AgenticIdentityError,
+  isGitHubActionsBot,
+  isResolvedCopilotActor,
+  normalizeConfiguredUserNodeId,
+  resolveRepositoryCopilotIdentity,
+} = require("./agentic-identity.cjs");
+const {
+  resolveLatestIssueClaim,
+  verifyPersistedAssignmentProvenance,
+} = require("./agentic-lifecycle-reconciler.cjs");
 
 const {
   autoMergeLabel: AUTO_MERGE_LABEL,
@@ -66,18 +76,28 @@ function isSameRepositoryPullRequest(pullRequest, repository) {
   );
 }
 
-function isTrustedAgentPullRequest(pullRequest, repository) {
+function isTrustedAgentPullRequest(
+  pullRequest,
+  repository,
+  copilotIdentity,
+) {
   const labels = getLabels(pullRequest);
   const title = pullRequest.title || "";
   const body = pullRequest.body || "";
 
+  const actionsAuthor =
+    isGitHubActionsBot(pullRequest.user) &&
+    TRUSTED_AGENT_AUTHORS.has(pullRequest.user.login);
+  const copilotAuthor = isResolvedCopilotActor(
+    pullRequest.user,
+    copilotIdentity,
+  );
   return (
     isSameRepositoryPullRequest(pullRequest, repository) &&
-    TRUSTED_AGENT_AUTHORS.has(pullRequest.user && pullRequest.user.login) &&
     labels.has(AUTO_MERGE_LABEL) &&
-    ((pullRequest.user.login === "github-actions[bot]" &&
+    ((actionsAuthor &&
       title.startsWith("[docs-sync] ")) ||
-      (pullRequest.user.login === "copilot-swe-agent[bot]" &&
+      (copilotAuthor &&
         title.startsWith("[ai-dev] ") &&
         /<!-- factory-claim:[^>\s]+ -->/.test(body) &&
         /Refs #\d+(?!\d)/.test(body)))
@@ -101,10 +121,9 @@ function getIssueFormSection(body, heading) {
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-function getAgentImplementationReference(pullRequest) {
+function getAgentImplementationReference(pullRequest, copilotIdentity) {
   const isImplementation =
-    (pullRequest.user &&
-      pullRequest.user.login === "copilot-swe-agent[bot]") ||
+    isResolvedCopilotActor(pullRequest.user, copilotIdentity) ||
     (pullRequest.title || "").startsWith("[ai-dev] ");
   if (!isImplementation) {
     return { required: false, valid: true };
@@ -136,13 +155,42 @@ async function verifyAgentImplementationProvenance({
   repo,
   pullRequest,
   core,
+  copilotIdentity,
+  assignmentActorNodeId,
+  allPullRequests,
 }) {
-  const reference = getAgentImplementationReference(pullRequest);
+  const reference = getAgentImplementationReference(
+    pullRequest,
+    copilotIdentity,
+  );
   if (!reference.required) {
     return { valid: true };
   }
   if (!reference.valid) {
     return { valid: false };
+  }
+  const correlated = (Array.isArray(allPullRequests)
+    ? allPullRequests
+    : []
+  ).filter((candidate) => {
+    const body =
+      typeof candidate.body === "string" ? candidate.body : "";
+    return body.includes(
+      `<!-- factory-claim:${reference.nonce} -->`,
+    );
+  });
+  if (
+    correlated.length !== 1 ||
+    correlated[0].number !== pullRequest.number
+  ) {
+    return {
+      valid: false,
+      pauseFactory: true,
+      reason:
+        correlated.length > 1
+          ? "duplicate-pull-request-candidates"
+          : "correlated-pull-request-mismatch",
+    };
   }
 
   try {
@@ -262,34 +310,32 @@ async function verifyAgentImplementationProvenance({
       return { valid: false };
     }
 
-    const latest = comments
-      .filter(
-        (comment) =>
-          comment.user &&
-          comment.user.login === "github-actions[bot]" &&
-          typeof comment.body === "string" &&
-          comment.body.includes("<!-- factory-claim:v1 "),
-      )
-      .sort(
-        (left, right) =>
-          Date.parse(right.created_at || "") -
-            Date.parse(left.created_at || "") ||
-          (right.id || 0) - (left.id || 0),
-      )[0];
-    if (!latest) {
-      return { valid: false };
+    const claim = resolveLatestIssueClaim(
+      comments,
+      reference.issueNumber,
+    );
+    if (
+      claim.state !== "valid" ||
+      claim.claim.issueNumber !== reference.issueNumber ||
+      claim.claim.nonce !== reference.nonce
+    ) {
+      return { valid: false, reason: claim.reason };
     }
-    const match = /<!-- factory-claim:v1 (.+?) -->/s.exec(latest.body);
-    if (!match) {
-      return { valid: false };
-    }
-    const parsed = parseClaimPayload(match[1]);
+    const assignment = await verifyPersistedAssignmentProvenance({
+      github,
+      owner,
+      repo,
+      issue,
+      comments,
+      claim: claim.claim,
+      now: new Date().toISOString(),
+      copilotIdentity,
+      assignmentActorNodeId,
+    });
     return {
-      valid: Boolean(
-        parsed.valid &&
-        parsed.claim.issueNumber === reference.issueNumber &&
-        parsed.claim.nonce === reference.nonce,
-      ),
+      valid: assignment.valid,
+      pauseFactory: !assignment.valid,
+      reason: assignment.reason,
       riskLabel: issueRiskLabels[0],
       allowedPaths: allowedPathResult.patterns,
       goalMaxRiskTier,
@@ -517,6 +563,7 @@ function evaluateMergePolicy({
   issueRiskLabel,
   issueAllowedPaths,
   goalMaxRiskTier,
+  copilotIdentity,
 }) {
   const sha = pullRequest.head.sha;
   const sameRepository = isSameRepositoryPullRequest(
@@ -524,12 +571,16 @@ function evaluateMergePolicy({
     repository,
   );
   const requiresVerifiedAgentProvenance =
-    getAgentImplementationReference(pullRequest).required;
+    getAgentImplementationReference(pullRequest, copilotIdentity).required;
   const implementationScopeValid =
     !requiresVerifiedAgentProvenance ||
     areChangedFilesWithinAllowedPaths(files, issueAllowedPaths);
   const trustedAgent =
-    isTrustedAgentPullRequest(pullRequest, repository) &&
+    isTrustedAgentPullRequest(
+      pullRequest,
+      repository,
+      copilotIdentity,
+    ) &&
     agentImplementationProvenance;
   const factoryEnrolled = getLabels(pullRequest).has(AUTO_MERGE_LABEL);
   const factoryModeBlocksAction =
@@ -677,10 +728,11 @@ function getRepairAttemptLimit(riskTier) {
   return 0;
 }
 
-function countRepairAttempts(commits) {
+function countRepairAttempts(commits, copilotIdentity) {
   return commits.filter(
     (commit) =>
-      TRUSTED_AGENT_AUTHORS.has(commit.author && commit.author.login) &&
+      (isGitHubActionsBot(commit.author) ||
+        isResolvedCopilotActor(commit.author, copilotIdentity)) &&
       commit.commit &&
       typeof commit.commit.message === "string" &&
       commit.commit.message.includes("[self-heal]"),
@@ -750,7 +802,12 @@ function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function reconcileAgenticPullRequests({ github, context, core }) {
+async function reconcileAgenticPullRequests({
+  github,
+  context,
+  core,
+  assignmentActorNodeId,
+}) {
   const { owner, repo } = context.repo;
   const repository = `${owner}/${repo}`;
   const defaultBranch =
@@ -762,12 +819,15 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
     throw new Error("Repository default branch is unavailable");
   }
 
-  const pullRequests = await github.paginate(github.rest.pulls.list, {
+  const allPullRequests = await github.paginate(github.rest.pulls.list, {
     owner,
     repo,
-    state: "open",
+    state: "all",
     per_page: 100,
   });
+  const pullRequests = allPullRequests.filter(
+    (pullRequest) => pullRequest.state === "open",
+  );
   let factoryMode = FACTORY_MODES.PAUSED;
   let factoryControlIssue;
   try {
@@ -1055,6 +1115,39 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
     factoryMode = FACTORY_MODES.PAUSED;
   };
 
+  const hasCopilotCandidate = pullRequests.some(
+    (pullRequest) =>
+      (pullRequest.title || "").startsWith("[ai-dev] ") ||
+      (pullRequest.user &&
+        pullRequest.user.type === "Bot" &&
+        pullRequest.user.login !== "github-actions[bot]"),
+  );
+  let copilotIdentity;
+  let configuredAssignmentActorNodeId;
+  if (hasCopilotCandidate && factoryMode === FACTORY_MODES.ACTIVE) {
+    try {
+      configuredAssignmentActorNodeId =
+        normalizeConfiguredUserNodeId(assignmentActorNodeId);
+      copilotIdentity = await resolveRepositoryCopilotIdentity({
+        github,
+        owner,
+        repo,
+      });
+    } catch (error) {
+      const code =
+        error instanceof AgenticIdentityError
+          ? error.code
+          : "copilot-identity-unexpected-error";
+      await pauseFactoryControl(
+        factoryControlIssue,
+        `Canonical Copilot identity resolution failed (${code}).`,
+      );
+      throw new Error(
+        "Canonical Copilot identity could not be established for PR reconciliation",
+      );
+    }
+  }
+
   const reconciliationErrors = [];
   const recordReconciliationError = (pullRequest, error) => {
     const message = `Failed to reconcile PR #${pullRequest.number}: ${getErrorMessage(error)}`;
@@ -1072,10 +1165,10 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
         commits,
         checkRuns,
         ciRuns,
-        reviewRuns,
-        qaRuns,
-        securityRuns,
-        tradingSafetyRuns,
+        rawReviewRuns,
+        rawQaRuns,
+        rawSecurityRuns,
+        rawTradingSafetyRuns,
       ] = await Promise.all([
           github.paginate(github.rest.pulls.listFiles, {
             owner,
@@ -1103,6 +1196,12 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
           listRuns("security-review.lock.yml", sha, number),
           listRuns("trading-safety-review.lock.yml", sha, number),
         ]);
+      const dispatchedRuns = (runs) =>
+        runs.filter((run) => run.event === "workflow_dispatch");
+      const reviewRuns = dispatchedRuns(rawReviewRuns);
+      const qaRuns = dispatchedRuns(rawQaRuns);
+      const securityRuns = dispatchedRuns(rawSecurityRuns);
+      const tradingSafetyRuns = dispatchedRuns(rawTradingSafetyRuns);
 
       const implementationProvenance =
         await verifyAgentImplementationProvenance({
@@ -1111,6 +1210,9 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
           repo,
           pullRequest,
           core,
+          copilotIdentity,
+          assignmentActorNodeId: configuredAssignmentActorNodeId,
+          allPullRequests,
         });
       const policy = evaluateMergePolicy({
         pullRequest,
@@ -1124,6 +1226,7 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
         issueRiskLabel: implementationProvenance.riskLabel,
         issueAllowedPaths: implementationProvenance.allowedPaths,
         goalMaxRiskTier: implementationProvenance.goalMaxRiskTier,
+        copilotIdentity,
       });
 
       if (policy.requiresHumanBoundaryApproval) {
@@ -1140,6 +1243,34 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
           checkRuns,
           HUMAN_BOUNDARY_APPROVAL_CHECK,
         );
+      }
+
+      if (implementationProvenance.pauseFactory) {
+        await ensureCheckRun(
+          sha,
+          policy.state,
+          policy.description,
+          pullRequest.html_url,
+          checkRuns,
+        );
+        await pauseFactoryControl(
+          factoryControlIssue,
+          `PR #${number} has invalid assignment/PR provenance (${implementationProvenance.reason || "unknown"}).`,
+        );
+        continue;
+      }
+      if (
+        policy.requiresVerifiedAgentProvenance &&
+        !implementationProvenance.valid
+      ) {
+        await ensureCheckRun(
+          sha,
+          policy.state,
+          policy.description,
+          pullRequest.html_url,
+          checkRuns,
+        );
+        continue;
       }
 
       const policyOperationsBlocked =
@@ -1204,7 +1335,9 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
       }
 
       const ciNeedsDispatch = ciRuns.length === 0;
-      const reviewNeedsDispatch = reviewRuns.length === 0;
+      const reviewNeedsDispatch =
+        reviewRuns.length === 0 &&
+        policy.agentCheckStates[REVIEW_CHECK_NAME] === "missing";
       const ciHeld = ciRuns[0] && ciRuns[0].conclusion === "action_required";
       const ciShouldDispatch = ciNeedsDispatch || ciHeld;
       const reviewHeld =
@@ -1333,7 +1466,10 @@ async function reconcileAgenticPullRequests({ github, context, core }) {
       }
 
       const repairAttemptLimit = getRepairAttemptLimit(policy.riskTier);
-      if (countRepairAttempts(commits) >= repairAttemptLimit) {
+      if (
+        countRepairAttempts(commits, copilotIdentity) >=
+        repairAttemptLimit
+      ) {
         await addLabels(pullRequest, [EXHAUSTED_LABEL, BLOCKED_LABEL]);
         await pauseFactoryControl(
           factoryControlIssue,

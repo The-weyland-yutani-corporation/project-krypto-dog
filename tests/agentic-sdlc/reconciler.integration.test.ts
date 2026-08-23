@@ -4,11 +4,14 @@ interface PullRequest {
   number: number;
   title: string;
   draft: boolean;
+  state: "open" | "closed";
   html_url: string;
   body: string;
   user: {
     login: string;
     type: string;
+    id?: number;
+    node_id?: string;
   };
   labels: Array<{ name: string }>;
   head: {
@@ -37,18 +40,20 @@ interface Review {
 }
 
 interface Commit {
-  author: { login: string } | null;
+  author:
+    | { login: string; type?: string; id?: number; node_id?: string }
+    | null;
   commit: { message: string };
 }
 
 interface WorkflowRun {
   id: number;
   name: string;
+  event?: string;
   status: string;
   conclusion: string | null;
   head_sha?: string;
   head_branch?: string;
-  event?: string;
   display_title?: string;
 }
 
@@ -100,8 +105,15 @@ interface HarnessOptions {
   commentsByIssue?: Record<
     number,
     Array<{
+      id?: number;
+      created_at?: string;
       body: string;
-      user: { login: string; type: string };
+      user: {
+        login: string;
+        type: string;
+        id?: number;
+        node_id?: string;
+      };
     }>
   >;
   goalMaxRiskTier?: string;
@@ -113,6 +125,7 @@ interface ReconcilerModule {
     github: unknown;
     context: unknown;
     core: unknown;
+    assignmentActorNodeId?: string;
   }): Promise<void>;
 }
 
@@ -122,6 +135,84 @@ const { reconcileAgenticPullRequests } =
   );
 
 const repository = "VeVarunSharma/project-krypto-dog";
+const COPILOT_ACTOR = {
+  login: "Copilot",
+  type: "Bot",
+  id: 198982749,
+  node_id: "BOT_copilot",
+};
+const ACTIONS_ACTOR = {
+  login: "github-actions[bot]",
+  type: "Bot",
+  id: 41898282,
+  node_id: "BOT_actions",
+};
+const ASSIGNMENT_ACTOR = {
+  login: "VeVarunSharma",
+  type: "User",
+  id: 62218708,
+  node_id: "U_assignment_actor",
+};
+const VALID_ASSIGNEES = [ASSIGNMENT_ACTOR, COPILOT_ACTOR];
+const ASSIGNED_AT = "2026-08-20T20:51:30.000Z";
+const CLAIM_CREATED_AT = "2026-08-20T18:57:11.000Z";
+const CLAIM_EXPIRES_AT = "2026-08-20T20:56:29.000Z";
+
+function claimNonce(issueNumber: number): string {
+  return `32405933684:1:${issueNumber}`;
+}
+
+function trustedClaimComment(
+  issueNumber: number,
+  nonce = claimNonce(issueNumber),
+) {
+  const [runId, runAttempt] = nonce.split(":");
+  return {
+    id: issueNumber * 10,
+    created_at: CLAIM_CREATED_AT,
+    user: ACTIONS_ACTOR,
+    body: `<!-- factory-claim:v1 ${JSON.stringify({
+      nonce,
+      owner: `queue-controller:${runId}:${runAttempt}`,
+      issueNumber,
+      expiresAt: CLAIM_EXPIRES_AT,
+    })} -->`,
+  };
+}
+
+function assignmentEvents(issueNumber: number) {
+  return [
+    {
+      id: issueNumber * 100 + 1,
+      event: "assigned",
+      created_at: ASSIGNED_AT,
+      actor: ASSIGNMENT_ACTOR,
+      assignee: COPILOT_ACTOR,
+    },
+    {
+      id: issueNumber * 100 + 2,
+      event: "assigned",
+      created_at: ASSIGNED_AT,
+      actor: ASSIGNMENT_ACTOR,
+      assignee: ASSIGNMENT_ACTOR,
+    },
+  ];
+}
+
+function assignmentAttestation(issueNumber: number, nonce: string) {
+  return {
+    id: issueNumber * 100 + 3,
+    created_at: ASSIGNED_AT,
+    user: ACTIONS_ACTOR,
+    body: `<!-- factory-assignment:v1 ${JSON.stringify({
+      nonce,
+      assignedAt: ASSIGNED_AT,
+      eventIds: assignmentEvents(issueNumber).map((event) => event.id),
+      copilotNodeId: COPILOT_ACTOR.node_id,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+    })} -->`,
+  };
+}
 
 function reconcilerContext() {
   return {
@@ -141,6 +232,7 @@ function pullRequest(
     number,
     title: "[docs-sync] Refresh contributor guide",
     draft: false,
+    state: "open",
     html_url: `https://github.com/${repository}/pull/${number}`,
     body: "",
     user: {
@@ -205,6 +297,7 @@ function successRun(
   return {
     id,
     name,
+    event: "workflow_dispatch",
     status: "completed",
     conclusion: "success",
     ...overrides,
@@ -245,7 +338,27 @@ function createHarness(options: HarnessOptions = {}) {
         );
       }
       if (method === listComments) {
-        return options.commentsByIssue?.[params.issue_number ?? -1] ?? [];
+        const issueNumber = params.issue_number ?? -1;
+        const comments = options.commentsByIssue?.[issueNumber] ?? [];
+        const claim = comments.find((comment) =>
+          comment.body.includes("<!-- factory-claim:v1 "),
+        );
+        const match = claim
+          ? /<!-- factory-claim:v1 (.+?) -->/s.exec(claim.body)
+          : null;
+        if (
+          match &&
+          !comments.some((comment) =>
+            comment.body.includes("<!-- factory-assignment:v1 "),
+          )
+        ) {
+          const payload = JSON.parse(match[1]) as { nonce: string };
+          return [
+            ...comments,
+            assignmentAttestation(issueNumber, payload.nonce),
+          ];
+        }
+        return comments;
       }
       if (method === listEventsForTimeline) {
         if (params.issue_number === 10) {
@@ -257,6 +370,9 @@ function createHarness(options: HarnessOptions = {}) {
               actor: { login: "owner", type: "User" },
             },
           ];
+        }
+        if (params.issue_number !== 233) {
+          return assignmentEvents(params.issue_number ?? -1);
         }
         return (
           options.controlTimeline ?? [
@@ -287,7 +403,17 @@ function createHarness(options: HarnessOptions = {}) {
         return options.reviewsByPull?.[params.pull_number ?? -1] ?? [];
       }
       if (method === listCommits) {
-        return options.commitsByPull?.[params.pull_number ?? -1] ?? [];
+        return (
+          options.commitsByPull?.[params.pull_number ?? -1] ?? []
+        ).map((commit) => {
+          if (commit.author?.login === "github-actions[bot]") {
+            return { ...commit, author: ACTIONS_ACTOR };
+          }
+          if (commit.author?.login === "copilot-swe-agent[bot]") {
+            return { ...commit, author: COPILOT_ACTOR };
+          }
+          return commit;
+        });
       }
       if (method === listForRef) {
         const checks = options.checksBySha?.[params.ref ?? ""] ?? [
@@ -361,6 +487,26 @@ function createHarness(options: HarnessOptions = {}) {
   });
   const removeLabel = jest.fn(async (_params: ApiParams) => ({}));
   const createComment = jest.fn(async (_params: ApiParams) => ({}));
+  const graphql = jest.fn(async (query: string) => {
+    if (!query.includes("ResolveCopilotSuggestedActor")) {
+      throw new Error("Unexpected GraphQL query");
+    }
+    return {
+      repository: {
+        suggestedActors: {
+          nodes: [
+            {
+              __typename: "Bot",
+              login: "copilot-swe-agent",
+              id: COPILOT_ACTOR.node_id,
+              databaseId: COPILOT_ACTOR.id,
+            },
+          ],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      },
+    };
+  });
   getIssue.mockImplementation(async (params: ApiParams) => ({
     data:
       params.issue_number === 10
@@ -380,8 +526,12 @@ function createHarness(options: HarnessOptions = {}) {
               options.goalMaxRiskTier ?? "risk:boundary",
             ].join("\n"),
           }
-        : options.provenanceIssues?.[params.issue_number ?? -1] ?? {
-            labels: [],
+        : {
+            number: params.issue_number,
+            ...(options.provenanceIssues?.[
+              params.issue_number ?? -1
+            ] ?? { labels: [] }),
+            assignees: VALID_ASSIGNEES,
           },
   }));
   const core = {
@@ -391,6 +541,7 @@ function createHarness(options: HarnessOptions = {}) {
 
   const github = {
     paginate,
+    graphql,
     request: jest.fn(
       async (
         _route: string,
@@ -452,6 +603,7 @@ function createHarness(options: HarnessOptions = {}) {
       getIssue,
       listWorkflowRuns,
       paginate,
+      graphql,
     },
   };
 }
@@ -464,6 +616,7 @@ async function reconcile(
     github: harness.github,
     context: reconcilerContext(),
     core: harness.core,
+    assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
   });
   return harness;
 }
@@ -547,11 +700,11 @@ describe("agentic PR reconciler integration", () => {
   });
 
   it("approves a correlated Copilot implementation PR with matching claim provenance", async () => {
-      const nonce = "run:1:99";
+      const nonce = claimNonce(99);
       const implementation = pullRequest(1, {
         title: "[ai-dev] Implement issue 99",
         body: `<!-- factory-claim:${nonce} -->\nRefs #99`,
-        user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+        user: COPILOT_ACTOR,
         labels: [
           { name: "agentic-factory" },
           { name: "agentic-automerge" },
@@ -571,18 +724,7 @@ describe("agentic PR reconciler integration", () => {
           },
         },
         commentsByIssue: {
-          99: [
-            {
-              user: { login: "github-actions[bot]", type: "Bot" },
-              body:
-                `<!-- factory-claim:v1 ${JSON.stringify({
-                  nonce,
-                  owner: "queue-controller",
-                  issueNumber: 99,
-                  expiresAt: "2099-01-01T00:00:00Z",
-                })} -->`,
-            },
-          ],
+          99: [trustedClaimComment(99, nonce)],
         },
       });
 
@@ -594,12 +736,62 @@ describe("agentic PR reconciler integration", () => {
       );
   });
 
+  it("pauses before merge or self-heal when more than one PR shares the claim", async () => {
+    const nonce = claimNonce(99);
+    const body = `<!-- factory-claim:${nonce} -->\nRefs #99`;
+    const first = pullRequest(1, {
+      title: "[ai-dev] Implement issue 99",
+      body,
+      user: COPILOT_ACTOR,
+      labels: [
+        { name: "agentic-factory" },
+        { name: "agentic-automerge" },
+        { name: "risk:routine" },
+      ],
+    });
+    const second = pullRequest(2, {
+      title: "[ai-dev] Duplicate issue 99",
+      body: `<!-- factory-claim:${nonce} -->`,
+      state: "closed",
+      user: COPILOT_ACTOR,
+      labels: [
+        { name: "agentic-factory" },
+        { name: "agentic-automerge" },
+        { name: "risk:routine" },
+      ],
+    });
+    const { mocks } = await reconcile({
+      pullRequests: [first, second],
+      provenanceIssues: {
+        99: {
+          body:
+            "### Approved parent goal\n\n#10\n\n### Allowed paths\n\ndocs/**",
+          labels: [
+            { name: "factory:pr-open" },
+            { name: "risk:routine" },
+          ],
+        },
+      },
+      commentsByIssue: {
+        99: [trustedClaimComment(99, nonce)],
+      },
+    });
+
+    expect(mocks.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 233,
+        labels: ["factory-mode:paused"],
+      }),
+    );
+    expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
   it("inherits boundary risk from the claimed issue before PR risk labeling", async () => {
-    const nonce = "run:1:99";
+    const nonce = claimNonce(99);
     const implementation = pullRequest(1, {
       title: "[ai-dev] Implement issue 99",
       body: `<!-- factory-claim:${nonce} -->\nRefs #99`,
-      user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+      user: COPILOT_ACTOR,
       labels: [
         { name: "agentic-factory" },
         { name: "agentic-automerge" },
@@ -618,18 +810,7 @@ describe("agentic PR reconciler integration", () => {
         },
       },
       commentsByIssue: {
-        99: [
-          {
-            user: { login: "github-actions[bot]", type: "Bot" },
-            body:
-              `<!-- factory-claim:v1 ${JSON.stringify({
-                nonce,
-                owner: "queue-controller",
-                issueNumber: 99,
-                expiresAt: "2099-01-01T00:00:00Z",
-              })} -->`,
-          },
-        ],
+        99: [trustedClaimComment(99, nonce)],
       },
       checksBySha: {
         "sha-1": [
@@ -663,11 +844,11 @@ describe("agentic PR reconciler integration", () => {
   });
 
   it("pauses when the PR path risk exceeds its approved goal ceiling", async () => {
-    const nonce = "run:1:99";
+    const nonce = claimNonce(99);
     const implementation = pullRequest(1, {
       title: "[ai-dev] Change workflow policy",
       body: `<!-- factory-claim:${nonce} -->\nRefs #99`,
-      user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+      user: COPILOT_ACTOR,
       labels: [
         { name: "agentic-factory" },
         { name: "agentic-automerge" },
@@ -688,18 +869,7 @@ describe("agentic PR reconciler integration", () => {
         },
       },
       commentsByIssue: {
-        99: [
-          {
-            user: { login: "github-actions[bot]", type: "Bot" },
-            body:
-              `<!-- factory-claim:v1 ${JSON.stringify({
-                nonce,
-                owner: "queue-controller",
-                issueNumber: 99,
-                expiresAt: "2099-01-01T00:00:00Z",
-              })} -->`,
-          },
-        ],
+        99: [trustedClaimComment(99, nonce)],
       },
       filesByPull: {
         1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
@@ -759,8 +929,8 @@ describe("agentic PR reconciler integration", () => {
   it("fails closed when a Copilot implementation PR claim does not match the issue", async () => {
       const implementation = pullRequest(1, {
         title: "[ai-dev] Implement issue 99",
-        body: "<!-- factory-claim:run:1:99 -->\nRefs #99",
-        user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+        body: `<!-- factory-claim:${claimNonce(99)} -->\nRefs #99`,
+        user: COPILOT_ACTOR,
         labels: [
           { name: "agentic-factory" },
           { name: "agentic-automerge" },
@@ -776,18 +946,7 @@ describe("agentic PR reconciler integration", () => {
           },
         },
         commentsByIssue: {
-          99: [
-            {
-              user: { login: "github-actions[bot]", type: "Bot" },
-              body:
-                `<!-- factory-claim:v1 ${JSON.stringify({
-                  nonce: "different:nonce:99",
-                  owner: "queue-controller",
-                  issueNumber: 99,
-                  expiresAt: "2099-01-01T00:00:00Z",
-                })} -->`,
-            },
-          ],
+          99: [trustedClaimComment(99, "32405933685:1:99")],
         },
       });
 
@@ -959,6 +1118,7 @@ describe("agentic PR reconciler integration", () => {
 
   it("dispatches missing CI and agentic review from the trusted default branch", async () => {
     const { mocks } = await reconcile({
+      checksBySha: { "sha-1": [] },
       runs: {
         [runKey("ci.yml", "sha-1")]: [],
         [runKey("code-review.lock.yml", "sha-1")]: [],
@@ -985,6 +1145,26 @@ describe("agentic PR reconciler integration", () => {
         "pr-self-heal.lock.yml",
       ),
     ).toBe(false);
+  });
+
+  it("does not let a denied native review run suppress stable workflow dispatch", async () => {
+    const { mocks } = await reconcile({
+      checksBySha: { "sha-1": [] },
+      runs: {
+        [runKey("code-review.lock.yml", "sha-1")]: [
+          successRun(31, "Code Review", {
+            event: "pull_request",
+            conclusion: "skipped",
+          }),
+        ],
+      },
+    });
+    expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflow_id: "code-review.lock.yml",
+        ref: "main",
+      }),
+    );
   });
 
   it("dispatches required security and trading specialist reviews", async () => {
@@ -1423,6 +1603,7 @@ describe("agentic PR reconciler integration", () => {
           },
         ],
       },
+      checksBySha: { "sha-1": [] },
       runs: {
         [runKey("code-review.lock.yml", "sha-1")]: [],
       },

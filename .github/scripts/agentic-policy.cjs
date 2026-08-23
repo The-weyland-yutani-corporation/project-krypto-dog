@@ -124,7 +124,11 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
   const identities = object(root.identities, "identities");
   exactKeys(
     identities,
-    ["trustedAgentAuthors", "trustedReviewAssociations"],
+    [
+      "copilotSuggestedActorLogin",
+      "trustedAgentAuthors",
+      "trustedReviewAssociations",
+    ],
     "identities",
   );
   const labels = object(root.labels, "labels");
@@ -234,6 +238,10 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
     tradingSafetyCheckName: string(
       merge.tradingSafetyCheck,
       "merge.tradingSafetyCheck",
+    ),
+    copilotSuggestedActorLogin: string(
+      identities.copilotSuggestedActorLogin,
+      "identities.copilotSuggestedActorLogin",
     ),
     trustedAgentAuthors: new Set(
       strings(

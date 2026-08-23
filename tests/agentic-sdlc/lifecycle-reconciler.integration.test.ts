@@ -7,13 +7,22 @@ interface Label {
 interface Comment {
   id: number;
   body: string;
+  created_at?: string;
+  user?: ActorFixture;
+}
+
+interface ActorFixture {
+  login: string;
+  type?: "Bot" | "User";
+  id?: number;
+  node_id?: string;
 }
 
 interface IssueFixture {
   number: number;
   state: "open" | "closed";
   labels: Label[];
-  assignees: Array<{ login: string }>;
+  assignees: ActorFixture[];
   comments: Comment[];
   state_reason?: string;
   body?: string;
@@ -36,14 +45,14 @@ interface PullRequestFixture {
   merged_at: string | null;
   merge_commit_sha: string | null;
   auto_merge: unknown;
-  user: { login: string };
+  user: ActorFixture;
   labels: Label[];
   head: { sha: string; ref: string; repo: { full_name: string } | null };
   base: { ref: string };
 }
 
 interface CommitFixture {
-  author: { login: string } | null;
+  author: ActorFixture | null;
   commit: { message: string };
 }
 
@@ -90,13 +99,17 @@ interface ReconcilerModule {
     context: unknown;
     core: unknown;
     now?: string;
+    assignmentActorNodeId?: string;
   }): Promise<void>;
   extractClaimMarkerPayload(body: unknown): string | null;
   resolveLatestIssueClaim(
     comments: unknown,
     issueNumber: number,
   ): { state: string; claim?: { nonce: string; owner: string; issueNumber: number; expiresAt: string }; reason?: string };
-  isDocumentedCopilotAssignee(login: string): boolean;
+  classifyAssignmentEvidence(input: unknown): {
+    state: string;
+    reason?: string;
+  };
   buildClaimNonceMarker(nonce: string): string;
   buildRefsMarker(issueNumber: number): string;
   correlatePullRequests(input: {
@@ -105,8 +118,19 @@ interface ReconcilerModule {
     nonce: string;
     repository: string;
     defaultBranch: string;
+    copilotIdentity: {
+      nodeId: string;
+      databaseId: number;
+      suggestedLogin: string;
+    };
   }): { candidates: unknown[]; valid: unknown[]; malformed: unknown[] };
-  hasTrustedSelfHealCommit(commits: unknown[]): boolean;
+  hasTrustedSelfHealCommit(
+    commits: unknown[],
+    copilotIdentity: {
+      nodeId: string;
+      databaseId: number;
+    },
+  ): boolean;
   hasPendingCheckRuns(checkRuns: unknown[]): boolean;
   resolveLifecycleTransitionPath(
     from: string,
@@ -154,23 +178,98 @@ const owner = "VeVarunSharma";
 const repo = "project-krypto-dog";
 const repository = `${owner}/${repo}`;
 const DEFAULT_BRANCH = "main";
-const NONCE_FOR = (issueNumber: number) => `run-1:0:${issueNumber}`;
+const DEFAULT_NOW = "2026-08-20T20:52:00.000Z";
+const CLAIM_CREATED_AT = "2026-08-20T18:57:11.000Z";
+const CLAIM_EXPIRES_AT = "2026-08-20T20:56:29.000Z";
+const ASSIGNED_AT = "2026-08-20T20:51:30.000Z";
+const NONCE_FOR = (issueNumber: number) => `32405933684:1:${issueNumber}`;
+const ASSIGNMENT_ACTOR: Required<ActorFixture> = {
+  login: "VeVarunSharma",
+  type: "User",
+  id: 62218708,
+  node_id: "U_assignment_actor",
+};
+const COPILOT_ACTOR: Required<ActorFixture> = {
+  login: "Copilot",
+  type: "Bot",
+  id: 198982749,
+  node_id: "BOT_copilot",
+};
+const ACTIONS_ACTOR: Required<ActorFixture> = {
+  login: "github-actions[bot]",
+  type: "Bot",
+  id: 41898282,
+  node_id: "BOT_actions",
+};
+const COPILOT_IDENTITY = {
+  nodeId: COPILOT_ACTOR.node_id,
+  databaseId: COPILOT_ACTOR.id,
+  suggestedLogin: "copilot-swe-agent",
+};
+const VALID_ASSIGNEES = [ASSIGNMENT_ACTOR, COPILOT_ACTOR];
 
 let nextCommentId = 1;
 function claimComment(
   issueNumber: number,
-  overrides: Partial<{ nonce: string; owner: string; issueNumber: number; expiresAt: string }> = {},
+  overrides: Partial<{
+    nonce: string;
+    owner: string;
+    issueNumber: number;
+    expiresAt: string;
+    createdAt: string;
+    user: ActorFixture;
+  }> = {},
 ): Comment {
+  const nonce = overrides.nonce ?? NONCE_FOR(issueNumber);
   const payload = {
-    nonce: NONCE_FOR(issueNumber),
-    owner: "queue-controller-run-1",
+    nonce,
+    owner: overrides.owner ?? `queue-controller:32405933684:1`,
     issueNumber,
-    expiresAt: "2999-01-01T00:00:00.000Z",
-    ...overrides,
+    expiresAt: overrides.expiresAt ?? CLAIM_EXPIRES_AT,
+    ...(overrides.issueNumber === undefined
+      ? {}
+      : { issueNumber: overrides.issueNumber }),
   };
   return {
     id: nextCommentId++,
     body: `<!-- factory-claim:v1 ${JSON.stringify(payload)} -->`,
+    created_at: overrides.createdAt ?? CLAIM_CREATED_AT,
+    user: overrides.user ?? ACTIONS_ACTOR,
+  };
+}
+
+function assignmentEvents(issueNumber: number): TimelineEventFixture[] {
+  return [
+    {
+      id: issueNumber * 10 + 1,
+      event: "assigned",
+      actor: ASSIGNMENT_ACTOR,
+      assignee: COPILOT_ACTOR,
+      created_at: ASSIGNED_AT,
+    },
+    {
+      id: issueNumber * 10 + 2,
+      event: "assigned",
+      actor: ASSIGNMENT_ACTOR,
+      assignee: ASSIGNMENT_ACTOR,
+      created_at: ASSIGNED_AT,
+    },
+  ];
+}
+
+function assignmentAttestation(issueNumber: number): Comment {
+  const evidence = {
+    nonce: NONCE_FOR(issueNumber),
+    assignedAt: ASSIGNED_AT,
+    eventIds: assignmentEvents(issueNumber).map((event) => event.id),
+    copilotNodeId: COPILOT_ACTOR.node_id,
+    assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+  };
+  return {
+    id: nextCommentId++,
+    body: `<!-- factory-assignment:v1 ${JSON.stringify(evidence)} -->`,
+    created_at: ASSIGNED_AT,
+    user: ACTIONS_ACTOR,
   };
 }
 
@@ -186,14 +285,30 @@ function issueFixture(
   labelName: string,
   overrides: Partial<IssueFixture> = {},
 ): IssueFixture {
+  const afterClaim = [
+    "factory:implementing",
+    "factory:pr-open",
+    "factory:repairing",
+    "factory:merged",
+    "factory:deployed-dev",
+  ].includes(labelName);
+  const normalizedOverrides = { ...overrides };
+  if (
+    normalizedOverrides.assignees?.length === 1 &&
+    normalizedOverrides.assignees[0].login === "copilot-swe-agent[bot]"
+  ) {
+    normalizedOverrides.assignees = VALID_ASSIGNEES;
+  }
   return {
     number,
     state: "open",
     labels: [{ name: labelName }, { name: "risk:routine" }],
-    assignees: [],
-    comments: [claimComment(number)],
+    assignees: afterClaim ? VALID_ASSIGNEES : [],
+    comments: afterClaim
+      ? [claimComment(number), assignmentAttestation(number)]
+      : [claimComment(number)],
     body: DEFAULT_ALLOWED_PATHS_BODY,
-    ...overrides,
+    ...normalizedOverrides,
   };
 }
 
@@ -214,7 +329,7 @@ function pullRequestFixture(
     merged_at: null,
     merge_commit_sha: null,
     auto_merge: null,
-    user: { login: "copilot-swe-agent[bot]" },
+    user: COPILOT_ACTOR,
     labels: [],
     head: { sha: `sha-${number}`, ref: `ai-dev/${number}`, repo: { full_name: repository } },
     base: { ref: DEFAULT_BRANCH },
@@ -223,16 +338,19 @@ function pullRequestFixture(
 }
 
 interface TimelineEventFixture {
+  id?: number;
   event: string;
   label?: { name: string };
-  actor?: { type: string; login?: string };
+  actor?: Partial<ActorFixture>;
+  assignee?: Partial<ActorFixture>;
   created_at?: string;
 }
 
 const HUMAN_ACTIVE_TIMELINE_EVENT: TimelineEventFixture = {
+  id: 1,
   event: "labeled",
   label: { name: "factory-mode:active" },
-  actor: { type: "User", login: "human-operator" },
+  actor: ASSIGNMENT_ACTOR,
   created_at: "2024-01-01T00:00:00.000Z",
 };
 
@@ -255,6 +373,14 @@ interface HarnessOptions {
   // without having to know about this check.
   controlIssueTimelineEvents?: TimelineEventFixture[];
   controlIssueTimelineFails?: boolean;
+  assignmentTimelineByIssue?: Record<number, TimelineEventFixture[]>;
+  assignmentTimelineSequenceByIssue?: Record<
+    number,
+    TimelineEventFixture[][]
+  >;
+  assignmentTimelineFailsFor?: number[];
+  issueRereadAssigneesByIssue?: Record<number, ActorFixture[]>;
+  copilotSuggestedActors?: unknown[];
   failIssueNumbers?: number[];
   defaultBranch?: string;
   now?: string;
@@ -269,7 +395,20 @@ function createHarness(options: HarnessOptions = {}) {
   for (const pull of options.pullRequests ?? []) {
     pulls.set(pull.number, pull);
   }
-  const commitsByPull = options.commitsByPull ?? {};
+  const commitsByPull = Object.fromEntries(
+    Object.entries(options.commitsByPull ?? {}).map(([number, commits]) => [
+      number,
+      commits.map((commit) => {
+        if (commit.author?.login === "copilot-swe-agent[bot]") {
+          return { ...commit, author: COPILOT_ACTOR };
+        }
+        if (commit.author?.login === "github-actions[bot]") {
+          return { ...commit, author: ACTIONS_ACTOR };
+        }
+        return commit;
+      }),
+    ]),
+  );
   const filesByPull = options.filesByPull ?? {};
   const checksBySha = options.checksBySha ?? {};
   const statusesBySha = options.statusesBySha ?? {};
@@ -286,6 +425,10 @@ function createHarness(options: HarnessOptions = {}) {
       : options.controlIssue;
   const controlIssueTimelineEvents = options.controlIssueTimelineEvents ?? [HUMAN_ACTIVE_TIMELINE_EVENT];
   const controlIssueTimelineFails = options.controlIssueTimelineFails ?? false;
+  const assignmentTimelineFailsFor = new Set(
+    options.assignmentTimelineFailsFor ?? [],
+  );
+  const assignmentTimelineReadCount = new Map<number, number>();
   const failIssueNumbers = new Set(options.failIssueNumbers ?? []);
   const defaultBranch = options.defaultBranch ?? DEFAULT_BRANCH;
 
@@ -308,6 +451,21 @@ function createHarness(options: HarnessOptions = {}) {
   const listDeployments = jest.fn();
   const listDeploymentStatuses = jest.fn();
   const listEventsForTimeline = jest.fn();
+  const getIssue = jest.fn(async (params: ApiParams) => {
+    const issue = issues.get(params.issue_number ?? -1);
+    if (!issue) {
+      throw new Error("Issue not found");
+    }
+    return {
+      data: {
+        ...issue,
+        assignees:
+          options.issueRereadAssigneesByIssue?.[
+            params.issue_number ?? -1
+          ] ?? issue.assignees,
+      },
+    };
+  });
 
   const paginate = jest.fn(async (method: unknown, params: ApiParams): Promise<unknown[]> => {
     if (method === listForRepo) {
@@ -320,10 +478,27 @@ function createHarness(options: HarnessOptions = {}) {
       );
     }
     if (method === listEventsForTimeline) {
-      if (controlIssueTimelineFails) {
-        throw new Error("simulated timeline read failure");
+      if (controlIssue && params.issue_number === controlIssue.number) {
+        if (controlIssueTimelineFails) {
+          throw new Error("simulated timeline read failure");
+        }
+        return controlIssueTimelineEvents;
       }
-      return controlIssueTimelineEvents;
+      const issueNumber = params.issue_number ?? -1;
+      if (assignmentTimelineFailsFor.has(issueNumber)) {
+        throw new Error("simulated assignment timeline read failure");
+      }
+      const sequence =
+        options.assignmentTimelineSequenceByIssue?.[issueNumber];
+      if (sequence) {
+        const readCount = assignmentTimelineReadCount.get(issueNumber) ?? 0;
+        assignmentTimelineReadCount.set(issueNumber, readCount + 1);
+        return sequence[Math.min(readCount, sequence.length - 1)];
+      }
+      return (
+        options.assignmentTimelineByIssue?.[issueNumber] ??
+        assignmentEvents(issueNumber)
+      );
     }
     if (method === listComments) {
       const issueNumber = params.issue_number ?? -1;
@@ -385,7 +560,12 @@ function createHarness(options: HarnessOptions = {}) {
 
   const createComment = jest.fn(async (params: ApiParams) => {
     const entity = findEntity(params.issue_number ?? -1);
-    const comment = { id: nextCommentId++, body: params.body ?? "" };
+    const comment = {
+      id: nextCommentId++,
+      body: params.body ?? "",
+      created_at: DEFAULT_NOW,
+      user: ACTIONS_ACTOR,
+    };
     if (entity && entity.comments) entity.comments.push(comment);
     return { data: comment };
   });
@@ -409,7 +589,24 @@ function createHarness(options: HarnessOptions = {}) {
     return {};
   });
 
-  const graphql = jest.fn(async (_query: string, variables: { pullRequestId: string }) => {
+  const graphql = jest.fn(async (query: string, variables: { pullRequestId?: string }) => {
+    if (query.includes("ResolveCopilotSuggestedActor")) {
+      return {
+        repository: {
+          suggestedActors: {
+            nodes: options.copilotSuggestedActors ?? [
+              {
+                __typename: "Bot",
+                login: "copilot-swe-agent",
+                id: COPILOT_ACTOR.node_id,
+                databaseId: COPILOT_ACTOR.id,
+              },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      };
+    }
     const pull = [...pulls.values()].find((p) => p.node_id === variables.pullRequestId);
     if (pull) {
       pull.auto_merge = { enabledBy: { login: "github-actions[bot]" } };
@@ -436,6 +633,7 @@ function createHarness(options: HarnessOptions = {}) {
         listForRepo,
         listComments,
         listEventsForTimeline,
+        get: getIssue,
         addLabels,
         removeLabel,
         createComment,
@@ -480,13 +678,20 @@ async function reconcile(options: HarnessOptions = {}) {
     github: harness.github,
     context: { repo: { owner, repo } },
     core: harness.core,
-    now: options.now,
+    now: options.now ?? DEFAULT_NOW,
+    assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
   });
   return harness;
 }
 
 function labelsOf(entity: { labels: Label[] } | undefined): string[] {
   return entity ? entity.labels.map((l) => l.name) : [];
+}
+
+function autoMergeCalls(graphql: jest.Mock): unknown[][] {
+  return graphql.mock.calls.filter(
+    ([, variables]) => variables && variables.pullRequestId,
+  );
 }
 
 describe("agentic lifecycle reconciler factory-mode gate", () => {
@@ -500,7 +705,7 @@ describe("agentic lifecycle reconciler factory-mode gate", () => {
     expect(harness.mocks.addLabels).not.toHaveBeenCalled();
     expect(harness.mocks.removeLabel).not.toHaveBeenCalled();
     expect(harness.mocks.createComment).not.toHaveBeenCalled();
-    expect(harness.mocks.graphql).not.toHaveBeenCalled();
+    expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
     expect(harness.mocks.updateIssue).not.toHaveBeenCalled();
     expect(harness.core.info).toHaveBeenCalledWith(
       expect.stringContaining("Factory mode is 'paused'"),
@@ -543,7 +748,7 @@ describe("agentic lifecycle reconciler factory-mode gate", () => {
 
     expect(labelsOf(harness.issues.get(72))).toEqual(["factory:pr-open", "risk:routine"]);
     expect(harness.mocks.addLabels).not.toHaveBeenCalled();
-    expect(harness.mocks.graphql).not.toHaveBeenCalled();
+    expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
     expect(harness.core.info).toHaveBeenCalledWith(
       expect.stringContaining("Factory mode is 'paused'"),
     );
@@ -733,14 +938,21 @@ describe("agentic lifecycle reconciler integration", () => {
     expect(harness.mocks.createComment).toHaveBeenCalledWith(
       expect.objectContaining({
         issue_number: 1,
-        body: expect.stringContaining("missing-claim"),
+        body: expect.stringContaining("missing-trusted-claim"),
       }),
     );
   });
 
   it("fails closed to blocked when the claim marker payload is malformed JSON", async () => {
     const issue = issueFixture(2, "factory:claimed", {
-      comments: [{ id: nextCommentId++, body: "<!-- factory-claim:v1 {not-json} -->" }],
+      comments: [
+        {
+          id: nextCommentId++,
+          body: "<!-- factory-claim:v1 {not-json} -->",
+          created_at: CLAIM_CREATED_AT,
+          user: ACTIONS_ACTOR,
+        },
+      ],
     });
     const harness = await reconcile({ issues: [issue] });
 
@@ -754,9 +966,9 @@ describe("agentic lifecycle reconciler integration", () => {
     );
   });
 
-  it("transitions factory:claimed to factory:implementing on an exact documented Copilot assignment", async () => {
+  it("transitions the observed User plus Copilot Bot assignment pair to implementing", async () => {
     const issue = issueFixture(3, "factory:claimed", {
-      assignees: [{ login: "copilot-swe-agent[bot]" }],
+      assignees: VALID_ASSIGNEES,
     });
     const harness = await reconcile({ issues: [issue] });
 
@@ -768,15 +980,273 @@ describe("agentic lifecycle reconciler integration", () => {
         body: expect.stringContaining("factory:claimed -> factory:implementing"),
       }),
     );
+    expect(harness.mocks.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 3,
+        body: expect.stringContaining("factory-assignment:v1"),
+      }),
+    );
   });
 
-  it("also accepts the bare copilot-swe-agent assignee login variant", async () => {
+  it("accepts a changed REST display login only when stable Copilot IDs match", async () => {
     const issue = issueFixture(4, "factory:claimed", {
-      assignees: [{ login: "copilot-swe-agent" }],
+      assignees: [
+        ASSIGNMENT_ACTOR,
+        { ...COPILOT_ACTOR, login: "Renamed Copilot" },
+      ],
     });
-    const harness = await reconcile({ issues: [issue] });
+    const timeline = assignmentEvents(4).map((event) =>
+      event.assignee?.node_id === COPILOT_ACTOR.node_id
+        ? {
+            ...event,
+            assignee: { ...COPILOT_ACTOR, login: "Renamed Copilot" },
+          }
+        : event,
+    );
+    const harness = await reconcile({
+      issues: [issue],
+      assignmentTimelineByIssue: { 4: timeline },
+    });
 
     expect(labelsOf(harness.issues.get(4))).toContain("factory:implementing");
+  });
+
+  it("accepts the authorized assignment pair with bounded timestamp skew", async () => {
+    const issue = issueFixture(47, "factory:claimed", {
+      assignees: VALID_ASSIGNEES,
+    });
+    const skewed = assignmentEvents(47).map((event, index) => ({
+      ...event,
+      created_at:
+        index === 0
+          ? ASSIGNED_AT
+          : "2026-08-20T20:51:32.000Z",
+    }));
+    const harness = await reconcile({
+      issues: [issue],
+      assignmentTimelineByIssue: { 47: skewed },
+    });
+    expect(labelsOf(harness.issues.get(47))).toContain(
+      "factory:implementing",
+    );
+  });
+
+  it("reuses an exact same-nonce assignment attestation after an interrupted transition", async () => {
+    const issue = issueFixture(48, "factory:claimed", {
+      assignees: VALID_ASSIGNEES,
+      comments: [claimComment(48), assignmentAttestation(48)],
+    });
+    const harness = await reconcile({ issues: [issue] });
+    expect(labelsOf(harness.issues.get(48))).toContain(
+      "factory:implementing",
+    );
+    const assignmentComments = harness.mocks.createComment.mock.calls.filter(
+      ([params]) =>
+        typeof params.body === "string" &&
+        params.body.includes("factory-assignment:v1"),
+    );
+    expect(assignmentComments).toHaveLength(0);
+  });
+
+  it("invalidates downstream authority after a later assignment mutation", async () => {
+    const issue = issueFixture(49, "factory:implementing");
+    const laterMutation = {
+      id: 499,
+      event: "unassigned",
+      actor: ASSIGNMENT_ACTOR,
+      assignee: ASSIGNMENT_ACTOR,
+      created_at: "2026-08-20T21:10:00.000Z",
+    };
+    const harness = await reconcile({
+      issues: [issue],
+      pullRequests: [],
+      assignmentTimelineByIssue: {
+        49: [...assignmentEvents(49), laterMutation],
+      },
+      now: "2026-08-20T21:15:00.000Z",
+    });
+    expect(labelsOf(harness.issues.get(49))).toContain("blocked");
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain(
+      "factory-mode:paused",
+    );
+  });
+
+  it("fails closed when the current Copilot login matches but its stable ID does not", async () => {
+    const issue = issueFixture(40, "factory:claimed", {
+      assignees: [
+        ASSIGNMENT_ACTOR,
+        { ...COPILOT_ACTOR, id: 999, node_id: "BOT_wrong" },
+      ],
+    });
+    const harness = await reconcile({ issues: [issue] });
+    expect(labelsOf(harness.issues.get(40))).toContain("blocked");
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain(
+      "factory-mode:paused",
+    );
+  });
+
+  it("fails closed when an extra assignee appears beside the authorized pair", async () => {
+    const issue = issueFixture(41, "factory:claimed", {
+      assignees: [
+        ...VALID_ASSIGNEES,
+        {
+          login: "other-user",
+          type: "User",
+          id: 77,
+          node_id: "U_other",
+        },
+      ],
+    });
+    const harness = await reconcile({ issues: [issue] });
+    expect(labelsOf(harness.issues.get(41))).toContain("blocked");
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain(
+      "factory-mode:paused",
+    );
+  });
+
+  it("rejects assignment events at the exact claim expiry boundary", async () => {
+    const issue = issueFixture(42, "factory:claimed", {
+      assignees: VALID_ASSIGNEES,
+    });
+    const atExpiry = assignmentEvents(42).map((event) => ({
+      ...event,
+      created_at: CLAIM_EXPIRES_AT,
+    }));
+    const harness = await reconcile({
+      issues: [issue],
+      assignmentTimelineByIssue: { 42: atExpiry },
+      now: "2026-08-20T21:00:00.000Z",
+    });
+    expect(labelsOf(harness.issues.get(42))).toContain("blocked");
+  });
+
+  it("ignores an untrusted future claim marker instead of letting it replace the trusted claim", async () => {
+    const issue = issueFixture(43, "factory:claimed", {
+      assignees: VALID_ASSIGNEES,
+    });
+    issue.comments.push({
+      id: nextCommentId++,
+      body: `<!-- factory-claim:v1 ${JSON.stringify({
+        nonce: "99999999999:1:43",
+        owner: "queue-controller:99999999999:1",
+        issueNumber: 43,
+        expiresAt: "2099-01-01T01:00:00.000Z",
+      })} -->`,
+      created_at: "2099-01-01T00:00:00.000Z",
+      user: {
+        login: "malicious-user",
+        type: "User",
+        id: 123,
+        node_id: "U_malicious",
+      },
+    });
+    const harness = await reconcile({ issues: [issue] });
+    expect(labelsOf(harness.issues.get(43))).toContain(
+      "factory:implementing",
+    );
+  });
+
+  it("pauses and aborts the pass when the canonical Copilot actor cannot be resolved", async () => {
+    const issue = issueFixture(44, "factory:claimed", {
+      assignees: VALID_ASSIGNEES,
+    });
+    const harness = createHarness({
+      issues: [issue],
+      copilotSuggestedActors: [],
+    });
+    await expect(
+      reconcileFactoryLifecycle({
+        github: harness.github,
+        context: { repo: { owner, repo } },
+        core: harness.core,
+        now: DEFAULT_NOW,
+        assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+      }),
+    ).rejects.toThrow("Canonical Copilot identity");
+    expect(labelsOf(harness.issues.get(44))).toContain("factory:claimed");
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain(
+      "factory-mode:paused",
+    );
+  });
+
+  it("pauses and aborts the pass when the assignment timeline cannot be read", async () => {
+    const issue = issueFixture(45, "factory:claimed", {
+      assignees: VALID_ASSIGNEES,
+    });
+    const harness = createHarness({
+      issues: [issue],
+      assignmentTimelineFailsFor: [45],
+    });
+    await expect(
+      reconcileFactoryLifecycle({
+        github: harness.github,
+        context: { repo: { owner, repo } },
+        core: harness.core,
+        now: DEFAULT_NOW,
+        assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+      }),
+    ).rejects.toThrow("assignment timeline");
+    expect(labelsOf(harness.issues.get(45))).toContain("factory:claimed");
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain(
+      "factory-mode:paused",
+    );
+  });
+
+  it("blocks and pauses when assignees change during the final pre-transition re-read", async () => {
+    const issue = issueFixture(46, "factory:claimed", {
+      assignees: VALID_ASSIGNEES,
+    });
+    const harness = await reconcile({
+      issues: [issue],
+      issueRereadAssigneesByIssue: {
+        46: [COPILOT_ACTOR],
+      },
+    });
+    expect(labelsOf(harness.issues.get(46))).toContain("blocked");
+    expect(harness.mocks.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining(
+          "assignment-changed-before-transition",
+        ),
+      }),
+    );
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain(
+      "factory-mode:paused",
+    );
+  });
+
+  it("blocks an unassign-reassign ABA mutation detected by the final timeline watermark", async () => {
+    const issue = issueFixture(50, "factory:claimed", {
+      assignees: VALID_ASSIGNEES,
+    });
+    const base = assignmentEvents(50);
+    const churned = [
+      ...base,
+      {
+        id: 503,
+        event: "unassigned",
+        actor: ASSIGNMENT_ACTOR,
+        assignee: ASSIGNMENT_ACTOR,
+        created_at: "2026-08-20T20:51:33.000Z",
+      },
+      {
+        id: 504,
+        event: "assigned",
+        actor: ASSIGNMENT_ACTOR,
+        assignee: ASSIGNMENT_ACTOR,
+        created_at: "2026-08-20T20:51:34.000Z",
+      },
+    ];
+    const harness = await reconcile({
+      issues: [issue],
+      assignmentTimelineSequenceByIssue: {
+        50: [base, base, churned],
+      },
+    });
+    expect(labelsOf(harness.issues.get(50))).toContain("blocked");
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain(
+      "factory-mode:paused",
+    );
   });
 
   it("leaves an unassigned claim unchanged", async () => {
@@ -791,9 +1261,18 @@ describe("agentic lifecycle reconciler integration", () => {
   it("leaves an unassigned claim unchanged when expiresAt is still in the future relative to an injected now", async () => {
     const issue = issueFixture(86, "factory:claimed", {
       assignees: [],
-      comments: [claimComment(86, { expiresAt: "2024-06-01T00:10:00.000Z" })],
+      comments: [
+        claimComment(86, {
+          createdAt: "2024-05-31T23:00:00.000Z",
+          expiresAt: "2024-06-01T00:10:00.000Z",
+        }),
+      ],
     });
-    const harness = await reconcile({ issues: [issue], now: "2024-06-01T00:00:00.000Z" });
+    const harness = await reconcile({
+      issues: [issue],
+      now: "2024-06-01T00:00:00.000Z",
+      assignmentTimelineByIssue: { 86: [] },
+    });
 
     expect(labelsOf(harness.issues.get(86))).toEqual(["factory:claimed", "risk:routine"]);
     expect(harness.mocks.addLabels).not.toHaveBeenCalled();
@@ -804,16 +1283,25 @@ describe("agentic lifecycle reconciler integration", () => {
   it("transitions a stale, unassigned claim to blocked with stale-claim-without-assignment and best-effort pauses the factory", async () => {
     const issue = issueFixture(87, "factory:claimed", {
       assignees: [],
-      comments: [claimComment(87, { expiresAt: "2024-06-01T00:00:00.000Z" })],
+      comments: [
+        claimComment(87, {
+          createdAt: "2024-05-31T22:00:00.000Z",
+          expiresAt: "2024-06-01T00:00:00.000Z",
+        }),
+      ],
     });
-    const harness = await reconcile({ issues: [issue], now: "2024-06-01T00:10:00.000Z" });
+    const harness = await reconcile({
+      issues: [issue],
+      now: "2024-06-01T00:10:00.000Z",
+      assignmentTimelineByIssue: { 87: [] },
+    });
 
     expect(labelsOf(harness.issues.get(87))).toContain("blocked");
     expect(labelsOf(harness.issues.get(87))).not.toContain("factory:claimed");
     expect(harness.mocks.createComment).toHaveBeenCalledWith(
       expect.objectContaining({
         issue_number: 87,
-        body: expect.stringContaining("stale-claim-without-assignment"),
+        body: expect.stringContaining("assignment-evidence-expired"),
       }),
     );
     // A stale, unassigned lease is a queue/lease integrity failure, not an
@@ -826,9 +1314,18 @@ describe("agentic lifecycle reconciler integration", () => {
   it("treats an expiresAt exactly equal to now as expired (at/past now)", async () => {
     const issue = issueFixture(88, "factory:claimed", {
       assignees: [],
-      comments: [claimComment(88, { expiresAt: "2024-06-01T00:00:00.000Z" })],
+      comments: [
+        claimComment(88, {
+          createdAt: "2024-05-31T22:00:00.000Z",
+          expiresAt: "2024-06-01T00:00:00.000Z",
+        }),
+      ],
     });
-    const harness = await reconcile({ issues: [issue], now: "2024-06-01T00:00:00.000Z" });
+    const harness = await reconcile({
+      issues: [issue],
+      now: "2024-06-01T00:00:00.000Z",
+      assignmentTimelineByIssue: { 88: [] },
+    });
 
     expect(labelsOf(harness.issues.get(88))).toContain("blocked");
     expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
@@ -837,9 +1334,22 @@ describe("agentic lifecycle reconciler integration", () => {
   it("does not treat an assigned claim as stale even past its original expiresAt: assigned/implementing work continues", async () => {
     const issue = issueFixture(89, "factory:claimed", {
       assignees: [{ login: "copilot-swe-agent[bot]" }],
-      comments: [claimComment(89, { expiresAt: "2024-06-01T00:00:00.000Z" })],
+      comments: [
+        claimComment(89, {
+          createdAt: "2024-05-31T22:00:00.000Z",
+          expiresAt: "2024-06-01T00:00:00.000Z",
+        }),
+      ],
     });
-    const harness = await reconcile({ issues: [issue], now: "2024-06-01T00:10:00.000Z" });
+    const historicalPair = assignmentEvents(89).map((event) => ({
+      ...event,
+      created_at: "2024-05-31T23:59:00.000Z",
+    }));
+    const harness = await reconcile({
+      issues: [issue],
+      now: "2024-06-01T00:10:00.000Z",
+      assignmentTimelineByIssue: { 89: historicalPair },
+    });
 
     expect(labelsOf(harness.issues.get(89))).toContain("factory:implementing");
     expect(labelsOf(harness.issues.get(89))).not.toContain("blocked");
@@ -856,7 +1366,9 @@ describe("agentic lifecycle reconciler integration", () => {
 
     expect(labelsOf(harness.issues.get(6))).toContain("blocked");
     expect(harness.mocks.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining("unknown-assignee") }),
+      expect.objectContaining({
+        body: expect.stringContaining("unexpected-current-assignee"),
+      }),
     );
   });
 
@@ -874,7 +1386,7 @@ describe("agentic lifecycle reconciler integration", () => {
     const harness = await reconcile({
       issues: [issue],
       pullRequests: [pull],
-      now: "2024-02-01T01:00:00.000Z",
+      now: DEFAULT_NOW,
     });
 
     expect(labelsOf(harness.issues.get(8))).toContain("factory:pr-open");
@@ -954,7 +1466,7 @@ describe("agentic lifecycle reconciler integration", () => {
       expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
       // Never trust title/author/enrollment: no labels were ever applied.
       expect(labelsOf(harness.pulls.get(192))).toEqual([]);
-      expect(harness.mocks.graphql).not.toHaveBeenCalled();
+      expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
     });
 
     it("blocks and best-effort pauses the factory when a file is renamed FROM outside the declared scope", async () => {
@@ -989,7 +1501,7 @@ describe("agentic lifecycle reconciler integration", () => {
       const harness = await reconcile({
         issues: [issue],
         pullRequests: [pull],
-        now: "2024-02-01T01:00:00.000Z",
+        now: DEFAULT_NOW,
       });
 
       expect(labelsOf(harness.issues.get(94))).toContain("blocked");
@@ -1020,7 +1532,7 @@ describe("agentic lifecycle reconciler integration", () => {
       );
       expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
       expect(labelsOf(harness.pulls.get(197))).toEqual([]);
-      expect(harness.mocks.graphql).not.toHaveBeenCalled();
+      expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
     });
 
     it("blocks and best-effort pauses the factory when the Allowed paths section contains a malformed pattern", async () => {
@@ -1058,7 +1570,7 @@ describe("agentic lifecycle reconciler integration", () => {
       });
 
       expect(labelsOf(harness.issues.get(96))).toContain("blocked");
-      expect(harness.mocks.graphql).not.toHaveBeenCalled();
+      expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
       expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
     });
   });
@@ -1085,7 +1597,7 @@ describe("agentic lifecycle reconciler integration", () => {
     });
     const harness = await reconcile({ issues: [issue], pullRequests: [pull] });
 
-    expect(harness.mocks.graphql).not.toHaveBeenCalled();
+    expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
   });
 
   it("treats a clean/unstable/pending mergeable-state error as a retryable no-op, not a block", async () => {
@@ -1094,17 +1606,40 @@ describe("agentic lifecycle reconciler integration", () => {
       labels: [{ name: "agentic-factory" }, { name: "agentic-automerge" }, { name: "needs-ai-review" }, { name: "risk:routine" }],
     });
     const harness = createHarness({ issues: [issue], pullRequests: [pull] });
-    harness.mocks.graphql.mockRejectedValueOnce(
-      new Error("Pull request Auto merge is not allowed for pull request because it is in clean status."),
+    harness.mocks.graphql.mockImplementation(
+      async (query: string) => {
+        if (query.includes("ResolveCopilotSuggestedActor")) {
+          return {
+            repository: {
+              suggestedActors: {
+                nodes: [
+                  {
+                    __typename: "Bot",
+                    login: "copilot-swe-agent",
+                    id: COPILOT_ACTOR.node_id,
+                    databaseId: COPILOT_ACTOR.id,
+                  },
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          };
+        }
+        throw new Error(
+          "Pull request Auto merge is not allowed for pull request because it is in clean status.",
+        );
+      },
     );
 
     await reconcileFactoryLifecycle({
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
+      now: DEFAULT_NOW,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
 
-    expect(harness.mocks.graphql).toHaveBeenCalledTimes(1);
+    expect(harness.mocks.graphql).toHaveBeenCalledTimes(2);
     expect(labelsOf(harness.issues.get(75))).not.toContain("blocked");
     expect(harness.mocks.createComment).not.toHaveBeenCalled();
     expect(harness.core.info).toHaveBeenCalledWith(
@@ -1275,7 +1810,7 @@ describe("agentic lifecycle reconciler integration", () => {
     const issue = issueFixture(14, "factory:implementing");
     const pull = pullRequestFixture(108, 14, {
       state: "closed",
-      merged_at: "2024-02-01T00:00:00.000Z",
+      merged_at: "2026-08-20T20:00:00.000Z",
       merge_commit_sha: "merged-sha-108",
     });
     const harness = await reconcile({ issues: [issue], pullRequests: [pull] });
@@ -1293,15 +1828,14 @@ describe("agentic lifecycle reconciler integration", () => {
     const issue = issueFixture(15, "factory:pr-open");
     const pull = pullRequestFixture(109, 15, {
       state: "closed",
-      merged_at: "2024-02-01T00:00:00.000Z",
+      merged_at: "2026-08-20T20:00:00.000Z",
       merge_commit_sha: "merged-sha-109",
     });
     const harness = await reconcile({
       issues: [issue],
       pullRequests: [pull],
-      now: "2024-02-01T01:00:00.000Z",
+      now: DEFAULT_NOW,
     });
-
     expect(labelsOf(harness.issues.get(15))).toContain("factory:merged");
     expect(harness.issues.get(15)?.state).toBe("open");
     expect(harness.mocks.updateIssue).not.toHaveBeenCalled();
@@ -1311,13 +1845,13 @@ describe("agentic lifecycle reconciler integration", () => {
     const issue = issueFixture(115, "factory:merged");
     const pull = pullRequestFixture(115, 115, {
       state: "closed",
-      merged_at: "2024-02-01T00:00:00.000Z",
+      merged_at: "2026-08-20T14:00:00.000Z",
       merge_commit_sha: "merged-sha-115",
     });
     const harness = await reconcile({
       issues: [issue],
       pullRequests: [pull],
-      now: "2024-02-01T07:00:00.000Z",
+      now: DEFAULT_NOW,
     });
 
     expect(labelsOf(harness.issues.get(115))).toContain("blocked");
@@ -1357,6 +1891,8 @@ describe("agentic lifecycle reconciler integration", () => {
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
+      now: DEFAULT_NOW,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
 
     // First run: verified evidence authorizes exactly one hop,
@@ -1374,6 +1910,8 @@ describe("agentic lifecycle reconciler integration", () => {
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
+      now: DEFAULT_NOW,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
 
     // Second, separate run: `factory:deployed-dev -> factory:done` and the
@@ -1481,14 +2019,14 @@ describe("agentic lifecycle reconciler integration", () => {
     expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:active");
   });
 
-  it("does not pause the factory for an issue blocked over an unknown assignee (an ordinary item failure)", async () => {
+  it("pauses the factory for an issue with invalid assignment provenance", async () => {
     const issue = issueFixture(85, "factory:claimed", {
       assignees: [{ login: "some-random-human" }],
     });
     const harness = await reconcile({ issues: [issue] });
 
     expect(labelsOf(harness.issues.get(85))).toContain("blocked");
-    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:active");
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
   });
 
   it("makes no further mutation on an idempotent rerun once a transition has already settled", async () => {
@@ -1501,10 +2039,12 @@ describe("agentic lifecycle reconciler integration", () => {
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
+      now: DEFAULT_NOW,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
     expect(labelsOf(harness.issues.get(21))).toContain("factory:implementing");
     expect(harness.mocks.addLabels).toHaveBeenCalledTimes(1);
-    expect(harness.mocks.createComment).toHaveBeenCalledTimes(1);
+    expect(harness.mocks.createComment).toHaveBeenCalledTimes(2);
 
     // Second pass: the issue is already `factory:implementing` with zero
     // correlated PRs yet, which is a defined "stays" no-op -- it must not
@@ -1513,10 +2053,12 @@ describe("agentic lifecycle reconciler integration", () => {
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
+      now: DEFAULT_NOW,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
     expect(harness.mocks.addLabels).toHaveBeenCalledTimes(1);
     expect(harness.mocks.removeLabel).toHaveBeenCalledTimes(1);
-    expect(harness.mocks.createComment).toHaveBeenCalledTimes(1);
+    expect(harness.mocks.createComment).toHaveBeenCalledTimes(2);
     expect(harness.mocks.updateComment).not.toHaveBeenCalled();
   });
 
@@ -1529,9 +2071,11 @@ describe("agentic lifecycle reconciler integration", () => {
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
+      now: DEFAULT_NOW,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
     expect(labelsOf(harness.issues.get(22))).toContain("factory:pr-open");
-    expect(harness.mocks.graphql).toHaveBeenCalledTimes(1);
+    expect(harness.mocks.graphql).toHaveBeenCalledTimes(2);
     const firstCommentCalls = harness.mocks.createComment.mock.calls.length;
     const firstAddLabelCalls = harness.mocks.addLabels.mock.calls.length;
 
@@ -1539,11 +2083,13 @@ describe("agentic lifecycle reconciler integration", () => {
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
+      now: DEFAULT_NOW,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
 
     // Steady state: PR is already open, already enrolled, and auto-merge is
     // already enabled -- nothing further should be written.
-    expect(harness.mocks.graphql).toHaveBeenCalledTimes(1);
+    expect(harness.mocks.graphql).toHaveBeenCalledTimes(3);
     expect(harness.mocks.createComment.mock.calls.length).toBe(firstCommentCalls);
     expect(harness.mocks.addLabels.mock.calls.length).toBe(firstAddLabelCalls);
     expect(harness.mocks.updateComment).not.toHaveBeenCalled();
@@ -1581,6 +2127,8 @@ describe("agentic lifecycle reconciler integration", () => {
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
+      now: DEFAULT_NOW,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
 
     expect(harness.core.warning).toHaveBeenCalledWith(
@@ -1598,11 +2146,21 @@ describe("agentic lifecycle reconciler pure helpers", () => {
   });
 
   it("resolveLatestIssueClaim takes the most recently posted claim marker", () => {
-    const first = claimComment(30, { nonce: "run-0:0:30" });
-    const second = claimComment(30, { nonce: "run-1:0:30" });
+    const first = claimComment(30, {
+      nonce: "100:1:30",
+      owner: "queue-controller:100:1",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      expiresAt: "2024-01-01T01:00:00.000Z",
+    });
+    const second = claimComment(30, {
+      nonce: "101:1:30",
+      owner: "queue-controller:101:1",
+      createdAt: "2024-01-01T02:00:00.000Z",
+      expiresAt: "2024-01-01T03:00:00.000Z",
+    });
     const result = reconciler.resolveLatestIssueClaim([first, second], 30);
     expect(result.state).toBe("valid");
-    expect(result.claim?.nonce).toBe("run-1:0:30");
+    expect(result.claim?.nonce).toBe("101:1:30");
   });
 
   it("resolveLatestIssueClaim fails closed on an issue-number mismatch", () => {
@@ -1610,13 +2168,6 @@ describe("agentic lifecycle reconciler pure helpers", () => {
     const result = reconciler.resolveLatestIssueClaim([comment], 31);
     expect(result.state).toBe("malformed");
     expect(result.reason).toContain("issue-number-mismatch");
-  });
-
-  it("isDocumentedCopilotAssignee only accepts the two exact documented variants", () => {
-    expect(reconciler.isDocumentedCopilotAssignee("copilot-swe-agent")).toBe(true);
-    expect(reconciler.isDocumentedCopilotAssignee("copilot-swe-agent[bot]")).toBe(true);
-    expect(reconciler.isDocumentedCopilotAssignee("copilot")).toBe(false);
-    expect(reconciler.isDocumentedCopilotAssignee("Copilot-SWE-Agent[bot]")).toBe(false);
   });
 
   it("correlatePullRequests partitions valid vs. malformed candidates", () => {
@@ -1631,6 +2182,7 @@ describe("agentic lifecycle reconciler pure helpers", () => {
       nonce,
       repository,
       defaultBranch: DEFAULT_BRANCH,
+      copilotIdentity: COPILOT_IDENTITY,
     });
 
     expect(result.candidates).toHaveLength(2);
@@ -1818,14 +2370,26 @@ describe("agentic lifecycle reconciler pure helpers", () => {
 
   it("hasTrustedSelfHealCommit and hasPendingCheckRuns are conservative and trusted-author scoped", () => {
     expect(
-      reconciler.hasTrustedSelfHealCommit([
-        { author: { login: "some-human" }, commit: { message: "[self-heal] retry" } },
-      ]),
+      reconciler.hasTrustedSelfHealCommit(
+        [
+          {
+            author: { login: "some-human", type: "User" },
+            commit: { message: "[self-heal] retry" },
+          },
+        ],
+        COPILOT_IDENTITY,
+      ),
     ).toBe(false);
     expect(
-      reconciler.hasTrustedSelfHealCommit([
-        { author: { login: "copilot-swe-agent[bot]" }, commit: { message: "[self-heal] retry" } },
-      ]),
+      reconciler.hasTrustedSelfHealCommit(
+        [
+          {
+            author: COPILOT_ACTOR,
+            commit: { message: "[self-heal] retry" },
+          },
+        ],
+        COPILOT_IDENTITY,
+      ),
     ).toBe(true);
     expect(reconciler.hasPendingCheckRuns([{ status: "completed" }])).toBe(false);
     expect(reconciler.hasPendingCheckRuns([{ status: "in_progress" }])).toBe(true);

@@ -13,6 +13,7 @@
     "tradingSafetyCheck": "Trading safety review"
   },
   "identities": {
+    "copilotSuggestedActorLogin": "copilot-swe-agent",
     "trustedAgentAuthors": [
       "github-actions[bot]",
       "copilot-swe-agent[bot]"
