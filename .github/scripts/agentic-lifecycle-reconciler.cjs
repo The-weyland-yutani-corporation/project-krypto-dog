@@ -28,6 +28,16 @@
 
 const policy = require("./agentic-factory-policy.cjs");
 const queueController = require("./agentic-queue-controller.cjs");
+const queueRuntime = require("./agentic-queue-runtime.cjs");
+const {
+  AgenticIdentityError,
+  actorNodeId,
+  isConfiguredAssignmentActor,
+  isGitHubActionsBot,
+  isResolvedCopilotActor,
+  normalizeConfiguredUserNodeId,
+  resolveRepositoryCopilotIdentity,
+} = require("./agentic-identity.cjs");
 
 const { LIFECYCLE_STATES } = policy;
 
@@ -57,16 +67,13 @@ const LIFECYCLE_STATE_SET = new Set(policy.LIFECYCLE_STATE_VALUES);
 // handed to `agentic-queue-controller.cjs`'s `parseClaimPayload`, which never
 // throws and fails closed on any malformed shape.
 const CLAIM_MARKER_PATTERN = /<!-- factory-claim:v1 (.+?) -->/s;
-
-// The two documented Copilot coding-agent assignee login variants. No other
-// login is ever treated as "the" implementation agent.
-const DOCUMENTED_COPILOT_ASSIGNEE_LOGINS = Object.freeze([
-  "copilot-swe-agent",
-  "copilot-swe-agent[bot]",
-]);
+const ASSIGNMENT_MARKER_PATTERN =
+  /<!-- factory-assignment:v1 (.+?) -->/s;
+const MAX_CLAIM_LEASE_MS =
+  queueRuntime.DEFAULT_LEASE_MINUTES * 60 * 1000;
+const MAX_ASSIGNMENT_PAIR_SKEW_MS = 5 * 1000;
 
 const PR_TITLE_PREFIX = "[ai-dev] ";
-const PR_AUTHOR_LOGIN = "copilot-swe-agent[bot]";
 
 const AGENTIC_FACTORY_LABEL = "agentic-factory";
 const AUTO_MERGE_LABEL = "agentic-automerge";
@@ -76,10 +83,6 @@ const FACTORY_CONTROL_LABEL = "factory-control";
 const ACTIVE_MODE_LABEL = "factory-mode:active";
 const PAUSED_MODE_LABEL = "factory-mode:paused";
 
-const TRUSTED_SELF_HEAL_AUTHORS = Object.freeze([
-  "copilot-swe-agent[bot]",
-  "github-actions[bot]",
-]);
 const SELF_HEAL_COMMIT_MARKER = "[self-heal]";
 
 const DEV_EVIDENCE_STATUS_CONTEXT = "Dev deployment evidence";
@@ -88,6 +91,14 @@ const DEV_EVIDENCE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 const AUDIT_COMMENT_MARKER_PREFIX = "<!-- agentic-lifecycle-reconciler:v1 issue=";
 const CONTROL_COMMENT_MARKER = "<!-- agentic-lifecycle-reconciler:v1 factory-control-pause -->";
+
+class FactoryTrustSourceError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "FactoryTrustSourceError";
+    this.code = code;
+  }
+}
 
 const ENABLE_AUTO_MERGE_MUTATION = `
   mutation EnableAgenticAutoMerge($pullRequestId: ID!) {
@@ -143,65 +154,350 @@ function extractClaimMarkerPayload(body) {
   return match ? match[1] : null;
 }
 
-/**
- * Filters a comment list down to those carrying a claim marker, pairing each
- * with its extracted (still-unparsed) payload text, in original (i.e.
- * chronological) order.
- *
- * @param {Array<{body?: unknown}>} comments
- * @returns {Array<{comment: object, payload: string}>}
- */
-function commentsWithClaimPayload(comments) {
-  return (Array.isArray(comments) ? comments : [])
-    .map((comment) => ({
-      comment,
-      payload: extractClaimMarkerPayload(comment && comment.body),
-    }))
-    .filter((entry) => entry.payload !== null);
+function parseClaimNonce(nonce, issueNumber) {
+  if (typeof nonce !== "string") {
+    return null;
+  }
+  const match = /^(\d+):(\d+):(\d+)$/.exec(nonce);
+  if (!match || Number(match[3]) !== issueNumber) {
+    return null;
+  }
+  return {
+    runId: match[1],
+    runAttempt: match[2],
+  };
 }
 
-/**
- * Resolves the latest (most recent) claim from an issue's comments. Fails
- * closed: a missing marker is `no-claim-comment`; a marker whose payload
- * fails `parseClaimPayload`, or whose `issueNumber` does not match the
- * issue it was read from, is `malformed`.
- *
- * @param {Array<object>} comments
- * @param {number} issueNumber
- * @returns {{state: "no-claim-comment"|"malformed"|"valid", claim?: object, reason?: string}}
- */
-function resolveLatestIssueClaim(comments, issueNumber) {
-  const withPayload = commentsWithClaimPayload(comments).sort(
-    (left, right) =>
-      Date.parse(left.comment.created_at || "") -
-        Date.parse(right.comment.created_at || "") ||
-      (left.comment.id || 0) - (right.comment.id || 0),
-  );
-  if (withPayload.length === 0) {
-    return { state: "no-claim-comment", reason: "missing-claim" };
-  }
-
-  const latest = withPayload[withPayload.length - 1];
-  const parsed = queueController.parseClaimPayload(latest.payload);
+function parseTrustedClaimEntry(entry, issueNumber, nowMs) {
+  const parsed = queueController.parseClaimPayload(entry.payload);
   if (!parsed.valid) {
-    return { state: "malformed", reason: `malformed-claim:${parsed.reason}` };
+    return { valid: false, reason: `malformed-claim:${parsed.reason}` };
   }
   if (parsed.claim.issueNumber !== issueNumber) {
     return {
-      state: "malformed",
+      valid: false,
       reason: "malformed-claim:issue-number-mismatch",
     };
   }
 
-  return { state: "valid", claim: parsed.claim };
+  const nonce = parseClaimNonce(parsed.claim.nonce, issueNumber);
+  if (
+    !nonce ||
+    parsed.claim.owner !==
+      `queue-controller:${nonce.runId}:${nonce.runAttempt}`
+  ) {
+    return {
+      valid: false,
+      reason: "malformed-claim:run-identity-mismatch",
+    };
+  }
+
+  const createdAtMs = Date.parse(entry.comment.created_at || "");
+  const expiresAtMs = Date.parse(parsed.claim.expiresAt || "");
+  if (
+    Number.isNaN(createdAtMs) ||
+    Number.isNaN(expiresAtMs) ||
+    createdAtMs >= expiresAtMs ||
+    expiresAtMs - createdAtMs > MAX_CLAIM_LEASE_MS ||
+    (Number.isFinite(nowMs) && createdAtMs > nowMs)
+  ) {
+    return {
+      valid: false,
+      reason: "malformed-claim:invalid-server-time-window",
+    };
+  }
+
+  return {
+    valid: true,
+    claim: {
+      ...parsed.claim,
+      commentId: entry.comment.id,
+      createdAt: new Date(createdAtMs).toISOString(),
+    },
+    createdAtMs,
+    expiresAtMs,
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Assignee classification (pure)
-// ---------------------------------------------------------------------------
+/**
+ * Resolves the latest authoritative queue-controller claim. Marker comments
+ * from any actor other than GitHub Actions are ignored and can never replace a
+ * trusted claim. Trusted malformed or overlapping claims fail closed.
+ */
+function resolveLatestIssueClaim(comments, issueNumber, now) {
+  const nowMs = Date.parse(now || "");
+  const trustedEntries = (Array.isArray(comments) ? comments : [])
+    .map((comment) => ({
+      comment,
+      payload: extractClaimMarkerPayload(comment && comment.body),
+    }))
+    .filter(
+      (entry) =>
+        entry.payload !== null && isGitHubActionsBot(entry.comment.user),
+    )
+    .sort(
+      (left, right) =>
+        Date.parse(left.comment.created_at || "") -
+          Date.parse(right.comment.created_at || "") ||
+        (left.comment.id || 0) - (right.comment.id || 0),
+    );
 
-function isDocumentedCopilotAssignee(login) {
-  return DOCUMENTED_COPILOT_ASSIGNEE_LOGINS.includes(login);
+  if (trustedEntries.length === 0) {
+    return { state: "no-claim-comment", reason: "missing-trusted-claim" };
+  }
+
+  const parsedEntries = [];
+  for (const entry of trustedEntries) {
+    const parsed = parseTrustedClaimEntry(entry, issueNumber, nowMs);
+    if (!parsed.valid) {
+      return { state: "malformed", reason: parsed.reason };
+    }
+    parsedEntries.push(parsed);
+  }
+
+  for (let index = 1; index < parsedEntries.length; index += 1) {
+    if (
+      parsedEntries[index].createdAtMs <
+      parsedEntries[index - 1].expiresAtMs
+    ) {
+      return {
+        state: "malformed",
+        reason: "malformed-claim:overlapping-trusted-claims",
+      };
+    }
+  }
+
+  return {
+    state: "valid",
+    claim: parsedEntries[parsedEntries.length - 1].claim,
+  };
+}
+
+function currentAssigneeState({
+  assignees,
+  copilotIdentity,
+  assignmentActorNodeId,
+}) {
+  const actors = Array.isArray(assignees) ? assignees : [];
+  const copilot = actors.filter((actor) =>
+    isResolvedCopilotActor(actor, copilotIdentity),
+  );
+  const assignmentActor = actors.filter((actor) =>
+    isConfiguredAssignmentActor(actor, assignmentActorNodeId),
+  );
+  const expected = actors.filter(
+    (actor) =>
+      isResolvedCopilotActor(actor, copilotIdentity) ||
+      isConfiguredAssignmentActor(actor, assignmentActorNodeId),
+  );
+
+  if (expected.length !== actors.length) {
+    return { state: "invalid", reason: "unexpected-current-assignee" };
+  }
+  if (copilot.length > 1 || assignmentActor.length > 1) {
+    return { state: "invalid", reason: "duplicate-current-assignee" };
+  }
+  if (actors.length === 0 || copilot.length === 0 || assignmentActor.length === 0) {
+    return { state: "incomplete", reason: "assignment-pair-not-settled" };
+  }
+  if (actors.length !== 2) {
+    return { state: "invalid", reason: "invalid-current-assignee-count" };
+  }
+  return { state: "valid" };
+}
+
+function assignmentMutationFingerprint(timeline) {
+  return JSON.stringify(
+    (Array.isArray(timeline) ? timeline : [])
+      .filter(
+        (event) =>
+          event &&
+          (event.event === "assigned" || event.event === "unassigned"),
+      )
+      .map((event) => ({
+        id: event.id,
+        event: event.event,
+        createdAt: event.created_at,
+        actorNodeId: actorNodeId(event.actor),
+        assigneeNodeId: actorNodeId(event.assignee),
+      }))
+      .sort((left, right) =>
+        String(left.id).localeCompare(String(right.id)),
+      ),
+  );
+}
+
+function classifyAssignmentEvidence({
+  issue,
+  timeline,
+  claim,
+  copilotIdentity,
+  assignmentActorNodeId,
+  now,
+}) {
+  const current = currentAssigneeState({
+    assignees: issue && issue.assignees,
+    copilotIdentity,
+    assignmentActorNodeId,
+  });
+  if (current.state === "invalid") {
+    return current;
+  }
+
+  const claimCreatedAtMs = Date.parse(claim.createdAt || "");
+  const expiresAtMs = Date.parse(claim.expiresAt || "");
+  const nowMs = Date.parse(now || "");
+  if (
+    Number.isNaN(claimCreatedAtMs) ||
+    Number.isNaN(expiresAtMs) ||
+    Number.isNaN(nowMs)
+  ) {
+    return { state: "invalid", reason: "invalid-assignment-time-context" };
+  }
+
+  const mutations = [];
+  for (const event of Array.isArray(timeline) ? timeline : []) {
+    if (
+      !event ||
+      (event.event !== "assigned" && event.event !== "unassigned")
+    ) {
+      continue;
+    }
+    const eventMs = Date.parse(event.created_at || "");
+    if (Number.isNaN(eventMs)) {
+      return {
+        state: "invalid",
+        reason: "assignment-event-timestamp-malformed",
+      };
+    }
+
+    if (!Number.isInteger(event.id) && typeof event.id !== "string") {
+      return { state: "invalid", reason: "assignment-event-id-malformed" };
+    }
+    if (eventMs <= claimCreatedAtMs) {
+      continue;
+    }
+    mutations.push({ event, eventMs });
+  }
+  mutations.sort(
+    (left, right) =>
+      left.eventMs - right.eventMs ||
+      String(left.event.id).localeCompare(String(right.event.id)),
+  );
+
+  const inWindow = mutations.filter(
+    ({ eventMs }) => eventMs < expiresAtMs,
+  );
+  const expectedEvents = inWindow.filter(
+    ({ event }) =>
+      event.event === "assigned" &&
+      isConfiguredAssignmentActor(event.actor, assignmentActorNodeId) &&
+      (isResolvedCopilotActor(event.assignee, copilotIdentity) ||
+        isConfiguredAssignmentActor(
+          event.assignee,
+          assignmentActorNodeId,
+        )),
+  );
+  const unexpectedMutation = mutations.find(
+    ({ event }) => !expectedEvents.some(({ event: expected }) => expected.id === event.id),
+  );
+  if (unexpectedMutation) {
+    return { state: "invalid", reason: "assignment-mutated-after-claim" };
+  }
+
+  const botEvents = expectedEvents.filter(({ event }) =>
+    isResolvedCopilotActor(event.assignee, copilotIdentity),
+  );
+  const userEvents = expectedEvents.filter(({ event }) =>
+    isConfiguredAssignmentActor(event.assignee, assignmentActorNodeId),
+  );
+  if (botEvents.length > 1 || userEvents.length > 1) {
+    return { state: "invalid", reason: "duplicate-assignment-event-pair" };
+  }
+  if (
+    botEvents.length === 0 ||
+    userEvents.length === 0 ||
+    current.state === "incomplete"
+  ) {
+    return nowMs < expiresAtMs
+      ? { state: "incomplete", reason: "assignment-evidence-pending" }
+      : { state: "invalid", reason: "assignment-evidence-expired" };
+  }
+  if (
+    Math.abs(botEvents[0].eventMs - userEvents[0].eventMs) >
+    MAX_ASSIGNMENT_PAIR_SKEW_MS
+  ) {
+    return { state: "invalid", reason: "assignment-event-pair-skew" };
+  }
+
+  const pairEvents = [botEvents[0], userEvents[0]].sort(
+    (left, right) =>
+      left.eventMs - right.eventMs ||
+      String(left.event.id).localeCompare(String(right.event.id)),
+  );
+  const pair = {
+    assignedAt: new Date(pairEvents[0].eventMs).toISOString(),
+    eventIds: pairEvents.map(({ event }) => event.id),
+  };
+
+  return {
+    state: "valid",
+    evidence: {
+      nonce: claim.nonce,
+      assignedAt: pair.assignedAt,
+      eventIds: pair.eventIds,
+      copilotNodeId: copilotIdentity.nodeId,
+      assignmentActorNodeId,
+    },
+  };
+}
+
+function buildAssignmentMarker(evidence) {
+  return `<!-- factory-assignment:v1 ${JSON.stringify(evidence)} -->`;
+}
+
+function assignmentAttestationEntries(comments, nonce) {
+  return (Array.isArray(comments) ? comments : [])
+    .map((comment) => {
+      const match =
+        typeof comment.body === "string"
+          ? ASSIGNMENT_MARKER_PATTERN.exec(comment.body)
+          : null;
+      return match
+        ? { comment, payload: match[1] }
+        : null;
+    })
+    .filter(Boolean)
+    .filter((entry) => isGitHubActionsBot(entry.comment.user))
+    .map((entry) => {
+      try {
+        return { ...entry, evidence: JSON.parse(entry.payload) };
+      } catch {
+        return { ...entry, evidence: null };
+      }
+    })
+    .filter((entry) => entry.evidence?.nonce === nonce);
+}
+
+function resolveAssignmentAttestation(comments, claim) {
+  const entries = assignmentAttestationEntries(comments, claim.nonce);
+  if (entries.length !== 1) {
+    return { valid: false, reason: "assignment-attestation-not-unique" };
+  }
+  try {
+    const evidence = entries[0].evidence;
+    if (
+      !evidence ||
+      evidence.nonce !== claim.nonce ||
+      !Array.isArray(evidence.eventIds) ||
+      evidence.eventIds.length !== 2
+    ) {
+      return { valid: false, reason: "assignment-attestation-malformed" };
+    }
+    return { valid: true, evidence };
+  } catch {
+    return { valid: false, reason: "assignment-attestation-malformed" };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,16 +596,23 @@ function isCandidatePullRequest(pullRequest, issueNumber, nonce) {
 
 /**
  * A candidate is *valid* only when every conservative correlation
- * requirement holds: same-repository head, `[ai-dev] ` title prefix,
- * `copilot-swe-agent[bot]` author, and a base ref matching the exact
- * repository default branch. Title/author alone are never sufficient.
+ * requirement holds: same-repository head, `[ai-dev] ` title prefix, an
+ * author matching the resolved canonical Copilot actor identity, and a base
+ * ref matching the exact repository default branch. Title/author alone are
+ * never sufficient, and the author is matched by stable actor identity
+ * rather than by presentation login.
  *
  * @param {object} pullRequest
  * @param {string} repository
  * @param {string} defaultBranch
  * @returns {boolean}
  */
-function isValidCandidatePullRequest(pullRequest, repository, defaultBranch) {
+function isValidCandidatePullRequest(
+  pullRequest,
+  repository,
+  defaultBranch,
+  copilotIdentity,
+) {
   const sameRepositoryHead = Boolean(
     pullRequest.head &&
       pullRequest.head.repo &&
@@ -319,8 +622,9 @@ function isValidCandidatePullRequest(pullRequest, repository, defaultBranch) {
   const titleOk =
     typeof pullRequest.title === "string" &&
     pullRequest.title.startsWith(PR_TITLE_PREFIX);
-  const authorOk = Boolean(
-    pullRequest.user && pullRequest.user.login === PR_AUTHOR_LOGIN,
+  const authorOk = isResolvedCopilotActor(
+    pullRequest.user,
+    copilotIdentity,
   );
   const baseOk = Boolean(
     pullRequest.base &&
@@ -344,15 +648,27 @@ function correlatePullRequests({
   nonce,
   repository,
   defaultBranch,
+  copilotIdentity,
 }) {
   const candidates = (Array.isArray(pullRequests) ? pullRequests : []).filter(
     (pullRequest) => isCandidatePullRequest(pullRequest, issueNumber, nonce),
   );
   const valid = candidates.filter((pullRequest) =>
-    isValidCandidatePullRequest(pullRequest, repository, defaultBranch),
+    isValidCandidatePullRequest(
+      pullRequest,
+      repository,
+      defaultBranch,
+      copilotIdentity,
+    ),
   );
   const malformed = candidates.filter(
-    (pullRequest) => !isValidCandidatePullRequest(pullRequest, repository, defaultBranch),
+    (pullRequest) =>
+      !isValidCandidatePullRequest(
+        pullRequest,
+        repository,
+        defaultBranch,
+        copilotIdentity,
+      ),
   );
 
   return { candidates, valid, malformed };
@@ -362,12 +678,13 @@ function correlatePullRequests({
 // Self-heal / repair detection (pure)
 // ---------------------------------------------------------------------------
 
-function hasTrustedSelfHealCommit(commits) {
+function hasTrustedSelfHealCommit(commits, copilotIdentity) {
   return (Array.isArray(commits) ? commits : []).some(
     (commit) =>
       commit &&
       commit.author &&
-      TRUSTED_SELF_HEAL_AUTHORS.includes(commit.author.login) &&
+      (isGitHubActionsBot(commit.author) ||
+        isResolvedCopilotActor(commit.author, copilotIdentity)) &&
       commit.commit &&
       typeof commit.commit.message === "string" &&
       commit.commit.message.includes(SELF_HEAL_COMMIT_MARKER),
@@ -639,6 +956,41 @@ async function upsertAuditComment({ github, owner, repo, issue, comments, body }
     issue_number: issue.number,
     body,
   });
+}
+
+async function ensureAssignmentAttestation({
+  github,
+  owner,
+  repo,
+  issueNumber,
+  comments,
+  evidence,
+}) {
+  const entries = assignmentAttestationEntries(comments, evidence.nonce);
+  if (entries.length > 0) {
+    if (
+      entries.length === 1 &&
+      JSON.stringify(entries[0].evidence) === JSON.stringify(evidence)
+    ) {
+      return { valid: true, created: false };
+    }
+    return { valid: false, reason: "assignment-attestation-conflict" };
+  }
+  await github.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number: issueNumber,
+    body: [
+      buildAssignmentMarker(evidence),
+      "**Factory assignment provenance accepted**",
+      `- Claim nonce: \`${evidence.nonce}\``,
+      `- Assigned at: \`${evidence.assignedAt}\``,
+      `- Assignment event IDs: ${evidence.eventIds
+        .map((id) => `\`${id}\``)
+        .join(", ")}`,
+    ].join("\n"),
+  });
+  return { valid: true, created: true };
 }
 
 /**
@@ -923,40 +1275,49 @@ async function pauseFactoryControl({ github, core, owner, repo, reason }) {
  *   only matters while the claim is still unassigned.
  * - Assigned to anything else: blocks as an unknown assignee (unchanged).
  */
-async function handleClaimedState({ github, core, owner, repo, issue, comments, claim, currentState, now }) {
-  const assignees = (issue.assignees || [])
-    .map((assignee) => assignee && assignee.login)
-    .filter(Boolean);
-
-  if (assignees.length === 0) {
-    const claimState = queueController.evaluateClaimState(claim, now);
-    if (claimState.expired) {
-      await blockIssue({
-        github,
+async function handleClaimedState({
+  github,
+  core,
+  owner,
+  repo,
+  issue,
+  comments,
+  claim,
+  currentState,
+  now,
+  copilotIdentity,
+  assignmentActorNodeId,
+}) {
+  let timeline;
+  try {
+    timeline = await github.paginate(
+      github.rest.issues.listEventsForTimeline,
+      {
         owner,
         repo,
-        issue,
-        comments,
-        from: currentState,
-        reason: "stale-claim-without-assignment",
-        nonce: claim.nonce,
-      });
-      await pauseFactoryControl({
-        github,
-        core,
-        owner,
-        repo,
-        reason: `Issue #${issue.number}'s claim (nonce ${claim.nonce}) expired at ${claim.expiresAt} with no assignment; this is a queue/lease integrity failure, not an ordinary item failure.`,
-      });
-      return;
-    }
-    // Still within the lease window: the claim stands unchanged. No silent
-    // renew/requeue.
-    return;
+        issue_number: issue.number,
+        per_page: 100,
+      },
+    );
+  } catch (error) {
+    throw new FactoryTrustSourceError(
+      "assignment-timeline-unavailable",
+      `Could not read assignment timeline for issue #${issue.number}: ${getErrorMessage(error)}`,
+    );
   }
 
-  const unknownAssignees = assignees.filter((login) => !isDocumentedCopilotAssignee(login));
-  if (unknownAssignees.length > 0) {
+  const result = classifyAssignmentEvidence({
+    issue,
+    timeline,
+    claim,
+    copilotIdentity,
+    assignmentActorNodeId,
+    now,
+  });
+  if (result.state === "incomplete") {
+    return;
+  }
+  if (result.state === "invalid") {
     await blockIssue({
       github,
       owner,
@@ -964,12 +1325,131 @@ async function handleClaimedState({ github, core, owner, repo, issue, comments, 
       issue,
       comments,
       from: currentState,
-      reason: "unknown-assignee",
+      reason: result.reason,
       nonce: claim.nonce,
+    });
+    await pauseFactoryControl({
+      github,
+      core,
+      owner,
+      repo,
+      reason: `Issue #${issue.number} has invalid Copilot assignment provenance (${result.reason}).`,
     });
     return;
   }
 
+  let firstIssueRead;
+  let finalTimeline;
+  let finalIssueRead;
+  let lastTimeline;
+  try {
+    firstIssueRead = (
+      await github.rest.issues.get({
+        owner,
+        repo,
+        issue_number: issue.number,
+      })
+    ).data;
+    finalTimeline = await github.paginate(
+      github.rest.issues.listEventsForTimeline,
+      {
+        owner,
+        repo,
+        issue_number: issue.number,
+        per_page: 100,
+      },
+    );
+    finalIssueRead = (
+      await github.rest.issues.get({
+        owner,
+        repo,
+        issue_number: issue.number,
+      })
+    ).data;
+    lastTimeline = await github.paginate(
+      github.rest.issues.listEventsForTimeline,
+      {
+        owner,
+        repo,
+        issue_number: issue.number,
+        per_page: 100,
+      },
+    );
+  } catch (error) {
+    throw new FactoryTrustSourceError(
+      "assignment-final-reread-failed",
+      `Could not complete the final assignment reread for issue #${issue.number}: ${getErrorMessage(error)}`,
+    );
+  }
+  const firstAssignees = currentAssigneeState({
+    assignees: firstIssueRead.assignees,
+    copilotIdentity,
+    assignmentActorNodeId,
+  });
+  const finalResult = classifyAssignmentEvidence({
+    issue: finalIssueRead,
+    timeline: lastTimeline,
+    claim,
+    copilotIdentity,
+    assignmentActorNodeId,
+    now,
+  });
+  if (
+    firstAssignees.state !== "valid" ||
+    assignmentMutationFingerprint(finalTimeline) !==
+      assignmentMutationFingerprint(lastTimeline) ||
+    finalResult.state !== "valid" ||
+    JSON.stringify(finalResult.evidence) !==
+      JSON.stringify(result.evidence)
+  ) {
+    await blockIssue({
+      github,
+      owner,
+      repo,
+      issue,
+      comments,
+      from: currentState,
+      reason: "assignment-changed-before-transition",
+      nonce: claim.nonce,
+    });
+    await pauseFactoryControl({
+      github,
+      core,
+      owner,
+      repo,
+      reason: `Issue #${issue.number}'s assignees changed before the lifecycle transition.`,
+    });
+    return;
+  }
+
+  const attestation = await ensureAssignmentAttestation({
+    github,
+    owner,
+    repo,
+    issueNumber: issue.number,
+    comments,
+    evidence: finalResult.evidence,
+  });
+  if (!attestation.valid) {
+    await blockIssue({
+      github,
+      owner,
+      repo,
+      issue,
+      comments,
+      from: currentState,
+      reason: attestation.reason,
+      nonce: claim.nonce,
+    });
+    await pauseFactoryControl({
+      github,
+      core,
+      owner,
+      repo,
+      reason: `Issue #${issue.number} has conflicting assignment attestations.`,
+    });
+    return;
+  }
   await transitionOrBlock({
     github,
     owner,
@@ -978,9 +1458,106 @@ async function handleClaimedState({ github, core, owner, repo, issue, comments, 
     comments,
     from: currentState,
     to: LIFECYCLE_STATES.IMPLEMENTING,
-    reason: "copilot-assignment-detected",
+    reason: "copilot-assignment-provenance-verified",
     nonce: claim.nonce,
   });
+}
+
+async function verifyPersistedAssignmentProvenance({
+  github,
+  owner,
+  repo,
+  issue,
+  comments,
+  claim,
+  now,
+  copilotIdentity,
+  assignmentActorNodeId,
+}) {
+  const attestation = resolveAssignmentAttestation(comments, claim);
+  if (!attestation.valid) {
+    return attestation;
+  }
+
+  let timeline;
+  let firstIssueRead;
+  let finalIssueRead;
+  let finalTimeline;
+  try {
+    firstIssueRead = (
+      await github.rest.issues.get({
+        owner,
+        repo,
+        issue_number: issue.number,
+      })
+    ).data;
+    timeline = await github.paginate(
+      github.rest.issues.listEventsForTimeline,
+      {
+        owner,
+        repo,
+        issue_number: issue.number,
+        per_page: 100,
+      },
+    );
+    finalIssueRead = (
+      await github.rest.issues.get({
+        owner,
+        repo,
+        issue_number: issue.number,
+      })
+    ).data;
+    finalTimeline = await github.paginate(
+      github.rest.issues.listEventsForTimeline,
+      {
+        owner,
+        repo,
+        issue_number: issue.number,
+        per_page: 100,
+      },
+    );
+  } catch (error) {
+    throw new FactoryTrustSourceError(
+      "assignment-provenance-reread-failed",
+      `Could not revalidate assignment provenance for issue #${issue.number}: ${getErrorMessage(error)}`,
+    );
+  }
+
+  const firstAssignees = currentAssigneeState({
+    assignees: firstIssueRead.assignees,
+    copilotIdentity,
+    assignmentActorNodeId,
+  });
+  const current = classifyAssignmentEvidence({
+    issue: finalIssueRead,
+    timeline: finalTimeline,
+    claim,
+    copilotIdentity,
+    assignmentActorNodeId,
+    now,
+  });
+  if (
+    firstAssignees.state !== "valid" ||
+    assignmentMutationFingerprint(timeline) !==
+      assignmentMutationFingerprint(finalTimeline) ||
+    current.state !== "valid"
+  ) {
+    return {
+      valid: false,
+      reason: current.reason || "assignment-provenance-invalid",
+    };
+  }
+  const accepted = attestation.evidence;
+  const observed = current.evidence;
+  if (
+    accepted.copilotNodeId !== observed.copilotNodeId ||
+    accepted.assignmentActorNodeId !== observed.assignmentActorNodeId ||
+    accepted.assignedAt !== observed.assignedAt ||
+    JSON.stringify(accepted.eventIds) !== JSON.stringify(observed.eventIds)
+  ) {
+    return { valid: false, reason: "assignment-attestation-drift" };
+  }
+  return { valid: true };
 }
 
 async function handleMergedEvidence({
@@ -1127,6 +1704,7 @@ async function handlePullRequestState({
   claim,
   currentState,
   now,
+  copilotIdentity,
 }) {
   const pullRequests = await github.paginate(github.rest.pulls.list, {
     owner,
@@ -1141,6 +1719,7 @@ async function handlePullRequestState({
     nonce: claim.nonce,
     repository,
     defaultBranch,
+    copilotIdentity,
   });
 
   if (candidates.length === 0) {
@@ -1335,7 +1914,9 @@ async function handlePullRequestState({
       per_page: 100,
     }),
   ]);
-  const hasPendingSelfHeal = hasTrustedSelfHealCommit(commits) && hasPendingCheckRuns(checkRuns);
+  const hasPendingSelfHeal =
+    hasTrustedSelfHealCommit(commits, copilotIdentity) &&
+    hasPendingCheckRuns(checkRuns);
   const desired = determineOpenPullRequestState({ hasPendingSelfHeal });
 
   if (desired !== currentState) {
@@ -1378,7 +1959,18 @@ async function handleDeployedDevState({ github, owner, repo, issue, comments, cl
   }
 }
 
-async function reconcileIssue({ github, core, owner, repo, repository, defaultBranch, issue, now }) {
+async function reconcileIssue({
+  github,
+  core,
+  owner,
+  repo,
+  repository,
+  defaultBranch,
+  issue,
+  now,
+  copilotIdentity,
+  assignmentActorNodeId,
+}) {
   const comments = await github.paginate(github.rest.issues.listComments, {
     owner,
     repo,
@@ -1422,7 +2014,11 @@ async function reconcileIssue({ github, core, owner, repo, repository, defaultBr
     return;
   }
 
-  const claimResolution = resolveLatestIssueClaim(comments, issue.number);
+  const claimResolution = resolveLatestIssueClaim(
+    comments,
+    issue.number,
+    now,
+  );
   if (claimResolution.state !== "valid") {
     await blockIssue({
       github,
@@ -1438,12 +2034,66 @@ async function reconcileIssue({ github, core, owner, repo, repository, defaultBr
   const claim = claimResolution.claim;
 
   if (currentState === LIFECYCLE_STATES.CLAIMED) {
-    await handleClaimedState({ github, core, owner, repo, issue, comments, claim, currentState, now });
+    await handleClaimedState({
+      github,
+      core,
+      owner,
+      repo,
+      issue,
+      comments,
+      claim,
+      currentState,
+      now,
+      copilotIdentity,
+      assignmentActorNodeId,
+    });
     return;
   }
 
+  if (currentState !== LIFECYCLE_STATES.CLAIMED) {
+    const assignment = await verifyPersistedAssignmentProvenance({
+      github,
+      owner,
+      repo,
+      issue,
+      comments,
+      claim,
+      now,
+      copilotIdentity,
+      assignmentActorNodeId,
+    });
+    if (!assignment.valid) {
+      await blockIssue({
+        github,
+        owner,
+        repo,
+        issue,
+        comments,
+        from: currentState,
+        reason: assignment.reason,
+        nonce: claim.nonce,
+      });
+      await pauseFactoryControl({
+        github,
+        core,
+        owner,
+        repo,
+        reason: `Issue #${issue.number} no longer has valid assignment provenance (${assignment.reason}).`,
+      });
+      return;
+    }
+  }
+
   if (currentState === LIFECYCLE_STATES.DEPLOYED_DEV) {
-    await handleDeployedDevState({ github, owner, repo, issue, comments, claim, currentState });
+    await handleDeployedDevState({
+      github,
+      owner,
+      repo,
+      issue,
+      comments,
+      claim,
+      currentState,
+    });
     return;
   }
 
@@ -1459,6 +2109,7 @@ async function reconcileIssue({ github, core, owner, repo, repository, defaultBr
     claim,
     currentState,
     now,
+    copilotIdentity,
   });
 }
 
@@ -1582,13 +2233,19 @@ async function resolveFactoryMode({ github, core, owner, repo }) {
  * `shadow`, `paused`, missing, or conflicting control-issue mode performs no
  * mutations at all this pass and is logged as an advisory no-op.
  *
- * @param {{github: object, context: {repo: {owner: string, repo: string}}, core: object, now?: string}} input
+ * @param {{github: object, context: {repo: {owner: string, repo: string}}, core: object, now?: string, assignmentActorNodeId?: string}} input
  * @param {string} [input.now] ISO-8601 "current time" used only for the
  *   stale-unassigned-claim check (contract §9's `evaluateClaimState`). Injected
  *   so callers/tests can pass a deterministic value; defaults to the actual
  *   current time (`new Date().toISOString()`).
  */
-async function reconcileFactoryLifecycle({ github, context, core, now }) {
+async function reconcileFactoryLifecycle({
+  github,
+  context,
+  core,
+  now,
+  assignmentActorNodeId,
+}) {
   const resolvedNow = typeof now === "string" && now.trim() !== "" ? now : new Date().toISOString();
   const { owner, repo } = context.repo;
   const repository = `${owner}/${repo}`;
@@ -1612,6 +2269,34 @@ async function reconcileFactoryLifecycle({ github, context, core, now }) {
     return;
   }
 
+  let configuredAssignmentActorNodeId;
+  let copilotIdentity;
+  try {
+    configuredAssignmentActorNodeId =
+      normalizeConfiguredUserNodeId(assignmentActorNodeId);
+    copilotIdentity = await resolveRepositoryCopilotIdentity({
+      github,
+      owner,
+      repo,
+    });
+  } catch (error) {
+    const code =
+      error instanceof AgenticIdentityError
+        ? error.code
+        : "copilot-identity-unexpected-error";
+    await pauseFactoryControl({
+      github,
+      core,
+      owner,
+      repo,
+      reason: `Canonical Copilot identity resolution failed (${code}).`,
+    });
+    throw new FactoryTrustSourceError(
+      code,
+      "Canonical Copilot identity could not be established",
+    );
+  }
+
   const issuesByNumber = new Map();
   for (const label of TARGET_LIFECYCLE_LABELS) {
     const found = await github.paginate(github.rest.issues.listForRepo, {
@@ -1628,8 +2313,29 @@ async function reconcileFactoryLifecycle({ github, context, core, now }) {
 
   for (const issue of issuesByNumber.values()) {
     try {
-      await reconcileIssue({ github, core, owner, repo, repository, defaultBranch, issue, now: resolvedNow });
+      await reconcileIssue({
+        github,
+        core,
+        owner,
+        repo,
+        repository,
+        defaultBranch,
+        issue,
+        now: resolvedNow,
+        copilotIdentity,
+        assignmentActorNodeId: configuredAssignmentActorNodeId,
+      });
     } catch (error) {
+      if (error instanceof FactoryTrustSourceError) {
+        await pauseFactoryControl({
+          github,
+          core,
+          owner,
+          repo,
+          reason: `Lifecycle trust-source failure (${error.code}).`,
+        });
+        throw error;
+      }
       core.warning(
         `Lifecycle reconciliation failed for issue #${issue.number}: ${getErrorMessage(error)}`,
       );
@@ -1643,9 +2349,7 @@ module.exports = {
   reconcileFactoryLifecycle,
   // Constants useful to callers/tests
   TARGET_LIFECYCLE_LABELS,
-  DOCUMENTED_COPILOT_ASSIGNEE_LOGINS,
   PR_TITLE_PREFIX,
-  PR_AUTHOR_LOGIN,
   AGENTIC_FACTORY_LABEL,
   AUTO_MERGE_LABEL,
   NEEDS_AI_REVIEW_LABEL,
@@ -1656,11 +2360,14 @@ module.exports = {
   DEV_ENVIRONMENT,
   DEV_EVIDENCE_TIMEOUT_MS,
   CLAIM_MARKER_PATTERN,
+  ASSIGNMENT_MARKER_PATTERN,
   // Pure parsers/classifiers/resolvers
   extractClaimMarkerPayload,
-  commentsWithClaimPayload,
   resolveLatestIssueClaim,
-  isDocumentedCopilotAssignee,
+  classifyAssignmentEvidence,
+  currentAssigneeState,
+  resolveAssignmentAttestation,
+  verifyPersistedAssignmentProvenance,
   getRiskLabels,
   buildClaimNonceMarker,
   buildRefsMarker,

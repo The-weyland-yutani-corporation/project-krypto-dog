@@ -57,7 +57,7 @@ describe("agentic SDLC workflow contracts", () => {
       '".github/scripts/agentic-pr-reconciler.cjs"',
     );
     expect(reconciler).toContain(
-      "await reconcileAgenticPullRequests({ github, context, core });",
+      "await reconcileAgenticPullRequests({",
     );
     expect(reconciler).toContain("checks: write");
     expect(reconciler).toContain("pull-requests: write");
@@ -81,7 +81,7 @@ describe("agentic SDLC workflow contracts", () => {
       "ref: ${{ github.event.repository.default_branch }}",
     );
     expect(workflow).toContain("persist-credentials: false");
-    expect(workflow).toContain("sparse-checkout: .github/scripts");
+    expect(workflow).toContain(".github/scripts");
     expect(workflow).toContain(script);
     expect(workflow).not.toContain("ref: ${{ github.event.pull_request.head");
   });
@@ -140,6 +140,19 @@ describe("agentic SDLC workflow contracts", () => {
     );
     expect(lifecycleWorkflow).toContain("cancel-in-progress: false");
     expect(lifecycleWorkflow).not.toMatch(/^\s+status:/m);
+  });
+
+  it("binds lifecycle assignment provenance to the human-governed stable actor ID", () => {
+    expect(lifecycleWorkflow).toContain(".github/agentic-policy.json");
+    expect(lifecycleWorkflow).toContain(
+      "FACTORY_ASSIGNMENT_ACTOR_NODE_ID: ${{ vars.FACTORY_ASSIGNMENT_ACTOR_NODE_ID }}",
+    );
+    expect(lifecycleWorkflow).toContain(
+      "assignmentActorNodeId:",
+    );
+    expect(reconciler).toContain(
+      "FACTORY_ASSIGNMENT_ACTOR_NODE_ID: ${{ vars.FACTORY_ASSIGNMENT_ACTOR_NODE_ID }}",
+    );
   });
 
   it("keeps the traditional E2E workflow manual-only", () => {
@@ -350,11 +363,13 @@ describe("agentic SDLC workflow contracts", () => {
     expect(e2e).toContain(marker);
     expect(e2e).toContain('message.includes("[self-heal]")');
     expect(e2e).toContain("selfHealCommits.length <= 2");
+    expect(e2e).toContain("agentic-identity.cjs");
+    expect(e2e).toContain("isResolvedCopilotActor");
   });
 
   it("allows only trusted factory bots to activate manual code review", () => {
     expect(codeReview).toContain(
-      'bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]',
+      'bots: ["github-actions[bot]"]',
     );
   });
 
@@ -373,7 +388,7 @@ describe("agentic SDLC workflow contracts", () => {
   it("requires trusted-bot specialist checks for high-risk PRs", () => {
     for (const workflow of [securityReview, tradingSafetyReview]) {
       expect(workflow).toContain(
-        'bots: ["github-actions[bot]", "copilot-swe-agent[bot]"]',
+        'bots: ["github-actions[bot]"]',
       );
       expect(workflow).toContain("create-pr-check:");
       expect(workflow).toContain("For every pull request");

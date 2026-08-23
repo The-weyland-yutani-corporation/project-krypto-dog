@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 interface AgenticPolicy {
+  copilotSuggestedActorLogin: string;
   requiredContexts: readonly string[];
   mergeBlockingLabels: Set<string>;
   selfHealBlockingLabels: Set<string>;
@@ -35,6 +36,7 @@ const reconciler = jest.requireActual<ReconcilerModule>(
 describe("canonical agentic policy", () => {
   it("loads the required contexts and safety caps", () => {
     expect(policyModule.AGENTIC_POLICY).toMatchObject({
+      copilotSuggestedActorLogin: "copilot-swe-agent",
       maxRepairCommits: 2,
       maxOpenActionableOpportunities: 20,
       forksRequireHumanApproval: true,

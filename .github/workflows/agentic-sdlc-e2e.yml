@@ -33,6 +33,15 @@ jobs:
       CANARY_PATH: docs/e2e/factory-heartbeat.md
 
     steps:
+      - name: Check out trusted identity policy
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/agentic-policy.json
+
       - name: Require human-activated factory mode
         uses: actions/github-script@v9
         with:
@@ -290,7 +299,23 @@ jobs:
           PR_NUMBER: ${{ steps.create.outputs.pr }}
         with:
           script: |
+            const path = require("node:path");
             const { owner, repo } = context.repo;
+            const identityPath = path.join(
+              process.env.GITHUB_WORKSPACE,
+              ".github/scripts/agentic-identity.cjs",
+            );
+            const {
+              isGitHubActionsBot,
+              isResolvedCopilotActor,
+              resolveRepositoryCopilotIdentity,
+            } = require(identityPath);
+            const copilotIdentity =
+              await resolveRepositoryCopilotIdentity({
+                github,
+                owner,
+                repo,
+              });
             const pullNumber = Number(process.env.PR_NUMBER);
             const initialSha = process.env.INITIAL_SHA;
             const mode = process.env.MODE;
@@ -410,13 +435,13 @@ jobs:
                   check.status === "completed" &&
                   passingConclusions.has(check.conclusion),
               );
-              const trustedAgents = new Set([
-                "github-actions[bot]",
-                "copilot-swe-agent[bot]",
-              ]);
               const selfHealCommits = commits.filter(
                 (commit) =>
-                  trustedAgents.has(commit.author?.login) &&
+                  (isGitHubActionsBot(commit.author) ||
+                    isResolvedCopilotActor(
+                      commit.author,
+                      copilotIdentity,
+                    )) &&
                   commit.commit.message.includes("[self-heal]"),
               );
               let repairVerified = mode === "happy-path";

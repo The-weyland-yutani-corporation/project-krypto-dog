@@ -9,6 +9,8 @@ interface PullRequest {
   user: {
     login: string;
     type: string;
+    id?: number;
+    node_id?: string;
   };
   labels: Array<{ name: string }>;
   head: {
@@ -37,7 +39,9 @@ interface Review {
 }
 
 interface Commit {
-  author: { login: string } | null;
+  author:
+    | { login: string; type?: string; id?: number; node_id?: string }
+    | null;
   commit: { message: string };
 }
 
@@ -83,7 +87,10 @@ interface SelfHealEligibility {
 
 interface ReconcilerModule {
   canAttemptSelfHeal(input: SelfHealEligibility): boolean;
-  countRepairAttempts(commits: Commit[]): number;
+  countRepairAttempts(
+    commits: Commit[],
+    copilotIdentity?: CopilotIdentity,
+  ): number;
   getRepairAttemptLimit(riskTier: string): number;
   evaluateMergePolicy(input: {
     pullRequest: PullRequest;
@@ -96,6 +103,7 @@ interface ReconcilerModule {
     issueRiskLabel?: string;
     issueAllowedPaths?: string[];
     goalMaxRiskTier?: string;
+    copilotIdentity?: CopilotIdentity;
   }): PolicyResult;
   getAgentApprovalState(
     files: ChangedFile[],
@@ -127,8 +135,12 @@ interface ReconcilerModule {
   isTrustedAgentPullRequest(
     pullRequest: PullRequest,
     repository: string,
+    copilotIdentity?: CopilotIdentity,
   ): boolean;
-  getAgentImplementationReference(pullRequest: PullRequest): {
+  getAgentImplementationReference(
+    pullRequest: PullRequest,
+    copilotIdentity?: CopilotIdentity,
+  ): {
     required: boolean;
     valid: boolean;
     nonce?: string;
@@ -156,6 +168,20 @@ const {
 );
 
 const repository = "VeVarunSharma/project-krypto-dog";
+interface CopilotIdentity {
+  nodeId: string;
+  databaseId: number;
+}
+const COPILOT_IDENTITY: CopilotIdentity = {
+  nodeId: "BOT_copilot",
+  databaseId: 198982749,
+};
+const COPILOT_ACTOR = {
+  login: "Copilot",
+  type: "Bot",
+  id: COPILOT_IDENTITY.databaseId,
+  node_id: COPILOT_IDENTITY.nodeId,
+};
 
 function pullRequest(
   overrides: Partial<PullRequest> = {},
@@ -246,38 +272,65 @@ function policy(
     issueRiskLabel: overrides.issueRiskLabel,
     issueAllowedPaths: overrides.issueAllowedPaths,
     goalMaxRiskTier: overrides.goalMaxRiskTier,
+    copilotIdentity: COPILOT_IDENTITY,
   });
 }
 
 describe("trusted agent identity", () => {
   it.each([
-    ["github-actions[bot]", "[docs-sync] Refresh contributor guide", ""],
     [
-      "copilot-swe-agent[bot]",
+      {
+        login: "github-actions[bot]",
+        type: "Bot",
+      },
+      "[docs-sync] Refresh contributor guide",
+      "",
+    ],
+    [
+      COPILOT_ACTOR,
       "[ai-dev] Refresh contributor guide",
       "<!-- factory-claim:run:1:42 -->\nRefs #42",
     ],
   ])(
-    "trusts the enrolled same-repository %s identity only for its title class",
-    (login, title, body) => {
+    "trusts an enrolled same-repository stable identity only for its title class",
+    (user, title, body) => {
       expect(
         isTrustedAgentPullRequest(
           pullRequest({
-            user: { login, type: "Bot" },
+            user,
             title,
             body,
           }),
           repository.toUpperCase(),
+          COPILOT_IDENTITY,
         ),
       ).toBe(true);
     },
   );
 
+  it("rejects a matching Copilot display login when stable IDs differ", () => {
+    expect(
+      isTrustedAgentPullRequest(
+        pullRequest({
+          user: {
+            ...COPILOT_ACTOR,
+            id: 999,
+            node_id: "BOT_wrong",
+          },
+          title: "[ai-dev] Implement issue 42",
+          body: "<!-- factory-claim:run:1:42 -->\nRefs #42",
+        }),
+        repository,
+        COPILOT_IDENTITY,
+      ),
+    ).toBe(false);
+  });
+
   it("parses exactly one implementation claim and issue reference", () => {
     expect(
       getAgentImplementationReference(
         pullRequest({
-          user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+          user: COPILOT_ACTOR,
           title: "[ai-dev] Implement",
           body: "<!-- factory-claim:run:1:42 -->\nRefs #42",
           labels: [
@@ -332,7 +385,7 @@ describe("trusted agent identity", () => {
     expect(
       isTrustedAgentPullRequest(
         pullRequest({
-          user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+          user: COPILOT_ACTOR,
           title: "[docs-sync] Unverified docs",
         }),
         repository,
@@ -800,7 +853,7 @@ describe("deterministic merge policy", () => {
     expect(
       policy({
         pullRequest: pullRequest({
-          user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+          user: COPILOT_ACTOR,
           title: "[ai-dev] Implement",
           body: "<!-- factory-claim:run:1:42 -->\nRefs #42",
           labels: [
@@ -821,7 +874,7 @@ describe("deterministic merge policy", () => {
 
   it("inherits and cannot lower the claimed issue risk tier", () => {
     const implementation = pullRequest({
-      user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+      user: COPILOT_ACTOR,
       title: "[ai-dev] Implement",
       body: "<!-- factory-claim:run:1:42 -->\nRefs #42",
       labels: [
@@ -853,7 +906,7 @@ describe("deterministic merge policy", () => {
     expect(
       policy({
         pullRequest: pullRequest({
-          user: { login: "copilot-swe-agent[bot]", type: "Bot" },
+          user: COPILOT_ACTOR,
           title: "[ai-dev] Implement",
           body: "<!-- factory-claim:run:1:42 -->\nRefs #42",
           labels: [
@@ -1040,11 +1093,11 @@ describe("bounded self-heal policy", () => {
   it("counts only trusted [self-heal] commits", () => {
     const commits: Commit[] = [
       {
-        author: { login: "github-actions[bot]" },
+        author: { login: "github-actions[bot]", type: "Bot" },
         commit: { message: "docs: repair check [self-heal]" },
       },
       {
-        author: { login: "copilot-swe-agent[bot]" },
+        author: COPILOT_ACTOR,
         commit: { message: "docs: retry [self-heal]" },
       },
       {
@@ -1061,7 +1114,7 @@ describe("bounded self-heal policy", () => {
       },
     ];
 
-    expect(countRepairAttempts(commits)).toBe(2);
+    expect(countRepairAttempts(commits, COPILOT_IDENTITY)).toBe(2);
   });
 
   it.each([
