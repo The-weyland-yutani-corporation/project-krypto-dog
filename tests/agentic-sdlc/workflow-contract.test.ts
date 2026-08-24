@@ -243,6 +243,32 @@ describe("agentic SDLC workflow contracts", () => {
     expect(selfHeal).toContain("Verify dispatched PR head");
   });
 
+  // gh-aw skips its PR checkout on workflow_dispatch ("No pull request context
+  // available"), so the agent workspace stays on the default branch. A guard that
+  // compared the local HEAD to inputs.head_sha could therefore never pass and killed
+  // every dispatched review run before it did any work. The guard must resolve the
+  // head through the API instead.
+  it("verifies a dispatched review head through the API, never the local checkout", () => {
+    for (const workflow of [
+      codeReview,
+      qaReview,
+      securityReview,
+      tradingSafetyReview,
+    ]) {
+      expect(workflow).toContain("Verify dispatched PR head");
+      expect(workflow).toContain(
+        'gh api "repos/${GH_AW_REPOSITORY}/pulls/${EXPECTED_PR_NUMBER}" --jq \'.head.sha\'',
+      );
+      // Fail closed on a non-numeric target and on any API failure.
+      expect(workflow).toContain("set -euo pipefail");
+      expect(workflow).toContain("''|*[!0-9]*)");
+      // The broken local-tree assertion must not come back.
+      expect(workflow).not.toContain(
+        'test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"',
+      );
+    }
+  });
+
   it("automates only exact-SHA dev delivery from main", () => {
     expect(devDeploy).toContain(
       "github.event.workflow_run.head_branch == 'main'",
