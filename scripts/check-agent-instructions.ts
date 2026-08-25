@@ -19,16 +19,17 @@ const CONTRACT = "tests/agentic-sdlc/agent-instructions.test.ts";
 const REMEDIATION = `npx jest ${CONTRACT}`;
 
 function main(): void {
-  const jestBin = path.join(
+  const jestCli = path.join(
     REPO_ROOT,
     "node_modules",
-    ".bin",
-    process.platform === "win32" ? "jest.cmd" : "jest",
+    "jest",
+    "bin",
+    "jest.js",
   );
 
   const result = spawnSync(
-    jestBin,
-    ["--silent", "--runInBand", CONTRACT],
+    process.execPath,
+    [jestCli, "--silent", "--runInBand", CONTRACT],
     { cwd: REPO_ROOT, stdio: "inherit", env: process.env },
   );
 

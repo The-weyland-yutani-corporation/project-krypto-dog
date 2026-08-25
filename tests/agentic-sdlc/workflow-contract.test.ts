@@ -240,7 +240,7 @@ describe("agentic SDLC workflow contracts", () => {
     expect(selfHeal).toContain("head_sha:");
     expect(selfHeal).toContain("pre-agent-steps:");
     expect(selfHeal).toContain("Restore trusted agent instructions");
-    expect(selfHeal).toContain("Verify dispatched PR head");
+    expect(selfHeal).toContain("Check out dispatched PR head");
   });
 
   // gh-aw skips its PR checkout on workflow_dispatch ("No pull request context
@@ -267,6 +267,45 @@ describe("agentic SDLC workflow contracts", () => {
         'test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"',
       );
     }
+  });
+
+  it("checks out the exact self-heal head before restoring trusted agent configuration", () => {
+    const checkout = selfHeal.indexOf("Check out dispatched PR head");
+    const restore = selfHeal.indexOf("Restore trusted agent instructions");
+
+    expect(checkout).toBeGreaterThan(-1);
+    expect(restore).toBeGreaterThan(checkout);
+    expect(selfHeal).toMatch(
+      /head_sha:\r?\n\s+description:[^\r\n]+\r?\n\s+required: true/,
+    );
+    expect(selfHeal).toContain("''|*[!0-9]*)");
+    expect(selfHeal).toContain("''|*[!0-9a-f]*)");
+    expect(selfHeal).toContain(
+      'gh api "repos/${GH_AW_REPOSITORY}/pulls/${EXPECTED_PR_NUMBER}"',
+    );
+    expect(selfHeal).toContain(".head.repo.full_name");
+    expect(selfHeal).toContain(
+      'git fetch --no-tags --depth=1 origin "refs/pull/${EXPECTED_PR_NUMBER}/head"',
+    );
+    expect(selfHeal).toContain('git switch --detach "${EXPECTED_HEAD_SHA}"');
+    expect(selfHeal).toContain(
+      'GH_AW_AGENT_FILES="" bash "${RUNNER_TEMP}/gh-aw/actions/restore_base_github_folders.sh"',
+    );
+    expect(selfHeal).toContain(
+      'GH_AW_AGENT_FOLDERS: ".agents .antigravity .claude .codex .crush .gemini .github .opencode .pi"',
+    );
+    expect(selfHeal).toContain(
+      'GH_AW_AGENT_FILES: ".crush.json AGENTS.md ANTIGRAVITY.md CLAUDE.md GEMINI.md PI.md opencode.jsonc"',
+    );
+    expect(selfHeal).toContain(
+      'bash "${RUNNER_TEMP}/gh-aw/actions/restore_inline_sub_agents.sh"',
+    );
+    expect(selfHeal).toContain(
+      'bash "${RUNNER_TEMP}/gh-aw/actions/restore_inline_skills.sh"',
+    );
+    expect(selfHeal).toContain(
+      "node .github/scripts/restore-trusted-agent-instructions.cjs",
+    );
   });
 
   it("automates only exact-SHA dev delivery from main", () => {
