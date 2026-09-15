@@ -114,7 +114,14 @@ run(
   "report has rolloutMode != 'disabled' -- must reject",
 );
 
-// --- Omitting --image-digest entirely still requires releaseSha/passed to match (no bypass of those). ---
+// --- A bound report cannot omit its expected digest, even when it passed. ---
+run(
+  "target-smoke-pass.json",
+  ["--operation", "target-smoke", "--release-sha", RELEASE_SHA_A],
+  false,
+  "a passed target-smoke still requires an independently expected image digest",
+);
+
 run(
   "target-smoke-not-passed.json",
   ["--operation", "target-smoke", "--release-sha", RELEASE_SHA_A],

@@ -296,8 +296,9 @@ describe("agentic SDLC workflow contracts", () => {
     expect(fullE2e).toContain("latestHumanLabelEvent");
     expect(fullE2e).toContain("factory-queue-controller.yml");
     expect(fullE2e).toContain("factory:done");
-    expect(fullE2e).toContain("Dev deployment evidence");
-    expect(fullE2e).toContain('environment: "development"');
+    expect(fullE2e).toContain("await readDevEvidence(");
+    expect(fullE2e).toContain('evidence.outcome !== "success" || !evidence.receipt');
+    expect(fullE2e).not.toContain("deploymentStatuses.some(");
     expect(fullE2e).toContain("factory-full-heartbeat.md");
     expect(fullE2e).toContain("REQUESTED_AT");
     expect(fullE2e).not.toContain("azure-deploy-prod");

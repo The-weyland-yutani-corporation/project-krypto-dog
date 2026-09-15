@@ -721,13 +721,13 @@ function determineOpenPullRequestState({ hasPendingSelfHeal }) {
  * documented multi-hop case that collapses into a single label write:
  * `factory:repairing -> factory:merged` (via `factory:pr-open`, both hops
  * legal). `factory:merged -> factory:done` is deliberately NOT composited
- * here: verified dev evidence only ever authorizes `factory:merged ->
+ * here: initial verified dev evidence only ever authorizes `factory:merged ->
  * factory:deployed-dev` in the run it is verified (a direct, single-hop
  * legal transition); `factory:deployed-dev -> factory:done` (plus issue
  * closure) always happens in a separate, later reconciliation pass. Every
  * hop is validated through `agentic-factory-policy.cjs`'s
  * `applyLifecycleTransition` -- nothing here bypasses or reimplements the
- * policy's legality table.
+ * policy's legality table. Completion revalidates the immutable proof.
  *
  * @param {string} from
  * @param {string} to
@@ -782,65 +782,15 @@ function computeLifecycleLabelChange(currentLabelNames, target) {
 }
 
 // ---------------------------------------------------------------------------
-// Dev evidence evaluation (pure)
+// Dev evidence evaluation and immutable report reader
 // ---------------------------------------------------------------------------
 
-function evaluateCommitStatusOutcome(statuses, context) {
-  const relevant = (Array.isArray(statuses) ? statuses : []).filter(
-    (status) => status && status.context === context,
-  );
-  const latest = latestById(relevant);
-  if (!latest) {
-    return "pending";
-  }
-  if (latest.state === "success") {
-    return "success";
-  }
-  if (latest.state === "failure" || latest.state === "error") {
-    return "failure";
-  }
-  return "pending";
-}
-
-function evaluateDeploymentOutcome(deployments, deploymentStatusesByDeployment) {
-  const allStatuses = (Array.isArray(deployments) ? deployments : []).flatMap(
-    (deployment) =>
-      (deploymentStatusesByDeployment && deploymentStatusesByDeployment[deployment.id]) || [],
-  );
-  const latest = latestById(allStatuses);
-  if (!latest) {
-    return "pending";
-  }
-  if (latest.state === "success") {
-    return "success";
-  }
-  if (latest.state === "failure" || latest.state === "error") {
-    return "failure";
-  }
-  return "pending";
-}
-
-/**
- * Combines the exact-SHA `Dev deployment evidence` commit status and the
- * exact-SHA `development` GitHub Deployment into one fail-closed outcome:
- * `"success"` only when both are success; `"failure"` when either reports
- * failure/error; `"pending"` for anything missing or still in flight.
- *
- * @param {{statuses: object[], deployments: object[], deploymentStatusesByDeployment: Record<number, object[]>}} input
- * @returns {"success"|"failure"|"pending"}
- */
-function evaluateDevEvidence({ statuses, deployments, deploymentStatusesByDeployment }) {
-  const statusOutcome = evaluateCommitStatusOutcome(statuses, DEV_EVIDENCE_STATUS_CONTEXT);
-  const deploymentOutcome = evaluateDeploymentOutcome(deployments, deploymentStatusesByDeployment);
-
-  if (statusOutcome === "failure" || deploymentOutcome === "failure") {
-    return "failure";
-  }
-  if (statusOutcome === "success" && deploymentOutcome === "success") {
-    return "success";
-  }
-  return "pending";
-}
+const {
+  evaluateCommitStatusOutcome,
+  evaluateDeploymentOutcome,
+  evaluateDevEvidence,
+  readDevEvidence,
+} = require("./azure/dev-evidence.cjs");
 
 // ---------------------------------------------------------------------------
 // Audit comment (pure body/marker construction; async I/O wrapper below)
@@ -1569,17 +1519,18 @@ async function handleMergedEvidence({
   comments,
   claim,
   pullRequest,
+  currentState = LIFECYCLE_STATES.MERGED,
   now,
 }) {
   const sha = pullRequest.merge_commit_sha;
-  if (typeof sha !== "string" || sha.trim() === "") {
+  if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
     await blockIssue({
       github,
       owner,
       repo,
       issue,
       comments,
-      from: LIFECYCLE_STATES.MERGED,
+      from: currentState,
       reason: "missing-merge-commit-sha",
       nonce: claim.nonce,
       prNumber: pullRequest.number,
@@ -1588,31 +1539,20 @@ async function handleMergedEvidence({
     return;
   }
 
-  const [statuses, deployments] = await Promise.all([
-    github.paginate(github.rest.repos.listCommitStatusesForRef, {
+  let evidence;
+  try {
+    evidence = await readDevEvidence({ github, owner, repo, sha, pullNumber: pullRequest.number });
+  } catch (error) {
+    await pauseFactoryControl({
+      github,
+      core,
       owner,
       repo,
-      ref: sha,
-      per_page: 100,
-    }),
-    github.paginate(github.rest.repos.listDeployments, {
-      owner,
-      repo,
-      sha,
-      environment: DEV_ENVIRONMENT,
-      per_page: 100,
-    }),
-  ]);
-
-  const deploymentStatusesByDeployment = {};
-  for (const deployment of deployments) {
-    deploymentStatusesByDeployment[deployment.id] = await github.paginate(
-      github.rest.repos.listDeploymentStatuses,
-      { owner, repo, deployment_id: deployment.id, per_page: 100 },
-    );
+      reason: `Development evidence could not be read for issue #${issue.number} at SHA ${sha}.`,
+    });
+    throw error;
   }
-
-  const outcome = evaluateDevEvidence({ statuses, deployments, deploymentStatusesByDeployment });
+  const { outcome } = evidence;
 
   if (outcome === "pending") {
     const mergedAt = Date.parse(pullRequest.merged_at || "");
@@ -1628,8 +1568,9 @@ async function handleMergedEvidence({
         repo,
         issue,
         comments,
-        from: LIFECYCLE_STATES.MERGED,
+        from: currentState,
         reason: "dev-evidence-timeout",
+        evidenceReason: evidence.reason,
         nonce: claim.nonce,
         prNumber: pullRequest.number,
         prUrl: pullRequest.html_url,
@@ -1653,8 +1594,9 @@ async function handleMergedEvidence({
       repo,
       issue,
       comments,
-      from: LIFECYCLE_STATES.MERGED,
+      from: currentState,
       reason: "dev-evidence-failed",
+      evidenceReason: evidence.reason,
       nonce: claim.nonce,
       prNumber: pullRequest.number,
       prUrl: pullRequest.html_url,
@@ -1670,26 +1612,25 @@ async function handleMergedEvidence({
     return;
   }
 
-  // Verified dev evidence authorizes exactly one hop this run:
-  // `factory:merged -> factory:deployed-dev`. The issue is deliberately NOT
-  // closed here and does NOT advance to `factory:done` in the same pass --
-  // that always happens on a later, separate reconciliation pass (see
-  // `handleDeployedDevState`), so evidence verification and issue closure
-  // are never collapsed into a single step.
-  await transitionOrBlock({
+  // Re-read the current immutable proof on the separate completion pass;
+  // a newer failed/interrupted rollout must prevent issue closure.
+  const completing = currentState === LIFECYCLE_STATES.DEPLOYED_DEV;
+  const result = await transitionOrBlock({
     github,
     owner,
     repo,
     issue,
     comments,
-    from: LIFECYCLE_STATES.MERGED,
-    to: LIFECYCLE_STATES.DEPLOYED_DEV,
-    reason: "dev-evidence-verified",
+    from: currentState,
+    to: completing ? LIFECYCLE_STATES.DONE : LIFECYCLE_STATES.DEPLOYED_DEV,
+    reason: completing ? "dev-evidence-reverified" : "dev-evidence-verified",
     nonce: claim.nonce,
     prNumber: pullRequest.number,
     prUrl: pullRequest.html_url,
     mergeSha: sha,
+    devEvidence: evidence.receipt,
   });
+  if (completing && result.allowed) await closeIssueAsCompleted({ github, owner, repo, issue });
 }
 
 async function handlePullRequestState({
@@ -1774,7 +1715,7 @@ async function handlePullRequestState({
   let pullRequest = valid[0];
 
   if (pullRequest.merged_at) {
-    if (currentState !== LIFECYCLE_STATES.MERGED) {
+    if (currentState !== LIFECYCLE_STATES.MERGED && currentState !== LIFECYCLE_STATES.DEPLOYED_DEV) {
       const result = await transitionOrBlock({
         github,
         owner,
@@ -1792,6 +1733,7 @@ async function handlePullRequestState({
       if (!result.allowed) {
         return;
       }
+      return;
     }
     await handleMergedEvidence({
       github,
@@ -1802,6 +1744,7 @@ async function handlePullRequestState({
       comments,
       claim,
       pullRequest,
+      currentState,
       now,
     });
     return;
@@ -1942,23 +1885,6 @@ async function handlePullRequestState({
   await ensureAutoMergeEnabled({ github, core, pullRequest });
 }
 
-async function handleDeployedDevState({ github, owner, repo, issue, comments, claim, currentState }) {
-  const result = await transitionOrBlock({
-    github,
-    owner,
-    repo,
-    issue,
-    comments,
-    from: currentState,
-    to: LIFECYCLE_STATES.DONE,
-    reason: "dev-evidence-previously-verified",
-    nonce: claim.nonce,
-  });
-  if (result.allowed) {
-    await closeIssueAsCompleted({ github, owner, repo, issue });
-  }
-}
-
 async function reconcileIssue({
   github,
   core,
@@ -2082,19 +2008,6 @@ async function reconcileIssue({
       });
       return;
     }
-  }
-
-  if (currentState === LIFECYCLE_STATES.DEPLOYED_DEV) {
-    await handleDeployedDevState({
-      github,
-      owner,
-      repo,
-      issue,
-      comments,
-      claim,
-      currentState,
-    });
-    return;
   }
 
   await handlePullRequestState({

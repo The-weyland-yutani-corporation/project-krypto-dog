@@ -1,4 +1,5 @@
 export {};
+import { createDevEvidenceFixture, DEV_SHA } from "./fixtures/dev-evidence";
 
 interface Label {
   name: string;
@@ -67,15 +68,22 @@ interface CommitStatusFixture {
   id: number;
   context: string;
   state: string;
+  target_url?: string;
 }
 
 interface DeploymentFixture {
   id: number;
+  task?: string;
+  sha?: string;
+  environment?: string;
+  production_environment?: boolean;
+  payload?: unknown;
 }
 
 interface DeploymentStatusFixture {
   id: number;
   state: string;
+  log_url?: string;
 }
 
 interface ApiParams {
@@ -355,6 +363,7 @@ const HUMAN_ACTIVE_TIMELINE_EVENT: TimelineEventFixture = {
 };
 
 interface HarnessOptions {
+  devEvidence?: ReturnType<typeof createDevEvidenceFixture>;
   issues?: IssueFixture[];
   pullRequests?: PullRequestFixture[];
   commitsByPull?: Record<number, CommitFixture[]>;
@@ -411,10 +420,10 @@ function createHarness(options: HarnessOptions = {}) {
   );
   const filesByPull = options.filesByPull ?? {};
   const checksBySha = options.checksBySha ?? {};
-  const statusesBySha = options.statusesBySha ?? {};
-  const deploymentsBySha = options.deploymentsBySha ?? {};
+  const statusesBySha = options.statusesBySha ?? (options.devEvidence ? { [DEV_SHA]: options.devEvidence.statuses } : {});
+  const deploymentsBySha = options.deploymentsBySha ?? (options.devEvidence ? { [DEV_SHA]: options.devEvidence.deployments } : {});
   const deploymentStatusesByDeployment: Record<number, DeploymentStatusFixture[]> =
-    options.deploymentStatusesByDeployment ?? {};
+    options.deploymentStatusesByDeployment ?? (options.devEvidence ? { 501: options.devEvidence.deploymentStatuses } : {});
   let controlIssue =
     options.controlIssue === undefined
       ? {
@@ -623,6 +632,7 @@ function createHarness(options: HarnessOptions = {}) {
     paginate,
     graphql,
     rest: {
+      actions: options.devEvidence?.github.rest.actions,
       repos: {
         get: repoGet,
         listCommitStatusesForRef,
@@ -641,6 +651,11 @@ function createHarness(options: HarnessOptions = {}) {
         update: updateIssue,
       },
       pulls: {
+        get: jest.fn(async (params: ApiParams) => {
+          const pull = pulls.get(params.pull_number ?? -1);
+          if (!pull) throw new Error("Pull request not found");
+          return { data: pull };
+        }),
         list: listPulls,
         listCommits,
         listFiles,
@@ -1846,7 +1861,7 @@ describe("agentic lifecycle reconciler integration", () => {
     const pull = pullRequestFixture(115, 115, {
       state: "closed",
       merged_at: "2026-08-20T14:00:00.000Z",
-      merge_commit_sha: "merged-sha-115",
+      merge_commit_sha: DEV_SHA,
     });
     const harness = await reconcile({
       issues: [issue],
@@ -1871,20 +1886,12 @@ describe("agentic lifecycle reconciler integration", () => {
     const pull = pullRequestFixture(110, 16, {
       state: "closed",
       merged_at: "2024-02-01T00:00:00.000Z",
-      merge_commit_sha: "merged-sha-110",
+      merge_commit_sha: DEV_SHA,
     });
     const harness = createHarness({
       issues: [issue],
       pullRequests: [pull],
-      statusesBySha: {
-        "merged-sha-110": [{ id: 1, context: "Dev deployment evidence", state: "success" }],
-      },
-      deploymentsBySha: {
-        "merged-sha-110": [{ id: 501 }],
-      },
-      deploymentStatusesByDeployment: {
-        501: [{ id: 1, state: "success" }],
-      },
+      devEvidence: createDevEvidenceFixture({ owner, repo }),
     });
 
     await reconcileFactoryLifecycle({
@@ -1921,18 +1928,85 @@ describe("agentic lifecycle reconciler integration", () => {
     expect(harness.issues.get(16)?.state_reason).toBe("completed");
   });
 
+  it("uses three separate passes for merged, deployed-dev, and done even when proof is already available", async () => {
+    const issue = issueFixture(116, "factory:pr-open");
+    const pull = pullRequestFixture(116, 116, {
+      state: "closed", merged_at: "2026-08-20T20:00:00Z", merge_commit_sha: DEV_SHA,
+    });
+    const fixture = createDevEvidenceFixture({ owner, repo });
+    const harness = createHarness({ issues: [issue], pullRequests: [pull], devEvidence: fixture });
+    const input = {
+      github: harness.github, context: { repo: { owner, repo } }, core: harness.core,
+      now: DEFAULT_NOW, assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+    };
+    await reconcileFactoryLifecycle(input);
+    expect(labelsOf(issue)).toContain("factory:merged");
+    expect(fixture.github.rest.actions.downloadArtifact).not.toHaveBeenCalled();
+    await reconcileFactoryLifecycle(input);
+    expect(labelsOf(issue)).toContain("factory:deployed-dev");
+    expect(issue.state).toBe("open");
+    await reconcileFactoryLifecycle(input);
+    expect(labelsOf(issue)).toContain("factory:done");
+    expect(issue.state).toBe("closed");
+  });
+
+  it("rechecks immutable evidence before done and blocks a later failed deployment instead of closing", async () => {
+    const issue = issueFixture(117, "factory:merged");
+    const pull = pullRequestFixture(117, 117, {
+      state: "closed", merged_at: "2026-08-20T20:00:00Z", merge_commit_sha: DEV_SHA,
+    });
+    const fixture = createDevEvidenceFixture({ owner, repo });
+    const harness = createHarness({ issues: [issue], pullRequests: [pull], devEvidence: fixture });
+    const input = {
+      github: harness.github, context: { repo: { owner, repo } }, core: harness.core,
+      now: DEFAULT_NOW, assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+    };
+    await reconcileFactoryLifecycle(input);
+    expect(labelsOf(issue)).toContain("factory:deployed-dev");
+    fixture.deploymentStatuses.push({ ...fixture.deploymentStatuses[0], id: 90, state: "failure" });
+    await reconcileFactoryLifecycle(input);
+    expect(labelsOf(issue)).toContain("blocked");
+    expect(issue.state).toBe("open");
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
+    expect(harness.mocks.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it.each([6 * 60 * 60 * 1000 - 1, 6 * 60 * 60 * 1000])("enforces the exact six-hour evidence deadline at %i ms", async (elapsed) => {
+    const mergedAt = "2026-08-20T14:00:00Z";
+    const issue = issueFixture(118, "factory:merged");
+    const pull = pullRequestFixture(118, 118, { state: "closed", merged_at: mergedAt, merge_commit_sha: DEV_SHA });
+    const harness = await reconcile({
+      issues: [issue], pullRequests: [pull],
+      now: new Date(Date.parse(mergedAt) + elapsed).toISOString(),
+    });
+    expect(labelsOf(issue)).toContain(elapsed < 6 * 60 * 60 * 1000 ? "factory:merged" : "blocked");
+    expect(harness.mocks.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it("blocks and pauses instead of closing when immutable artifact access fails", async () => {
+    const issue = issueFixture(119, "factory:deployed-dev");
+    const pull = pullRequestFixture(119, 119, { state: "closed", merged_at: "2026-08-20T20:00:00Z", merge_commit_sha: DEV_SHA });
+    const fixture = createDevEvidenceFixture({ owner, repo });
+    fixture.github.rest.actions.getArtifact.mockRejectedValue(new Error("artifact access denied"));
+    const harness = await reconcile({ issues: [issue], pullRequests: [pull], devEvidence: fixture });
+    expect(labelsOf(issue)).toContain("blocked");
+    expect(issue.state).toBe("open");
+    expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
+    expect(harness.core.warning).toHaveBeenCalledWith(expect.stringContaining("artifact access denied"));
+  });
+
   it("pauses the factory-control issue and blocks when dev deployment evidence fails", async () => {
     const issue = issueFixture(17, "factory:merged");
     const pull = pullRequestFixture(111, 17, {
       state: "closed",
       merged_at: "2024-02-01T00:00:00.000Z",
-      merge_commit_sha: "merged-sha-111",
+      merge_commit_sha: DEV_SHA,
     });
     const harness = await reconcile({
       issues: [issue],
       pullRequests: [pull],
       statusesBySha: {
-        "merged-sha-111": [{ id: 1, context: "Dev deployment evidence", state: "failure" }],
+        [DEV_SHA]: [{ id: 1, context: "Dev deployment evidence", state: "failure" }],
       },
     });
 
@@ -1987,12 +2061,12 @@ describe("agentic lifecycle reconciler integration", () => {
     expect(harness.mocks.removeLabel).not.toHaveBeenCalled();
   });
 
-  it("closes a factory:deployed-dev issue idempotently left over from a partial prior run", async () => {
+  it("does not trust a deployed-dev label without a correlated merged PR and current proof", async () => {
     const issue = issueFixture(19, "factory:deployed-dev");
     const harness = await reconcile({ issues: [issue] });
 
-    expect(labelsOf(harness.issues.get(19))).toContain("factory:done");
-    expect(harness.issues.get(19)?.state).toBe("closed");
+    expect(labelsOf(harness.issues.get(19))).toContain("blocked");
+    expect(harness.issues.get(19)?.state).toBe("open");
   });
 
   it("fails closed to blocked when an issue carries more than one lifecycle label, and best-effort pauses the factory", async () => {

@@ -34,6 +34,15 @@ jobs:
       INPUT_GOAL_ISSUE: ${{ inputs.goal_issue }}
       SCHEDULED_GOAL_ISSUE: ${{ vars.FACTORY_CANARY_GOAL }}
     steps:
+      - name: Check out the trusted development evidence reader
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/agentic-policy.json
+
       - name: Create authorized canary issue
         id: create
         uses: actions/github-script@v9
@@ -246,6 +255,8 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
+            const { readDevEvidence } =
+              require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/azure/dev-evidence.cjs`);
             const issueNumber = Number(process.env.CANARY_ISSUE);
             const deadline = Date.now() + 330 * 60 * 1000;
             let previous = "";
@@ -334,58 +345,19 @@ jobs:
                     "Full-cycle heartbeat does not contain this run's exact evidence.",
                   );
                 }
-                const [statuses, deployments] = await Promise.all([
-                  github.paginate(
-                    github.rest.repos.listCommitStatusesForRef,
-                    {
-                      owner,
-                      repo,
-                      ref: pull.merge_commit_sha,
-                      per_page: 100,
-                    },
-                  ),
-                  github.paginate(github.rest.repos.listDeployments, {
-                    owner,
-                    repo,
-                    sha: pull.merge_commit_sha,
-                    environment: "development",
-                    per_page: 100,
-                  }),
-                ]);
-                const devStatus = statuses.find(
-                  (status) =>
-                    status.context === "Dev deployment evidence",
-                );
-                if (devStatus?.state !== "success") {
+                const evidence = await readDevEvidence({
+                  github,
+                  owner,
+                  repo,
+                  sha: pull.merge_commit_sha,
+                  pullNumber: pull.number,
+                });
+                if (evidence.outcome !== "success" || !evidence.receipt) {
                   throw new Error(
-                    `Merge ${pull.merge_commit_sha} lacks successful dev evidence status.`,
+                    `Merge ${pull.merge_commit_sha} lacks verified immutable development evidence: ${evidence.reason}.`,
                   );
                 }
-                let successfulDeployment = false;
-                for (const deployment of deployments) {
-                  const deploymentStatuses = await github.paginate(
-                    github.rest.repos.listDeploymentStatuses,
-                    {
-                      owner,
-                      repo,
-                      deployment_id: deployment.id,
-                      per_page: 100,
-                    },
-                  );
-                  if (
-                    deploymentStatuses.some(
-                      (status) => status.state === "success",
-                    )
-                  ) {
-                    successfulDeployment = true;
-                    break;
-                  }
-                }
-                if (!successfulDeployment) {
-                  throw new Error(
-                    `Merge ${pull.merge_commit_sha} lacks a successful development Deployment.`,
-                  );
-                }
+                core.info(JSON.stringify(evidence));
                 core.info(
                   `Canary issue #${issueNumber} completed through exact-SHA dev evidence.`,
                 );
