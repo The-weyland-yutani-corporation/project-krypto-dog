@@ -26,8 +26,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  observe:
+  authorize:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      allowed: ${{ steps.authorize.outputs.allowed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/agentic
+            .github/scripts
+            .github/agentic-policy.json
+      - name: Authorize the source before collection or publication
+        id: authorize
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { authorizeWatchdogEvent } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+            const decision = await authorizeWatchdogEvent({ github, context });
+            core.setOutput("allowed", String(decision.allowed));
+            core.info(`Watchdog authorization: ${decision.reason}`);
+
+  observe:
+    needs: authorize
+    if: needs.authorize.outputs.allowed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -106,8 +135,8 @@ jobs:
             /tmp/gh-aw/watchdog/signal-candidates.json
 
   publish:
-    needs: observe
-    if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name != 'workflow_dispatch' || inputs.publish)
+    needs: [authorize, observe]
+    if: always() && needs.authorize.outputs.allowed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -142,8 +171,8 @@ jobs:
               .addCodeBlock(JSON.stringify(result, null, 2), "json").write();
 
   discover:
-    needs: [observe, publish]
-    if: github.event_name == 'schedule' && github.event.schedule == '30 7 * * 1' && needs.observe.outputs.discovery_eligible == 'true'
+    needs: [authorize, observe, publish]
+    if: needs.authorize.outputs.allowed == 'true' && github.event_name == 'schedule' && github.event.schedule == '30 7 * * 1' && needs.observe.outputs.discovery_eligible == 'true'
     concurrency:
       group: factory-queue-controller
       cancel-in-progress: false

@@ -709,7 +709,7 @@ describe("MonitorOps collector — CLI (no GitHub access)", () => {
     expect(rc).toBe(2);
   });
 
-  it("fails loud when a required GitHub command fails", () => {
+  it.each(["", "example/repo"])("fails loud when commands fail with repository resolution %j", (repository) => {
     const rc = collector.main(
       ["--mode", "daily", "--out", path.join(tmpDir, "failed.json")],
       {
@@ -720,11 +720,19 @@ describe("MonitorOps collector — CLI (no GitHub access)", () => {
         }),
         repoRoot: root,
         policy,
+        repository,
       },
     );
     expect(rc).toBe(1);
-    expect(JSON.parse(fs.readFileSync(path.join(tmpDir, "failed.json"), "utf8"))).toMatchObject({
-      status: "failed", completeness: "unavailable", metrics: null,
-    });
+    const failed = JSON.parse(fs.readFileSync(path.join(tmpDir, "failed.json"), "utf8"));
+    if (repository) {
+      expect(failed).toMatchObject({
+        collection: { completeness: "partial" },
+        issues: { openedInWindow: null, openActionableOpportunities: null },
+        sources: { issues: { completeness: "unavailable" }, runs: { completeness: "unavailable" } },
+      });
+    } else {
+      expect(failed).toMatchObject({ status: "failed", completeness: "unavailable", metrics: null });
+    }
   });
 });

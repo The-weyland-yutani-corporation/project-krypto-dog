@@ -14,6 +14,7 @@ const watchdog = jest.requireActual<{
   publishWatchdog(options: unknown): Promise<Data[]>;
   inspectReceiptRun(options: unknown): Promise<{ attempt: number; sha: string }>;
   mergeDiscoverySignals(options: unknown): void;
+  authorizeWatchdogEvent(options: unknown): Promise<{ allowed: boolean; reason: string }>;
 }>("../../scripts/agentic/factory-watchdog.cjs");
 const factory = jest.requireActual<{
   collect(options: unknown): { snapshot: Data };
@@ -283,7 +284,49 @@ describe("trusted model-independent workflow wiring", () => {
     const workflow = parseYaml(source);
     expect(workflow.jobs.observe.permissions.issues).toBe("read");
     expect(workflow.jobs.publish.permissions.issues).toBe("write");
+    expect(workflow.jobs.observe.if).toContain("needs.authorize.outputs.allowed == 'true'");
+    expect(workflow.jobs.publish.if).toContain("needs.authorize.outputs.allowed == 'true'");
+    expect(workflow.jobs.publish.needs).toContain("authorize");
     expect(workflow.jobs.observe.steps.find((step: { id?: string }) => step.id === "collect").uses).toBe("actions/github-script@v9");
+  });
+
+  it.each([
+    ["skipped", "Bot", "github-actions[bot]"],
+    ["failure", "Bot", "github-actions[bot]"],
+    ["skipped", "User", "maintainer-token-owner"],
+    ["failure", "User", "maintainer-token-owner"],
+  ])("does not let %s command activation under a %s dispatcher trigger writes", async (conclusion, type, login) => {
+    const request = jest.fn(async (route: string) => ({
+      data: route.endsWith("/jobs") ? { jobs: [
+        { name: "pre_activation", status: "completed", conclusion: "success" },
+        { name: "activation", status: "completed", conclusion },
+      ] } : {
+        repository: { full_name: REPOSITORY }, head_repository: { full_name: REPOSITORY },
+        head_branch: "main", status: "completed", path: ".github/workflows/opportunity-discovery.lock.yml",
+        event: "workflow_dispatch", actor: { type, login }, run_attempt: 1,
+      },
+    }));
+    expect(await watchdog.authorizeWatchdogEvent({
+      github: { request }, context: { repo: { owner: "example", repo: "krypto" }, eventName: "workflow_run",
+        ref: "refs/heads/main", payload: { repository: { default_branch: "main" }, workflow_run: { id: 310 } } },
+    })).toEqual({ allowed: false, reason: "source-command-not-activated" });
+  });
+
+  it("retains authorized model-outage observation after a successful membership gate", async () => {
+    const request = jest.fn(async (route: string) => ({
+      data: route.endsWith("/jobs") ? { jobs: [
+        { name: "activation", status: "completed", conclusion: "success" },
+        { name: "agent", status: "completed", conclusion: "failure" },
+      ] } : {
+        repository: { full_name: REPOSITORY }, head_repository: { full_name: REPOSITORY },
+        head_branch: "main", status: "completed", path: ".github/workflows/opportunity-discovery.lock.yml",
+        event: "workflow_dispatch", actor: { type: "Bot", login: "github-actions[bot]" }, run_attempt: 1,
+      },
+    }));
+    expect(await watchdog.authorizeWatchdogEvent({
+      github: { request }, context: { repo: { owner: "example", repo: "krypto" }, eventName: "workflow_run",
+        ref: "refs/heads/main", payload: { repository: { default_branch: "main" }, workflow_run: { id: 310 } } },
+    })).toEqual({ allowed: true, reason: "trusted-command-activation" });
   });
 
   it.each(["daily-repo-status", "agentic-governance", "harness-entropy", "agentic-corrections"])(

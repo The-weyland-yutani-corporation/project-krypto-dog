@@ -13,9 +13,51 @@ const signals = require("./signal-contract.cjs");
 const policy = require("../../.github/scripts/agentic-factory-policy.cjs");
 
 const MAX_SIGNALS = 10;
+const OBSERVER_SOURCES = new Set([
+  "daily-repo-status", "agentic-governance", "harness-entropy",
+  "agentic-corrections", "opportunity-discovery", "ci-doctor",
+].map((name) => `.github/workflows/${name}.lock.yml`));
 
 function digest(value) {
   return crypto.createHash("sha256").update(factory.stableStringify(value)).digest("hex");
+}
+
+async function authorizeWatchdogEvent({ github, context }) {
+  const defaultBranch = context.payload.repository.default_branch;
+  if (context.ref !== `refs/heads/${defaultBranch}`) return { allowed: false, reason: "not-default-branch" };
+  if (["schedule", "workflow_dispatch"].includes(context.eventName)) {
+    return { allowed: true, reason: "trusted-native-trigger" };
+  }
+  if (context.eventName !== "workflow_run") return { allowed: false, reason: "unsupported-trigger" };
+  const { owner, repo } = context.repo;
+  const runId = context.payload.workflow_run?.id;
+  if (!Number.isSafeInteger(runId) || runId <= 0) return { allowed: false, reason: "invalid-source-run" };
+  const run = (await github.request("GET /repos/{owner}/{repo}/actions/runs/{run_id}",
+    { owner, repo, run_id: runId })).data;
+  if (run.repository?.full_name !== `${owner}/${repo}` || run.head_repository?.full_name !== `${owner}/${repo}` ||
+      run.head_branch !== defaultBranch || run.status !== "completed" ||
+      !OBSERVER_SOURCES.has(run.path?.split("@")[0])) {
+    return { allowed: false, reason: "untrusted-source-workflow" };
+  }
+  if (run.event === "schedule") return { allowed: true, reason: "trusted-source-schedule" };
+  const commandSource = run.path.split("@")[0] === ".github/workflows/opportunity-discovery.lock.yml";
+  if (!commandSource && run.actor?.type === "User" && ["workflow_dispatch", "issue_comment", "workflow_run"].includes(run.event)) {
+    const permission = (await github.request("GET /repos/{owner}/{repo}/collaborators/{username}/permission",
+      { owner, repo, username: run.actor.login })).data.permission;
+    return ["admin", "maintain", "write"].includes(permission)
+      ? { allowed: true, reason: "trusted-source-human" }
+      : { allowed: false, reason: "source-user-not-authorized" };
+  }
+  if ((!commandSource && run.actor?.login !== "github-actions[bot]") || !Number.isSafeInteger(run.run_attempt)) {
+    return { allowed: false, reason: "source-actor-not-authorized" };
+  }
+  // A command dispatcher can run as Actions or a maintainer's delegated token,
+  // not the original commenter. Its actor alone cannot prove membership.
+  const jobs = reads.requireComplete(await reads.readApiPages(github,
+    "GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs",
+    { owner, repo, run_id: runId, attempt_number: run.run_attempt }, { key: "jobs" }), "source-command-authorization");
+  const allowed = jobs.some((job) => job.name === "activation" && job.status === "completed" && job.conclusion === "success");
+  return { allowed, reason: allowed ? "trusted-command-activation" : "source-command-not-activated" };
 }
 
 function save(directory, name, value) {
@@ -272,4 +314,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
-module.exports = { MAX_SIGNALS, signalCandidates, canDiscover, receiptFor, collectWatchdog, publishWatchdog, inspectReceiptRun, mergeDiscoverySignals, runCollectionStep };
+module.exports = { MAX_SIGNALS, signalCandidates, canDiscover, receiptFor, collectWatchdog, publishWatchdog, inspectReceiptRun, mergeDiscoverySignals, runCollectionStep, authorizeWatchdogEvent };

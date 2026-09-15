@@ -14,6 +14,13 @@ resolution without an LLM. A model outage cannot prevent those jobs from running
 The former scheduled GH-AW reports are now optional manual summaries; their
 trusted pre-agent collection and artifact upload precede model execution.
 Their `workflow_run` completion is also observed by the native watchdog.
+That event is authorized in a read-only job before collection or publication.
+Source runs must be allowlisted, same-repository and on the default branch.
+Non-command human-triggered runs require current collaborator write/maintain/admin
+authority; a command-capable source must have passed GH-AW activation (and thus
+its membership gate), even when its dispatcher uses a maintainer's delegated
+token. Skipped/denied command activation cannot trigger even a
+missing-receipt fallback write. Authorized model failures remain observable.
 
 Weekly substantive, dev-verified improvement is an **eligibility-dependent
 objective**, not a guarantee or a reason to manufacture work. When a fresh
