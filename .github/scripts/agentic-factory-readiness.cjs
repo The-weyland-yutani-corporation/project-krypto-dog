@@ -8,6 +8,7 @@ const {
   parseNonNegativeInteger, determineFactoryMode, resolveActiveGoal,
   areAllCheckboxesChecked, findLatestLabelApplicationEvent, isHumanActorType, isValidTimestamp,
   resolveGoalScopeEvidence, getGoalScopeAnchors, hasVerifiedSignalScope,
+  nativeParentMatchesRepository,
 } = require("./agentic-queue-runtime.cjs");
 const { evaluateEligibility, evaluateClaimState, parseClaimPayload } = require("./agentic-queue-controller.cjs");
 const {
@@ -138,7 +139,7 @@ async function collectReadinessSnapshot({ github, context, config = {} }) {
       const prefix = `${base}/issues/{issue_number}`;
       const timeline = await reader.list(`${prefix}/timeline`, params, undefined, (item) => typeof item.event === "string");
       const comments = await reader.list(`${prefix}/comments`, params, undefined, (item) => typeof item.body === "string");
-      const parent = await reader.get(`${prefix}/parent`, params, { absent404: true, validate: (item) => Number.isSafeInteger(item.number) });
+      const parent = await reader.get(`${prefix}/parent`, params, { absent404: true, validate: (item) => nativeParentMatchesRepository(item, owner, repo) });
       const subIssues = await reader.list(`${prefix}/sub_issues`, params, undefined, validIssue);
       const blockedBy = await reader.list(`${prefix}/dependencies/blocked_by`, params, undefined, validIssue);
       details[issue.number] = { timeline, comments, parent, subIssues, blockedBy };
@@ -222,7 +223,8 @@ function buildFactoryReadinessReport(snapshot) {
     const scopeSource = snapshot.details[parsed.scopeSourceIssueNumber];
     const scopeSourceIssue = snapshot.issues.find((item) => item.number === parsed.scopeSourceIssueNumber);
     const scopeProof = resolveGoalScopeEvidence(goalIssue?.body, issue, issue.body, scopeSource?.comments,
-      hasVerifiedSignalScope(issue, parsed.scopeSourceIssueNumber, goalIssue?.number, scopeSource?.comments, scopeSource?.parent?.number));
+      hasVerifiedSignalScope(issue, parsed.scopeSourceIssueNumber, goalIssue?.number, scopeSource?.comments,
+        nativeParentMatchesRepository(scopeSource?.parent, snapshot.repository.owner, snapshot.repository.repo) ? scopeSource.parent.number : null));
     const nativeParent = Number.isSafeInteger(detail.parent?.number) ? detail.parent.number : null;
     const linkedPrs = linkedPullRequestNumbers(snapshot.pulls, issue.number, detail.timeline);
     const activeClaim = readClaim(detail.comments, issue.number);

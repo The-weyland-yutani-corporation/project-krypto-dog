@@ -60,6 +60,17 @@ describe("bounded immutable PM/EM intake", () => {
     expect(h.requireIssue(300).body).toBe(workBody());
   });
 
+  it("accepts the centralized /plan issue context without requiring a manual scope input", async () => {
+    const issues = baseIssues();
+    issues[2].labels = ["agentic-factory", "ready-for-planning", "risk:routine", "priority:P1"];
+    const h = harness({ issues });
+    const context = { repo: h.context().repo, payload: { inputs: { aw_context: JSON.stringify({ item_type: "issue", item_number: 300 }) } } };
+    expect(await intake.applyWorkItemProposal({ github: h.github, core: h.core, context, stage: "em", now: NOW, proposal: proposal(h) }))
+      .toMatchObject({ ok: true, issue: 300 });
+    expect(intake.resolveIntakeTarget({ payload: { inputs: { scope: "301", aw_context: JSON.stringify({ item_type: "issue", item_number: 300 }) } } })).toBeNull();
+    expect(intake.resolveIntakeTarget({ payload: { inputs: { aw_context: JSON.stringify({ item_type: "pull_request", item_number: 300 }) } } })).toBeNull();
+  });
+
   it.each([
     ["paused", { labels: ["factory-control", "factory-mode:paused"] }, "factory-not-active"],
   ])("refuses %s mode without writes", async (_name, overrides, reason) => {

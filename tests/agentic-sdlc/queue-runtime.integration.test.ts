@@ -472,17 +472,18 @@ function createHarness(options: HarnessOptions) {
     return {};
   });
 
-  const search = jest.fn(async (params: ApiParams): Promise<{ data: { items: MockSearchItem[] } }> => {
+  const search = jest.fn(async (params: ApiParams): Promise<{ data: { items: MockSearchItem[]; total_count: number; incomplete_results: boolean } }> => {
     const match = /Refs #(\d+)/.exec(params.q ?? "");
     const number = match ? Number(match[1]) : -1;
     if ((options.failSearchFor ?? []).includes(number)) {
       throw new Error(`search failed for #${number}`);
     }
-    return { data: { items: options.searchResultsByIssue?.[number] ?? [] } };
+    const items = options.searchResultsByIssue?.[number] ?? [];
+    return { data: { items, total_count: items.length, incomplete_results: false } };
   });
 
   const request = jest.fn(
-    async (route: string, params: ApiParams): Promise<{ data: MockSubIssue[] | { number: number } }> => {
+    async (route: string, params: ApiParams): Promise<{ data: MockSubIssue[] | { number: number; repository_url: string } }> => {
       const number = params.issue_number as number;
       if (route.includes("/parent")) {
         if ((options.failParentFor ?? []).includes(number)) {
@@ -490,7 +491,7 @@ function createHarness(options: HarnessOptions) {
         }
         const parentNumber =
           options.parentGoalByNumber?.[number] ?? options.defaultNativeParentGoalNumber ?? 1;
-        return { data: { number: parentNumber } };
+        return { data: { number: parentNumber, repository_url: `https://api.github.com/repos/${params.owner}/${params.repo}` } };
       }
       if ((options.failSubIssuesFor ?? []).includes(number)) {
         throw new Error(`sub_issues lookup failed for #${number}`);

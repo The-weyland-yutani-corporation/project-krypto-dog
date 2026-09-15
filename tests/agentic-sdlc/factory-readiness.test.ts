@@ -2,7 +2,7 @@ import { baseIssues, goalBody, issue, NOW, workBody } from "./fixtures/factory-i
 
 const readiness = require("../../.github/scripts/agentic-factory-readiness.cjs");
 const { createReadOnlyReader } = require("../../.github/scripts/agentic-readiness-reader.cjs");
-const { resolveIsLeaf } = require("../../.github/scripts/agentic-queue-runtime.cjs");
+const { resolveIsLeaf, resolveHasOpenPullRequest, nativeParentMatchesRepository } = require("../../.github/scripts/agentic-queue-runtime.cjs");
 
 function snapshot() {
   const issues = baseIssues();
@@ -144,6 +144,17 @@ describe("bounded read-only GitHub adapter", () => {
     expect(denied.reads[0]).toMatchObject({ complete: false, status: 403 });
   });
 
+  it.each([
+    { items: [] },
+    { items: [], total_count: 10, incomplete_results: false },
+    { items: [], total_count: 0, incomplete_results: true },
+  ])("fails closed on incomplete or omitted PR search metadata: %j", async (data) => {
+    const core = { warning: jest.fn() };
+    const github = { rest: { search: { issuesAndPullRequests: async () => ({ data }) } } };
+    expect(await resolveHasOpenPullRequest({ github, core, owner: "example", repo: "krypto", issueNumber: 300 })).toBe(true);
+    expect(core.warning).toHaveBeenCalled();
+  });
+
   it("refuses mutating routes before any GitHub request", async () => {
     const github = { request: jest.fn() };
     const reader = createReadOnlyReader({ github, owner: "example", repo: "krypto" });
@@ -152,6 +163,11 @@ describe("bounded read-only GitHub adapter", () => {
     expect(reader.reads[0].complete).toBe(false);
   });
 
+  it("rejects a foreign native parent with the same issue number or missing repository identity", () => {
+    expect(nativeParentMatchesRepository({ number: 248, repository_url: "https://api.github.com/repos/foreign/other" }, "example", "krypto")).toBe(false);
+    expect(nativeParentMatchesRepository({ number: 248 }, "example", "krypto")).toBe(false);
+    expect(nativeParentMatchesRepository({ number: 248, repository_url: "https://api.github.com/repos/example/krypto" }, "example", "krypto")).toBe(true);
+  });
   it("fails closed on unadvertised remaining pages and unknown sub-issue shapes", async () => {
     const github = { request: jest.fn(async (_route: string, params: { page: number }) => ({
       data: params.page === 1 ? Array.from({ length: 100 }, () => ({ state: "closed" })) : [{ state: "open" }],

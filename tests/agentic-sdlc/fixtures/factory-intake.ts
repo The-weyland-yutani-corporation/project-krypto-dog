@@ -142,7 +142,7 @@ export function harness(options: {
     if (route.endsWith("/parent")) {
       const parent = parents.get(number);
       if (!parent) throw Object.assign(new Error("No native parent"), { status: 404 });
-      return { data: { number: parent } };
+      return { data: { number: parent, repository_url: `https://api.github.com/repos/${params.owner}/${params.repo}` } };
     }
     if (route.startsWith("POST ") && route.endsWith("/sub_issues")) {
       writeAllowed();

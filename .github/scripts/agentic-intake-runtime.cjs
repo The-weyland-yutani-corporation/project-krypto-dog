@@ -7,6 +7,7 @@ const {
   inspectIssueForm, getIssueFormSection, parseCandidateSections, isHumanActorType,
   resolveLatestLabelApplicationActorType, countInFlight, countBudgetConsumption, buildCandidate,
   resolveGoalScopeEvidence,
+  nativeParentMatchesRepository,
 } = require("./agentic-queue-runtime.cjs");
 const { evaluateEligibility } = require("./agentic-queue-controller.cjs");
 const {
@@ -71,7 +72,7 @@ async function readIntakeCandidate({ github, context, core, issue, activeGoalNum
   let parentStatus = "unknown";
   try {
     const response = await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}/parent", { owner, repo, issue_number: issue.number });
-    if (!Number.isSafeInteger(response.data?.number)) throw new Error("Malformed native parent");
+    if (!nativeParentMatchesRepository(response.data, owner, repo)) throw new Error("Native parent repository is unverified");
     candidate.nativeParentGoalNumber = response.data.number;
     parentStatus = "present";
   } catch (error) {
@@ -194,9 +195,28 @@ function parseReceipts(comments, pattern) {
   return records;
 }
 
+function resolveIntakeTarget(context) {
+  const inputs = context.payload?.inputs || {};
+  const candidates = [];
+  if (context.payload?.issue?.number !== undefined) candidates.push(context.payload.issue.number);
+  for (const value of [inputs.issue, inputs.scope]) {
+    if (value === undefined || value === "") continue;
+    if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) return null;
+    candidates.push(Number(value));
+  }
+  if (inputs.aw_context) {
+    let supplied;
+    try { supplied = JSON.parse(inputs.aw_context); } catch { return null; }
+    if (supplied?.item_type !== "issue") return null;
+    candidates.push(supplied.item_number);
+  }
+  if (!candidates.length || candidates.some((number) => !Number.isSafeInteger(number) || number <= 0 || number !== candidates[0])) return null;
+  return candidates[0];
+}
+
 async function applyWorkItemProposal({ github, context, core, stage, proposal, now, dryRun = false }) {
   const { owner, repo } = context.repo;
-  const target = Number(context.payload?.issue?.number || context.payload?.inputs?.issue || context.payload?.inputs?.scope);
+  const target = resolveIntakeTarget(context);
   if (!Number.isSafeInteger(target) || target <= 0 || proposal.issue !== target) return { ok: false, reasons: ["proposal-target-mismatch"] };
   const authority = await loadIntakeAuthority({ github, context, core, now });
   if (!authority.ok) return authority;
@@ -269,7 +289,9 @@ async function applyWorkItemProposal({ github, context, core, stage, proposal, n
       });
     }
     const parent = await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}/parent", { owner, repo, issue_number: materialized.number });
-    if (parent.data?.number !== authority.config.goalNumber) return { ok: false, reasons: ["native-parent-verification-failed"] };
+    if (!nativeParentMatchesRepository(parent.data, owner, repo) || parent.data.number !== authority.config.goalNumber) {
+      return { ok: false, reasons: ["native-parent-verification-failed"] };
+    }
     const source = await github.rest.issues.get({ owner, repo, issue_number: target });
     if (!sameOwnedSnapshot(source.data, issue)) return { ok: false, reasons: ["concurrent-intake-change"], reserved };
     await applySelectiveLabels({ github, owner, repo, issue: materialized, labels: validation.plan.labels });
@@ -319,4 +341,4 @@ async function runIntakeSafeOutput({ github, context, core, stage, output }) {
   return result;
 }
 
-module.exports = { STAGES, loadIntakeAuthority, readIntakeCandidate, validateWorkItemProposal, applySelectiveLabels, applyWorkItemProposal, runIntakeSafeOutput };
+module.exports = { STAGES, loadIntakeAuthority, readIntakeCandidate, validateWorkItemProposal, applySelectiveLabels, resolveIntakeTarget, applyWorkItemProposal, runIntakeSafeOutput };

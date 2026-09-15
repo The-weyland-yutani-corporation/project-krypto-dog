@@ -704,6 +704,15 @@ function hasVerifiedSignalScope(issue, sourceIssue, goalNumber, sourceComments, 
   return admissions.length === 1;
 }
 
+function nativeParentMatchesRepository(parent, owner, repo) {
+  if (!Number.isSafeInteger(parent?.number) || parent.number <= 0 || typeof parent.repository_url !== "string") return false;
+  try {
+    return new URL(parent.repository_url).pathname.toLowerCase() === `/repos/${owner}/${repo}`.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 function resolveGoalScopeEvidence(goalBody, issue, proposedBody = issue.body, sourceComments, signalProof = false) {
   const anchors = getGoalScopeAnchors(goalBody);
   if (anchors.length === 0) return { reasons: [], anchors, sourceIssue: null, semanticReviewRequired: true };
@@ -742,7 +751,8 @@ async function resolveScopeEvidence({ github, owner, repo, issue, goalIssue, cor
         const sourceParent = await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}/parent", {
           owner, repo, issue_number: source[0],
         });
-        signalProof = hasVerifiedSignalScope(issue, source[0], goalIssue.number, sourceComments, sourceParent.data?.number);
+        signalProof = hasVerifiedSignalScope(issue, source[0], goalIssue.number, sourceComments,
+          nativeParentMatchesRepository(sourceParent.data, owner, repo) ? sourceParent.data.number : null);
       }
     } catch (error) {
       core.warning(`Scope provenance read failed for #${issue.number}: ${describeError(error)}`);
@@ -948,7 +958,7 @@ async function resolveNativeParentGoalNumber({ github, owner, repo, issueNumber,
       issue_number: issueNumber,
     });
     const parent = response && response.data;
-    if (!parent || !Number.isInteger(parent.number)) {
+    if (!nativeParentMatchesRepository(parent, owner, repo)) {
       core.warning(
         `Issue #${issueNumber} has no resolvable native sub-issue parent; native goal ancestry cannot be verified (fail closed).`,
       );
@@ -1019,8 +1029,9 @@ async function resolveHasOpenPullRequest({ github, owner, repo, issueNumber, cor
     const response = await github.rest.search.issuesAndPullRequests({ q: query, per_page: 20 });
     if (
       !Array.isArray(response.data?.items) ||
-      response.data.incomplete_results === true ||
-      response.data.total_count > response.data.items.length
+      response.data.incomplete_results !== false ||
+      !Number.isSafeInteger(response.data.total_count) ||
+      response.data.total_count !== response.data.items.length
     ) {
       throw new Error("Open pull request search is incomplete");
     }
@@ -1849,6 +1860,7 @@ module.exports = {
   resolveScopeEvidence,
   hasVerifiedIntakeScope,
   hasVerifiedSignalScope,
+  nativeParentMatchesRepository,
   buildClaimCommentBody,
   countInFlight,
   countBudgetConsumption,
