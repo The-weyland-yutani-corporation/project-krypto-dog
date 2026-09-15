@@ -44,6 +44,7 @@ const {
   getRequestedChecks,
   hasNewerReviewAttempt,
   infrastructureRetryDecision,
+  isBoundCiRun,
   isBoundReviewRun,
   latestBoundReviewRun,
   markIncompleteReviewAttempt,
@@ -1215,6 +1216,14 @@ async function reconcileAgenticPullRequests({
         if (!(error instanceof EvidenceError)) throw error;
         core.warning(`PR #${number} CI evidence unavailable: ${error.message}`);
         ciEvidence = { complete: false, state: "unavailable" };
+      }
+      const latestCiDispatch = ciRuns.filter((run) =>
+        isBoundCiRun(run, sha, number, repository, defaultBranch))
+        .sort((left, right) => right.id - left.id || right.run_attempt - left.run_attempt)[0];
+      if (latestCiDispatch && ciEvidence.complete && ciEvidence.checks.some((check) =>
+        check.runId < latestCiDispatch.id ||
+        (check.runId === latestCiDispatch.id && check.runAttempt < latestCiDispatch.run_attempt))) {
+        ciEvidence = { ...ciEvidence, complete: false, state: "unavailable" };
       }
       const assertCurrentHead = async () => {
         const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: number });

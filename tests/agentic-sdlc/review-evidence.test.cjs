@@ -196,6 +196,14 @@ describe("trusted exact-head review packet", () => {
     h.context.ref = "refs/heads/untrusted-pr";
     await expect(evidence.collectReviewPacket(h)).rejects.toMatchObject({ code: "invalid_context" });
   });
+
+  it("does not make an unmerged lower branch trusted by retargeting a native PR", async () => {
+    const h = harness();
+    h.context.eventName = "pull_request";
+    h.context.payload.pull_request = { ...h.state.pull, base: { ...h.state.pull.base, ref: "unmerged-foundation" } };
+    await expect(evidence.collectReviewPacket(h)).rejects.toMatchObject({ code: "invalid_context" });
+    expect(h.github.rest.git.getBlob).not.toHaveBeenCalled();
+  });
 });
 
 describe("deterministic review verdict publication", () => {
@@ -354,6 +362,32 @@ describe("trusted CI dispatch bridge", () => {
     })));
     return h;
   }
+
+  it("keeps prior CI success pending throughout dispatch and completes only the owned attempt", async () => {
+    const h = ciHarness();
+    const preparation = await evidence.prepareCiDispatch(h);
+    await evidence.beginCiChecks({ ...h, preparation });
+    expect(evidence.ciState(h.state.checks, SHA)).toBe("pending");
+    expect(await evidence.collectCiEvidence(h.github, h.context, SHA, h.state.checks)).toMatchObject({ state: "pending" });
+    await evidence.beginCiChecks({ ...h, preparation });
+    expect(h.github.rest.checks.create).toHaveBeenCalledTimes(2);
+    await evidence.publishCiChecks({ ...h, preparation, outcomes: Object.fromEntries(evidence.CI_CHECKS.map((name) => [name, "success"])) });
+    expect(h.github.rest.checks.create).toHaveBeenCalledTimes(2);
+    expect(h.github.rest.checks.update).toHaveBeenCalledTimes(2);
+    expect(evidence.ciState(h.state.checks, SHA)).toBe("success");
+  });
+
+  it("validates all required jobs before completing even the first check", async () => {
+    const h = ciHarness();
+    const preparation = await evidence.prepareCiDispatch(h);
+    await evidence.beginCiChecks({ ...h, preparation });
+    h.state.jobs.get(900).pop();
+    await expect(evidence.publishCiChecks({ ...h, preparation,
+      outcomes: Object.fromEntries(evidence.CI_CHECKS.map((name) => [name, "success"])),
+    })).rejects.toMatchObject({ code: "partial_evidence" });
+    expect(h.github.rest.checks.update).not.toHaveBeenCalled();
+    expect(evidence.ciState(h.state.checks, SHA)).toBe("pending");
+  });
 
   it("bridges only verified job outcomes to the requested SHA, not the workflow SHA", async () => {
     const h = ciHarness();

@@ -199,6 +199,25 @@ describe("exact-head API reconciliation and dispatch", () => {
     expect(policy).toMatchObject({ status: "in_progress", output: { summary: "Waiting for QA verification" } });
   });
 
+  it.each(["in_progress", "completed"])(
+    "does not reuse old CI proof when a newer bound dispatch is %s but has no head evidence",
+    async (status) => {
+      const h = harness();
+      h.addReview();
+      h.addReview("QA verification");
+      h.state.runs.push({
+        ...h.state.runs.find((run) => run.id === 500), id: 1000, event: "workflow_dispatch",
+        head_sha: BASE, head_branch: "main", display_title: evidence.correlationId("ci.yml", 7, SHA),
+        status, conclusion: status === "completed" ? "failure" : null,
+      });
+      await reconcileAgenticPullRequests(h);
+      const policy = h.state.checks.filter((check) => check.name === "Agentic merge policy").at(-1);
+      expect(policy.status).toBe("in_progress");
+      expect(dispatched(h)).not.toContain("qa-test-plan.lock.yml");
+      expect(dispatched(h)).not.toContain("pr-self-heal.lock.yml");
+    },
+  );
+
   it("rejects a fabricated same-name success from another workflow", async () => {
     const h = harness();
     h.addReview();
@@ -257,6 +276,7 @@ describe("label storms and compiled evidence boundaries", () => {
       expect(compiled.concurrency).toMatchObject({ "cancel-in-progress": false, queue: "max" });
       expect(compiled.jobs.activation.needs).toContain("review_evidence");
       expect(compiled.jobs.review_evidence.permissions.checks).toBe("read");
+      expect(compiled.jobs.review_evidence.if).toContain("github.event.pull_request.base.ref == github.event.repository.default_branch");
       expect(compiled.jobs.agent.permissions.checks).toBe("read");
       expect(compiled.jobs.create_pr_check.permissions.checks).toBe("write");
       const name = Object.keys(evidence.REVIEW_WORKFLOWS).find((key) => evidence.REVIEW_WORKFLOWS[key] === `${workflow}.lock.yml`);
@@ -297,5 +317,26 @@ describe("label storms and compiled evidence boundaries", () => {
     expect(publisher.permissions.checks).toBe("write");
     expect(publisher.steps[0].with.ref).toBe("${{ github.sha }}");
     expect(workflow.on.pull_request_target).toBeUndefined();
+  });
+
+  it("declares pending exact-head CI checks in the real preparation step before tests run", async () => {
+    const h = harness();
+    h.env.CORRELATION_ID = evidence.correlationId("ci.yml", 7, SHA);
+    const workflow = yaml.parse(fs.readFileSync(path.join(__dirname, "../../.github/workflows/ci.yml"), "utf8"));
+    const script = workflow.jobs["dispatch-context"].steps.find((step) => step.id === "verify").with.script;
+    const env = { ...h.env, GITHUB_WORKSPACE: path.join(__dirname, "../..") };
+    const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+    try {
+      Object.assign(process.env, env);
+      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+      await new AsyncFunction("github", "context", "core", "require", script)(h.github, h.context, h.core, require);
+      expect(evidence.ciState(h.state.checks, SHA)).toBe("pending");
+      expect(h.state.checks.filter((check) => check.head_sha === SHA && check.status === "in_progress")).toHaveLength(2);
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 });

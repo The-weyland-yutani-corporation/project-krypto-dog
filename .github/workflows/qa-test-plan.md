@@ -64,6 +64,10 @@ jobs:
   review_evidence:
     name: Prepare trusted review evidence
     needs: pre_activation
+    if: >-
+      needs.pre_activation.outputs.activated == 'true' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) &&
+      (!github.event.pull_request || (github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.head.repo.id == github.repository_id))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

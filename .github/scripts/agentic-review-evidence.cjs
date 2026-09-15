@@ -47,6 +47,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const REVIEW_MARKER = "agentic-review-evidence:v1";
 const CI_MARKER = "agentic-ci-evidence:v1";
+const CI_ATTEMPT_MARKER = "agentic-ci-attempt:v1";
 const DISPATCH_MARKER = "agentic-review-dispatch:v1";
 const INFRA_REASONS = new Set([
   "access_unavailable",
@@ -247,6 +248,15 @@ function latestBoundReviewRun(runs, checkName, sha, number, repository, defaultB
     .sort((left, right) => right.id - left.id || right.run_attempt - left.run_attempt)[0];
 }
 
+function isBoundCiRun(run, sha, number, repository, defaultBranch) {
+  return run.path === ".github/workflows/ci.yml" &&
+    run.repository?.full_name?.toLowerCase() === repository.toLowerCase() &&
+    run.event === "workflow_dispatch" && run.head_branch === defaultBranch &&
+    SHA.test(run.head_sha || "") && Number.isSafeInteger(run.id) &&
+    Number.isInteger(run.run_attempt) && run.run_attempt > 0 &&
+    run.display_title === correlationId("ci.yml", number, sha);
+}
+
 function trustedReviewSource(check, runs, repository, defaultBranch) {
   const proof = receipt(check, REVIEW_MARKER);
   if (!proof || !SHA.test(proof.workflowSha || "")) return false;
@@ -367,6 +377,8 @@ function dispatchReservation(checks, workflowId, sha, number) {
 function trustedContext(context, env) {
   const repository = `${context.repo.owner}/${context.repo.repo}`;
   const payload = context.payload || {};
+  requireEvidence(typeof payload.repository?.default_branch === "string" &&
+    payload.repository.default_branch.length > 0, "invalid_context", "approved default branch");
   const workflowId = env.REVIEW_WORKFLOW_ID || "ci.yml";
   const trustedWorkflowSha = payload.pull_request?.base.sha || context.sha;
   requireEvidence(SHA.test(trustedWorkflowSha || ""), "invalid_context", "trusted workflow SHA");
@@ -374,6 +386,10 @@ function trustedContext(context, env) {
     env.TRUSTED_WORKFLOW_SHA === trustedWorkflowSha,
     "invalid_context", "trusted source checkout",
   );
+  if (payload.pull_request) {
+    requireEvidence(payload.pull_request.base?.ref === payload.repository?.default_branch,
+      "invalid_context", "native review requires an approved default-branch base");
+  }
   if (context.eventName === "workflow_dispatch") {
     requireEvidence(
       context.ref === `refs/heads/${payload.repository?.default_branch}`,
@@ -508,6 +524,7 @@ async function collectCiEvidence(github, context, sha, checks) {
     const check = latestCheck(checks, name, sha);
     if (!check) continue;
     const bridge = receipt(check, CI_MARKER);
+    const attempt = receipt(check, CI_ATTEMPT_MARKER);
     const match = new RegExp(`^https://github\\.com/${repository}/actions/runs/(\\d+)(?:/job/(\\d+))?$`, "i")
       .exec(check.details_url || "");
     requireEvidence(Boolean(match), "evidence_unavailable", `${name} run source`);
@@ -538,6 +555,18 @@ async function collectCiEvidence(github, context, sha, checks) {
       runs.set(runId, { run, jobs });
     }
     const { run, jobs } = runs.get(runId);
+    if (attempt) {
+      requireEvidence(check.status !== "completed" && attempt.headSha === sha &&
+        attempt.checkName === name && attempt.runId === runId &&
+        attempt.runAttempt <= run.run_attempt && attempt.workflowSha === run.head_sha &&
+        check.external_id === `${CI_ATTEMPT_MARKER}:${runId}:${attempt.runAttempt}:${name}` &&
+        isBoundCiRun(run, sha, attempt.pullNumber, repository, context.payload.repository.default_branch),
+      "evidence_unavailable", `${name} pending CI attempt provenance`);
+      sources.push({ name, checkId: check.id, runId, runAttempt: attempt.runAttempt,
+        status: check.status, conclusion: null, phase: "pending",
+        source: sourceUrl(repository, `check-runs/${check.id}`) });
+      continue;
+    }
     const jobId = bridge ? bridge.jobId : Number(match[2]);
     const job = jobs.find((candidate) => candidate.id === jobId && candidate.name === name);
     requireEvidence(
@@ -949,6 +978,32 @@ async function prepareCiDispatch({ github, context, env = process.env }) {
   return { ...target, publish: true };
 }
 
+async function beginCiChecks({ github, context, env = process.env, preparation }) {
+  const target = await prepareCiDispatch({ github, context, env });
+  requireEvidence(digest(target) === digest(preparation), "invalid_packet", "CI attempt preparation binding");
+  if (!target.publish) return;
+  const checks = await readPages(github.rest.checks.listForRef, {
+    ...context.repo, ref: target.headSha, filter: "all",
+  }, "check_runs");
+  for (const name of CI_CHECKS) {
+    if (checks.some((check) => {
+      const proof = receipt(check, CI_ATTEMPT_MARKER) || receipt(check, CI_MARKER);
+      return isActionsCheck(check, target.headSha) && check.name === name &&
+        proof?.runId === target.runId && proof.runAttempt === target.runAttempt;
+    })) continue;
+    const proof = { headSha: target.headSha, workflowSha: target.trustedWorkflowSha,
+      pullNumber: target.number, runId: target.runId, runAttempt: target.runAttempt, checkName: name };
+    await github.rest.checks.create({
+      ...context.repo, head_sha: target.headSha, name, status: "in_progress",
+      external_id: `${CI_ATTEMPT_MARKER}:${target.runId}:${target.runAttempt}:${name}`,
+      details_url: `https://github.com/${target.repository}/actions/runs/${target.runId}`,
+      output: { title: "Trusted exact-head CI attempt in progress",
+        summary: `<!-- ${CI_ATTEMPT_MARKER} ${JSON.stringify(proof)} -->\n` +
+          "Required CI is pending for this dispatch; older same-head successes are not reused." },
+    });
+  }
+}
+
 async function publishCiChecks({ github, context, env = process.env, preparation, outcomes }) {
   const target = await prepareCiDispatch({ github, context, env });
   requireEvidence(target.publish && digest(target) === digest(preparation), "invalid_packet", "CI preparation binding");
@@ -968,36 +1023,46 @@ async function publishCiChecks({ github, context, env = process.env, preparation
   const existing = await readPages(github.rest.checks.listForRef, {
     ...context.repo, ref: target.headSha, filter: "all",
   }, "check_runs");
-  for (const name of CI_CHECKS) {
+  const plan = CI_CHECKS.map((name) => {
     const candidates = jobs.filter((job) => job.name === name);
     const job = candidates[0];
     requireEvidence(candidates.length === 1 && job.status === "completed" &&
       job.conclusion === outcomes[name], "partial_evidence", `${name} completed job outcome`);
+    return { name, job };
+  });
+  for (const { name, job } of plan) {
     const externalId = `agentic-ci:v1:${target.runId}:${target.runAttempt}:${job.id}:${target.headSha}`;
     if (existing.some((check) => isActionsCheck(check, target.headSha) && check.external_id === externalId)) continue;
     const proof = {
       headSha: target.headSha, workflowSha: target.trustedWorkflowSha, pullNumber: target.number,
       runId: target.runId, runAttempt: target.runAttempt, jobId: job.id, checkName: name,
     };
-    await github.rest.checks.create({
-      ...context.repo, head_sha: target.headSha, name, external_id: externalId, status: "completed",
+    const input = {
+      ...context.repo, name, external_id: externalId, status: "completed",
       conclusion: ["success", "failure", "cancelled", "timed_out", "skipped", "action_required"].includes(job.conclusion)
         ? job.conclusion : "action_required",
       details_url: `https://github.com/${target.repository}/actions/runs/${target.runId}/job/${job.id}`,
+      completed_at: new Date().toISOString(),
       output: { title: name, summary: `<!-- ${CI_MARKER} ${JSON.stringify(proof)} -->\n` +
         `Trusted dispatch tested ${target.headSha}; source job ${job.id}: ${job.conclusion}.` },
-    });
+    };
+    const pending = existing.find((check) => check.name === name && isActionsCheck(check, target.headSha) &&
+      check.external_id === `${CI_ATTEMPT_MARKER}:${target.runId}:${target.runAttempt}:${name}` &&
+      check.status !== "completed");
+    if (pending) await github.rest.checks.update({ ...input, check_run_id: pending.id });
+    else await github.rest.checks.create({ ...input, head_sha: target.headSha });
   }
 }
 
 module.exports = {
-  CI_CHECKS, CI_MARKER, REVIEW_MARKER, DISPATCH_MARKER, REVIEW_WORKFLOWS, HUMAN_BOUNDARY_APPROVAL_CHECK,
+  CI_CHECKS, CI_MARKER, CI_ATTEMPT_MARKER, REVIEW_MARKER, DISPATCH_MARKER, REVIEW_WORKFLOWS, HUMAN_BOUNDARY_APPROVAL_CHECK,
   MAX_INFRA_ATTEMPTS, RETRY_DELAY_MS, DISPATCH_LEASE_MS, EvidenceError,
   readPages, digest, correlationId, latestCheck, ciFingerprint, ciState, receipt,
   getPolicyFiles, getDeclaredRiskLabel, getRequestedChecks,
   reviewVerdictItems,
   semanticReviewOutcome, trustedReviewSource, infrastructureRetryDecision,
   isBoundReviewRun, latestBoundReviewRun, hasNewerReviewAttempt, markIncompleteReviewAttempt,
+  isBoundCiRun,
   reviewDispatchDecision, reviewEventRelevant, dispatchReservation, collectCiEvidence, collectReviewPacket,
-  prepareReviewEvidence, recordReviewAttempt, publishReviewVerdict, prepareCiDispatch, publishCiChecks,
+  prepareReviewEvidence, recordReviewAttempt, publishReviewVerdict, prepareCiDispatch, beginCiChecks, publishCiChecks,
 };
