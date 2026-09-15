@@ -180,6 +180,109 @@ directly without first forging a claim, which the workflow rejects.
 
 QA and docs-sync are label-triggered with `needs-qa` and `docs-sync` so routine PRs do not fan out into expensive review loops.
 
+## Readiness and intake recovery
+
+The deterministic `factory-readiness.yml` runs daily and on manual dispatch
+from trusted default-branch code with **read-only** permissions. It remains
+useful while paused: it independently reports control-mode ambiguity, every
+open goal's malformed/duplicate fields, native parent and milestone mismatches,
+body and native blocking dependencies, claims, linked open PRs, WIP and consumed
+assignment budget. It never calls selection, claims, or a mutation API.
+
+The same report and dry-run recovery manifest are available locally:
+
+```powershell
+node .github\scripts\agentic-factory-readiness-cli.cjs --repo The-weyland-yutani-corporation/project-krypto-dog --json "$env:TEMP\factory-readiness.json" --markdown "$env:TEMP\factory-readiness.md"
+```
+
+`schemaVersion: 1` separates `hypotheticalReady` from `authorized`; neither
+selects work. `completeness.errors` records inaccessible, malformed, capped or
+incomplete API reads. Unknown capacity is `null`, not a healthy zero. CLI exit
+code `2` means incomplete observation; a complete paused observation can exit
+`0` without implying factory health. The JSON `disposition` and `pullRequests`
+sections are **proposals only** (`apply: false`): existing claims, draft PRs,
+blocked work and topology remain untouched. A wrong native parent is not
+silently repaired from body text, and multiple approved goals are never
+resolved by picking one.
+
+Capacity identifies its canonical lifecycle-label accounting basis separately
+from claim/assignee/open-PR ownership signals. Ownership not represented by
+in-flight labels produces `wip-label-accounting-inconsistent` and requires
+human reconciliation; a zero label count is not advertised as an empty system.
+
+Capabilities include readable branch protection, Actions permissions, and
+stage/default `GH_AW_*_COPILOT` model overrides. The pinned compiler's fallback
+is reported separately from the effective configured model. Runtime support
+and provider availability are independent, unverified dimensions until
+source-addressed observations exist. Optional `--capability-evidence file.json`
+accepts an array of `{model, layer, availability, observedAt, evidenceRefs}`
+records; these remain historical observations, never authorization or a
+timeless claim that a configured model works. No secrets are read or changed.
+
+PM and EM now have one executable `apply_work_item` safe-output path, not
+independent unrestricted create/label operations. Each pass validates the
+current singleton human-approved goal, exact issue-form headings, declared
+scope, path-risk floor, native lineage, milestone, dependencies, claims, open
+PRs and capacity. It accepts only the triggering issue plus the exact original
+body/`updated_at` snapshot. Incomplete, stale, blocked, boundary or
+out-of-scope work fails closed with structured reasons.
+
+When the approved goal's `Allowed scope` names particular source issues,
+the queue also requires that scoped issue number or a derived leaf proven by
+the listed anchor's trusted intake reservation/result receipts. A derived
+leaf's single `Scope source: #N`, source issue, issue number and exact current
+body hash must match those receipts. A copied body marker, a user-forged
+comment or a later body change does not prove scope. PM cannot invent or change
+the source to authorize unrelated work. This is additional narrowing evidence,
+not approval: PM/EM still review the goal's Objective, Allowed scope
+and Explicit non-goals for substantive relevance. A broad path allow-list or
+an agent-created parent link never authorizes novel maintenance. Signal
+fingerprints/evidence are preserved when a proposal needs a derived leaf.
+Signals under an issue-bounded goal without that mechanical provenance remain
+unproven; do not add a marker as a substitute for human goal rollover.
+The signal adapter's versioned `factory-signal-admission:v1` receipt is also
+accepted when the trusted workflow-authored comment on the goal-listed source
+binds its source issue, emitted issue, current goal, fingerprint and exact body
+SHA256 with `phase: native-linked`. Both source and emitted leaf must retain
+their direct native goal relationship. This keeps a complete admitted signal
+on the same implementing issue through PM and EM; no second issue is created.
+An immutable derived leaf that needs revision must be re-planned from its
+approved anchor; PM does not manufacture a second-generation scope proof.
+Unproven goal-prose exceptions, including heartbeat scope without mechanical
+evidence, require human scope clarification rather than a claimed live proof.
+
+GitHub does **not** document conditional issue `PATCH` as compare-and-swap.
+Accordingly intake never rewrites human-owned issue bodies/milestones or
+reparents existing issues. When PM's complete proposal differs, it reserves
+one bounded application and creates at most one immutable planning leaf,
+sets the existing goal milestone at creation, and links that **new** leaf
+directly to the goal (`replace_parent: false`). A leaf already matching the
+proposal advances in place using only its legal lifecycle/risk/priority label
+transition. Selective label operations preserve concurrent human hard stops;
+pre/post reads refuse changed snapshots rather than replacing entire label
+sets. EM verifies the materialized body without rewriting it, then advances
+the leaf to the canonical `ready-for-ai-dev` label.
+
+PM explicitly dispatches `em-planning.lock.yml` with the materialized issue
+number. The existing scheduled queue controller observes final ready leaves.
+Neither path relies on `GITHUB_TOKEN` label events recursively launching the
+next stage. Intake/promotion and queue passes share a serialized concurrency
+group. A durable `factory-intake:v1` reservation plus verified result receipt
+prevents duplicate issue creation and dispatch on replay. These are **not**
+factory claims or approval markers. Unknown delivery, interrupted application
+or conflicting receipts require evidence-based human recovery, never a blind
+retry, fake nonce, automatic unblock or replacement PR.
+
+The operating objective is daily health visibility and at least one substantive,
+verified dev improvement per week **when eligible authorized work exists**:
+v2.1 safety/correctness first, then the standing human-approved
+reliability/testing/maintenance goal. WIP remains one; twelve assignments per
+human renewal is the proposed bounded goal configuration, not an automatic
+budget edit. A human must resolve competing approvals and explicitly roll over
+the goal before maintenance outside the existing goal can be admitted. Goal
+approval, renewal, unpause, hard-stop recovery, boundary merge, architecture
+acceptance, production/live operations, secrets and accounts remain human-only.
+
 ## Required repository settings
 
 The autonomous path is fail-closed unless the repository is configured with:

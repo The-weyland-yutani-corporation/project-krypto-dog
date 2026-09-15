@@ -1,5 +1,7 @@
 "use strict";
 
+const { createHash } = require("node:crypto");
+const trustedIntakeAuthors = require("../agentic-policy.json").identities.trustedAgentAuthors;
 /**
  * Deterministic GitHub queue-controller runtime for the safety-bounded
  * autonomous SDLC factory.
@@ -24,6 +26,7 @@ const {
   RISK_TIER_LABELS,
   isKnownRiskTier,
   normalizeAllowedPathPatterns,
+  BLOCKING_QUEUE_LABELS,
 } = require("./agentic-factory-policy.cjs");
 
 const {
@@ -99,7 +102,9 @@ const PRIORITY_LABEL_TO_PRIORITY = Object.freeze({
 const PRIORITY_LABELS = Object.freeze(Object.keys(PRIORITY_LABEL_TO_PRIORITY));
 
 const CANDIDATE_FORM_HEADINGS = Object.freeze({
+  workType: "Work type",
   parentGoal: "Approved parent goal",
+  problem: "Problem or goal",
   acceptance: "Acceptance criteria",
   validation: "Validation plan",
   scope: "Scope and non-goals",
@@ -107,6 +112,8 @@ const CANDIDATE_FORM_HEADINGS = Object.freeze({
   risk: "Risk tier",
   rollback: "Rollback or safe reversal",
   dependencies: "Dependencies",
+  priority: "Priority",
+  context: "Context, links, or constraints",
 });
 
 const GOAL_FORM_HEADINGS = Object.freeze({
@@ -218,8 +225,25 @@ function getIssueFormSection(sections, heading) {
   return trimmed;
 }
 
+function inspectIssueForm(body, requiredHeadings) {
+  const sections = extractIssueFormSections(body);
+  const headings = typeof body === "string"
+    ? Array.from(body.matchAll(/^###\s+(.+?)\s*$/gm), (match) => match[1].trim())
+    : [];
+  const duplicates = [...new Set(headings.filter((heading, index) => headings.indexOf(heading) !== index))];
+  return {
+    sections,
+    reasons: [
+      ...duplicates.map((heading) => `duplicate-field:${heading}`),
+      ...requiredHeadings
+        .filter((heading) => !duplicates.includes(heading) && getIssueFormSection(sections, heading) === undefined)
+        .map((heading) => `missing-field:${heading}`),
+    ],
+  };
+}
+
 /**
- * Extracts the first `#123`-style issue reference from free text.
+ * Resolves exactly one positive `#123` reference; ambiguity authorizes nothing.
  *
  * @param {unknown} text
  * @returns {number|undefined}
@@ -228,8 +252,9 @@ function parseIssueReference(text) {
   if (typeof text !== "string") {
     return undefined;
   }
-  const match = /#(\d+)/.exec(text);
-  return match ? Number(match[1]) : undefined;
+  const matches = Array.from(text.matchAll(/#(\d+)/g));
+  const number = matches.length === 1 ? Number(matches[0][1]) : undefined;
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
 }
 
 /**
@@ -254,6 +279,9 @@ function parseDependencyReferences(text) {
   }
   const matches = Array.from(trimmed.matchAll(/#(\d+)/g)).map((match) => Number(match[1]));
   if (matches.length === 0) {
+    return null;
+  }
+  if (matches.some((number) => !Number.isSafeInteger(number) || number <= 0)) {
     return null;
   }
   return Array.from(new Set(matches));
@@ -444,6 +472,9 @@ function resolveActiveGoal(goalIssues) {
   }
 
   const issue = issues[0];
+  if (normalizeLabels(issue.labels).some((label) => BLOCKING_QUEUE_LABELS.includes(label))) {
+    return { valid: false, reason: "goal-blocked", goal: null };
+  }
   const milestoneTitle =
     issue.milestone && typeof issue.milestone.title === "string" ? issue.milestone.title.trim() : "";
   if (milestoneTitle === "") {
@@ -526,6 +557,7 @@ function resolveActiveGoal(goalIssues) {
       concurrencyLimit,
       dailyBudgetLimit: parsedBudget === null ? 0 : parsedBudget,
       goalAllowedPaths: goalAllowedPathsResult.patterns,
+      goalScopeAnchors: getGoalScopeAnchors(issue.body),
       fieldWarnings,
     },
   };
@@ -594,6 +626,7 @@ function parseCandidateSections(issue, activeGoalNumber) {
   const scopeText = getIssueFormSection(sections, CANDIDATE_FORM_HEADINGS.scope);
   const allowedPathsRaw = getIssueFormSection(sections, CANDIDATE_FORM_HEADINGS.allowedPaths);
   const allowedPathsResult = normalizeAllowedPathPatterns(allowedPathsRaw);
+  const scopeSources = getScopeSources(issue.body);
 
   return {
     labels,
@@ -601,6 +634,7 @@ function parseCandidateSections(issue, activeGoalNumber) {
       issue.milestone && typeof issue.milestone.title === "string" ? issue.milestone.title : null,
     parentGoalNumber,
     parentGoalApproved,
+    scopeSourceIssueNumber: scopeSources.length === 1 ? scopeSources[0] : undefined,
     dependencyNumbers,
     hasAcceptanceCriteria:
       getIssueFormSection(sections, CANDIDATE_FORM_HEADINGS.acceptance) !== undefined,
@@ -615,6 +649,107 @@ function parseCandidateSections(issue, activeGoalNumber) {
     state: issue.state === "closed" ? "closed" : "open",
     createdAt: issue.created_at,
   };
+}
+
+function getGoalScopeAnchors(goalBody) {
+  const goalSections = extractIssueFormSections(goalBody);
+  const allowedScope = getIssueFormSection(goalSections, GOAL_FORM_HEADINGS.allowedScope) || "";
+  return [...new Set(Array.from(allowedScope.matchAll(/#(\d+)/g), (match) => Number(match[1])))];
+}
+
+function getScopeSources(body) {
+  const context = getIssueFormSection(extractIssueFormSections(body), CANDIDATE_FORM_HEADINGS.context) || "";
+  return Array.from(context.matchAll(/^Scope source:\s*#(\d+)\s*$/gm), (match) => Number(match[1]));
+}
+
+function hasVerifiedIntakeScope(issue, sourceIssue, sourceComments) {
+  if (!Array.isArray(sourceComments)) return false;
+  const markers = Array.from((issue.body || "").matchAll(/<!-- factory-intake-leaf:v1 (.+?) -->/g));
+  if (markers.length !== 1) return false;
+  let leaf;
+  try { leaf = JSON.parse(markers[0][1]); } catch { return false; }
+  if (!Number.isSafeInteger(sourceIssue) || leaf.sourceIssue !== sourceIssue ||
+    !/^[a-f0-9]{64}$/.test(leaf.fingerprint || "")) return false;
+  const bodySha256 = createHash("sha256").update(issue.body).digest("hex");
+  const records = (pattern) => sourceComments.flatMap((comment) => {
+    if (comment.user?.type !== "Bot" || !trustedIntakeAuthors.includes(comment.user?.login)) return [];
+    return Array.from((comment.body || "").matchAll(pattern)).flatMap((match) => {
+      try { return [JSON.parse(match[1])]; } catch { return []; }
+    });
+  });
+  const reservations = records(/<!-- factory-intake:v1 (.+?) -->/g).filter((entry) =>
+    entry.stage === "pm" && entry.sourceIssue === sourceIssue && entry.fingerprint === leaf.fingerprint);
+  const results = records(/<!-- factory-intake-result:v1 (.+?) -->/g).filter((entry) =>
+    entry.stage === "pm" && entry.fingerprint === leaf.fingerprint && entry.issue === issue.number &&
+    entry.completed === true && entry.bodySha256 === bodySha256);
+  return reservations.length === 1 && results.length === 1;
+}
+
+function hasVerifiedSignalScope(issue, sourceIssue, goalNumber, sourceComments, sourceNativeParent) {
+  if (!Number.isSafeInteger(sourceIssue) || !Number.isSafeInteger(goalNumber) || goalNumber <= 0 ||
+    !Number.isSafeInteger(issue.number) || !Array.isArray(sourceComments) || sourceNativeParent !== goalNumber) return false;
+  const fingerprints = Array.from((issue.body || "").matchAll(/<!-- factory-signal:v1 ([a-f0-9]{64}) -->/g));
+  if (fingerprints.length !== 1) return false;
+  const bodySha256 = createHash("sha256").update(issue.body).digest("hex");
+  const admissions = sourceComments.flatMap((comment) => {
+    if (comment.user?.type !== "Bot" || comment.user?.login !== "github-actions[bot]" ||
+      !trustedIntakeAuthors.includes(comment.user.login)) return [];
+    return Array.from((comment.body || "").matchAll(/<!-- factory-signal-admission:v1 (.+?) -->/g)).flatMap((match) => {
+      try { return [JSON.parse(match[1])]; } catch { return []; }
+    });
+  }).filter((entry) =>
+    entry.schemaVersion === 1 && entry.phase === "native-linked" && entry.goalNumber === goalNumber &&
+    entry.sourceIssueNumber === sourceIssue && entry.issueNumber === issue.number &&
+    entry.fingerprint === fingerprints[0][1] && entry.bodySha256 === bodySha256);
+  return admissions.length === 1;
+}
+
+function resolveGoalScopeEvidence(goalBody, issue, proposedBody = issue.body, sourceComments, signalProof = false) {
+  const anchors = getGoalScopeAnchors(goalBody);
+  if (anchors.length === 0) return { reasons: [], anchors, sourceIssue: null, semanticReviewRequired: true };
+  const original = getScopeSources(issue.body);
+  const proposed = getScopeSources(proposedBody);
+  const sourceIssue = anchors.includes(issue.number) ? issue.number : original.length === 1 ? original[0] : null;
+  const reasons = [];
+  if (!anchors.includes(sourceIssue)) reasons.push("goal-prose-scope-unproven");
+  if (!anchors.includes(issue.number) && !hasVerifiedIntakeScope(issue, sourceIssue, sourceComments) && !signalProof) {
+    reasons.push("scope-source-provenance-unverified");
+  }
+  if (original.length > 1 || proposed.length > 1 ||
+    proposed.length === 1 && proposed[0] !== sourceIssue ||
+    !anchors.includes(issue.number) && (proposed.length !== 1 || proposed[0] !== sourceIssue)) {
+    reasons.push("scope-source-ambiguous-or-changed");
+  }
+  return { reasons, anchors, sourceIssue, semanticReviewRequired: true };
+}
+
+async function resolveScopeEvidence({ github, owner, repo, issue, goalIssue, core }) {
+  const anchors = getGoalScopeAnchors(goalIssue.body);
+  const source = getScopeSources(issue.body);
+  let sourceComments;
+  let signalProof = false;
+  if (!anchors.includes(issue.number) && source.length === 1 && anchors.includes(source[0])) {
+    try {
+      const sourceIssue = (await github.rest.issues.get({ owner, repo, issue_number: source[0] })).data;
+      if (sourceIssue.state !== "open") return { reasons: ["scope-source-not-open"] };
+      if (normalizeLabels(sourceIssue.labels).some((label) => BLOCKING_QUEUE_LABELS.includes(label))) {
+        return { reasons: ["scope-source-blocked"] };
+      }
+      sourceComments = await github.paginate(github.rest.issues.listComments, {
+        owner, repo, issue_number: source[0], per_page: 100,
+      });
+      if ((issue.body || "").includes("<!-- factory-signal:v1 ") && !hasVerifiedIntakeScope(issue, source[0], sourceComments)) {
+        const sourceParent = await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}/parent", {
+          owner, repo, issue_number: source[0],
+        });
+        signalProof = hasVerifiedSignalScope(issue, source[0], goalIssue.number, sourceComments, sourceParent.data?.number);
+      }
+    } catch (error) {
+      core.warning(`Scope provenance read failed for #${issue.number}: ${describeError(error)}`);
+      return { reasons: ["scope-provenance-api-incomplete"] };
+    }
+  }
+  return resolveGoalScopeEvidence(goalIssue.body, issue, issue.body, sourceComments, signalProof);
 }
 
 // ---------------------------------------------------------------------------
@@ -696,7 +831,7 @@ async function countBudgetConsumption(github, owner, repo, goalNumber, core) {
       const parentNumber = parseIssueReference(
         getIssueFormSection(sections, CANDIDATE_FORM_HEADINGS.parentGoal),
       );
-      if (!Number.isInteger(parentNumber) || parentNumber !== goalNumber) {
+      if (Number.isInteger(parentNumber) && parentNumber !== goalNumber) {
         continue;
       }
       const claimed = await hasFactoryClaimMarker({
@@ -706,6 +841,10 @@ async function countBudgetConsumption(github, owner, repo, goalNumber, core) {
         issueNumber: issue.number,
         core,
       });
+      if (claimed && !Number.isInteger(parentNumber)) {
+        core.warning(`Claimed issue #${issue.number} has ambiguous goal attribution; assignment budget is unknown (fail closed).`);
+        return Infinity;
+      }
       if (claimed) {
         seen.add(issue.number);
       }
@@ -742,6 +881,24 @@ async function resolveDependencyStates({ github, owner, repo, issueNumber, depen
       return null;
     }
   }
+  if (Number.isSafeInteger(issueNumber)) {
+    try {
+      for (let page = 1; page <= 20; page += 1) {
+        const response = await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by", {
+          owner, repo, issue_number: issueNumber, per_page: 100, page,
+        });
+        if (!Array.isArray(response.data) || response.data.some((dependency) => !["open", "closed"].includes(dependency?.state))) {
+          throw new Error("Malformed native dependency response");
+        }
+        states.push(...response.data.map((dependency) => dependency.state));
+        if (!response.headers?.link?.includes('rel="next"') && response.data.length < 100) return states;
+      }
+      throw new Error("Native dependency pagination limit reached");
+    } catch (error) {
+      core.warning(`Native dependency read failed for #${issueNumber}: ${describeError(error)}; failing closed.`);
+      return null;
+    }
+  }
   return states;
 }
 
@@ -752,12 +909,18 @@ async function resolveDependencyStates({ github, owner, repo, issueNumber, depen
  */
 async function resolveIsLeaf({ github, owner, repo, issueNumber, core }) {
   try {
-    const response = await github.request(
-      "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues",
-      { owner, repo, issue_number: issueNumber },
-    );
-    const subIssues = Array.isArray(response.data) ? response.data : [];
-    return subIssues.every((subIssue) => !subIssue || subIssue.state !== "open");
+    for (let page = 1; page <= 20; page += 1) {
+      const response = await github.request(
+        "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues",
+        { owner, repo, issue_number: issueNumber, per_page: 100, page },
+      );
+      if (!Array.isArray(response.data) || response.data.some((issue) => !["open", "closed"].includes(issue?.state))) {
+        throw new Error("Malformed sub-issues response");
+      }
+      if (response.data.some((issue) => issue.state === "open")) return false;
+      if (!response.headers?.link?.includes('rel="next"') && response.data.length < 100) return true;
+    }
+    throw new Error("Sub-issues pagination limit reached; leaf status is incomplete");
   } catch (error) {
     core.warning(
       `Failed to fetch sub-issues for issue #${issueNumber}: ${describeError(
@@ -854,7 +1017,14 @@ async function resolveHasOpenPullRequest({ github, owner, repo, issueNumber, cor
   let items;
   try {
     const response = await github.rest.search.issuesAndPullRequests({ q: query, per_page: 20 });
-    items = Array.isArray(response.data && response.data.items) ? response.data.items : [];
+    if (
+      !Array.isArray(response.data?.items) ||
+      response.data.incomplete_results === true ||
+      response.data.total_count > response.data.items.length
+    ) {
+      throw new Error("Open pull request search is incomplete");
+    }
+    items = response.data.items;
   } catch (error) {
     core.warning(
       `Open pull request search failed for issue #${issueNumber}: ${describeError(
@@ -926,9 +1096,9 @@ async function findActiveClaim({ github, owner, repo, issueNumber, core }) {
   }
 
   const parsed = parseClaimPayload(latestMarker);
-  if (!parsed.valid) {
+  if (!parsed.valid || parsed.claim.issueNumber !== issueNumber) {
     core.warning(
-      `Malformed claim marker found on issue #${issueNumber} (${parsed.reason}); treating as an active malformed claim (fail closed).`,
+      `Malformed claim marker found on issue #${issueNumber} (${parsed.valid ? "claim-issue-mismatch" : parsed.reason}); treating as an active malformed claim (fail closed).`,
     );
     return {};
   }
@@ -940,7 +1110,7 @@ async function findActiveClaim({ github, owner, repo, issueNumber, core }) {
  * Builds the compact, fail-closed `QueueCandidate` for a single issue,
  * combining the pure section parse with the async enrichment reads.
  */
-async function buildCandidate({ github, owner, repo, issue, activeGoalNumber, core }) {
+async function buildCandidate({ github, owner, repo, issue, activeGoalNumber, goalIssue, core }) {
   const parsed = parseCandidateSections(issue, activeGoalNumber);
 
   const dependencyStates = await resolveDependencyStates({
@@ -992,13 +1162,25 @@ async function buildCandidate({ github, owner, repo, issue, activeGoalNumber, co
   });
 
   const activeClaim = await findActiveClaim({ github, owner, repo, issueNumber: issue.number, core });
+  let scopeProof;
+  try {
+    const parentGoal = goalIssue || (await github.rest.issues.get({ owner, repo, issue_number: activeGoalNumber })).data;
+    scopeProof = await resolveScopeEvidence({ github, owner, repo, issue, goalIssue: parentGoal, core });
+  } catch (error) {
+    core.warning(`Goal scope read failed for #${issue.number}: ${describeError(error)}`);
+    scopeProof = { reasons: ["scope-provenance-api-incomplete"] };
+  }
 
   return {
     number: issue.number,
     labels: parsed.labels,
     milestone: parsed.milestone,
     parentGoalNumber: parsed.parentGoalNumber,
+    nativeParentGoalNumber,
     parentGoalApproved: parsed.parentGoalApproved && nativeParentGoalApproved,
+    scopeSourceIssueNumber: parsed.scopeSourceIssueNumber,
+    scopeProofReasons: scopeProof.reasons,
+    scopeSourceVerified: scopeProof.reasons.length === 0,
     dependencyStates,
     state: parsed.state,
     isLeaf,
@@ -1446,6 +1628,7 @@ async function runFactoryQueueController({ github, context, core, config = {} })
     currentBudgetUsed,
     maxGoalRiskTier: goalResult.goal.maxGoalRiskTier,
     goalAllowedPaths: goalResult.goal.goalAllowedPaths,
+    goalScopeAnchors: goalResult.goal.goalScopeAnchors,
     now,
   };
 
@@ -1458,6 +1641,7 @@ async function runFactoryQueueController({ github, context, core, config = {} })
         repo,
         issue,
         activeGoalNumber: goalResult.goal.number,
+        goalIssue: goalIssues[0],
         core,
       }),
     );
@@ -1642,8 +1826,12 @@ module.exports = {
   CLAIM_MARKER_PATTERN,
   PRIORITY_LABELS,
   PRIORITY_LABEL_TO_PRIORITY,
+  CANDIDATE_FORM_HEADINGS,
+  GOAL_FORM_HEADINGS,
+  GOAL_REQUIRED_NARRATIVE_HEADINGS,
   // Pure parsing helpers.
   extractIssueFormSections,
+  inspectIssueForm,
   getIssueFormSection,
   parseIssueReference,
   parseDependencyReferences,
@@ -1656,5 +1844,19 @@ module.exports = {
   determineFactoryMode,
   resolveActiveGoal,
   parseCandidateSections,
+  resolveGoalScopeEvidence,
+  getGoalScopeAnchors,
+  resolveScopeEvidence,
+  hasVerifiedIntakeScope,
+  hasVerifiedSignalScope,
   buildClaimCommentBody,
+  countInFlight,
+  countBudgetConsumption,
+  resolveDependencyStates,
+  resolveIsLeaf,
+  resolveNativeParentGoalNumber,
+  resolveLatestLabelApplicationActorType,
+  resolveHasOpenPullRequest,
+  findActiveClaim,
+  buildCandidate,
 };

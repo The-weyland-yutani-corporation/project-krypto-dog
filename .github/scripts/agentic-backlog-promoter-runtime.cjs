@@ -7,7 +7,7 @@
  * Reads the factory control mode and the single approved goal, evaluates every
  * open `agentic-factory` backlog issue with the pure core
  * (`agentic-backlog-promoter.cjs`), and — only in `factory-mode:active` —
- * applies `factory:ready` (plus the human-declared risk label and the goal's
+ * applies `ready-for-ai-dev` (plus the human-declared risk label and the goal's
  * milestone) so the existing queue controller can select the issue.
  *
  * This workflow never executes issue-authored code. Issue and comment content
@@ -33,10 +33,14 @@ const {
   findLatestLabelApplicationEvent,
   determineFactoryMode,
   resolveActiveGoal,
-  parseCandidateSections,
+  countInFlight,
+  countBudgetConsumption,
 } = require("./agentic-queue-runtime.cjs");
 
 const { planPromotions } = require("./agentic-backlog-promoter.cjs");
+const queueRuntime = require("./agentic-queue-runtime.cjs");
+const { readIntakeCandidate, loadIntakeAuthority, applySelectiveLabels } = require("./agentic-intake-runtime.cjs");
+const { diagnoseGoalIssue } = require("./agentic-factory-readiness.cjs");
 
 const RISK_HEADING = "Risk tier";
 const ACTIVE_MODE_LABEL = "factory-mode:active";
@@ -97,21 +101,7 @@ async function resolveLatestLabelApplicationActorType({ github, owner, repo, iss
 
 /** Every open sub-issue makes the candidate a non-leaf. Fails closed. */
 async function resolveIsLeaf({ github, owner, repo, issueNumber, core }) {
-  try {
-    const response = await github.request(
-      "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues",
-      { owner, repo, issue_number: issueNumber },
-    );
-    const subIssues = Array.isArray(response.data) ? response.data : [];
-    return subIssues.every((subIssue) => !subIssue || subIssue.state !== "open");
-  } catch (error) {
-    core.warning(
-      `Failed to fetch sub-issues for issue #${issueNumber}: ${describeError(
-        error,
-      )}; treating as non-leaf (fail closed).`,
-    );
-    return false;
-  }
+  return queueRuntime.resolveIsLeaf({ github, owner, repo, issueNumber, core });
 }
 
 /**
@@ -120,145 +110,64 @@ async function resolveIsLeaf({ github, owner, repo, issueNumber, core }) {
  * is what corroborates it.
  */
 async function resolveNativeParentGoalNumber({ github, owner, repo, issueNumber, core }) {
-  try {
-    const response = await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}", {
-      owner,
-      repo,
-      issue_number: issueNumber,
-    });
-    const parent = response.data && response.data.sub_issue_parent;
-    return parent && Number.isInteger(parent.number) ? parent.number : undefined;
-  } catch (error) {
-    core.warning(
-      `Failed to resolve the native parent for issue #${issueNumber}: ${describeError(error)} (fail closed).`,
-    );
-    return undefined;
-  }
+  return queueRuntime.resolveNativeParentGoalNumber({ github, owner, repo, issueNumber, core });
 }
 
 async function resolveDependencyStates({ github, owner, repo, dependencyNumbers, core }) {
-  const numbers = Array.isArray(dependencyNumbers) ? dependencyNumbers : [];
-  const states = [];
-  for (const number of numbers) {
-    try {
-      const response = await github.rest.issues.get({ owner, repo, issue_number: number });
-      states.push(response.data.state === "closed" ? "closed" : "open");
-    } catch (error) {
-      core.warning(
-        `Failed to read dependency #${number}: ${describeError(error)}; treating as open (fail closed).`,
-      );
-      states.push("open");
-    }
-  }
-  return states;
+  return queueRuntime.resolveDependencyStates({ github, owner, repo, dependencyNumbers, core });
 }
 
 /**
  * Builds the promoter's view of one backlog issue.
  */
 async function buildCandidate({ github, owner, repo, issue, activeGoalNumber, core }) {
-  const parsed = parseCandidateSections(issue, activeGoalNumber);
+  const parsed = await readIntakeCandidate({ github, context: { repo: { owner, repo } }, core, issue, activeGoalNumber });
   const sections = extractIssueFormSections(issue.body);
   const declaredRiskTier = getIssueFormSection(sections, RISK_HEADING);
-
-  const dependencyStates = await resolveDependencyStates({
-    github,
-    owner,
-    repo,
-    dependencyNumbers: parsed.dependencyNumbers,
-    core,
-  });
-  const isLeaf = await resolveIsLeaf({ github, owner, repo, issueNumber: issue.number, core });
-  const nativeParentGoalNumber = await resolveNativeParentGoalNumber({
-    github,
-    owner,
-    repo,
-    issueNumber: issue.number,
-    core,
-  });
-
-  // Body text and the native sub-issue parent must agree. When the native
-  // parent is missing or disagrees, the parent goal is treated as unresolved
-  // so the candidate lands in the report instead of being promoted.
   const bodyParentGoalNumber = parsed.parentGoalNumber;
   const parentGoalNumber =
-    Number.isInteger(bodyParentGoalNumber) && nativeParentGoalNumber === bodyParentGoalNumber
+    Number.isInteger(bodyParentGoalNumber) && parsed.nativeParentGoalNumber === bodyParentGoalNumber
       ? bodyParentGoalNumber
       : undefined;
-
-  const assignees = Array.isArray(issue.assignees)
-    ? issue.assignees.map((assignee) => assignee && assignee.login).filter(Boolean)
-    : [];
-
   return {
+    ...parsed,
     number: issue.number,
     title: typeof issue.title === "string" ? issue.title : "",
-    labels: parsed.labels,
-    milestone: parsed.milestone,
     parentGoalNumber,
-    nativeParentGoalNumber,
     bodyParentGoalNumber,
     declaredRiskTier,
-    allowedPaths: parsed.allowedPaths,
-    hasAcceptanceCriteria: parsed.hasAcceptanceCriteria,
-    hasValidationPlan: parsed.hasValidationPlan,
-    hasScopeDefinition: parsed.hasScopeDefinition,
-    hasRollbackPlan: parsed.hasRollbackPlan,
-    dependencyStates,
-    state: parsed.state,
-    isLeaf,
-    assignees,
-    hasOpenSession: assignees.length > 0,
-    createdAt: parsed.createdAt,
+    issue,
   };
 }
 
 /**
  * Applies the promotion plan for one issue: milestone binding, the declared
- * risk label, and `factory:ready`.
+ * risk label, and `ready-for-ai-dev`.
  */
-async function applyPromotion({ github, owner, repo, promotion, goalMilestoneNumber, core }) {
+async function applyPromotion({ github, owner, repo, promotion, goalMilestoneNumber, core, candidate, expectedConfig }) {
   const issueNumber = promotion.number;
-
-  if (promotion.plan.milestone && Number.isInteger(goalMilestoneNumber)) {
-    try {
-      await github.rest.issues.update({
-        owner,
-        repo,
-        issue_number: issueNumber,
-        milestone: goalMilestoneNumber,
-      });
-    } catch (error) {
-      core.warning(`Failed to set the milestone on issue #${issueNumber}: ${describeError(error)}.`);
-      return { ok: false, reason: "set-milestone-failed" };
-    }
-  }
-
-  // Remove the superseded lifecycle label first so the issue never
-  // transiently carries two lifecycle labels.
-  for (const label of promotion.plan.removeLabels || []) {
-    try {
-      await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: label });
-    } catch (error) {
-      if (!error || error.status !== 404) {
-        core.warning(
-          `Failed to remove lifecycle label "${label}" from issue #${issueNumber}: ${describeError(error)}.`,
-        );
-        return { ok: false, reason: "remove-lifecycle-label-failed" };
-      }
-    }
-  }
-
   try {
-    await github.rest.issues.addLabels({
-      owner,
-      repo,
-      issue_number: issueNumber,
-      labels: promotion.plan.addLabels,
-    });
+    const authority = await loadIntakeAuthority({ github, context: { repo: { owner, repo } }, core, now: expectedConfig.now });
+    if (!authority.ok || authority.mode !== "active" ||
+      authority.config.goalNumber !== expectedConfig.goalNumber) return { ok: false, reason: "authorization-changed" };
+    const fresh = await github.rest.issues.get({ owner, repo, issue_number: issueNumber });
+    if (fresh.data.updated_at !== candidate.issue.updated_at || fresh.data.body !== candidate.issue.body ||
+      JSON.stringify(fresh.data.labels) !== JSON.stringify(candidate.issue.labels)) return { ok: false, reason: "concurrent-issue-change" };
+    const refreshed = await buildCandidate({ github, owner, repo, issue: fresh.data, activeGoalNumber: authority.config.goalNumber, core });
+    const { evaluatePromotion } = require("./agentic-backlog-promoter.cjs");
+    const verifiedPlan = evaluatePromotion(refreshed, authority.config);
+    if (!verifiedPlan.promotable) return { ok: false, reason: verifiedPlan.reasons.join(",") };
+    // GitHub issue PATCH has no documented CAS. Do not overwrite a human's
+    // milestone; immutable PM intake can materialize a new, correctly bound leaf.
+    if (verifiedPlan.plan.milestone) return { ok: false, reason: "milestone-binding-requires-intake" };
+    const labels = [...new Set(refreshed.labels.filter((label) => !verifiedPlan.plan.removeLabels.includes(label)).concat(verifiedPlan.plan.addLabels))];
+    await applySelectiveLabels({ github, owner, repo, issue: fresh.data, labels });
+    const persisted = await github.rest.issues.get({ owner, repo, issue_number: issueNumber });
+    if (JSON.stringify(normalizeLabels(persisted.data.labels).sort()) !== JSON.stringify(labels.sort()) ||
+      persisted.data.milestone?.number !== goalMilestoneNumber) return { ok: false, reason: "promotion-verification-failed" };
   } catch (error) {
-    core.warning(`Failed to label issue #${issueNumber}: ${describeError(error)}.`);
-    return { ok: false, reason: "add-labels-failed" };
+    core.warning(`Failed to apply promotion for #${issueNumber}: ${describeError(error)}.`);
+    return { ok: false, reason: error.status === 403 ? "promotion-permission-denied" : "promotion-write-failed" };
   }
 
   return { ok: true };
@@ -311,13 +220,13 @@ function renderReport({ mode, controlReason, goalReason, goal, plan, candidatesB
 
   const scopeBlocked = plan.rejections.filter((rejection) => rejection.bucket === "scope-blocked");
   lines.push("");
-  lines.push("## Blocked only by goal scope");
+  lines.push("## Goal-scope blockers (additional blockers may also apply)");
   lines.push("");
   if (scopeBlocked.length === 0) {
     lines.push("_None._");
   } else {
     lines.push(
-      "These issues are otherwise ready. Widening the approved goal (allowed paths, risk ceiling, or milestone) is a **human decision** — this workflow never widens it.",
+      "Review every listed reason; these issues are not necessarily otherwise ready. Re-scoping work or changing an approved goal is a **human decision** — this workflow never widens it.",
     );
     lines.push("");
     lines.push("| Issue | Blocking reason | Requested scope |");
@@ -461,6 +370,12 @@ async function runBacklogPromoter({ github, context, core, config = {} }) {
   }
 
   const goalIssue = goalIssues[0];
+  const goalDiagnostics = diagnoseGoalIssue(goalIssue);
+  if (goalDiagnostics.reasons.length) {
+    result.goalReason = goalDiagnostics.reasons.join(",");
+    core.warning(`Goal fields are incomplete: ${result.goalReason}`);
+    return result;
+  }
   const goalMilestoneNumber =
     goalIssue.milestone && Number.isInteger(goalIssue.milestone.number)
       ? goalIssue.milestone.number
@@ -485,15 +400,24 @@ async function runBacklogPromoter({ github, context, core, config = {} }) {
     );
   }
 
-  const plan = planPromotions(candidates, {
+  const promoterConfig = {
     factoryMode: controlResult.mode,
     goalApproved: true,
     goalNumber: goalResult.goal.number,
     goalMilestone: goalResult.goal.milestone,
     goalAllowedPaths: goalResult.goal.goalAllowedPaths,
+    goalScopeAnchors: goalResult.goal.goalScopeAnchors,
     maxGoalRiskTier: goalResult.goal.maxGoalRiskTier,
+    concurrencyLimit: goalResult.goal.concurrencyLimit,
+    currentInFlightCount: await countInFlight(github, owner, repo),
+    dailyBudgetLimit: goalResult.goal.dailyBudgetLimit,
+    currentBudgetUsed: await countBudgetConsumption(github, owner, repo, goalResult.goal.number, core),
+    now: config.now || new Date().toISOString(),
     maxPromotions,
-  });
+  };
+  const plan = planPromotions(candidates, promoterConfig);
+  // A manual dry-run must never render planned labels as already applied.
+  plan.advisory ||= dryRun;
   result.plan = plan;
 
   const candidatesByNumber = new Map(candidates.map((candidate) => [candidate.number, candidate]));
@@ -510,6 +434,8 @@ async function runBacklogPromoter({ github, context, core, config = {} }) {
         promotion,
         goalMilestoneNumber,
         core,
+        candidate: candidatesByNumber.get(promotion.number),
+        expectedConfig: promoterConfig,
       });
       applied.set(promotion.number, outcome);
       if (outcome.ok) {

@@ -8,6 +8,11 @@ interface PromoterConfig {
   goalAllowedPaths: string[];
   maxGoalRiskTier: string;
   maxPromotions: number;
+  concurrencyLimit: number;
+  currentInFlightCount: number;
+  dailyBudgetLimit: number;
+  currentBudgetUsed: number;
+  now: string;
 }
 
 interface PromoterModule {
@@ -36,6 +41,11 @@ function baseConfig(overrides: Partial<PromoterConfig> = {}): PromoterConfig {
     goalAllowedPaths: ["src/lib/**", "tests/**"],
     maxGoalRiskTier: "risk:sensitive",
     maxPromotions: 5,
+    concurrencyLimit: 1,
+    currentInFlightCount: 0,
+    dailyBudgetLimit: 12,
+    currentBudgetUsed: 0,
+    now: "2026-09-15T00:00:00.000Z",
     ...overrides,
   };
 }

@@ -272,6 +272,12 @@ function evaluateEligibility(candidate, config) {
   if (!config.goalApproved || candidate.parentGoalApproved !== true) {
     reasons.push("goal-not-approved");
   }
+  if (Array.isArray(config.goalScopeAnchors) && config.goalScopeAnchors.length > 0 &&
+    !config.goalScopeAnchors.includes(candidate.number) &&
+    (!config.goalScopeAnchors.includes(candidate.scopeSourceIssueNumber) || candidate.scopeSourceVerified !== true)) {
+    reasons.push("goal-prose-scope-unproven");
+  }
+  if (Array.isArray(candidate.scopeProofReasons)) reasons.push(...candidate.scopeProofReasons);
   if (
     !areAllowedPathPatternsWithin(
       candidate.allowedPaths,

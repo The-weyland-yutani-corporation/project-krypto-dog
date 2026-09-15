@@ -26,7 +26,7 @@ body:
     id: parent_goal
     attributes:
       label: Approved parent goal
-      description: Link the human-approved factory goal that authorizes this scope.
+      description: Exactly one local "#number" for the currently human-approved goal. PM intake verifies native lineage and never chooses between multiple approved goals.
       placeholder: "#123"
     validations:
       required: true
@@ -109,6 +109,6 @@ body:
     id: context
     attributes:
       label: Context, links, or constraints
-      description: Include relevant specs, files, screenshots, risks, or non-goals.
+      description: Include source evidence, hypothesis, baseline and verification oracle when proposing an improvement. PM preserves this source issue and may materialize one immutable, milestone-bound native goal child; it never overwrites human-owned fields.
     validations:
       required: false

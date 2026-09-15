@@ -1,0 +1,49 @@
+name: Factory Readiness
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "23 6 * * *"
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: factory-readiness
+  cancel-in-progress: false
+
+jobs:
+  readiness:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/agentic-policy.json
+      - name: Read readiness without selection or mutation
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const { collectReadinessSnapshot, buildFactoryReadinessReport, renderReadinessMarkdown } =
+              require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-factory-readiness.cjs"));
+            const report = buildFactoryReadinessReport(await collectReadinessSnapshot({ github, context }));
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, "factory-readiness.json"), JSON.stringify(report, null, 2));
+            await core.summary.addRaw(renderReadinessMarkdown(report)).write();
+            if (!report.completeness.complete) core.setFailed("Readiness observation incomplete; inspect the structured API errors.");
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: factory-readiness
+          path: ${{ runner.temp }}/factory-readiness.json
+          if-no-files-found: error
+          retention-days: 14

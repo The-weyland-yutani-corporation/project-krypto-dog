@@ -12,7 +12,7 @@
  *
  * This module closes that gap without widening any authority boundary. It
  * decides, for each backlog issue, whether the issue may be labelled
- * `factory:ready` so the existing queue controller can see it.
+ * `ready-for-ai-dev` so the existing queue controller can see it.
  *
  * Authority rules (these are deliberate and must not be relaxed):
  *
@@ -45,6 +45,7 @@ const {
   isLegalLifecycleTransition,
   areAllowedPathPatternsWithin,
 } = require("./agentic-factory-policy.cjs");
+const { evaluateEligibility } = require("./agentic-queue-controller.cjs");
 
 /**
  * Readiness fields a candidate issue must have authored before it can be
@@ -281,6 +282,20 @@ function evaluatePromotion(candidate, config) {
     reasons.push("already-has-open-session");
   }
 
+  // Validate the actual post-promotion shape with the queue's own gates,
+  // including claims, WIP and consumed budget, before proposing any writes.
+  const projectedLabels = labels.filter((label) => !lifecycleToRemove.includes(label));
+  if (!projectedLabels.includes(QUEUE_READY_LABEL)) projectedLabels.push(QUEUE_READY_LABEL);
+  if (existingRiskLabels.length === 0 && effectiveRiskTier) projectedLabels.push(effectiveRiskTier);
+  const queueReasons = evaluateEligibility({
+    ...candidate,
+    labels: projectedLabels,
+    milestone: milestoneToSet || candidate.milestone,
+    parentGoalApproved: config.goalApproved === true && candidate.parentGoalNumber === config.goalNumber,
+    hasRiskAssessment: effectiveRiskTier !== null,
+  }, { ...config, allowedMilestones: goalMilestone ? [goalMilestone] : [] });
+  reasons.push(...queueReasons.filter((reason) => !reasons.includes(reason)));
+
   if (reasons.length > 0) {
     return {
       number: candidate.number,
@@ -339,6 +354,8 @@ function classifyBucket(reasons) {
         "already-assigned",
         "already-has-open-pull-request",
         "already-has-open-session",
+        "active-claim",
+        "stale-claim-requires-recovery",
       ].includes(reason),
     )
   ) {
