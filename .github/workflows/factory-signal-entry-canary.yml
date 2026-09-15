@@ -1,0 +1,25 @@
+name: Factory Signal Entry Canary (offline)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signal-entry:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Exercise real intake against offline GitHub fixtures, never a pre-ready issue
+        run: npm test -- --runInBand tests/agentic-sdlc/signal-entry.integration.test.ts tests/agentic-sdlc/factory-watchdog.test.ts

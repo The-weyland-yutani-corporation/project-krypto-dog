@@ -34,6 +34,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
+const reads = require("./factory-read.cjs");
+const reports = require("./factory-report.cjs");
+const { enrichUsageRows } = require("./factory-usage.cjs");
 
 const SNAPSHOT_SCHEMA_VERSION = 1;
 
@@ -456,7 +459,7 @@ function normalizeStatus(statusJson) {
             stateValue === "active" ||
             stateValue === "enabled"
            ? true
-           : statusValue === "disabled" || stateValue === "disabled"
+           : statusValue === "disabled" || (stateValue && stateValue.startsWith("disabled"))
             ? false
             : null,
     };
@@ -466,18 +469,11 @@ function normalizeStatus(statusJson) {
 
 /** Derive a stable workflow id from a heterogeneous status/logs row. */
 function deriveWorkflowId(row) {
-  const candidate =
-    row.id ||
-    row.workflowId ||
-    row.workflow_id ||
-    row.workflow ||
-    row.workflowPath ||
-    row.workflow_path ||
-    row.workflowName ||
-    row.workflow_name ||
-    row.name ||
-    row.file ||
-    row.path;
+  const candidate = [
+    row.workflowPath, row.workflow_path, row.path, row.workflow,
+    row.workflowId, row.workflow_id, row.id, row.workflowName,
+    row.workflow_name, row.name, row.file,
+  ].find((value) => typeof value === "string" && value.trim() !== "");
   if (typeof candidate !== "string" || candidate.trim() === "") return null;
   let value = candidate.trim();
   const slash = value.lastIndexOf("/");
@@ -501,13 +497,17 @@ function deriveWorkflowId(row) {
  *   - `tokens` is `null` when missing OR reported only as an unavailable `0`
  *     (an all-zero, no-signal token field is treated as "unavailable", never a
  *     real zero).
- *   - safe-output outcome and correction metrics are always `null` here: no
- *     authoritative source is wired yet, so we must not invent `0`.
+ *   - Partial metric coverage exposes observed totals separately; it never
+ *     presents a sampled cost as the complete window's cost.
  */
 function normalizeUsage(logsJson, knownIds, window, options) {
   const opts = options || {};
   const failing = new Set(opts.failingConclusions || DEFAULT_FAILING_CONCLUSIONS);
-  const runs = extractRunRows(logsJson);
+  const runs = extractRunRows(logsJson).slice().sort((a, b) =>
+    Date.parse(a.createdAt || a.created_at || a.startedAt || a.timestamp || "") -
+    Date.parse(b.createdAt || b.created_at || b.startedAt || b.timestamp || ""),
+  );
+  const seen = new Set();
 
   const acc = {};
   for (const id of knownIds) acc[id] = freshUsage();
@@ -516,9 +516,21 @@ function normalizeUsage(logsJson, knownIds, window, options) {
     const id = deriveWorkflowId(run);
     if (!id || !(id in acc)) continue;
     const when = run.createdAt || run.created_at || run.startedAt || run.timestamp;
-    if (window && when && !isWithinWindow(when, window)) continue;
     const entry = acc[id];
+    if (window && (!when || Number.isNaN(Date.parse(when)))) {
+      entry._invalidTimestamps += 1;
+      continue;
+    }
+    if (window && !isWithinWindow(when, window)) continue;
+    const runId = run.databaseId || run.run_id || (typeof run.id === "number" ? run.id : null);
+    const runKey = runId ? `${id}:${runId}:${run.run_attempt || 1}` : null;
+    if (runKey && seen.has(runKey)) continue;
+    if (runKey) seen.add(runKey);
     entry.runs += 1;
+    if (runId) entry._evidence.push({
+      runId, sha: run.head_sha || null, path: run.path || run.workflow_path || null,
+      conclusion: normalizeConclusion(run), createdAt: when, attempt: run.run_attempt || 1,
+    });
 
     const conclusion = normalizeConclusion(run);
     if (conclusion) {
@@ -535,6 +547,7 @@ function normalizeUsage(logsJson, knownIds, window, options) {
     );
     if (duration != null) {
       entry._durationSeconds = (entry._durationSeconds || 0) + duration;
+      entry._durationRows += 1;
     }
 
     const credits = numericOrNull(
@@ -546,6 +559,7 @@ function normalizeUsage(logsJson, knownIds, window, options) {
     );
     if (credits != null) {
       entry._aiCredits = (entry._aiCredits || 0) + credits;
+      entry._costRows += 1;
       if (entry.maxRunAiCredits == null || credits > entry.maxRunAiCredits) {
         entry.maxRunAiCredits = credits;
       }
@@ -556,6 +570,18 @@ function normalizeUsage(logsJson, knownIds, window, options) {
     );
     if (tokens != null && tokens > 0) {
       entry._tokens = (entry._tokens || 0) + tokens;
+      entry._tokenRows += 1;
+    }
+    for (const [field, keys] of [
+      ["safeOutputOutcomes", ["succeeded", "failed", "noop"]],
+      ["selfHeal", ["repairCommits", "exhausted"]],
+    ]) {
+      const value = run[field];
+      if (value && keys.every((key) => Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+        if (!entry[field]) entry[field] = Object.fromEntries(keys.map((key) => [key, 0]));
+        for (const key of keys) entry[field][key] += value[key];
+        entry._metricRows[field] = (entry._metricRows[field] || 0) + 1;
+      }
     }
   }
 
@@ -564,16 +590,21 @@ function normalizeUsage(logsJson, knownIds, window, options) {
   for (const id of knownIds) {
     const e = acc[id];
     out[id] = {
-      runs: e.runs,
+      runs: e._invalidTimestamps ? null : e.runs,
+      observedRuns: e.runs,
+      invalidTimestampRuns: e._invalidTimestamps,
       conclusions: e.conclusions,
       repeatedFailures: countRepeatedFailures(e._sequence),
-      durationSecondsTotal: e._durationSeconds != null ? e._durationSeconds : null,
-      aiCredits: e._aiCredits != null ? e._aiCredits : null,
+      durationSecondsTotal: e._durationRows === e.runs ? e._durationSeconds : null,
+      aiCredits: e._costRows === e.runs ? e._aiCredits : null,
+      observedAiCredits: e._aiCredits,
       maxRunAiCredits: e.maxRunAiCredits,
-      tokens: e._tokens != null ? e._tokens : null,
-      safeOutputOutcomes: null,
+      tokens: e._tokenRows === e.runs ? e._tokens : null,
+      safeOutputOutcomes: e._metricRows.safeOutputOutcomes === e.runs ? e.safeOutputOutcomes : null,
       corrections: null,
-      selfHeal: null,
+      selfHeal: e._metricRows.selfHeal === e.runs ? e.selfHeal : null,
+      metricCoverage: { costRuns: e._costRows, tokenRuns: e._tokenRows, ...e._metricRows },
+      evidence: e._evidence,
     };
   }
   return out;
@@ -588,6 +619,14 @@ function freshUsage() {
     _durationSeconds: null,
     _aiCredits: null,
     _tokens: null,
+    _invalidTimestamps: 0,
+    _durationRows: 0,
+    _costRows: 0,
+    _tokenRows: 0,
+    _metricRows: {},
+    safeOutputOutcomes: null,
+    selfHeal: null,
+    _evidence: [],
   };
 }
 
@@ -669,6 +708,10 @@ function normalizeIssues(issues, window, policy, nowInput) {
   let openedInWindow = 0;
   let closedInWindow = 0;
   let openActionableOpportunities = 0;
+  let reportOpenedInWindow = 0;
+  let reportClosedInWindow = 0;
+  let workOpenedInWindow = 0;
+  let workClosedInWindow = 0;
   const staleWip = [];
   const blocked = [];
 
@@ -683,6 +726,16 @@ function normalizeIssues(issues, window, policy, nowInput) {
 
     if (createdAt && isWithinWindow(createdAt, window)) openedInWindow += 1;
     if (closedAt && isWithinWindow(closedAt, window)) closedInWindow += 1;
+    const isReport = labels.includes("report") || labels.includes("factory-control") ||
+      labels.includes("factory:goal");
+    if (createdAt && isWithinWindow(createdAt, window)) {
+      if (isReport) reportOpenedInWindow += 1;
+      else workOpenedInWindow += 1;
+    }
+    if (closedAt && isWithinWindow(closedAt, window)) {
+      if (isReport) reportClosedInWindow += 1;
+      else workClosedInWindow += 1;
+    }
 
     if (state === "open") {
       const isOpportunity = labels.includes("opportunity");
@@ -713,6 +766,10 @@ function normalizeIssues(issues, window, policy, nowInput) {
     openedInWindow,
     closedInWindow,
     netOpened: openedInWindow - closedInWindow,
+    reportOpenedInWindow,
+    reportClosedInWindow,
+    workOpenedInWindow,
+    workClosedInWindow,
     staleWip,
     blocked,
   };
@@ -768,12 +825,14 @@ function normalizeCheckState(pr) {
     return rollup.trim().toLowerCase();
   }
   if (Array.isArray(rollup)) {
+    if (rollup.length === 0) return "unknown";
     const conclusions = rollup
       .map((c) => (c && typeof c.conclusion === "string" ? c.conclusion.toLowerCase() : null))
       .filter(Boolean);
     if (conclusions.some((c) => DEFAULT_FAILING_CONCLUSIONS.includes(c))) return "failing";
-    if (conclusions.length === 0) return "pending";
-    return "passing";
+    if (rollup.some((check) => check.status && check.status.toLowerCase() !== "completed")) return "pending";
+    return conclusions.length === rollup.length && conclusions.every((conclusion) => conclusion === "success")
+      ? "passing" : "pending";
   }
   return "unknown";
 }
@@ -784,14 +843,20 @@ function normalizeCheckState(pr) {
 
 /**
  * Build the deterministic "material view" — the subset of snapshot state whose
- * change should trigger a new report. Volatile fields (generation timestamp,
- * exact window bounds, exact durations/credits) are deliberately excluded so an
- * otherwise-identical run produces an identical hash and thus a noop.
+ * change should trigger a new report. Only collection timestamps are excluded;
+ * closed windows, gross churn, exact cost and incomplete sources are material.
  */
 function buildMaterialView(snapshot) {
   return {
     schemaVersion: snapshot.schemaVersion,
     mode: snapshot.mode,
+    window: snapshot.window || null,
+    collection: snapshot.collection || null,
+    sources: Object.fromEntries(Object.entries(snapshot.sources || {}).map(([key, value]) => [
+      key, { ...value, observedAt: null },
+    ])),
+    factory: snapshot.factory || null,
+    outcomes: snapshot.outcomes || null,
     workflows: (snapshot.workflows || [])
       .map((w) => ({
         id: w.id,
@@ -802,25 +867,18 @@ function buildMaterialView(snapshot) {
         runs: w.usage ? w.usage.runs : null,
         conclusions: w.usage ? w.usage.conclusions : null,
         repeatedFailures: w.usage ? w.usage.repeatedFailures : null,
+        usage: w.usage || null,
       }))
       .sort((a, b) => a.id.localeCompare(b.id, "en")),
-    issues: snapshot.issues
-      ? {
-          wipCap: snapshot.issues.wipCap,
-          openActionableOpportunities: snapshot.issues.openActionableOpportunities,
-          netOpened: snapshot.issues.netOpened,
-          staleWip: snapshot.issues.staleWip,
-          blocked: snapshot.issues.blocked,
-        }
-      : null,
+    issues: snapshot.issues || null,
     pullRequests: snapshot.pullRequests || null,
     hashes: snapshot.hashes || null,
     thresholds: (snapshot.thresholds && snapshot.thresholds.breaches
       ? snapshot.thresholds.breaches
       : []
     )
-      .map((b) => b.id)
-      .sort((a, b) => a.localeCompare(b, "en")),
+      .slice()
+      .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b), "en")),
   };
 }
 
@@ -850,7 +908,7 @@ function readPublishedHash(issues) {
     .map((issue) => {
       const body = issue && typeof issue.body === "string" ? issue.body : "";
       const m = body.match(STATE_HASH_MARKER_RE);
-      const createdAt = issue && (issue.createdAt || issue.created_at);
+      const createdAt = issue && (issue.updatedAt || issue.updated_at || issue.createdAt || issue.created_at);
       return m ? { hash: m[1].toLowerCase(), createdAt } : null;
     })
     .filter(Boolean);
@@ -1040,7 +1098,14 @@ function evaluateThresholds(snapshot, policy, watermarks, config) {
     ? wm.missingTelemetryStreak
     : 0;
   const telemetryMissingNow = requiredTelemetryMissing(snapshot);
-  const projectedStreak = telemetryMissingNow ? missingStreak + 1 : 0;
+  const windowKey = snapshot.window ? `${snapshot.window.start}/${snapshot.window.end}` : null;
+  const sameWindow = windowKey !== null && wm.lastTelemetryWindow === windowKey;
+  const previousEnd = wm.lastTelemetryWindow?.split("/")[1];
+  const consecutive = previousEnd && snapshot.window &&
+    Date.parse(snapshot.window.end) - Date.parse(previousEnd) === snapshot.window.days * 86400000;
+  const projectedStreak = telemetryMissingNow
+    ? sameWindow ? missingStreak : (consecutive ? missingStreak : 0) + 1
+    : 0;
   if (projectedStreak >= 2) {
     breaches.push({
       id: "telemetry_missing_two_periods",
@@ -1081,7 +1146,7 @@ function evaluateThresholds(snapshot, policy, watermarks, config) {
   return {
     evaluated: evaluated.sort((a, b) => a.localeCompare(b, "en")),
     breaches: dedupeBreaches(breaches),
-    watermarks: { missingTelemetryStreak: projectedStreak },
+    watermarks: { missingTelemetryStreak: projectedStreak, lastTelemetryWindow: windowKey },
   };
 }
 
@@ -1101,7 +1166,7 @@ function countFailing(conclusions, failing) {
  */
 function requiredTelemetryMissing(snapshot) {
   for (const w of snapshot.workflows || []) {
-    if (w.usage && w.usage.runs > 0 && w.usage.aiCredits === null) {
+    if (w.kind !== "actions" && w.usage && w.usage.runs > 0 && w.usage.aiCredits === null) {
       return true;
     }
   }
@@ -1203,6 +1268,10 @@ function buildSnapshot(inputs) {
     telemetry: computeTelemetryCoverage(workflows),
     thresholds: null,
     materialState: null,
+    collection: inputs.collection || null,
+    sources: inputs.sources || {},
+    factory: inputs.factoryState || null,
+    outcomes: inputs.outcomes || null,
   };
 
   snapshot.thresholds = evaluateThresholds(
@@ -1227,173 +1296,99 @@ function buildSnapshot(inputs) {
 // GitHub read helpers (via injected runner) — orchestration only
 // ---------------------------------------------------------------------------
 
-function ghStatus(runner) {
-  return normalizeStatus(
-    runJson(runner, ["aw", "status", "--json"], "gh aw status"),
-  );
-}
-
-function ghUsage(runner, inventory, window, outputDir) {
-  const knownIds = inventory.map((w) => w.id);
-  const startFlag = window.start.slice(0, 10);
-  const endFlag = window.end.slice(0, 10);
+function ghUsageTelemetry(runner, window, outputDir, now) {
   fs.mkdirSync(outputDir, { recursive: true });
-  const parsed = runJson(
-    runner,
-    [
-      "aw",
-      "logs",
-      "--json",
-      "--start-date",
-      startFlag,
-      "--end-date",
-      endFlag,
-      "--count",
-      "200",
-      "--no-staged",
-      "--output",
-      outputDir,
-    ],
-    "gh aw logs",
-  );
-  return normalizeUsage(parsed, knownIds, window);
-}
-
-function ghIssues(runner, window, policy, now) {
-  const parsed = runJson(
-    runner,
-    [
-      "issue",
-      "list",
-      "--state",
-      "all",
-      "--limit",
-      "200",
-      "--json",
-      "number,state,labels,createdAt,closedAt,updatedAt",
-    ],
-    "gh issue list",
-  );
-  return normalizeIssues(parsed, window, policy, now);
-}
-
-function ghPullRequests(runner) {
-  const parsed = runJson(
-    runner,
-    [
-      "pr",
-      "list",
-      "--state",
-      "open",
-      "--limit",
-      "100",
-      "--json",
-      "number,state,isDraft,reviewDecision,statusCheckRollup",
-    ],
-    "gh pr list",
-  );
-  return normalizePullRequests(parsed);
-}
-
-/**
- * Collect run conclusions for auxiliary (non-GH-AW) Actions workflows — the
- * deterministic eval and harness/CI workflows that are `.yml`, not `*.md`
- * sources, and so never appear in the GH-AW inventory. Their failures are the
- * "eval/harness failure" threshold's authoritative evidence, so MonitorOps must
- * still observe them. Missing data stays null-not-zero, exactly like GH-AW
- * usage.
- */
-function ghAuxiliaryWorkflows(runner, files, window) {
-  const out = [];
-  for (const file of files) {
-    const id = file.replace(/\.(ya?ml)$/, "");
-    const args = [
-      "run",
-      "list",
-      "--workflow",
-      file,
-      "--limit",
-      "50",
-      "--json",
-      "databaseId,conclusion,status,createdAt",
-    ];
-    const result = runner("gh", args);
-    if (
-      result.status !== 0 &&
-      /(?:HTTP 404|workflow .* not found)/i.test(result.stderr || "")
-    ) {
-      out.push({
-        id,
-        sourcePath: path.posix.join(".github", "workflows", file),
-        lockPath: null,
-        compiled: null,
-        active: true,
-        kind: "actions",
-        perRunCreditCap: null,
-        perDayCreditCap: null,
-        safeOutputs: [],
-        sourceHash: null,
-        lockHash: null,
-        usage: null,
-        telemetryError: "workflow-not-found-on-default-branch",
-      });
-      continue;
+  try {
+    const parsed = runJson(runner, [
+      "aw", "logs", "--json", "--start-date", window.start.slice(0, 10),
+      "--end-date", window.end.slice(0, 10), "--count", "200",
+      "--artifacts", "all", "--no-staged", "--output", outputDir,
+    ], "gh aw logs");
+    if (!Array.isArray(parsed) && !Array.isArray(parsed?.runs) && !Array.isArray(parsed?.workflows)) {
+      throw new Error("invalid-usage-shape");
     }
-    if (result.status !== 0) {
-      throw new Error(
-        `gh run list --workflow ${file} failed (${result.status}): ${result.stderr || "no error output"}`,
-      );
-    }
-    let rows;
-    try {
-      rows = JSON.parse(result.stdout);
-    } catch (error) {
-      throw new Error(
-        `gh run list --workflow ${file} returned invalid JSON: ${error.message}`,
-      );
-    }
-    const knownIds = [id];
-    const tagged = (Array.isArray(rows) ? rows : []).map((r) =>
-      Object.assign({ workflow: id }, r),
-    );
-    const usage = normalizeUsage({ runs: tagged }, knownIds, window)[id];
-    out.push({
-      id,
-      sourcePath: path.posix.join(".github", "workflows", file),
-      lockPath: null,
-      compiled: null, // not a GH-AW compiled source
-      active: true,
-      kind: "actions",
-      perRunCreditCap: null,
-      perDayCreditCap: null,
-      safeOutputs: [],
-      sourceHash: null,
-      lockHash: null,
-      usage,
-      telemetryError: null,
-    });
+    const data = enrichUsageRows(extractRunRows(parsed), outputDir);
+    return {
+      data,
+      source: reads.source(data.length >= 200 ? "partial" : "complete", data.length, now,
+        data.length >= 200 ? "usage-run-limit-reached" : null),
+    };
+  } catch {
+    // Optional usage tooling is not allowed to prevent native health collection.
+    return { data: [], source: reads.source("unavailable", 0, now, "gh-aw-usage-unavailable") };
   }
-  return out;
 }
 
-function ghReportIssues(runner, titlePrefix) {
-  // Search only the report series; never persist raw bodies beyond hash reading.
-  return runJson(
-    runner,
-    [
-      "issue",
-      "list",
-      "--state",
-      "all",
-      "--search",
-      `${titlePrefix} in:title`,
-      "--limit",
-      "20",
-      "--json",
-      "number,body,createdAt",
-    ],
-    "gh issue list for published report state",
-  );
+function withCompleteness(normalized, observation, fields) {
+  if (observation.source.completeness === "complete") return normalized;
+  const observed = {};
+  for (const field of fields) {
+    observed[field] = normalized[field];
+    normalized[field] = null;
+  }
+  return { ...normalized, observed };
+}
+
+function collectGitHubInputs({ runner, repository, inventory, window, policy, now, logsOutputDir, includeUsage, auxiliaryFiles }) {
+  const base = `repos/${repository}`;
+  const observedAt = new Date(now).toISOString();
+  const options = { now: observedAt };
+  const status = reads.readPages(runner, `${base}/actions/workflows`, "workflows", options);
+  const runs = reads.readPages(runner,
+    `${base}/actions/runs?created=${encodeURIComponent(`${window.start}..${window.end}`)}`, "workflow_runs", options);
+  const issueRows = reads.readPages(runner, `${base}/issues?state=all&sort=updated&direction=desc`, null, options);
+  let prRows;
+  try {
+    const data = runJson(runner, [
+      "pr", "list", "--repo", repository, "--state", "open", "--limit", "100",
+      "--json", "number,state,isDraft,reviewDecision,statusCheckRollup",
+    ], "gh pr list");
+    if (!Array.isArray(data)) throw new Error("invalid-pr-list");
+    prRows = { data, source: reads.source(data.length >= 100 ? "partial" : "complete", data.length, observedAt,
+      data.length >= 100 ? "pull-request-limit-reached" : null) };
+  } catch {
+    prRows = { data: [], source: reads.source("unavailable", 0, observedAt, "pull-request-read-failed") };
+  }
+  const telemetry = includeUsage
+    ? ghUsageTelemetry(runner, window, logsOutputDir, observedAt)
+    : { data: [], source: reads.source("unavailable", 0, observedAt, "optional-usage-not-requested") };
+  const knownIds = inventory.map((workflow) => workflow.id).concat(auxiliaryFiles.map((file) => file.replace(/\.ya?ml$/, "")));
+  const usage = normalizeUsage({ runs: runs.data }, knownIds, window);
+  const cost = normalizeUsage({ runs: telemetry.data }, knownIds, window);
+  for (const id of knownIds) {
+    if (telemetry.source.completeness === "complete" && cost[id].runs === usage[id].runs) {
+      for (const field of ["aiCredits", "observedAiCredits", "maxRunAiCredits", "tokens", "safeOutputOutcomes", "selfHeal", "metricCoverage"]) {
+        usage[id][field] = cost[id][field];
+      }
+    }
+    if (runs.source.completeness !== "complete") {
+      usage[id].runs = null;
+      usage[id].aiCredits = null;
+      usage[id].tokens = null;
+      usage[id].durationSecondsTotal = null;
+    }
+  }
+  const issues = withCompleteness(normalizeIssues(issueRows.data, window, policy, now), issueRows, [
+    "openedInWindow", "closedInWindow", "netOpened", "openActionableOpportunities",
+    "reportOpenedInWindow", "reportClosedInWindow", "workOpenedInWindow", "workClosedInWindow",
+  ]);
+  const statusById = normalizeStatus(status.data);
+  const auxiliaryWorkflows = auxiliaryFiles.map((file) => {
+    const id = file.replace(/\.ya?ml$/, "");
+    const exists = Boolean(statusById[id]);
+    return {
+      id, kind: "actions", sourcePath: `.github/workflows/${file}`,
+      lockPath: null, compiled: null, active: exists ? statusById[id].enabled : null,
+      perRunCreditCap: null, perDayCreditCap: null, safeOutputs: [], sourceHash: null, lockHash: null,
+      usage: exists ? usage[id] : null,
+      telemetryError: exists ? null : "workflow-not-found-on-default-branch",
+    };
+  });
+  return {
+    status: statusById, usage, issues, auxiliaryWorkflows, issueRows,
+    pullRequests: withCompleteness(normalizePullRequests(prRows.data), prRows, ["open", "byReviewState", "byCheckState"]),
+    sources: { workflows: status.source, runs: runs.source, issues: issueRows.source, pullRequests: prRows.source, usage: telemetry.source },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1500,18 +1495,19 @@ function collect(options) {
   const inventory = buildWorkflowInventory(workflowsDir);
   const window = computeWindow(mode, now);
 
-  const status = ghStatus(runner);
-  const usage = ghUsage(runner, inventory, window, logsOutputDir);
-  const auxiliaryWorkflows = ghAuxiliaryWorkflows(
-    runner,
-    opts.auxiliaryWorkflowFiles || DEFAULT_AUXILIARY_WORKFLOWS,
-    window,
-  );
-  const issues = ghIssues(runner, window, policy, now);
-  const pullRequests = ghPullRequests(runner);
+  const repository = reads.repositoryName(runner, opts.repository);
+  const gathered = collectGitHubInputs({
+    runner, repository, inventory, window, policy, now, logsOutputDir,
+    includeUsage: opts.includeUsage ?? mode === "governance",
+    auxiliaryFiles: opts.auxiliaryWorkflowFiles || DEFAULT_AUXILIARY_WORKFLOWS,
+  });
+  const { status, usage, auxiliaryWorkflows, issues, pullRequests, sources } = gathered;
   const hashes = computeSourceHashes(repoRoot, inventory);
 
-  const reportIssues = ghReportIssues(runner, titlePrefix);
+  const canonical = reports.canonicalReport(gathered.issueRows.data, mode);
+  const reportIssues = gathered.issueRows.source.completeness === "complete"
+    ? gathered.issueRows.data.filter((issue) => issue.number === canonical.number)
+    : [];
   const publishedHash = readPublishedHash(reportIssues);
   const cache = loadCache(opts.cachePath);
   const cacheRepresentsPublishedState = Boolean(
@@ -1536,7 +1532,16 @@ function collect(options) {
     watermarks,
     thresholdConfig: opts.thresholdConfig,
     policy,
+    sources,
+    factoryState: opts.factoryState,
+    outcomes: opts.outcomes,
+    collection: {
+      completeness: Object.entries(sources).some(([name, value]) => name !== "usage" && value.completeness !== "complete") ? "partial" : "complete",
+    },
   });
+  snapshot.repository = repository;
+  snapshot.canonicalReport = canonical;
+  snapshot.reportTitlePrefix = titlePrefix;
 
   const decision = decideChange({
     currentHash: snapshot.materialState.hash,
@@ -1589,6 +1594,7 @@ function parseArgs(argv) {
     else if (a === "--workflow-mode") args.workflowMode = true;
     else if (a === "--workflow-root") args.workflowRoot = argv[++i];
     else if (a === "--now") args.now = argv[++i];
+    else if (a === "--include-usage") args.includeUsage = true;
     else if (a === "--help" || a === "-h") args.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -1660,11 +1666,18 @@ function main(argv, deps) {
       repoRoot: d.repoRoot,
       policy: d.policy,
       logsOutputDir: d.logsOutputDir,
+      repository: d.repository,
+      includeUsage: args.includeUsage,
     }));
   } catch (error) {
     process.stderr.write(
       `error: factory-health collection failed: ${(error && error.message) || error}\n`,
     );
+    if (outPath) {
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, `${JSON.stringify(reports.failureReceipt(args.mode,
+        args.now || new Date().toISOString(), "factory-health-collection-failed"), null, 2)}\n`);
+    }
     return 1;
   }
 
@@ -1682,7 +1695,7 @@ function main(argv, deps) {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
     fs.writeFileSync(cachePath, `${JSON.stringify(cacheRecord, null, 2)}\n`);
   }
-  return 0;
+  return snapshot.collection.completeness === "complete" ? 0 : 1;
 }
 
 if (require.main === module) {

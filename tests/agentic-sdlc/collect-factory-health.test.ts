@@ -144,6 +144,28 @@ function fakeRunner(overrides: {
   return (command, args) => {
     expect(command).toBe("gh");
     const joined = args.join(" ");
+    if (joined.includes("repo view")) return json({ nameWithOwner: "example/repo" });
+    if (joined.includes("/actions/workflows")) return json({ workflows: [
+      ...(overrides.status ?? fixtures.status) as unknown[],
+      { id: "agentic-evals", enabled: true }, { id: "ci", enabled: true },
+    ] });
+    if (joined.includes("/actions/runs?")) {
+      const logs = (overrides.logs ?? fixtures.logsGovernance) as { runs: unknown[] };
+      const auxiliary = Object.entries(overrides.auxRuns ?? fixtures.auxRuns)
+        .flatMap(([workflow, rows]) => rows.map((row) => ({ ...row as object, workflow })));
+      return json({ workflow_runs: [...logs.runs, ...auxiliary] });
+    }
+    if (joined.includes("/issues?")) {
+      const reportIssues = (overrides.reportIssues ?? fixtures.reportIssuesNone) as Array<Record<string, unknown>>;
+      return json([
+        ...((overrides.issues ?? fixtures.issues) as unknown[]),
+        ...reportIssues.map((issue) => ({
+          ...issue, state: "open", labels: ["agentic-factory", "report"],
+          user: { login: "github-actions[bot]" },
+          body: `${issue.body}\n<!-- factory-report:v1 governance -->`,
+        })),
+      ]);
+    }
     if (joined.includes("aw status")) return json(overrides.status ?? fixtures.status);
     if (joined.includes("aw logs")) return json(overrides.logs ?? fixtures.logsGovernance);
     if (joined.includes("run list")) {
@@ -234,13 +256,12 @@ describe("MonitorOps collector — workflow coverage", () => {
     const missingRunner: Runner = (command, args) => {
       if (
         command === "gh" &&
-        args.includes("--workflow") &&
-        args.includes("agentic-evals.yml")
+        args.some((arg) => arg.includes("/actions/workflows"))
       ) {
         return {
-          status: 1,
-          stdout: "",
-          stderr: "HTTP 404: workflow agentic-evals.yml not found on the default branch",
+          status: 0,
+          stdout: JSON.stringify({ workflows: fixtures.status }),
+          stderr: "",
         };
       }
       return runner(command, args);
@@ -426,11 +447,16 @@ describe("MonitorOps collector — issue-marker precedence and cache", () => {
   });
 
   it("produces a noop when material state matches the published hash", () => {
+    const priorReport = {
+      number: 1,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      body: "Existing canonical report awaiting its first material hash",
+    };
     const { snapshot } = collector.collect({
       mode: "governance",
       now: new Date(fixtures.now),
       repoRoot: root,
-      runner: fakeRunner(),
+      runner: fakeRunner({ reportIssues: [priorReport] }),
       policy,
     });
     const currentHash = (snapshot.materialState as Record<string, string>).hash;
@@ -442,8 +468,7 @@ describe("MonitorOps collector — issue-marker precedence and cache", () => {
       runner: fakeRunner({
         reportIssues: [
           {
-            number: 1,
-            createdAt: "2026-08-09T00:00:00.000Z",
+            ...priorReport,
             body: `report\n<!-- factory-state-hash: ${currentHash} -->`,
           },
         ],
@@ -614,14 +639,17 @@ describe("MonitorOps collector — threshold evaluation", () => {
 
     const second = collector.buildSnapshot({
       mode: "governance",
-      now: new Date(fixtures.now),
+      now: new Date("2026-08-17T00:15:37Z"),
       inventory: inv,
       status: {},
       usage,
       issues: null,
       pullRequests: null,
       hashes: { sourceLockDrift: [] },
-      watermarks: { missingTelemetryStreak: 1 },
+      watermarks: {
+        missingTelemetryStreak: 1,
+        lastTelemetryWindow: "2026-08-03T00:00:00.000Z/2026-08-10T00:00:00.000Z",
+      },
       policy,
     });
     const secondIds = (
@@ -695,6 +723,8 @@ describe("MonitorOps collector — CLI (no GitHub access)", () => {
       },
     );
     expect(rc).toBe(1);
-    expect(fs.existsSync(path.join(tmpDir, "failed.json"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(tmpDir, "failed.json"), "utf8"))).toMatchObject({
+      status: "failed", completeness: "unavailable", metrics: null,
+    });
   });
 });

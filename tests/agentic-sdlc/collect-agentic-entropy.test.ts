@@ -66,6 +66,7 @@ interface Entropy {
     delta: unknown;
   };
   computeDelta(a: unknown, b: unknown): { added: string[]; removed: string[] };
+  shouldReport(decision: unknown, manifest: unknown): boolean;
   buildManifest(ctx: Record<string, unknown>): Record<string, unknown>;
   collect(options: Record<string, unknown>): {
     manifest: Record<string, unknown>;
@@ -668,7 +669,8 @@ describe("entropy — report decision (noop vs one issue)", () => {
       return {
         status: 0,
         stdout: JSON.stringify([
-          { number: 9, createdAt: "2026-08-09T00:00:00Z", body: `r\n<!-- entropy-state-hash: ${currentHash} -->` },
+          { number: 9, state: "open", labels: ["agentic-factory", "report"], author: { login: "github-actions[bot]" },
+            createdAt: "2026-08-09T00:00:00Z", body: `<!-- factory-report:v1 entropy -->\nr\n<!-- entropy-state-hash: ${currentHash} -->` },
         ]),
         stderr: "",
       };
@@ -709,6 +711,13 @@ describe("entropy — report decision (noop vs one issue)", () => {
     // policy_valid + generated markers pass against the real root; no violations.
     expect(manifest.violations).toHaveLength(0);
     expect((manifest.summary as Record<string, unknown>).actionable).toBe(false);
+  });
+
+  it("publishes the last finding's resolution once, including after a cache miss", () => {
+    const manifest = { summary: { actionable: false } };
+    expect(entropy.shouldReport({ changed: true, publishedHash: "a".repeat(64) }, manifest)).toBe(true);
+    expect(entropy.shouldReport({ changed: false, publishedHash: "b".repeat(64) }, manifest)).toBe(false);
+    expect(entropy.shouldReport({ changed: true, publishedHash: null }, manifest)).toBe(false);
   });
 });
 
@@ -759,7 +768,9 @@ describe("entropy — CLI (no GitHub access)", () => {
       },
     );
     expect(rc).toBe(1);
-    expect(fs.existsSync(path.join(tmpDir, "fail.json"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(tmpDir, "fail.json"), "utf8"))).toMatchObject({
+      status: "failed", completeness: "unavailable", metrics: null,
+    });
   });
 
   it("throws loud when the supplied MonitorOps snapshot path is missing", () => {
@@ -792,30 +803,31 @@ describe("entropy — harness-entropy workflow contract", () => {
     "utf8",
   );
 
-  it("runs weekly with a manual dispatch path", () => {
+  it("keeps model summaries manual while native watchdog owns weekly collection", () => {
     expect(source).toContain("workflow_dispatch:");
-    expect(source).toContain("schedule: weekly on monday");
+    expect(source).not.toContain("schedule:");
+    expect(source).toContain("factory-watchdog.yml");
   });
 
-  it("uses cache-memory with 90-day retention", () => {
-    expect(source).toContain("cache-memory:");
-    expect(source).toContain("retention-days: 90");
+  it("collects and persists receipts before optional model execution", () => {
+    expect(source).toContain("pre-agent-steps:");
+    expect(source).toContain('mode: "governance"');
+    expect(source).toContain("runCollectionStep({ github, context, core,");
+    expect(source).toContain("if: always()");
+    expect(source).toContain("actions/upload-artifact@v4");
   });
 
-  it("exposes only the two trusted collectors and cat on the bash allowlist", () => {
-    expect(source).toContain('"node scripts/agentic/collect-factory-health.cjs *"');
-    expect(source).toContain('"node scripts/agentic/collect-agentic-entropy.cjs *"');
-    expect(source).toContain('"cat /tmp/gh-aw/factory-health.json"');
-    expect(source).toContain('"cat /tmp/gh-aw/entropy-manifest.json"');
+  it("exposes receipt reads, not collector execution, to the agent", () => {
+    expect(source).not.toContain('"node scripts/agentic/');
+    expect(source).toContain('"cat /tmp/gh-aw/watchdog/entropy-manifest.json"');
+    expect(source).toContain('"cat /tmp/gh-aw/watchdog/receipts.json"');
   });
 
-  it("configures exactly one report issue with close-older, expiry, and no mentions", () => {
-    expect(source).toContain('title-prefix: "[factory-entropy] "');
-    expect(source).toContain("max: 1");
-    expect(source).toContain("close-older-issues: true");
-    expect(source).toContain("expires: 90d");
-    expect(source).toContain("mentions: false");
-    expect(source).toContain("allowed-github-references: []");
+  it("leaves canonical publication to the trusted native publisher", () => {
+    expect(source).not.toContain("create-issue:");
+    expect(source).not.toContain("close-older-issues:");
+    expect(source).not.toContain("update-issue:");
+    expect(source).toContain("canonicalReport");
     expect(source).toContain("noop:");
   });
 
@@ -836,14 +848,15 @@ describe("entropy — harness-entropy workflow contract", () => {
     ]) {
       expect(frontmatter).not.toContain(forbidden);
     }
-    // The compiled lock only declares create_issue + noop safe-output tools.
-    expect(lock).toContain("create_issue");
+    expect(lock).toContain('"noop":');
+    expect(lock).not.toContain('"create_issue":');
     expect(lock).not.toContain('"create_pull_request":');
     expect(lock).not.toContain('"push_to_pull_request_branch":');
   });
 
-  it("compiles to a single create-issue safe output (max 1)", () => {
+  it("compiles summary-only safe output and explicit incomplete handling", () => {
     expect(lock).toContain('"max":1');
-    expect(lock).toContain('"title_prefix":"[factory-entropy] "');
+    expect(lock).not.toContain('"title_prefix":"[factory-entropy] "');
+    expect(source).toContain("report_incomplete");
   });
 });

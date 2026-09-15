@@ -148,7 +148,7 @@
       "immutableRouteConflicts": []
     }
   ],
-  "materialHash": "39e8714e77302d26160cc25c9307c4720b59e8f81f71e6201de9453a0b062d07",
+  "materialHash": "960f28546d8c0cb08fa82dd87acc1b3e50eafcf7b49050225790ac5626a76137",
   "baselineDelta": {
     "publishedHash": null,
     "cacheHash": null,
@@ -156,5 +156,8 @@
     "cacheHit": false,
     "delta": null
   },
+  "canonicalReport": null,
+  "sources": null,
+  "completeness": "complete",
   "shouldReport": true
 }

@@ -43,11 +43,10 @@ describe("workflow frontmatter inventory", () => {
     const opportunity = inventoryForWorkflow("opportunity-discovery");
     expect(opportunity.imports).toEqual(["trading-growth-pm.md"]);
     expect(opportunity.triggers).toContain("manual");
-    expect(opportunity.triggers).toContain("schedule: weekly");
+    expect(opportunity.triggers).not.toContain("schedule: weekly");
     expect(opportunity.triggers).toContain("/discover");
     expect(opportunity.safeOutputs).toEqual([
-      "add-comment",
-      "create-issue",
+      "jobs",
       "noop",
     ]);
     expect(opportunity.creditCaps).toEqual({ perRun: 1000, perDay: 2000 });

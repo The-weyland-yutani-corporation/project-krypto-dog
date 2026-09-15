@@ -1,118 +1,104 @@
 ---
-description: Weekly MonitorOps governance report for GH-AW factory health, cost, safe-output outcomes, and configured-threshold breaches. Deterministic collector runs first; the agent only summarizes the normalized snapshot.
+description: Optional manual governance summary after trusted model-independent collection. Native Factory Watchdog owns weekly canonical receipts and failure publication.
 on:
   workflow_dispatch:
-  schedule: weekly on monday
 permissions:
   contents: read
   issues: read
   pull-requests: read
   actions: read
-  checks: read
+  deployments: read
+  statuses: read
   copilot-requests: write
+pre-agent-steps:
+  - name: Check out trusted collectors
+    uses: actions/checkout@v4
+    with:
+      ref: ${{ github.event.repository.default_branch }}
+      persist-credentials: false
+  - uses: actions/setup-node@v4
+    with:
+      node-version-file: .nvmrc
+  - uses: github/gh-aw-actions/setup-cli@v0.81.6
+    with:
+      version: v0.81.6
+  - name: Verify tooling and collect before model execution
+    uses: actions/github-script@v9
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WATCHDOG_INCLUDE_USAGE: "true"
+    with:
+      script: |
+        const { runCollectionStep } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+        await runCollectionStep({ github, context, core, mode: "governance", includeUsage: true });
+  - name: Preserve deterministic receipt even if the model fails
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: factory-observer-receipts
+      path: /tmp/gh-aw/watchdog/*.json
+      retention-days: 30
 tools:
-  github:
-    mode: gh-proxy
-    toolsets: [default]
-  cache-memory:
-    retention-days: 90
   bash:
-    - "node scripts/agentic/collect-factory-health.cjs *"
-    - "cat /tmp/gh-aw/factory-health.json"
+    - "cat /tmp/gh-aw/watchdog/factory-health.json"
+    - "cat /tmp/gh-aw/watchdog/receipts.json"
 network: defaults
 safe-outputs:
-  update-issue:
-    target: "*"
-  create-issue:
-    title-prefix: "[factory-governance] "
-    labels: [agentic-factory, report]
-    allowed-labels: [agentic-factory, report]
-    max: 1
-    deduplicate-by-title: 1
-    close-older-issues: true
-    expires: 30d
-  mentions: false
-  allowed-github-references: []
+  jobs:
+    record-summary:
+      if: needs.agent.result == 'success' && needs.detection.outputs.detection_success == 'true'
+      description: Record one optional summary in the Actions job summary only, with no GitHub issue write.
+      runs-on: ubuntu-latest
+      inputs:
+        summary:
+          description: Evidence-only summary, at most 8000 characters
+          required: true
+          type: string
+      permissions:
+        contents: read
+      steps:
+        - uses: actions/checkout@v4
+          with:
+            ref: ${{ github.event.repository.default_branch }}
+            persist-credentials: false
+            sparse-checkout: scripts/agentic
+        - uses: actions/github-script@v9
+          with:
+            script: |
+              const { recordSummary } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-report.cjs`);
+              await recordSummary({ core, outputPath: process.env.GH_AW_AGENT_OUTPUT });
+  report-failure-as-issue: false
   noop:
     report-as-issue: false
 max-ai-credits: 1000
 max-daily-ai-credits: 2500
 ---
 
-# Agentic Governance (MonitorOps)
+# Agentic Governance
 
-Weekly governance report for the GH-AW software factory. A deterministic,
-dependency-free collector normalizes every active workflow, its usage, factory
-throughput, and configured-threshold state into one JSON snapshot **before** you
-summarize it. You never re-derive metrics by hand.
+Summarize the trusted governance receipt, never rerun collection in the prompt.
+Scheduled weekly health and canonical publication belong to
+`factory-watchdog.yml`; healthy no-change checks require no model.
 
-## Steps
+### Read before summarizing
 
-### 1. Run the collector first
+Read `/tmp/gh-aw/watchdog/receipts.json` and
+`/tmp/gh-aw/watchdog/factory-health.json`. Use `report_incomplete` when data is
+missing, partial, or failed. Do not call `noop` to disguise collector failure.
 
-Run exactly this command (it is read-only toward GitHub and writes only under
-`/tmp/gh-aw/`):
+### Evidence summary
 
-```
-node scripts/agentic/collect-factory-health.cjs \
-  --mode governance \
-  --out /tmp/gh-aw/factory-health.json \
-  --cache /tmp/gh-aw/cache-memory/monitor-ops-governance.json \
-  --workflow-mode \
-  --title-prefix "[factory-governance] "
-```
+Use `###`/`####` headings and `> [!WARNING]` for failures. Include every workflow,
+closed UTC window, coverage, exact measured cost, actual control/goal/budget
+reasons, stage ages, claims/repairs, and verified substantive dev outcomes.
+Zero observed runs from an incomplete API read are unknown, not healthy.
+Report gross issue churn separately from delivery and expose unavailable metrics.
 
-Then read `/tmp/gh-aw/factory-health.json`. Do not run any other data-gathering
-commands; the snapshot is the single source of truth for this report.
+Goal approval, activation, budget renewal, hard-stop recovery, boundary merges,
+production, live trading, secrets, accounts, and architecture remain human-only.
+No finite standing maintenance goal is inferred from a broad path allowlist.
 
-### 2. Decide whether to report
-
-- If `materialState.changed` is `false`, call `noop` with a one-line reason
-  (the material state matches the last published governance report) and stop.
-- Otherwise, update the canonical open `[factory-governance]` issue when it
-  exists; use `create-issue` only to establish it when absent.
-
-### 3. Write the report
-
-Report on the whole active factory from the snapshot only. Use `###`/`####`
-headings and GitHub alerts (`> [!NOTE]`, `> [!WARNING]`). Do not use emoji, and
-do not invent numbers.
-
-#### Required sections
-
-- **Coverage** — confirm every active workflow in `workflows[]` is represented,
-  including zero-run workflows (`usage.runs == 0`). Never report a zero-run
-  workflow as failing.
-- **Run health** — per-workflow run counts and conclusions from
-  `usage.conclusions`; call out repeated failures.
-- **Cost** — `usage.aiCredits`, `usage.maxRunAiCredits`, and duration. When a
-  value is `null` it is unavailable; state "not available", never `0`.
-- **Telemetry coverage** — from `telemetry`; if `usage.tokens`,
-  `usage.safeOutputOutcomes`, or `usage.corrections` are `null`, report them as
-  unavailable rather than zero.
-- **Issue and PR state** — throughput, actionable-opportunity WIP vs the policy
-  cap (`issues.wipCap`), stale/blocked work, and PR review/check state.
-- **Autonomy funnel and invariants** — report queue/lifecycle counts,
-  assignment/repair/dev outcomes, duplicate/orphaned state, boundary
-  escalations, rollback, and human vetoes when present in the snapshot.
-- **Threshold breaches** — list every entry in `thresholds.breaches` with its
-  `id` and `evidence`. If empty, state that no configured threshold is breached.
-  Put breaches under a `> [!WARNING]` alert.
-
-### 4. Embed the state-hash marker
-
-End the issue body with the exact material-state marker so the next run can
-detect a noop, on its own line:
-
-```
-<!-- factory-state-hash: MATERIAL_STATE_HASH -->
-```
-
-Replace `MATERIAL_STATE_HASH` with `materialState.hash` from the snapshot.
-
-## Rules
-
-- The collector — not the agent — gathers data. If the collector fails or its
-  JSON is missing, call `noop` explaining the failure; do not fabricate metrics.
-- Do not add GitHub references, backlinks, or @mentions.
-- Keep everything read-only. The only visible write is the single report issue.
+The receipt exposes `canonicalReport`; do not mutate any issue. Use
+`record_summary` once for the concise Actions summary, or `noop` for no material
+summary change. Native publication
+owns `<!-- factory-state-hash: MATERIAL_STATE_HASH -->`.

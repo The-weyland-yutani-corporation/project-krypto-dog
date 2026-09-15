@@ -1,0 +1,180 @@
+name: Factory Watchdog
+
+on:
+  schedule:
+    - cron: "15 7 * * *"
+    - cron: "30 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [daily, governance]
+        default: daily
+      publish:
+        description: Publish canonical report-only receipts (never changes factory control)
+        type: boolean
+        default: false
+  workflow_run:
+    workflows: [Daily Repo Status, Agentic Governance, Harness Entropy, Agentic Corrections, Opportunity Discovery, CI Doctor]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-watchdog
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: read
+      deployments: read
+      statuses: read
+    outputs:
+      discovery_eligible: ${{ steps.collect.outputs.discovery_eligible }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Set closed reporting window
+        id: window
+        env:
+          REQUESTED_MODE: ${{ inputs.mode }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ "$REQUESTED_MODE" = governance ] || [ "$SCHEDULE" = '30 7 * * 1' ]; then
+            echo 'mode=governance' >> "$GITHUB_OUTPUT"
+          else
+            echo 'mode=daily' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install pinned optional usage and correction tooling
+        if: steps.window.outputs.mode == 'governance'
+        continue-on-error: true
+        uses: github/gh-aw-actions/setup-cli@v0.81.6
+        with:
+          version: v0.81.6
+      - name: Restore normalized watermarks
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: /tmp/gh-aw/watchdog/cache
+          key: factory-watchdog-${{ steps.window.outputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            factory-watchdog-${{ steps.window.outputs.mode }}-
+      - name: Verify required tooling
+        run: |
+          node --version
+          gh --version
+      - name: Collect without a model or factory activation
+        id: collect
+        uses: actions/github-script@v9
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WATCHDOG_MODE: ${{ steps.window.outputs.mode }}
+          WATCHDOG_INCLUDE_USAGE: ${{ steps.window.outputs.mode == 'governance' }}
+          WATCHDOG_SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        with:
+          script: |
+            const { runCollectionStep } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+            await runCollectionStep({
+              github, context, core, mode: process.env.WATCHDOG_MODE,
+              includeUsage: process.env.WATCHDOG_INCLUDE_USAGE === "true",
+            });
+      - name: Preserve machine receipts even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-watchdog-receipts-a${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            /tmp/gh-aw/watchdog/receipts.json
+            /tmp/gh-aw/watchdog/factory-health.json
+            /tmp/gh-aw/watchdog/entropy-manifest.json
+            /tmp/gh-aw/watchdog/correction-report.json
+            /tmp/gh-aw/watchdog/signal-candidates.json
+
+  publish:
+    needs: observe
+    if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name != 'workflow_dispatch' || inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/agentic
+            .github/scripts
+            .github/agentic-policy.json
+      - name: Download available collection receipts
+        id: receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: factory-watchdog-receipts-a${{ github.run_attempt }}
+          path: /tmp/gh-aw/watchdog
+      - name: Publish owned canonical status or explicit missing-receipt failure
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { publishWatchdog } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+            const result = await publishWatchdog({
+              github, ...context.repo, directory: "/tmp/gh-aw/watchdog", apply: true,
+            });
+            await core.summary.addHeading("Canonical factory receipts")
+              .addCodeBlock(JSON.stringify(result, null, 2), "json").write();
+
+  discover:
+    needs: [observe, publish]
+    if: github.event_name == 'schedule' && github.event.schedule == '30 7 * * 1' && needs.observe.outputs.discovery_eligible == 'true'
+    concurrency:
+      group: factory-queue-controller
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      actions: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Recheck active human-backed capacity before one bounded discovery
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { readFactoryState } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-observation.cjs`);
+            const { state } = await readFactoryState({ github, ...context.repo });
+            if (state.mode.mode !== "active" || state.goals.resolution !== "ok" ||
+                state.capacity.completeness !== "complete" || state.capacity.inFlight !== 0 ||
+                state.capacity.queued !== 0 || state.capacity.budgetUsed >= state.capacity.budgetLimit ||
+                !state.evalCapacity.available || state.blockReasons.includes("blocked-work") ||
+                state.blockReasons.includes("claim-recovery-required")) {
+              core.info("Discovery withheld: current control/capacity does not authorize it.");
+              return;
+            }
+            await github.rest.actions.createWorkflowDispatch({
+              ...context.repo, workflow_id: "opportunity-discovery.lock.yml",
+              ref: context.payload.repository.default_branch,
+              inputs: { receipt_run_id: String(context.runId), focus: "One corroborated signal within the existing approved goal only" },
+            });

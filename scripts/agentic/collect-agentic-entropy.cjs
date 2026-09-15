@@ -43,6 +43,7 @@ const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const factory = require("./collect-factory-health.cjs");
+const reports = require("./factory-report.cjs");
 
 const MANIFEST_SCHEMA_VERSION = 1;
 
@@ -464,7 +465,8 @@ function ruleWorkflowTelemetryCoverage(ctx) {
     "investigate the MonitorOps governance report; restore workflow telemetry or fix the repeatedly failing workflow";
   const snapshot = ctx.snapshot;
   const telemetry = snapshot && snapshot.telemetry;
-  if (!snapshot || !telemetry) {
+  if (!snapshot || !telemetry || snapshot.collection?.completeness === "partial" ||
+      snapshot.status === "failed") {
     return {
       check: makeCheck(ruleId, ADVISORY, UNKNOWN, "no MonitorOps snapshot for telemetry coverage"),
       violations: [],
@@ -795,7 +797,7 @@ function readPublishedHash(reportIssues) {
       if (!issue || typeof issue.body !== "string") return null;
       const m = issue.body.match(STATE_HASH_MARKER_RE);
       if (!m) return null;
-      return { number: issue.number || 0, createdAt: issue.createdAt || "", hash: m[1].toLowerCase() };
+      return { number: issue.number || 0, createdAt: issue.updatedAt || issue.updated_at || issue.createdAt || issue.created_at || "", hash: m[1].toLowerCase() };
     })
     .filter(Boolean);
   if (withHash.length === 0) return null;
@@ -837,6 +839,10 @@ function computeDelta(cachedManifest, currentManifest) {
   const added = [...cur].filter((k) => !prev.has(k)).sort((a, b) => a.localeCompare(b, "en"));
   const removed = [...prev].filter((k) => !cur.has(k)).sort((a, b) => a.localeCompare(b, "en"));
   return { added, removed };
+}
+
+function shouldReport(decision, manifest) {
+  return decision.changed && (manifest.summary.actionable || decision.publishedHash !== null);
 }
 
 /**
@@ -1122,7 +1128,7 @@ function summarizeMonitorOps(snapshot) {
 // ---------------------------------------------------------------------------
 
 function ghReportIssues(runner, titlePrefix) {
-  return factory.runJson(
+  const result = factory.runJson(
     runner,
     [
       "issue",
@@ -1132,12 +1138,14 @@ function ghReportIssues(runner, titlePrefix) {
       "--search",
       `${titlePrefix} in:title`,
       "--limit",
-      "20",
+      "1000",
       "--json",
-      "number,body,createdAt",
+      "number,body,createdAt,updatedAt,title,state,labels,author",
     ],
     "gh issue list for published entropy state",
   );
+  if (!Array.isArray(result) || result.length >= 1000) throw new Error("entropy-report-history-incomplete");
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,9 +1168,12 @@ function collect(options) {
   // Published-hash reading is only performed when a report prefix is supplied
   // (workflow mode). Local `--check` never contacts GitHub.
   let publishedHash = null;
+  let canonicalReport = null;
   if (opts.reportTitlePrefix) {
     const runner = opts.runner || factory.createRunner({ cwd: ctx.repoRoot });
-    publishedHash = readPublishedHash(ghReportIssues(runner, opts.reportTitlePrefix));
+    const issues = opts.reportIssues || ghReportIssues(runner, opts.reportTitlePrefix);
+    canonicalReport = reports.canonicalReport(issues, "entropy");
+    publishedHash = readPublishedHash(issues.filter((issue) => issue.number === canonicalReport.number));
   } else if (typeof opts.publishedHash === "string") {
     publishedHash = opts.publishedHash;
   }
@@ -1186,7 +1197,8 @@ function collect(options) {
     cacheHit: decision.cacheHit,
     delta: decision.delta,
   };
-  manifest.summary.shouldReport = decision.changed && manifest.summary.actionable;
+  manifest.canonicalReport = canonicalReport;
+  manifest.summary.shouldReport = shouldReport(decision, manifest);
 
   const cacheRecord = buildCacheRecord(manifest);
   return { manifest, decision, cacheRecord };
@@ -1293,6 +1305,11 @@ function main(argv, deps) {
     process.stderr.write(
       `error: entropy collection failed: ${(error && error.message) || error}\n`,
     );
+    if (outPath) {
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, `${JSON.stringify(reports.failureReceipt("entropy",
+        args.now || new Date().toISOString(), "entropy-collection-failed"), null, 2)}\n`);
+    }
     return 1;
   }
 
@@ -1370,6 +1387,7 @@ module.exports = {
   computeMaterialHash,
   readPublishedHash,
   decideChange,
+  shouldReport,
   computeDelta,
   buildManifest,
   buildContext,

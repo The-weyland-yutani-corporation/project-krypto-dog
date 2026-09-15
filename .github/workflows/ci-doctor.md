@@ -1,5 +1,5 @@
 ---
-description: Diagnoses failed CI runs and opens actionable incident issues.
+description: Diagnoses failed CI from deterministic receipts and submits at most one goal-authorized signal to normal intake; never creates ready work directly.
 on:
   workflow_dispatch:
   workflow_run:
@@ -9,13 +9,43 @@ on:
       - main
       - "develop/**"
 if: github.event_name != 'workflow_run' || contains(fromJSON('["failure","cancelled","timed_out","action_required"]'), github.event.workflow_run.conclusion)
+concurrency:
+  group: factory-queue-controller
+  cancel-in-progress: false
 permissions:
   contents: read
   issues: read
   pull-requests: read
   actions: read
   checks: read
+  deployments: read
+  statuses: read
   copilot-requests: write
+pre-agent-steps:
+  - name: Check out trusted collectors
+    uses: actions/checkout@v4
+    with:
+      ref: ${{ github.event.repository.default_branch }}
+      persist-credentials: false
+  - uses: actions/setup-node@v4
+    with:
+      node-version-file: .nvmrc
+  - name: Collect native failure receipt before model execution
+    uses: actions/github-script@v9
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WATCHDOG_SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+    with:
+      script: |
+        const { runCollectionStep } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+        await runCollectionStep({ github, context, core, mode: "daily" });
+  - name: Preserve deterministic failure receipt
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: factory-observer-receipts
+      path: /tmp/gh-aw/watchdog/*.json
+      retention-days: 30
 tools:
   github:
     mode: gh-proxy
@@ -23,13 +53,35 @@ tools:
 network:
   allowed: [defaults, node]
 safe-outputs:
-  create-issue:
-    title-prefix: "[ci-doctor] "
-    labels: [agentic-factory, ci-failure]
-    max: 1
-    deduplicate-by-title: 2
-  add-comment:
-    max: 1
+  jobs:
+    submit-signal:
+      if: needs.agent.result == 'success' && needs.detection.outputs.detection_success == 'true'
+      description: Corroborate one CI signal and admit at most one authorized native-goal child to PM triage.
+      runs-on: ubuntu-latest
+      inputs:
+        payload:
+          description: JSON object with signal and proposal, matching specs/factory-signals.md
+          required: true
+          type: string
+      permissions:
+        contents: read
+        issues: write
+        actions: write
+        pull-requests: read
+      steps:
+        - uses: actions/checkout@v4
+          with:
+            ref: ${{ github.event.repository.default_branch }}
+            persist-credentials: false
+        - uses: actions/github-script@v9
+          with:
+            script: |
+              const { runSafeOutput } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/signal-intake.cjs`);
+              await runSafeOutput({
+                github, context, core, outputPath: process.env.GH_AW_AGENT_OUTPUT,
+                repoRoot: process.env.GITHUB_WORKSPACE,
+              });
+  report-failure-as-issue: false
   noop:
     report-as-issue: false
 max-ai-credits: 1200
@@ -38,17 +90,28 @@ max-daily-ai-credits: 3000
 
 # CI Doctor
 
-Diagnose failed CI and produce an actionable incident report.
+Read the trusted `/tmp/gh-aw/watchdog/receipts.json` and `factory-health.json`
+before diagnosis. Collection already ran without a model. Missing or incomplete
+collection requires `report_incomplete`, never a success-shaped noop. A complete
+receipt with `reason: monitored-workflow-failed` is the expected CI incident to
+diagnose, not a collector failure. Native watchdog
+publishes canonical failure even when this model is unavailable.
 
 ## Task
 
 - Inspect the failed workflow run, failing jobs, failing steps, and relevant logs.
 - Identify whether the failure is deterministic, flaky, infrastructure-related, or caused by a recent code change.
-- Search for an existing open `[ci-doctor]` issue with the same failure key before creating a new issue.
-- If the failure self-recovered or duplicates an existing issue, use `noop` or `add-comment` instead of opening a duplicate.
+- Search existing issues for the same stable source/problem fingerprint.
+- If the failure recovered, duplicates existing work, lacks approved scope, or
+  control/capacity is paused/blocked/exhausted, use `noop`; do not open work.
 
 ## Safe outputs
 
-- Use `create-issue` for new actionable CI incidents.
-- Use `add-comment` when the failure belongs on an existing issue or PR.
-- Use `noop` for self-recovered, duplicate, or non-actionable failures.
+- Follow `specs/factory-signals.md`; emit `submit_signal` exactly once only for
+  a complete signal and proposal with a numeric baseline, independent test
+  oracle, rollback, and expected outcome. Reference existing direct-goal work
+  explicitly named in the human-approved scope, not just an allowed path.
+- The deterministic adapter rechecks source SHA/window, completeness, duplicate,
+  scope/risk, WIP1, budget, evaluation capacity, and native lineage, then creates
+  only `needs-triage` and dispatches ordinary PM triage. Never label work ready
+  by fiat or infer a new standing maintenance goal.

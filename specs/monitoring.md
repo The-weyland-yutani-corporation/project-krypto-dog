@@ -3,9 +3,10 @@
 This runbook defines the minimum observability required before any recurring
 paper-trading schedule is accepted. It does not authorize live trading.
 
-> **Azure state (2026-08-15): releases and monitoring live.** Dev is
-> shadow/scheduled with activation-bound missing-success monitoring; production
-> is disabled/manual. Both Action Groups returned successful test dispatches.
+> **Status is evidence-bound, not asserted by this runbook.** Read current,
+> environment-specific operation receipts and runtime telemetry before stating
+> whether a release, job, alert or schedule is active. The factory watchdog does
+> not query or change Azure. Production and live-trading authority are unchanged.
 
 Release thresholds and authorization are in
 [`readiness.md`](./readiness.md); deployment order is in
@@ -269,34 +270,62 @@ Daily:
 - each paper trade has a matching run and journal;
 - no-trade decisions remain coherent.
 
-Current baseline: 0 production days (v2 not yet deployed). See `specs/readiness.md`
-§1 for the current evidence summary.
+Qualifying paper-day counts come from the evidence summarized in
+[`readiness.md`](./readiness.md), not from provisioning or a successful release.
+Missing telemetry is unknown; it does not prove either deployment or absence of
+deployment.
 
 ## Factory observability (MonitorOps)
 
 The signals above cover the **trading app**. The **agentic factory** that builds
 it has its own observability, documented in
 [`../docs/agentic-workflows-map.md`](../docs/agentic-workflows-map.md)
-(Operational reporting). In short, the `daily-repo-status` and
-`agentic-governance` workflows run a deterministic collector
-(`scripts/agentic/collect-factory-health.cjs`) over explicit closed UTC windows
-and summarize a normalized JSON snapshot:
+(Operational reporting). The native `factory-watchdog.yml` runs deterministic
+collectors in trusted jobs over explicit closed UTC windows. Daily collection is
+07:15 UTC; weekly governance, entropy and corrections run Monday at 07:30 UTC.
+It continues while paused and does not require an LLM. The `daily-repo-status`,
+`agentic-governance`, `harness-entropy` and `agentic-corrections` GH-AW workflows
+are optional manual summaries **after** trusted pre-agent receipt collection:
 
 - every active GH-AW workflow is represented, including zero-run workflows;
-- unavailable cost/token/safe-output/correction telemetry is `null`, never `0`;
+- bounded API sources expose completeness, records, freshness and failure/limit
+  reasons; unread issue/PR/run data is unknown, never zero/pass;
+- native Actions conclusions remain available when Copilot or optional GH-AW
+  usage tooling fails; unavailable cost/token/proof telemetry is `null`;
+- actual control/goal resolution, lifetime budget, WIP1, claim/repair observations
+  and stage ages are separate from issue/report churn;
 - a material-state hash drives noop suppression, with the published hash read
   from prior report issues (`<!-- factory-state-hash: ... -->`) rather than cache;
+- material hashes include gross opened/closed counts, exact costs and closed
+  windows; same-window replays do not advance telemetry-missing streaks;
 - configured thresholds (repeated failure, WIP over cap, eval/harness failure,
   per-run AI-credit cap, telemetry missing across two published periods, and
   source/lock drift) produce explicit, evidence-backed breaches.
 
-Factory reports are read-only, single recurring issues; they do not replace the
-trading-app signals in this runbook.
+The native trusted publisher updates only its bot-owned canonical issue for each
+series (`factory-report:v1` marker plus `report`/`agentic-factory` labels).
+It exposes the canonical issue number, publishes a minimal failure when no
+collection artifact exists, and does not close unrelated or legacy reports.
+Snapshots/cache watermarks contain normalized evidence, not raw issue bodies or
+prompts. Optional model summaries cannot mutate those issues.
+
+Reports do not actuate work. A separate bounded `submit_signal` safe output
+validates fresh evidence, scope, risk, WIP, budget and evaluation capacity before
+one complete direct-goal child enters normal PM triage. See
+[`factory-signals.md`](./factory-signals.md) for schemas, replay handling,
+native lineage, human boundaries and the offline signal-entry canary.
+
+Substantive throughput requires genuine exact-merged-SHA development receipts,
+not `factory:done` labels, issue closures, heartbeat changes, merges, or a green
+status alone. If the authoritative dev-evidence reader is unavailable, verified
+throughput is null with an explicit capability reason. Receipt delivery and
+measured hypothesis outcome are separate, and unavailable paper metrics remain
+unknown.
 
 ### Report-only entropy (harness-entropy)
 
-The weekly `harness-entropy` workflow adds a report-only entropy loop on top of
-MonitorOps. A deterministic, dependency-free collector
+The native weekly watchdog adds a report-only entropy loop on top of MonitorOps;
+`harness-entropy` is its optional manual model summary. A dependency-free collector
 (`scripts/agentic/collect-agentic-entropy.cjs`) runs the MonitorOps governance
 collector first, then scans the governance surfaces (canonical policy, GH-AW
 sources/locks, instruction/doc references, architecture boundaries) and reuses
@@ -314,16 +343,19 @@ JSON manifest:
   never a false zero;
 - a material-state hash drives noop suppression, with the published hash read from
   prior `[factory-entropy]` report issues (`<!-- entropy-state-hash: ... -->`)
-  authoritative over cache, so a cache miss never suppresses a report.
+  authoritative over cache, so a cache miss never suppresses a report;
+- clearing the last finding publishes one resolution, rather than being
+  suppressed merely because no actionable violation remains.
 
-The workflow is strictly report-only: it has no create-pull-request, push, edit,
-or deletion output, publishes at most one recurring issue, and never proposes or
-applies a code, policy, or trading change.
+The collector remains report-only. It never applies a code, policy or trading
+change. Its native publisher updates one canonical report; a potential work
+signal is separately corroborated and admitted, never marked ready by the scan.
 
 ### Staged CorrectionOps (agentic-corrections)
 
-The weekly `agentic-corrections` workflow adds a staged, report-only correction
-loop that measures — and only measures — how often the factory's PM-triage and
+The native weekly CorrectionOps collection adds a staged, report-only loop;
+`agentic-corrections` is an optional manual summary. It measures — and only
+measures — how often the factory's PM-triage and
 specialist-routing label decisions were later corrected by a trusted human. A
 deterministic, dependency-free collector
 (`scripts/agentic/collect-agentic-corrections.cjs`) reconstructs each prediction
@@ -349,6 +381,9 @@ emits a versioned JSON report:
   sample size is `0`), immutable-route conflicts, and
   instruction/workflow/model version groupings — no raw
   issue/comment/prompt/event body is ever stored or emitted;
+- run sampling and bounded API reads expose incompleteness explicitly; paginated
+  changed-file/label-event responses are decoded page-by-page, not concatenated
+  into invalid JSON or treated as empty truth;
 - a material-state hash drives noop suppression, with the published hash read from
   prior `[factory-corrections]` report issues
   (`<!-- correction-state-hash: ... -->`) authoritative over cache, so a cache miss
@@ -385,6 +420,7 @@ complete monitoring, no unexplained errors, expected guardrail behavior,
 positive net results under the evaluation methodology, and manual journal
 review.
 
-Current Azure baseline: **2 provisioned environment foundations, 0 releases,
-0 Container Apps Jobs, and 0 scheduled production days**. Foundation workflow
-evidence exists; release, ops-job, and schedule evidence does not.
+Current Azure state must be established from exact-SHA, environment-specific
+release/operation receipts and current runtime observations. This document does
+not make a competing live/not-live assertion, and a factory receipt never
+authorizes production promotion or live trading.

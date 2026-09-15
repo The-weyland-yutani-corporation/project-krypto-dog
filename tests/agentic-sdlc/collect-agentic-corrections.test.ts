@@ -613,21 +613,24 @@ describe("corrections — agentic-corrections workflow contract", () => {
     "utf8",
   );
 
-  it("runs weekly with a manual dispatch path", () => {
+  it("keeps summaries manual while the native watchdog owns weekly collection", () => {
     expect(source).toContain("workflow_dispatch:");
-    expect(source).toContain("schedule: weekly on monday");
+    expect(source).not.toContain("schedule:");
+    expect(source).toContain("factory-watchdog.yml");
   });
 
-  it("uses cache-memory with 90-day retention", () => {
-    expect(source).toContain("cache-memory:");
-    expect(source).toContain("retention-days: 90");
+  it("persists deterministic receipts before model execution", () => {
+    expect(source).toContain("pre-agent-steps:");
+    expect(source).toContain('mode: "governance"');
+    expect(source).toContain("runCollectionStep({ github, context, core,");
+    expect(source).toContain("if: always()");
+    expect(source).toContain("actions/upload-artifact@v4");
   });
 
   it("exposes only the trusted collector and cat on the bash allowlist", () => {
-    expect(source).toContain(
-      '"node scripts/agentic/collect-agentic-corrections.cjs *"',
-    );
-    expect(source).toContain('"cat /tmp/gh-aw/correction-report.json"');
+    expect(source).not.toContain('"node scripts/agentic/');
+    expect(source).toContain('"cat /tmp/gh-aw/watchdog/correction-report.json"');
+    expect(source).toContain('"cat /tmp/gh-aw/watchdog/receipts.json"');
     // No add-labels/edit tooling on the allowlist.
     expect(source).not.toContain('"gh ');
   });
@@ -642,13 +645,11 @@ describe("corrections — agentic-corrections workflow contract", () => {
     expect(frontmatter).not.toMatch(/issues:\s*write/);
   });
 
-  it("configures exactly one report issue with close-older, expiry, and no mentions/refs", () => {
-    expect(source).toContain('title-prefix: "[factory-corrections] "');
-    expect(source).toContain("max: 1");
-    expect(source).toContain("close-older-issues: true");
-    expect(source).toContain("expires: 90d");
-    expect(source).toContain("mentions: false");
-    expect(source).toContain("allowed-github-references: []");
+  it("does not let optional model summaries mutate canonical reports", () => {
+    expect(source).not.toContain("create-issue:");
+    expect(source).not.toContain("close-older-issues:");
+    expect(source).not.toContain("update-issue:");
+    expect(source).toContain("canonicalReport");
     expect(source).toContain("noop:");
   });
 
@@ -678,15 +679,17 @@ describe("corrections — agentic-corrections workflow contract", () => {
     ]) {
       expect(frontmatter).not.toContain(forbidden);
     }
-    expect(lock).toContain("create_issue");
+    expect(lock).not.toContain('"create_issue":');
+    expect(lock).toContain('"noop":');
     expect(lock).not.toContain('"create_pull_request":');
     expect(lock).not.toContain('"push_to_pull_request_branch":');
     expect(lock).not.toContain('"add_labels":');
     expect(lock).not.toContain('"update_issue":');
   });
 
-  it("compiles to a single create-issue safe output (max 1)", () => {
+  it("compiles bounded summary-only output and explicit failure handling", () => {
     expect(lock).toContain('"max":1');
-    expect(lock).toContain('"title_prefix":"[factory-corrections] "');
+    expect(lock).not.toContain('"title_prefix":"[factory-corrections] "');
+    expect(source).toContain("report_incomplete");
   });
 });

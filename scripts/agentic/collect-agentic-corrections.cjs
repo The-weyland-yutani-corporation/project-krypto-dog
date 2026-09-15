@@ -60,6 +60,8 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 
 const factory = require("./collect-factory-health.cjs");
+const reports = require("./factory-report.cjs");
+const reads = require("./factory-read.cjs");
 
 const REPORT_SCHEMA_VERSION = 1;
 
@@ -739,7 +741,9 @@ function groupBy(diffs, keyFn) {
 function buildMaterialView(report) {
   return {
     schemaVersion: report.schemaVersion,
-    window: report.window ? { days: report.window.days } : null,
+    window: report.window || null,
+    completeness: report.completeness || null,
+    sources: report.sources || null,
     diffs: (report.diffs || [])
       .map((d) => ({
         id: d.id,
@@ -867,7 +871,7 @@ function readPublishedHash(issues) {
       return match
         ? {
             hash: match[1].toLowerCase(),
-            createdAt: issue.createdAt || issue.created_at || "",
+            createdAt: issue.updatedAt || issue.updated_at || issue.createdAt || issue.created_at || "",
             number: Number(issue.number) || 0,
           }
         : null;
@@ -1047,18 +1051,9 @@ function readRunFolder(dir) {
 /** Fetch a PR's changed filenames (path metadata only), read-only. */
 function ghChangedFiles(runner, repository, prNumber) {
   const [owner, repo] = repository.split("/");
-  const rows = factory.runJson(
-    runner,
-    [
-      "api",
-      "--paginate",
-      `/repos/${owner}/${repo}/pulls/${prNumber}/files`,
-      "--jq",
-      "[.[].filename]",
-    ],
-    `gh api pulls/${prNumber}/files`,
-  );
-  return Array.isArray(rows) ? rows.filter((f) => typeof f === "string") : [];
+  const result = reads.readPages(runner, `/repos/${owner}/${repo}/pulls/${prNumber}/files`);
+  return reads.requireComplete(result, "correction-changed-files").map((file) => file.filename)
+    .filter((filename) => typeof filename === "string");
 }
 
 /**
@@ -1068,26 +1063,17 @@ function ghChangedFiles(runner, repository, prNumber) {
  */
 function ghLabelEvents(runner, repository, itemNumber, permCache) {
   const [owner, repo] = repository.split("/");
-  const events = factory.runJson(
-    runner,
-    [
-      "api",
-      "--paginate",
-      `/repos/${owner}/${repo}/issues/${itemNumber}/events`,
-      "--jq",
-      '[.[] | select(.event == "labeled" or .event == "unlabeled") | {label: .label.name, action: .event, actor: .actor.login, actorType: .actor.type, createdAt: .created_at}]',
-    ],
-    `gh api issues/${itemNumber}/events`,
-  );
+  const result = reads.readPages(runner, `/repos/${owner}/${repo}/issues/${itemNumber}/events`);
+  const events = reads.requireComplete(result, "correction-label-events");
   const normalized = [];
-  for (const e of Array.isArray(events) ? events : []) {
-    if (!e || typeof e.label !== "string") continue;
+  for (const e of events) {
+    if (!e || !["labeled", "unlabeled"].includes(e.event) || typeof e.label?.name !== "string") continue;
     normalized.push({
-      label: e.label,
-      action: e.action,
-      actorType: e.actorType,
-      permission: resolvePermission(runner, repository, e.actor, permCache),
-      createdAt: e.createdAt,
+      label: e.label.name,
+      action: e.event,
+      actorType: e.actor?.type,
+      permission: e.actor?.type === "User" ? resolvePermission(runner, repository, e.actor.login, permCache) : null,
+      createdAt: e.created_at,
     });
   }
   return normalized;
@@ -1105,16 +1091,15 @@ function resolvePermission(runner, repository, login, permCache) {
     "--jq",
     ".permission",
   ]);
-  if (result.status === 0) {
-    permission = result.stdout.trim() || null;
-  }
+  if (result.status !== 0) throw new Error("correction-human-permission-unavailable");
+  permission = result.stdout.trim() || null;
   if (permCache) permCache.set(login, permission);
   return permission;
 }
 
 function ghReportIssues(runner, repository, titlePrefix) {
   const [owner, repo] = repository.split("/");
-  return factory.runJson(
+  const result = factory.runJson(
     runner,
     [
       "issue",
@@ -1126,12 +1111,14 @@ function ghReportIssues(runner, repository, titlePrefix) {
       "--search",
       `${titlePrefix} in:title`,
       "--limit",
-      "20",
+      "1000",
       "--json",
-      "number,body,createdAt",
+      "number,body,createdAt,updatedAt,title,state,labels,author",
     ],
     "gh issue list for published correction state",
   );
+  if (!Array.isArray(result) || result.length >= 1000) throw new Error("correction-report-history-incomplete");
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1158,6 +1145,8 @@ function collect(options) {
   let botExcluded = opts.botExcluded || 0;
   let untrustedExcluded = opts.untrustedExcluded || 0;
   let publishedHash = opts.publishedHash || null;
+  let canonicalReport = null;
+  let sources = opts.sources || null;
 
   if (!predictions) {
     // Live path: download runs and reconstruct predictions + truth from GitHub.
@@ -1184,10 +1173,11 @@ function collect(options) {
       : null;
     botExcluded = built.botExcluded;
     untrustedExcluded = built.untrustedExcluded;
+    sources = built.sources;
     if (opts.reportTitlePrefix) {
-      publishedHash = readPublishedHash(
-        ghReportIssues(runner, repository, opts.reportTitlePrefix),
-      );
+      const issues = opts.reportIssues || ghReportIssues(runner, repository, opts.reportTitlePrefix);
+      canonicalReport = reports.canonicalReport(issues, "corrections");
+      publishedHash = readPublishedHash(issues.filter((issue) => issue.number === canonicalReport.number));
     }
   }
 
@@ -1214,6 +1204,11 @@ function collect(options) {
     untrustedExcluded,
     cap: opts.cap,
   });
+  report.canonicalReport = canonicalReport;
+  report.sources = sources;
+  report.completeness = sources && Object.values(sources).some((source) => source.completeness !== "complete")
+    ? "partial" : "complete";
+  report.materialHash = computeMaterialHash(report);
 
   const cacheRepresentsPublished = Boolean(
     cache && publishedHash && cache.materialHash && cache.materialHash === publishedHash,
@@ -1289,6 +1284,7 @@ function livePredictionsAndTruth(ctx) {
   const truthByItem = {};
   let botExcluded = 0;
   let untrustedExcluded = 0;
+  const sources = {};
 
   const plans = [
     { workflow: "pm-triage", kind: "pm-triage" },
@@ -1304,9 +1300,13 @@ function livePredictionsAndTruth(ctx) {
       window: ctx.window,
       outputDir,
     });
+    sources[plan.workflow] = {
+      completeness: folders.length >= ctx.count ? "partial" : "complete",
+      records: folders.length, limit: ctx.count, reason: folders.length >= ctx.count ? "run-sample-limit-reached" : null,
+    };
     for (const folder of folders) {
       const raw = readRunFolder(folder);
-      if (!raw) continue;
+      if (!raw) throw new Error("correction-run-artifact-unavailable");
       if (
         !raw.awInfo.createdAt ||
         !factory.isWithinWindow(raw.awInfo.createdAt, ctx.window)
@@ -1343,13 +1343,13 @@ function livePredictionsAndTruth(ctx) {
       ctx.repository,
       prediction.itemNumber,
       ctx.permCache,
-    );
+    ).filter((event) => Date.parse(event.createdAt) < Date.parse(ctx.window.end));
     const truth = deriveLabelTruth(events, relevant, prediction.appliedAt);
     botExcluded += truth.botExcluded;
     untrustedExcluded += truth.untrustedExcluded;
     truthByItem[prediction.id] = truth;
   }
-  return { predictions, truthByItem, botExcluded, untrustedExcluded };
+  return { predictions, truthByItem, botExcluded, untrustedExcluded, sources };
 }
 
 function firstItemNumber(safeOutputs) {
@@ -1391,7 +1391,7 @@ function runFixtureContract(fixtureDir) {
   const expectedPath = path.join(fixtureDir, "expected-report.json");
   let drift = null;
   if (fs.existsSync(expectedPath)) {
-    const expected = fs.readFileSync(expectedPath, "utf8").trim();
+    const expected = fs.readFileSync(expectedPath, "utf8").replace(/\r\n/g, "\n").trim();
     const actual = JSON.stringify(report, null, 2).trim();
     if (expected !== actual) drift = { expectedPath };
   }
@@ -1533,6 +1533,11 @@ function main(argv, deps) {
     process.stderr.write(
       `error: correction collection failed: ${(error && error.message) || error}\n`,
     );
+    if (outPath) {
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, `${JSON.stringify(reports.failureReceipt("corrections",
+        args.now || new Date().toISOString(), "correction-collection-failed"), null, 2)}\n`);
+    }
     return 1;
   }
 
@@ -1550,7 +1555,7 @@ function main(argv, deps) {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
     fs.writeFileSync(cachePath, `${JSON.stringify(cacheRecord, null, 2)}\n`);
   }
-  return 0;
+  return report.completeness === "complete" ? 0 : 1;
 }
 
 if (require.main === module) {

@@ -1,5 +1,5 @@
 ---
-description: Proactively discovers and creates high-quality PM/research opportunity tickets for the agentic SDLC factory. WIP-gated — produces at most one issue per run and calls noop when actionable backlog reaches 20 open issues.
+description: Proposes at most one evidence-bound signal for deterministic goal/capacity admission. Native watchdog schedules discovery only when eligible; the model cannot create or ready work directly.
 on:
   workflow_dispatch:
     inputs:
@@ -7,19 +7,84 @@ on:
         description: Optional focus area, e.g. QA, observability, safety, factory, admin UX. Strategy areas are deferred.
         required: false
         type: string
-  schedule: weekly
+      receipt_run_id:
+        description: Optional trusted Factory Watchdog receipt run (not authorization)
+        required: false
+        type: string
   slash_command:
     name: discover
     events: [issues, issue_comment]
     strategy: centralized
+concurrency:
+  group: factory-queue-controller
+  cancel-in-progress: false
 permissions:
   contents: read
   issues: read
   pull-requests: read
   actions: read
+  deployments: read
+  statuses: read
   copilot-requests: write
 imports:
   - .github/agents/trading-growth-pm.md
+pre-agent-steps:
+  - name: Check out trusted signal adapters
+    uses: actions/checkout@v4
+    with:
+      ref: ${{ github.event.repository.default_branch }}
+      persist-credentials: false
+  - uses: actions/setup-node@v4
+    with:
+      node-version-file: .nvmrc
+  - name: Collect current control and evidence before any model
+    uses: actions/github-script@v9
+    env:
+      GH_TOKEN: ${{ github.token }}
+    with:
+      script: |
+        const { runCollectionStep } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+        await runCollectionStep({ github, context, core, mode: "daily" });
+  - name: Verify optional native watchdog receipt provenance
+    id: receipt-source
+    if: github.event.inputs.receipt_run_id != ''
+    uses: actions/github-script@v9
+    env:
+      RECEIPT_RUN_ID: ${{ github.event.inputs.receipt_run_id }}
+    with:
+      script: |
+        const { inspectReceiptRun } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+        const receipt = await inspectReceiptRun({
+          github, ...context.repo, runId: process.env.RECEIPT_RUN_ID,
+          defaultBranch: context.payload.repository.default_branch,
+        });
+        core.setOutput("attempt", receipt.attempt);
+  - name: Read exact-attempt signal receipt
+    if: github.event.inputs.receipt_run_id != ''
+    uses: actions/download-artifact@v4
+    with:
+      github-token: ${{ github.token }}
+      run-id: ${{ github.event.inputs.receipt_run_id }}
+      name: factory-watchdog-receipts-a${{ steps.receipt-source.outputs.attempt }}
+      path: /tmp/gh-aw/watchdog-source
+  - name: Merge bounded fresh signal evidence without granting authority
+    if: github.event.inputs.receipt_run_id != ''
+    uses: actions/github-script@v9
+    with:
+      script: |
+        const { mergeDiscoverySignals } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+        mergeDiscoverySignals({
+          sourcePath: "/tmp/gh-aw/watchdog-source/signal-candidates.json",
+          outputPath: "/tmp/gh-aw/watchdog/signal-candidates.json",
+          repository: `${context.repo.owner}/${context.repo.repo}`,
+        });
+  - name: Preserve current deterministic receipt
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: factory-observer-receipts
+      path: /tmp/gh-aw/watchdog/*.json
+      retention-days: 30
 tools:
   github:
     mode: gh-proxy
@@ -27,15 +92,36 @@ tools:
   web-fetch:
 network: defaults
 safe-outputs:
-  create-issue:
-    title-prefix: "[opportunity] "
-    labels: [agentic-factory, opportunity, needs-rubber-duck]
-    allowed-labels: [agentic-factory, opportunity, needs-rubber-duck]
-    max: 1
-    deduplicate-by-title: 1
-  add-comment:
-    max: 1
-    hide-older-comments: true
+  jobs:
+    submit-signal:
+      if: needs.agent.result == 'success' && needs.detection.outputs.detection_success == 'true'
+      description: Validate exactly one signal and proposal, then admit at most one native approved-goal child to normal PM triage.
+      runs-on: ubuntu-latest
+      inputs:
+        payload:
+          description: JSON object with signal and proposal, matching specs/factory-signals.md
+          required: true
+          type: string
+      permissions:
+        contents: read
+        issues: write
+        actions: write
+        pull-requests: read
+      steps:
+        - uses: actions/checkout@v4
+          with:
+            ref: ${{ github.event.repository.default_branch }}
+            persist-credentials: false
+        - uses: actions/github-script@v9
+          with:
+            script: |
+              const { runSafeOutput } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/signal-intake.cjs`);
+              await runSafeOutput({
+                github, context, core, outputPath: process.env.GH_AW_AGENT_OUTPUT,
+                repoRoot: process.env.GITHUB_WORKSPACE,
+              });
+  report-failure-as-issue: false
+  mentions: false
   noop:
     report-as-issue: false
 max-ai-credits: 1000
@@ -44,14 +130,18 @@ max-daily-ai-credits: 2000
 
 # Opportunity Discovery
 
-Discover at most **one** high-quality opportunity ticket per run inside a
-human-approved factory goal. Strategy research is explicitly deferred.
+Propose at most **one** corroborated signal inside an existing human-approved
+factory goal. Read `specs/factory-signals.md` and the trusted
+`/tmp/gh-aw/watchdog/receipts.json`, `factory-health.json`, and
+`signal-candidates.json` first. Do not rerun collection in the prompt.
+Missing or failed collection requires `report_incomplete`, not `noop`.
+Strategy research is explicitly deferred.
 
 ## WIP gate (check this first)
 
 Count the number of open issues with label `opportunity` that do **not** have label `blocked`. If that count is **≥ 20**, call `noop` immediately with the reason "backlog WIP limit reached — {count} open opportunity issues". Do not proceed further.
 
-Also require exactly one open parent goal carrying `factory:goal-approved`.
+Also require active human-backed factory control and exactly one open parent goal carrying `factory:goal-approved`.
 Read its allowed scope, non-goals, maximum risk, WIP, and assignment budget.
 Call `noop` when no goal is active or when its queued/claimed/implementing work
 already reaches the goal's WIP allowance.
@@ -87,16 +177,18 @@ Act as a proactive PM/research agent.
 3. Identify exactly one opportunity from the allowed scope above.
 4. Use external web sources only when they materially improve the ticket; cite them in the issue body.
 5. Create only high-confidence software tickets with clear acceptance criteria and validation plans.
-6. Every created ticket starts behind rubber-duck review. Do not label tickets `ready-for-planning` or `ready-for-ai-dev`.
+6. The adapter creates only `needs-triage`. Rubber-duck review remains a normal PM step. Never apply `ready-for-planning`, `ready-for-ai-dev`, or multiple lifecycle labels.
 7. For any ticket touching guardrails, portfolio accounting, risk controls, or live-trading boundaries, state that it requires rubber-duck and trading-safety review before implementation.
 8. If no opportunity clears the quality bar, call `noop`.
-9. Link the created opportunity to the active goal and include the goal number
-   in its body. Set the safe output's native `parent` to that goal number.
-   Never create or approve a new goal.
+9. The proposal must reference an existing native direct-goal work issue explicitly
+   named in the goal's Objective or Allowed scope. Broad paths do not authorize
+   novel maintenance. Never infer a standing goal, renew a budget, or create or
+   approve a goal. The trusted adapter creates and verifies the direct native link.
 
 ## Ticket format
 
-Each created issue must include:
+The `submit_signal` payload must use the exact versioned schema in
+`specs/factory-signals.md`, including:
 
 - Opportunity
 - Why this may improve risk-adjusted paper-trading performance or factory velocity
@@ -107,9 +199,15 @@ Each created issue must include:
 - Validation plan
 - Safety/risk notes
 - Suggested next workflow labels, as recommendations only
+- Numeric baseline, an independent existing test oracle, rollback, expected
+  outcome, source fingerprint/window/SHA/evidence, exact allowed files, dependencies,
+  risk tier, and an explicitly authorized scope issue.
 
 ## Safe outputs
 
-- Use `create-issue` for exactly one opportunity ticket per run. The workflow attaches `agentic-factory`, `opportunity`, and `needs-rubber-duck`.
-- Use `add-comment` when triggered by `/discover` to summarize what was created or why no ticket was created.
-- Use `noop` when: WIP limit reached, near-duplicate exists, no high-confidence non-deferred opportunity found.
+- Emit `submit_signal` exactly once only for a complete, corroborated candidate.
+  It rechecks freshness, deduplication, human-backed control/goal, scope, risk,
+  WIP1, lifetime assignment budget, and current-SHA evaluation capacity.
+  Admission is not readiness or verified delivery. A rejection creates no work.
+- Use `noop` for no eligible signal, paused/shadow control, exhausted capacity,
+  stale/duplicate signals or no explicitly authorized scope.
