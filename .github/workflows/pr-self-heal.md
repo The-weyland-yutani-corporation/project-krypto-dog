@@ -180,7 +180,7 @@ pre-agent-steps:
   - name: Restore trusted agent instructions
     env:
       GH_AW_AGENT_FOLDERS: ".agents .antigravity .claude .codex .crush .gemini .github .opencode .pi"
-      GH_AW_AGENT_FILES: ".crush.json AGENTS.md ANTIGRAVITY.md CLAUDE.md GEMINI.md PI.md opencode.jsonc"
+      GH_AW_AGENT_FILES: ".crush.json AGENTS.md ANTIGRAVITY.md CLAUDE.md DESIGN.md GEMINI.md PI.md opencode.jsonc"
       GH_AW_SUB_AGENT_DIR: ".github/agents"
       GH_AW_SUB_AGENT_EXT: ".agent.md"
       GH_AW_SKILL_DIR: ".github/skills"
@@ -203,8 +203,8 @@ Repair failed checks on an eligible routine or sensitive agent pull request
 - Confirm the PR is open, comes from this repository, has both `agentic-factory` and `agentic-automerge`, and has an `[ai-dev] ` or `[docs-sync] ` title.
 - For reconciler dispatch, require the checked-out PR head to match the
   `head_sha` input; use `noop` if the PR advanced.
-- Agent instruction files in the workspace are restored from the trusted
-  workflow SHA; never modify an `AGENTS.md` file.
+- Agent instruction files and the binding `DESIGN.md` are restored from the
+  trusted workflow SHA; never modify an `AGENTS.md` or `DESIGN.md` file.
 - Resolve the shared factory risk tier from the changed paths and PR risk label.
   Do not repair `risk:boundary`, unknown, malformed, renamed, or destructive
   migration scope.

@@ -295,7 +295,7 @@ describe("agentic SDLC workflow contracts", () => {
       'GH_AW_AGENT_FOLDERS: ".agents .antigravity .claude .codex .crush .gemini .github .opencode .pi"',
     );
     expect(selfHeal).toContain(
-      'GH_AW_AGENT_FILES: ".crush.json AGENTS.md ANTIGRAVITY.md CLAUDE.md GEMINI.md PI.md opencode.jsonc"',
+      'GH_AW_AGENT_FILES: ".crush.json AGENTS.md ANTIGRAVITY.md CLAUDE.md DESIGN.md GEMINI.md PI.md opencode.jsonc"',
     );
     expect(selfHeal).toContain(
       'bash "${RUNNER_TEMP}/gh-aw/actions/restore_inline_sub_agents.sh"',
