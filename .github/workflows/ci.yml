@@ -4,6 +4,10 @@ run-name: ${{ inputs.correlation_id || github.workflow }}
 on:
   workflow_dispatch:
     inputs:
+      pr:
+        description: Pull request number for exact-head validation
+        required: false
+        type: string
       head_sha:
         description: Exact pull request head to validate
         required: false
@@ -23,17 +27,56 @@ on:
       - develop
       - 'develop/**'
 
-# Newer pushes to the same branch cancel in-progress runs.
+# Native pushes retain cancellation; dispatched PRs cannot cancel other PRs.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ inputs.pr || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
 
 jobs:
+  dispatch-context:
+    name: Verify trusted CI dispatch context
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      preparation: ${{ steps.verify.outputs.preparation }}
+      publish: ${{ steps.verify.outputs.publish }}
+    steps:
+      - name: Check out trusted dispatch validator
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/agentic-policy.json
+      - name: Bind dispatch to the live PR and immutable head
+        id: verify
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          EXPECTED_PR_NUMBER: ${{ inputs.pr }}
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+          TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+        with:
+          script: |
+            const { prepareCiDispatch } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/agentic-review-evidence.cjs`);
+            const preparation = await prepareCiDispatch({ github, context });
+            core.setOutput("preparation", JSON.stringify(preparation));
+            core.setOutput("publish", String(preparation.publish));
+
   quality:
     name: Quality and evidence gates
+    needs: dispatch-context
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || needs.dispatch-context.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -104,12 +147,14 @@ jobs:
           if-no-files-found: error
 
       - name: Generate evidence fixture artifacts
+        env:
+          IMPLEMENTATION_SHA: ${{ inputs.head_sha || github.sha }}
         run: |
           mkdir -p artifacts/evidence
           npm run --silent evidence:import -- \
             --input tests/fixtures/evidence/eth-daily.json \
             --out artifacts/evidence/dataset.json
-          jq --arg sha "$GITHUB_SHA" \
+          jq --arg sha "$IMPLEMENTATION_SHA" \
             '.implementationCommitSha = $sha' \
             tests/fixtures/evidence/eth-daily-plan.json \
             > artifacts/evidence/plan.json
@@ -122,7 +167,7 @@ jobs:
       - name: Upload evidence fixture artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: phase-2-evidence-fixture-${{ github.sha }}
+          name: phase-2-evidence-fixture-${{ inputs.head_sha || github.sha }}
           path: artifacts/evidence/
           if-no-files-found: error
           retention-days: 14
@@ -132,6 +177,8 @@ jobs:
 
   postgres:
     name: PostgreSQL migrations and execution
+    needs: dispatch-context
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || needs.dispatch-context.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -152,6 +199,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+
+      - name: Verify dispatched head
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+        run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -190,6 +245,8 @@ jobs:
 
   harness-integrity:
     name: Harness integrity
+    needs: dispatch-context
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || needs.dispatch-context.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Read-only, no secrets: validates the agentic harness (policy, generated
@@ -201,6 +258,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+
+      - name: Verify dispatched head
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+        run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -223,6 +288,8 @@ jobs:
 
   docker-validate:
     name: Docker image target validation
+    needs: dispatch-context
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || needs.dispatch-context.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -230,10 +297,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.head_sha || github.sha }}
           # Full history so the docs-only check below can diff against the
           # actual merge-base/previous commit rather than a shallow clone's
           # single commit.
           fetch-depth: 0
+
+      - name: Verify dispatched head
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+        run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
 
       - name: Determine whether this change is docs-only
         id: changed
@@ -266,12 +340,58 @@ jobs:
 
       - name: Build the web image target
         if: steps.changed.outputs.docs_only != 'true'
-        run: docker build --target web -t ci-validate-web:${{ github.sha }} .
+        run: docker build --target web -t ci-validate-web:${{ inputs.head_sha || github.sha }} .
 
       - name: Build the ops image target
         if: steps.changed.outputs.docs_only != 'true'
-        run: docker build --target ops -t ci-validate-ops:${{ github.sha }} .
+        run: docker build --target ops -t ci-validate-ops:${{ inputs.head_sha || github.sha }} .
 
       - name: Skip notice for docs-only change
         if: steps.changed.outputs.docs_only == 'true'
         run: echo "Skipping Docker target validation -- this change only touches documentation."
+
+  publish-dispatch-checks:
+    name: Publish trusted exact-head CI evidence
+    needs: [dispatch-context, quality, postgres, harness-integrity, docker-validate]
+    if: >-
+      !cancelled() && github.event_name == 'workflow_dispatch' &&
+      needs.dispatch-context.result == 'success' &&
+      needs.dispatch-context.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: read
+    steps:
+      - name: Check out trusted CI publisher, never the tested PR code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/agentic-policy.json
+      - name: Publish verified required job outcomes on the current head
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          EXPECTED_PR_NUMBER: ${{ inputs.pr }}
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+          TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+          PREPARATION: ${{ needs.dispatch-context.outputs.preparation }}
+          JOB_OUTCOMES: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const { publishCiChecks } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/agentic-review-evidence.cjs`);
+            const { QUALITY_GATES_CHECK, MIGRATIONS_CHECK } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/agentic-factory-policy.cjs`);
+            const jobs = JSON.parse(process.env.JOB_OUTCOMES);
+            await publishCiChecks({
+              github, context,
+              preparation: JSON.parse(process.env.PREPARATION),
+              outcomes: {
+                [QUALITY_GATES_CHECK]: jobs.quality.result,
+                [MIGRATIONS_CHECK]: jobs.postgres.result,
+              },
+            });

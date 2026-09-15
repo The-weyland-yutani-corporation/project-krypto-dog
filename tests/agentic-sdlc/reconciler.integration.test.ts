@@ -7,6 +7,9 @@ interface PullRequest {
   state: "open" | "closed";
   html_url: string;
   body: string;
+  base?: { sha: string };
+  created_at?: string;
+  changed_files?: number;
   user: {
     login: string;
     type: string;
@@ -55,6 +58,12 @@ interface WorkflowRun {
   head_sha?: string;
   head_branch?: string;
   display_title?: string;
+  path?: string;
+  run_attempt?: number;
+  created_at?: string;
+  updated_at?: string;
+  repository?: { full_name: string };
+  pull_requests?: Array<{ number: number; head: { sha: string }; base: { sha: string } }>;
 }
 
 interface CheckRun {
@@ -62,6 +71,10 @@ interface CheckRun {
   name: string;
   status: string;
   conclusion: string | null;
+  head_sha?: string;
+  app?: { slug: string };
+  external_id?: string;
+  check_suite?: { id: number };
   details_url?: string;
   output?: {
     title: string;
@@ -118,6 +131,7 @@ interface HarnessOptions {
   >;
   goalMaxRiskTier?: string;
   goalAllowedPaths?: string;
+  ciFailures?: number[];
 }
 
 interface ReconcilerModule {
@@ -133,6 +147,18 @@ const { reconcileAgenticPullRequests } =
   jest.requireActual<ReconcilerModule>(
     "../../.github/scripts/agentic-pr-reconciler.cjs",
   );
+const {
+  CI_CHECKS,
+  REVIEW_MARKER,
+  REVIEW_WORKFLOWS,
+  ciFingerprint,
+} = jest.requireActual<{
+  CI_CHECKS: string[];
+  REVIEW_MARKER: string;
+  REVIEW_WORKFLOWS: Record<string, string>;
+  ciFingerprint(checks: CheckRun[], sha: string): string;
+}>("../../.github/scripts/agentic-review-evidence.cjs");
+const TRUSTED_WORKFLOW_SHA = "b".repeat(40);
 
 const repository = "VeVarunSharma/project-krypto-dog";
 const COPILOT_ACTOR = {
@@ -235,6 +261,8 @@ function pullRequest(
     state: "open",
     html_url: `https://github.com/${repository}/pull/${number}`,
     body: "",
+    base: { sha: TRUSTED_WORKFLOW_SHA },
+    created_at: "2026-08-20T00:00:00Z",
     user: {
       login: "github-actions[bot]",
       type: "Bot",
@@ -262,6 +290,7 @@ function runKey(workflowId: string, sha: string): string {
 function dispatchMetadata(workflowId: string, number: number) {
   const sha = `sha-${number}`;
   return {
+    ...(workflowId === "ci.yml" ? { pr: String(number) } : {}),
     head_sha: sha,
     correlation_id: `agentic-pr:${number}:${sha}:${workflowId}`,
   };
@@ -297,9 +326,12 @@ function successRun(
   return {
     id,
     name,
-    event: "workflow_dispatch",
+    event: name === "CI" ? "pull_request" : "workflow_dispatch",
     status: "completed",
     conclusion: "success",
+    run_attempt: 1,
+    created_at: "2026-08-21T00:00:00Z",
+    updated_at: "2026-08-21T00:01:00Z",
     ...overrides,
   };
 }
@@ -318,6 +350,76 @@ function createHarness(options: HarnessOptions = {}) {
   const listEventsForTimeline = jest.fn();
   const listComments = jest.fn();
   const getIssue = jest.fn();
+  const filesForPull = (number: number): ChangedFile[] => {
+    if (fileErrors.has(number)) throw new Error(`file lookup failed for ${number}`);
+    return options.filesByPull?.[number] ?? [
+      { filename: "docs/guides/contributing.md", status: "modified" },
+    ];
+  };
+  const runsForPull = (workflowId: string, pull: PullRequest, index: number): WorkflowRun[] => {
+    const key = runKey(workflowId, pull.head.sha);
+    const configured = options.runs?.[key];
+    const runs = configured ?? (
+      workflowId === "ci.yml" ? [successRun(20 + index, "CI")] :
+      workflowId === "code-review.lock.yml" ? [successRun(30 + index, "Code Review")] : []
+    );
+    return runs.map((run) => ({
+      ...run,
+      run_attempt: run.run_attempt ?? 1,
+      created_at: run.created_at ?? "2026-08-21T00:00:00Z",
+      updated_at: run.updated_at ?? "2026-08-21T00:01:00Z",
+      path: `.github/workflows/${workflowId}`,
+      repository: { full_name: repository },
+      head_sha: run.head_sha ?? (run.event === "workflow_dispatch" ? TRUSTED_WORKFLOW_SHA : pull.head.sha),
+      head_branch: run.head_branch ?? (run.event === "workflow_dispatch" ? "main" : pull.head.ref),
+      display_title: run.display_title ?? `agentic-pr:${pull.number}:${pull.head.sha}:${workflowId}`,
+      pull_requests: [{ number: pull.number, head: { sha: pull.head.sha }, base: { sha: TRUSTED_WORKFLOW_SHA } }],
+    }));
+  };
+  const ciChecksForPull = (pull: PullRequest): CheckRun[] => {
+    const runs = runsForPull("ci.yml", pull, pullRequests.indexOf(pull));
+    if (!runs.length || ["action_required", "cancelled", "timed_out"].includes(runs[0].conclusion || "")) return [];
+    return CI_CHECKS.map((name, index) => ({
+      id: 5000 + pull.number * 10 + index,
+      name, head_sha: pull.head.sha, app: { slug: "github-actions" },
+      status: "completed",
+      conclusion: options.ciFailures?.includes(pull.number) ? "failure" : "success",
+      check_suite: { id: 6000 + pull.number },
+      details_url: `https://github.com/${repository}/actions/runs/${runs[0].id}/job/${5000 + pull.number * 10 + index}`,
+    }));
+  };
+  const checksForPull = (pull: PullRequest): CheckRun[] => {
+    const ci = ciChecksForPull(pull);
+    const configured = options.checksBySha?.[pull.head.sha] ?? [{
+      id: 40, name: "Agentic code review", status: "completed", conclusion: "success",
+    }];
+    const checks = configured.map((check) => ({
+      ...check, head_sha: pull.head.sha, app: { slug: "github-actions" },
+      ...(check.output ? { output: { ...check.output } } : {}),
+    }));
+    for (const check of checks) {
+      const workflow = REVIEW_WORKFLOWS[check.name];
+      if (!workflow || check.conclusion !== "success") continue;
+      const run = runsForPull(workflow, pull, pullRequests.indexOf(pull))[0];
+      if (!run) continue;
+      const packetDigest = "e".repeat(64);
+      check.external_id = `agentic-review:v1:${packetDigest}`;
+      check.output = {
+        title: check.name,
+        summary: `<!-- ${REVIEW_MARKER} ${JSON.stringify({
+          packetDigest, checkName: check.name, headSha: pull.head.sha,
+          workflowSha: TRUSTED_WORKFLOW_SHA, pullNumber: pull.number,
+          runId: run.id, runAttempt: run.run_attempt, verdict: "pass",
+          ciFingerprint: ciFingerprint(ci, pull.head.sha),
+        })} -->\nVerified fixture review`,
+      };
+    }
+    return [...ci, ...checks];
+  };
+  const apiPage = <T,>(items: T[], params: ApiParams) => {
+    const offset = (Number(params.page ?? 1) - 1) * Number(params.per_page ?? 100);
+    return items.slice(offset, offset + Number(params.per_page ?? 100));
+  };
 
   const paginate = jest.fn(
     async (method: unknown, params: ApiParams): Promise<unknown[]> => {
@@ -386,18 +488,7 @@ function createHarness(options: HarnessOptions = {}) {
         );
       }
       if (method === listFiles) {
-        const number = params.pull_number ?? -1;
-        if (fileErrors.has(number)) {
-          throw new Error(`file lookup failed for ${number}`);
-        }
-        return (
-          options.filesByPull?.[number] ?? [
-            {
-              filename: "docs/guides/contributing.md",
-              status: "modified",
-            },
-          ]
-        );
+        return filesForPull(params.pull_number ?? -1);
       }
       if (method === listReviews) {
         return options.reviewsByPull?.[params.pull_number ?? -1] ?? [];
@@ -416,18 +507,8 @@ function createHarness(options: HarnessOptions = {}) {
         });
       }
       if (method === listForRef) {
-        const checks = options.checksBySha?.[params.ref ?? ""] ?? [
-          {
-            id: 40,
-            name: "Agentic code review",
-            status: "completed",
-            conclusion: "success",
-          },
-        ];
-        return checks.map((check) => ({
-          ...check,
-          ...(check.output ? { output: { ...check.output } } : {}),
-        }));
+        const pull = pullRequests.find((item) => item.head.sha === params.ref);
+        return pull ? checksForPull(pull) : [];
       }
       throw new Error("Unexpected paginated method");
     },
@@ -435,40 +516,50 @@ function createHarness(options: HarnessOptions = {}) {
 
   const listWorkflowRuns = jest.fn(async (params: ApiParams) => {
     const workflowId = params.workflow_id ?? "";
-    const workflowRuns = pullRequests.flatMap((pull, index) => {
-      const key = runKey(workflowId, pull.head.sha);
-      if (Object.hasOwn(options.runs ?? {}, key)) {
-        return (options.runs?.[key] ?? []).map((run) => ({
-          ...run,
-          head_sha: run.head_sha ?? pull.head.sha,
-        }));
-      }
-      if (workflowId === "ci.yml") {
-        return [
-          successRun(20 + index, "CI", {
-            head_sha: pull.head.sha,
-          }),
-        ];
-      }
-      if (workflowId === "code-review.lock.yml") {
-        return [
-          successRun(30 + index, "Code Review", {
-            head_sha: pull.head.sha,
-          }),
-        ];
-      }
-      return [];
-    });
+    const workflowRuns = pullRequests.flatMap((pull, index) => runsForPull(workflowId, pull, index));
 
     return {
       data: {
-        workflow_runs: [...workflowRuns],
+        workflow_runs: apiPage(workflowRuns, params),
+        total_count: workflowRuns.length,
       },
     };
   });
 
-  const listForRef = jest.fn();
-  const createCheckRun = jest.fn(async (_params: ApiParams) => ({}));
+  const listForRef = jest.fn(async (params: ApiParams) => {
+    const pull = pullRequests.find((item) => item.head.sha === params.ref);
+    const checks = pull ? checksForPull(pull) : [];
+    return { data: { check_runs: apiPage(checks, params), total_count: checks.length } };
+  });
+  listFiles.mockImplementation(async (params: ApiParams) => ({
+    data: apiPage(filesForPull(params.pull_number ?? -1), params),
+  }));
+  const getPull = jest.fn(async (params: ApiParams) => {
+    const pull = pullRequests.find((item) => item.number === params.pull_number);
+    if (!pull) throw new Error("Unknown pull request");
+    return { data: { ...pull, changed_files: (options.filesByPull?.[pull.number] ?? [{}]).length } };
+  });
+  const getWorkflowRun = jest.fn(async (params: ApiParams) => {
+    for (const [index, pull] of pullRequests.entries()) {
+      const run = runsForPull("ci.yml", pull, index).find((item) => item.id === params.run_id);
+      if (run) return { data: { ...run, check_suite_id: 6000 + pull.number } };
+    }
+    throw new Error("Unknown CI source run");
+  });
+  const listJobsForWorkflowRunAttempt = jest.fn(async (params: ApiParams) => {
+    const pull = pullRequests.find((item, index) =>
+      runsForPull("ci.yml", item, index).some((run) => run.id === params.run_id));
+    if (!pull) throw new Error("Unknown CI job run");
+    const jobs = ciChecksForPull(pull).map((check) => ({
+      id: check.id, name: check.name, status: check.status, conclusion: check.conclusion, run_attempt: 1,
+    }));
+    return { data: { jobs: apiPage(jobs, params), total_count: jobs.length } };
+  });
+  const listWorkflowRunArtifacts = jest.fn(async () => ({ data: { artifacts: [], total_count: 0 } }));
+  let createdCheckId = 100000;
+  const createCheckRun = jest.fn(async (params: ApiParams) => ({
+    data: { ...params, id: createdCheckId++, app: { slug: "github-actions" } },
+  }));
   const updateCheckRun = jest.fn(async (params: ApiParams) => {
     if (updateCheckErrors.has(params.check_run_id ?? -1)) {
       throw new Error("check update forbidden");
@@ -560,6 +651,10 @@ function createHarness(options: HarnessOptions = {}) {
         approveWorkflowRun,
         createWorkflowDispatch,
         listWorkflowRuns,
+        getWorkflowRun,
+        listJobsForWorkflowRunAttempt,
+        listJobsForWorkflowRun: listJobsForWorkflowRunAttempt,
+        listWorkflowRunArtifacts,
       },
       checks: {
         create: createCheckRun,
@@ -576,6 +671,7 @@ function createHarness(options: HarnessOptions = {}) {
         createComment,
       },
       pulls: {
+        get: getPull,
         list: listPulls,
         listCommits,
         listFiles,
@@ -1066,8 +1162,7 @@ describe("agentic PR reconciler integration", () => {
         summary: "Current-head agent reviews approve this PR",
       },
     });
-    expect(mocks.paginate).toHaveBeenCalledWith(
-      mocks.listForRef,
+    expect(mocks.listForRef).toHaveBeenCalledWith(
       expect.objectContaining({
         ref: "sha-1",
         filter: "all",
@@ -1226,7 +1321,7 @@ describe("agentic PR reconciler integration", () => {
           successRun(51, "QA Test Plan", {
             status: "in_progress",
             conclusion: null,
-            head_sha: "main-sha",
+            head_sha: TRUSTED_WORKFLOW_SHA,
             head_branch: "main",
             event: "workflow_dispatch",
             display_title: `agentic-pr:1:sha-1:${workflowId}`,
@@ -1677,6 +1772,7 @@ describe("agentic PR reconciler integration", () => {
     });
     const { mocks } = await reconcile({
       pullRequests: [trusted, untrusted],
+      checksBySha: { "sha-1": [], "sha-2": [] },
       runs: {
         [runKey("code-review.lock.yml", "sha-1")]: [
           successRun(201, "Code Review", {
@@ -1740,6 +1836,7 @@ describe("agentic PR reconciler integration", () => {
       };
 
       const { mocks } = await reconcile({
+        ciFailures: failureSource === "CI" ? [1] : [],
         runs: {
           [runKey("ci.yml", "sha-1")]: [ciRun],
           [runKey("code-review.lock.yml", "sha-1")]: [
@@ -1786,8 +1883,7 @@ describe("agentic PR reconciler integration", () => {
       },
     });
 
-    expect(mocks.paginate).toHaveBeenCalledWith(
-      mocks.listForRef,
+    expect(mocks.listForRef).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: "VeVarunSharma",
         repo: "project-krypto-dog",
@@ -1802,7 +1898,7 @@ describe("agentic PR reconciler integration", () => {
     );
   });
 
-  it("never routes action_required CI or review runs to self-heal", async () => {
+  it("never routes held CI to self-heal or retries a substantive review rejection", async () => {
     const { mocks } = await reconcile({
       runs: {
         [runKey("ci.yml", "sha-1")]: [
@@ -1835,7 +1931,7 @@ describe("agentic PR reconciler integration", () => {
         mocks.createWorkflowDispatch,
         "code-review.lock.yml",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       dispatchedWorkflow(
         mocks.createWorkflowDispatch,
@@ -1856,6 +1952,7 @@ describe("agentic PR reconciler integration", () => {
       commit: { message },
     });
     const { mocks } = await reconcile({
+      ciFailures: [1],
       runs: {
         [runKey("ci.yml", "sha-1")]: [
           successRun(601, "CI", { conclusion: "failure" }),
@@ -1885,6 +1982,7 @@ describe("agentic PR reconciler integration", () => {
 
   it("labels a still-failing PR after a completed no-change heal run", async () => {
     const { mocks } = await reconcile({
+      ciFailures: [1],
       runs: {
         [runKey("ci.yml", "sha-1")]: [
           successRun(701, "CI", { conclusion: "failure" }),
@@ -1952,7 +2050,13 @@ describe("agentic PR reconciler integration", () => {
     expect(harness.core.warning).toHaveBeenCalledWith(
       "Failed to reconcile PR #1: file lookup failed for 1",
     );
-    expect(harness.mocks.createCheckRun).toHaveBeenCalledTimes(1);
+    expect(harness.mocks.createCheckRun).toHaveBeenCalledTimes(2);
+    expect(harness.mocks.createCheckRun).toHaveBeenCalledWith(expect.objectContaining({
+      head_sha: "sha-1",
+      name: "Agentic merge policy",
+      status: "in_progress",
+      output: expect.objectContaining({ summary: "Reconciliation evidence unavailable; no authorization" }),
+    }));
     expect(harness.mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
         head_sha: "sha-2",

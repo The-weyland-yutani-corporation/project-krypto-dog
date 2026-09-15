@@ -30,6 +30,29 @@ const {
   resolveLatestIssueClaim,
   verifyPersistedAssignmentProvenance,
 } = require("./agentic-lifecycle-reconciler.cjs");
+const {
+  DISPATCH_MARKER,
+  DISPATCH_LEASE_MS,
+  REVIEW_MARKER,
+  REVIEW_WORKFLOWS,
+  EvidenceError,
+  ciFingerprint,
+  collectCiEvidence,
+  dispatchReservation,
+  getDeclaredRiskLabel,
+  getPolicyFiles,
+  getRequestedChecks,
+  hasNewerReviewAttempt,
+  infrastructureRetryDecision,
+  isBoundReviewRun,
+  latestBoundReviewRun,
+  markIncompleteReviewAttempt,
+  readPages,
+  receipt,
+  reviewDispatchDecision,
+  semanticReviewOutcome,
+  trustedReviewSource,
+} = require("./agentic-review-evidence.cjs");
 
 const {
   autoMergeLabel: AUTO_MERGE_LABEL,
@@ -453,6 +476,10 @@ function hasSelfHealBlockingLabel(pullRequest) {
 }
 
 function getCheckState(checkRuns, name) {
+  if (checkRuns.some((check) => check.name === name &&
+      check.status === "completed" && check.conclusion === "failure")) {
+    return "failure";
+  }
   const check = latestNamedCheck(checkRuns, name);
   if (!check) {
     return "missing";
@@ -460,45 +487,10 @@ function getCheckState(checkRuns, name) {
   if (check.status !== "completed") {
     return "pending";
   }
+  if (check.conclusion === "action_required") return "pending";
   return PASSING_CHECK_CONCLUSIONS.has(check.conclusion)
     ? "success"
     : "failure";
-}
-
-function getPolicyFiles(files) {
-  return files.flatMap((file) => {
-    const entries = [file];
-    if (file.previous_filename) {
-      entries.push({
-        filename: file.previous_filename,
-        status: file.status,
-      });
-    }
-    return entries;
-  });
-}
-
-function getDeclaredRiskLabel(pullRequest) {
-  const labels = getLabels(pullRequest);
-  if (labels.has("ready-for-human-review")) {
-    return RISK_TIERS.BOUNDARY;
-  }
-  const riskLabels = [...labels].filter((label) =>
-    Object.values(RISK_TIERS).includes(label),
-  );
-  if (riskLabels.length === 0) {
-    return undefined;
-  }
-  return riskLabels.length === 1 ? riskLabels[0] : "risk:invalid";
-}
-
-function getRequestedChecks(pullRequest) {
-  const labels = getLabels(pullRequest);
-  return [
-    ...(labels.has("needs-qa") ? [QA_CHECK_NAME] : []),
-    ...(labels.has("security-review") ? [SECURITY_CHECK_NAME] : []),
-    ...(labels.has("trading-safety") ? [TRADING_SAFETY_CHECK_NAME] : []),
-  ];
 }
 
 function getAgentApprovalState(
@@ -888,20 +880,19 @@ async function reconcileAgenticPullRequests({
     );
   }
 
-  const listRuns = async (workflowId, headSha, pullNumber) => {
-    try {
-      const response = await github.rest.actions.listWorkflowRuns({
+  const listRuns = async (workflowId, headSha, pullNumber, createdAt) => {
+      const runs = await readPages(github.rest.actions.listWorkflowRuns, {
         owner,
         repo,
         workflow_id: workflowId,
-        per_page: 100,
-      });
+        ...(createdAt ? { created: `>=${createdAt}` } : {}),
+      }, "workflow_runs");
       const correlationId = dispatchCorrelationId(
         workflowId,
         pullNumber,
         headSha,
       );
-      return response.data.workflow_runs
+      return runs
         .filter(
           (run) =>
             run.head_sha === headSha ||
@@ -910,13 +901,6 @@ async function reconcileAgenticPullRequests({
               run.event === "workflow_dispatch"),
         )
         .sort((left, right) => right.id - left.id);
-    } catch (error) {
-      if (getErrorStatus(error) === 404) {
-        core.warning(`Workflow ${workflowId} is not available yet.`);
-        return [];
-      }
-      throw error;
-    }
   };
 
   const dispatch = async (workflowId, ref, inputs = {}) => {
@@ -943,10 +927,7 @@ async function reconcileAgenticPullRequests({
         getErrorStatus(error) === 403 ||
         getErrorStatus(error) === 404
       ) {
-        core.warning(
-          `Could not read reviews for PR #${pullNumber}; keeping the merge policy fail-closed.`,
-        );
-        return [];
+        throw new EvidenceError("access_unavailable", `human reviews for PR #${pullNumber}`);
       }
       throw error;
     }
@@ -1158,24 +1139,28 @@ async function reconcileAgenticPullRequests({
   for (const pullRequest of pullRequests) {
     try {
       const number = pullRequest.number;
+      const { data: livePull } = await github.rest.pulls.get({
+        owner, repo, pull_number: number,
+      });
+      if (livePull.state !== "open") continue;
+      Object.assign(pullRequest, livePull);
       const sha = pullRequest.head.sha;
       const [
         files,
         reviews,
         commits,
-        checkRuns,
+        rawCheckRuns,
         ciRuns,
         rawReviewRuns,
         rawQaRuns,
         rawSecurityRuns,
         rawTradingSafetyRuns,
       ] = await Promise.all([
-          github.paginate(github.rest.pulls.listFiles, {
+          readPages(github.rest.pulls.listFiles, {
             owner,
             repo,
             pull_number: number,
-            per_page: 100,
-          }),
+          }, undefined, pullRequest.changed_files),
           listReviews(number),
           github.paginate(github.rest.pulls.listCommits, {
             owner,
@@ -1183,25 +1168,64 @@ async function reconcileAgenticPullRequests({
             pull_number: number,
             per_page: 100,
           }),
-          github.paginate(github.rest.checks.listForRef, {
+          readPages(github.rest.checks.listForRef, {
             owner,
             repo,
             ref: sha,
             filter: "all",
-            per_page: 100,
-          }),
-          listRuns("ci.yml", sha, number),
-          listRuns("code-review.lock.yml", sha, number),
-          listRuns("qa-test-plan.lock.yml", sha, number),
-          listRuns("security-review.lock.yml", sha, number),
-          listRuns("trading-safety-review.lock.yml", sha, number),
+          }, "check_runs"),
+          listRuns("ci.yml", sha, number, pullRequest.created_at),
+          listRuns("code-review.lock.yml", sha, number, pullRequest.created_at),
+          listRuns("qa-test-plan.lock.yml", sha, number, pullRequest.created_at),
+          listRuns("security-review.lock.yml", sha, number, pullRequest.created_at),
+          listRuns("trading-safety-review.lock.yml", sha, number, pullRequest.created_at),
         ]);
-      const dispatchedRuns = (runs) =>
-        runs.filter((run) => run.event === "workflow_dispatch");
-      const reviewRuns = dispatchedRuns(rawReviewRuns);
-      const qaRuns = dispatchedRuns(rawQaRuns);
-      const securityRuns = dispatchedRuns(rawSecurityRuns);
-      const tradingSafetyRuns = dispatchedRuns(rawTradingSafetyRuns);
+      const allRunsByCheck = {
+        [REVIEW_CHECK_NAME]: rawReviewRuns,
+        [QA_CHECK_NAME]: rawQaRuns,
+        [SECURITY_CHECK_NAME]: rawSecurityRuns,
+        [TRADING_SAFETY_CHECK_NAME]: rawTradingSafetyRuns,
+      };
+      const runsByCheck = Object.fromEntries(Object.entries(allRunsByCheck).map(([name, runs]) => [
+        name, runs.filter((run) =>
+          isBoundReviewRun(run, name, sha, number, repository, defaultBranch) ||
+          (run.event === "pull_request" && run.head_sha === sha &&
+            run.path === `.github/workflows/${REVIEW_WORKFLOWS[name]}` &&
+            run.repository?.full_name?.toLowerCase() === repository.toLowerCase())),
+      ]));
+      const checkRuns = rawCheckRuns
+        .filter((check) => check.head_sha === sha && check.app?.slug === "github-actions")
+        .map((check) => {
+          if (!REVIEW_WORKFLOWS[check.name] || check.conclusion !== "success") return check;
+          const proof = receipt(check, REVIEW_MARKER);
+          const current = semanticReviewOutcome(check, sha) === "pass" &&
+            trustedReviewSource(check, runsByCheck[check.name], repository, defaultBranch) &&
+            !hasNewerReviewAttempt(check, runsByCheck[check.name], repository, defaultBranch) &&
+            (check.name === REVIEW_CHECK_NAME || proof.ciFingerprint === ciFingerprint(rawCheckRuns, sha));
+          return current ? check : { ...check, status: "in_progress", conclusion: null };
+        });
+      let ciEvidence;
+      try {
+        ciEvidence = await collectCiEvidence(github, {
+          ...context, payload: { ...context.payload, repository: {
+            ...context.payload?.repository, default_branch: defaultBranch,
+          } },
+        }, sha, rawCheckRuns);
+      } catch (error) {
+        if (!(error instanceof EvidenceError)) throw error;
+        core.warning(`PR #${number} CI evidence unavailable: ${error.message}`);
+        ciEvidence = { complete: false, state: "unavailable" };
+      }
+      const assertCurrentHead = async () => {
+        const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+        if (current.state !== "open" || current.head.sha !== sha ||
+            current.base?.sha !== pullRequest.base?.sha) {
+          throw new Error(`PR #${number} changed while reconciling; no stale-head dispatch is permitted`);
+        }
+        return current;
+      };
+      const currentPull = await assertCurrentHead();
+      Object.assign(pullRequest, currentPull);
 
       const implementationProvenance =
         await verifyAgentImplementationProvenance({
@@ -1228,6 +1252,10 @@ async function reconcileAgenticPullRequests({
         goalMaxRiskTier: implementationProvenance.goalMaxRiskTier,
         copilotIdentity,
       });
+      if (policy.state === "success" && (!ciEvidence.complete || ciEvidence.state !== "success")) {
+        policy.state = "pending";
+        policy.description = "Waiting for successful trusted current-head CI evidence";
+      }
 
       if (policy.requiresHumanBoundaryApproval) {
         await ensureCheckRun(
@@ -1299,6 +1327,19 @@ async function reconcileAgenticPullRequests({
           return false;
         }
       };
+      for (const checkName of [REVIEW_CHECK_NAME, ...policy.requiredSpecialistChecks]) {
+        await runPolicyOperation(async () => {
+          const run = latestBoundReviewRun(runsByCheck[checkName], checkName, sha, number, repository, defaultBranch);
+          const updated = await markIncompleteReviewAttempt({
+            github, context, checkName, sha, number, run, checks: rawCheckRuns, defaultBranch,
+          });
+          if (updated) {
+            const existing = checkRuns.find((check) => check.id === updated.id);
+            if (existing) Object.assign(existing, updated);
+            else checkRuns.push(updated);
+          }
+        });
+      }
       const humanBoundaryLabelNeeded =
         policy.requiresHumanBoundaryApproval &&
         !getLabels(pullRequest).has("ready-for-human-review");
@@ -1310,13 +1351,39 @@ async function reconcileAgenticPullRequests({
           addLabels(pullRequest, ["ready-for-human-review"]),
         );
       };
-      const dispatchForPullRequest = async (workflowId, inputs = {}) => {
-        return runPolicyOperation(() =>
-          dispatch(workflowId, defaultBranch, {
+      const dispatchForPullRequest = async (workflowId, inputs = {}, decision) => {
+        return runPolicyOperation(async () => {
+          const current = await assertCurrentHead();
+          if (current.draft || hasBlockingLabel(current)) {
+            throw new Error(`PR #${number} is draft or blocked; dispatch stopped`);
+          }
+          if (decision) {
+            const now = Date.now();
+            const reservation = {
+              correlationId: dispatchCorrelationId(workflowId, number, sha),
+              attempt: decision.attempt,
+              reservedAt: new Date(now).toISOString(),
+              expiresAt: new Date(now + DISPATCH_LEASE_MS).toISOString(),
+            };
+            const { data: created } = await github.rest.checks.create({
+              owner, repo, head_sha: sha, name: `Evidence dispatch: ${workflowId}`,
+              external_id: `${DISPATCH_MARKER}:${number}:${sha}:${workflowId}:${decision.attempt}`,
+              status: "completed", conclusion: "neutral",
+              output: {
+                title: "Bounded infrastructure recovery reservation",
+                summary: `<!-- ${DISPATCH_MARKER} ${JSON.stringify(reservation)} -->\n` +
+                  "This is a dispatch lease, not CI/review evidence or a repair commit.",
+              },
+            });
+            if (!created?.id) throw new Error("Dispatch reservation was not persisted");
+            checkRuns.push(created);
+          }
+          await assertCurrentHead();
+          await dispatch(workflowId, defaultBranch, {
             ...inputs,
             ...dispatchMetadata(workflowId, number, sha),
-          }),
-        );
+          });
+        });
       };
       if (policy.riskExceedsGoal) {
         await ensureCheckRun(
@@ -1334,38 +1401,37 @@ async function reconcileAgenticPullRequests({
         continue;
       }
 
-      const ciNeedsDispatch = ciRuns.length === 0;
-      const reviewNeedsDispatch =
-        reviewRuns.length === 0 &&
-        policy.agentCheckStates[REVIEW_CHECK_NAME] === "missing";
-      const ciHeld = ciRuns[0] && ciRuns[0].conclusion === "action_required";
-      const ciShouldDispatch = ciNeedsDispatch || ciHeld;
-      const reviewHeld =
-        reviewRuns[0] && reviewRuns[0].conclusion === "action_required";
-      const reviewShouldDispatch = reviewNeedsDispatch || reviewHeld;
-      const securityRequired =
-        policy.requiredSpecialistChecks.includes(SECURITY_CHECK_NAME);
-      const qaRequired =
-        policy.requiredSpecialistChecks.includes(QA_CHECK_NAME);
-      const tradingSafetyRequired =
-        policy.requiredSpecialistChecks.includes(
-          TRADING_SAFETY_CHECK_NAME,
-        );
-      const securityShouldDispatch =
-        securityRequired &&
-        policy.agentCheckStates[SECURITY_CHECK_NAME] !== "success" &&
-        (securityRuns.length === 0 ||
-          securityRuns[0].conclusion === "action_required");
-      const qaShouldDispatch =
-        qaRequired &&
-        policy.agentCheckStates[QA_CHECK_NAME] !== "success" &&
-        (qaRuns.length === 0 ||
-          qaRuns[0].conclusion === "action_required");
-      const tradingSafetyShouldDispatch =
-        tradingSafetyRequired &&
-        policy.agentCheckStates[TRADING_SAFETY_CHECK_NAME] !== "success" &&
-        (tradingSafetyRuns.length === 0 ||
-          tradingSafetyRuns[0].conclusion === "action_required");
+      const now = Date.now();
+      const ciNeedsDispatch = !ciEvidence.complete || !["success", "failure"].includes(ciEvidence.state);
+      const ciDecision = ciNeedsDispatch
+        ? infrastructureRetryDecision({
+          runs: ciRuns, now,
+          reservation: dispatchReservation(checkRuns, "ci.yml", sha, number),
+        })
+        : { dispatch: false, reason: "current_ci" };
+      const ciHeld = ciNeedsDispatch;
+      const ciShouldDispatch = ciDecision.dispatch;
+      const decisions = Object.fromEntries(
+        [REVIEW_CHECK_NAME, ...policy.requiredSpecialistChecks].map((checkName) => [
+          checkName,
+          checkName !== REVIEW_CHECK_NAME && (!ciEvidence.complete || ciNeedsDispatch)
+            ? { dispatch: false, reason: "ci_pending" }
+            : reviewDispatchDecision({
+              checks: checkRuns, runs: runsByCheck[checkName], checkName, sha, now,
+              reservation: dispatchReservation(checkRuns, REVIEW_WORKFLOWS[checkName], sha, number),
+            }),
+        ]),
+      );
+      for (const [name, decision] of Object.entries(decisions)) {
+        if (decision.reason === "infrastructure_exhausted") {
+          core.warning(`PR #${number} ${name}: infrastructure recovery exhausted; human investigation required (no repair commit).`);
+        }
+      }
+      const reviewShouldDispatch = decisions[REVIEW_CHECK_NAME].dispatch;
+      const reviewHeld = ["missing", "pending"].includes(policy.agentCheckStates[REVIEW_CHECK_NAME]);
+      const securityShouldDispatch = decisions[SECURITY_CHECK_NAME]?.dispatch;
+      const qaShouldDispatch = decisions[QA_CHECK_NAME]?.dispatch;
+      const tradingSafetyShouldDispatch = decisions[TRADING_SAFETY_CHECK_NAME]?.dispatch;
       const specialistReviewPending = policy.requiredSpecialistChecks.some(
         (name) =>
           policy.agentCheckStates[name] === "missing" ||
@@ -1392,13 +1458,14 @@ async function reconcileAgenticPullRequests({
       );
 
       if (ciShouldDispatch) {
-        await dispatchForPullRequest("ci.yml");
+        await dispatchForPullRequest("ci.yml", { pr: String(number) }, ciDecision);
       }
 
       if (reviewShouldDispatch) {
         await dispatchForPullRequest(
           "code-review.lock.yml",
           pullRequestDispatchInputs(number),
+          decisions[REVIEW_CHECK_NAME],
         );
       }
 
@@ -1406,6 +1473,7 @@ async function reconcileAgenticPullRequests({
         await dispatchForPullRequest(
           "security-review.lock.yml",
           targetDispatchInputs(number),
+          decisions[SECURITY_CHECK_NAME],
         );
       }
 
@@ -1413,6 +1481,7 @@ async function reconcileAgenticPullRequests({
         await dispatchForPullRequest(
           "qa-test-plan.lock.yml",
           targetDispatchInputs(number),
+          decisions[QA_CHECK_NAME],
         );
       }
 
@@ -1420,6 +1489,7 @@ async function reconcileAgenticPullRequests({
         await dispatchForPullRequest(
           "trading-safety-review.lock.yml",
           targetDispatchInputs(number),
+          decisions[TRADING_SAFETY_CHECK_NAME],
         );
       }
 
@@ -1455,7 +1525,7 @@ async function reconcileAgenticPullRequests({
         continue;
       }
 
-      const ciFailure = hasFailedCiRun(ciRuns);
+      const ciFailure = ciEvidence.complete && ciEvidence.state === "failure";
       const reviewFailure =
         hasFailedReviewCheck(checkRuns) ||
         policy.requiredSpecialistChecks.some(
@@ -1482,6 +1552,7 @@ async function reconcileAgenticPullRequests({
         "pr-self-heal.lock.yml",
         sha,
         number,
+        pullRequest.created_at,
       );
       if (healRuns.length === 0) {
         await dispatchForPullRequest(
@@ -1500,6 +1571,17 @@ async function reconcileAgenticPullRequests({
       }
     } catch (error) {
       recordReconciliationError(pullRequest, error);
+      try {
+        await ensureCheckRun(
+          pullRequest.head.sha,
+          "pending",
+          "Reconciliation evidence unavailable; no authorization",
+          pullRequest.html_url,
+          [],
+        );
+      } catch (publicationError) {
+        recordReconciliationError(pullRequest, publicationError);
+      }
     }
   }
 
