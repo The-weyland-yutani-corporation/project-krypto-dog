@@ -72,6 +72,7 @@ export function baseIssues() {
 type Params = Record<string, unknown>;
 export interface FixtureComment {
   id: number; body: string; created_at: string; user: { login: string; type: string };
+  updated_at?: string;
 }
 
 export function harness(options: {
@@ -121,7 +122,7 @@ export function harness(options: {
     writeAllowed();
     const number = Number(params.issue_number);
     const entries = comments.get(number) || [];
-    const comment = { id: entries.length + 1, body: String(params.body), created_at: NOW, user: { type: "Bot", login: "github-actions[bot]" } };
+    const comment = { id: entries.length + 1, body: String(params.body), created_at: NOW, updated_at: NOW, user: { type: "Bot", login: "github-actions[bot]" } };
     entries.push(comment);
     comments.set(number, entries);
     return { data: comment };

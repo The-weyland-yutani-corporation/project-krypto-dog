@@ -240,6 +240,10 @@ an agent-created parent link never authorizes novel maintenance. Signal
 fingerprints/evidence are preserved when a proposal needs a derived leaf.
 Signals under an issue-bounded goal without that mechanical provenance remain
 unproven; do not add a marker as a substitute for human goal rollover.
+Receipts must also match the exact machine-comment envelope and remain
+unedited (`created_at` equals `updated_at`). Model-owned GH-AW comments retain
+their workflow footers and cannot impersonate these bare machine records.
+Do not disable model-comment footers or quote a marker as evidence.
 The signal adapter's versioned `factory-signal-admission:v1` receipt is also
 accepted when the trusted workflow-authored comment on the goal-listed source
 binds its source issue, emitted issue, current goal, fingerprint and exact body

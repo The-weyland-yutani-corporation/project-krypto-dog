@@ -8,6 +8,7 @@ const {
   resolveLatestLabelApplicationActorType, countInFlight, countBudgetConsumption, buildCandidate,
   resolveGoalScopeEvidence,
   nativeParentMatchesRepository,
+  formatMachineReceipt, parseMachineReceipt,
 } = require("./agentic-queue-runtime.cjs");
 const { evaluateEligibility } = require("./agentic-queue-controller.cjs");
 const {
@@ -18,7 +19,6 @@ const { REQUIRED_WORK_ITEM_HEADINGS, diagnoseGoalIssue, linkedPullRequestNumbers
 
 const RECEIPT = /<!-- factory-intake:v1 (.+?) -->/g;
 const RESULT_RECEIPT = /<!-- factory-intake-result:v1 (.+?) -->/g;
-const trustedAuthors = require("../agentic-policy.json").identities.trustedAgentAuthors;
 const STAGES = Object.freeze({
   pm: { actor: "product-manager", from: "needs-triage", to: "ready-for-planning" },
   em: { actor: "engineering-manager", from: "ready-for-planning", to: QUEUE_READY_LABEL },
@@ -184,12 +184,13 @@ async function applySelectiveLabels({ github, owner, repo, issue, labels }) {
   }
 }
 
-function parseReceipts(comments, pattern) {
+function parseReceipts(comments, pattern, kind) {
   const records = [];
   for (const comment of comments) {
     for (const match of (comment.body || "").matchAll(pattern)) {
-      if (comment.user?.type !== "Bot" || !trustedAuthors.includes(comment.user?.login)) throw new Error("Untrusted intake receipt");
-      records.push(JSON.parse(match[1]));
+      const parsed = parseMachineReceipt(comment, kind);
+      if (!parsed) throw new Error(`Untrusted, wrapped or edited intake receipt: ${match[0].slice(0, 35)}`);
+      records.push(parsed);
     }
   }
   return records;
@@ -233,9 +234,9 @@ async function applyWorkItemProposal({ github, context, core, stage, proposal, n
   try {
     const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: target, per_page: 100 });
     if (!Array.isArray(comments)) throw new Error("Missing receipt list");
-    const reservations = parseReceipts(comments, RECEIPT).filter((item) => item.stage === stage);
+    const reservations = parseReceipts(comments, RECEIPT, "reservation").filter((item) => item.stage === stage);
     if (reservations.length) {
-      const results = parseReceipts(comments, RESULT_RECEIPT).filter((item) => item.stage === stage && item.fingerprint === fingerprint);
+      const results = parseReceipts(comments, RESULT_RECEIPT, "result").filter((item) => item.stage === stage && item.fingerprint === fingerprint);
       if (reservations.length !== 1 || reservations[0].fingerprint !== fingerprint) return { ok: false, reasons: ["intake-already-reserved-different-proposal"] };
       if (results.length === 1 && results[0].completed === true) {
         return { ok: true, replayed: true, applied: false, dispatched: false, issue: results[0].issue, handoff: "previously-recorded" };
@@ -265,7 +266,7 @@ async function applyWorkItemProposal({ github, context, core, stage, proposal, n
     }
     await github.rest.issues.createComment({
       owner, repo, issue_number: target,
-      body: `<!-- factory-intake:v1 ${JSON.stringify({ stage, fingerprint, sourceIssue: target, state: "reserved" })} -->\n\nBounded intake reserved. This is not a claim or authorization. Interrupted delivery requires evidence-based recovery, never blind replay.`,
+      body: formatMachineReceipt("reservation", { stage, fingerprint, sourceIssue: target, state: "reserved" }),
     });
     reserved = true;
     if (validation.plan.createLeaf) {
@@ -320,7 +321,7 @@ async function applyWorkItemProposal({ github, context, core, stage, proposal, n
   try {
     await github.rest.issues.createComment({
       owner, repo, issue_number: target,
-      body: `<!-- factory-intake-result:v1 ${JSON.stringify({ stage, fingerprint, issue: materialized.number, bodySha256: hash(materialized.body), completed: true, dispatched: stage === "pm" })} -->\n\nVerified bounded intake. Existing human-authored fields were not overwritten.`,
+      body: formatMachineReceipt("result", { stage, fingerprint, issue: materialized.number, bodySha256: hash(materialized.body), completed: true, dispatched: stage === "pm" }),
     });
   } catch (error) {
     core.warning(`Intake result persistence failed: ${error.message}`);

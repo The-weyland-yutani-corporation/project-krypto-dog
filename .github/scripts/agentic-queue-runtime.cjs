@@ -2,6 +2,41 @@
 
 const { createHash } = require("node:crypto");
 const trustedIntakeAuthors = require("../agentic-policy.json").identities.trustedAgentAuthors;
+const MACHINE_RECEIPTS = Object.freeze({
+  reservation: {
+    prefix: "factory-intake",
+    suffix: "Bounded intake reserved. This is not a claim or authorization. Interrupted delivery requires evidence-based recovery, never blind replay.",
+  },
+  result: {
+    prefix: "factory-intake-result",
+    suffix: "Verified bounded intake. Existing human-authored fields were not overwritten.",
+  },
+  signal: { prefix: "factory-signal-admission", suffix: "" },
+});
+
+function formatMachineReceipt(kind, payload) {
+  const format = MACHINE_RECEIPTS[kind];
+  return `<!-- ${format.prefix}:v1 ${JSON.stringify(payload)} -->${format.suffix ? `\n\n${format.suffix}` : ""}`;
+}
+
+function parseMachineReceipt(comment, kind) {
+  const format = MACHINE_RECEIPTS[kind];
+  if (!format || comment.user?.type !== "Bot" || comment.user?.login !== "github-actions[bot]" ||
+    !trustedIntakeAuthors.includes(comment.user.login) || !isValidTimestamp(comment.created_at) ||
+    comment.updated_at !== comment.created_at || typeof comment.body !== "string") return null;
+  const start = `<!-- ${format.prefix}:v1 `;
+  const end = ` -->${format.suffix ? `\n\n${format.suffix}` : ""}`;
+  if (!comment.body.startsWith(start) || !comment.body.endsWith(end)) return null;
+  try {
+    const payload = JSON.parse(comment.body.slice(start.length, -end.length));
+    // Exact machine output excludes model-authored GH-AW comments with appended
+    // workflow footers, quoted/copied markers, and subsequently edited comments.
+    return payload && typeof payload === "object" && !Array.isArray(payload) &&
+      formatMachineReceipt(kind, payload) === comment.body ? payload : null;
+  } catch {
+    return null;
+  }
+}
 /**
  * Deterministic GitHub queue-controller runtime for the safety-bounded
  * autonomous SDLC factory.
@@ -671,15 +706,10 @@ function hasVerifiedIntakeScope(issue, sourceIssue, sourceComments) {
   if (!Number.isSafeInteger(sourceIssue) || leaf.sourceIssue !== sourceIssue ||
     !/^[a-f0-9]{64}$/.test(leaf.fingerprint || "")) return false;
   const bodySha256 = createHash("sha256").update(issue.body).digest("hex");
-  const records = (pattern) => sourceComments.flatMap((comment) => {
-    if (comment.user?.type !== "Bot" || !trustedIntakeAuthors.includes(comment.user?.login)) return [];
-    return Array.from((comment.body || "").matchAll(pattern)).flatMap((match) => {
-      try { return [JSON.parse(match[1])]; } catch { return []; }
-    });
-  });
-  const reservations = records(/<!-- factory-intake:v1 (.+?) -->/g).filter((entry) =>
+  const records = (kind) => sourceComments.map((comment) => parseMachineReceipt(comment, kind)).filter(Boolean);
+  const reservations = records("reservation").filter((entry) =>
     entry.stage === "pm" && entry.sourceIssue === sourceIssue && entry.fingerprint === leaf.fingerprint);
-  const results = records(/<!-- factory-intake-result:v1 (.+?) -->/g).filter((entry) =>
+  const results = records("result").filter((entry) =>
     entry.stage === "pm" && entry.fingerprint === leaf.fingerprint && entry.issue === issue.number &&
     entry.completed === true && entry.bodySha256 === bodySha256);
   return reservations.length === 1 && results.length === 1;
@@ -691,13 +721,7 @@ function hasVerifiedSignalScope(issue, sourceIssue, goalNumber, sourceComments, 
   const fingerprints = Array.from((issue.body || "").matchAll(/<!-- factory-signal:v1 ([a-f0-9]{64}) -->/g));
   if (fingerprints.length !== 1) return false;
   const bodySha256 = createHash("sha256").update(issue.body).digest("hex");
-  const admissions = sourceComments.flatMap((comment) => {
-    if (comment.user?.type !== "Bot" || comment.user?.login !== "github-actions[bot]" ||
-      !trustedIntakeAuthors.includes(comment.user.login)) return [];
-    return Array.from((comment.body || "").matchAll(/<!-- factory-signal-admission:v1 (.+?) -->/g)).flatMap((match) => {
-      try { return [JSON.parse(match[1])]; } catch { return []; }
-    });
-  }).filter((entry) =>
+  const admissions = sourceComments.map((comment) => parseMachineReceipt(comment, "signal")).filter(Boolean).filter((entry) =>
     entry.schemaVersion === 1 && entry.phase === "native-linked" && entry.goalNumber === goalNumber &&
     entry.sourceIssueNumber === sourceIssue && entry.issueNumber === issue.number &&
     entry.fingerprint === fingerprints[0][1] && entry.bodySha256 === bodySha256);
@@ -1861,6 +1885,8 @@ module.exports = {
   hasVerifiedIntakeScope,
   hasVerifiedSignalScope,
   nativeParentMatchesRepository,
+  formatMachineReceipt,
+  parseMachineReceipt,
   buildClaimCommentBody,
   countInFlight,
   countBudgetConsumption,

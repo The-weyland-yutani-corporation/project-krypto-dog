@@ -9,6 +9,7 @@ const {
   areAllCheckboxesChecked, findLatestLabelApplicationEvent, isHumanActorType, isValidTimestamp,
   resolveGoalScopeEvidence, getGoalScopeAnchors, hasVerifiedSignalScope,
   nativeParentMatchesRepository,
+  parseMachineReceipt,
 } = require("./agentic-queue-runtime.cjs");
 const { evaluateEligibility, evaluateClaimState, parseClaimPayload } = require("./agentic-queue-controller.cjs");
 const {
@@ -80,12 +81,13 @@ function inspectIntakeReceipts(comments) {
   const reasons = [];
   for (const comment of comments || []) {
     for (const match of (comment.body || "").matchAll(/<!-- factory-intake(-result)?:v1 (.+?) -->/g)) {
-      if (comment.user?.type !== "Bot" || !policy.identities.trustedAgentAuthors.includes(comment.user?.login)) {
+      const parsed = parseMachineReceipt(comment, match[1] ? "result" : "reservation");
+      if (!parsed) {
         reasons.push("untrusted-intake-receipt");
         continue;
       }
       try {
-        const record = JSON.parse(match[2]);
+        const record = parsed;
         if (!["pm", "em"].includes(record.stage) || typeof record.fingerprint !== "string") throw new Error("Invalid receipt");
         (match[1] ? results : reservations).push(record);
       } catch {

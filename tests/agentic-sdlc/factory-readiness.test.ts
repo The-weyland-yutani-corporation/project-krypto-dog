@@ -2,7 +2,7 @@ import { baseIssues, goalBody, issue, NOW, workBody } from "./fixtures/factory-i
 
 const readiness = require("../../.github/scripts/agentic-factory-readiness.cjs");
 const { createReadOnlyReader } = require("../../.github/scripts/agentic-readiness-reader.cjs");
-const { resolveIsLeaf, resolveHasOpenPullRequest, nativeParentMatchesRepository } = require("../../.github/scripts/agentic-queue-runtime.cjs");
+const { resolveIsLeaf, resolveHasOpenPullRequest, nativeParentMatchesRepository, formatMachineReceipt } = require("../../.github/scripts/agentic-queue-runtime.cjs");
 
 function snapshot() {
   const issues = baseIssues();
@@ -108,7 +108,8 @@ describe("independent deterministic readiness diagnostics", () => {
   });
 
   it("reports reserved handoffs as human recovery instead of quietly reauthoring another issue", () => {
-    const receipt = { body: '<!-- factory-intake:v1 {"stage":"pm","fingerprint":"reserved"} -->',
+    const receipt = { body: formatMachineReceipt("reservation", { stage: "pm", fingerprint: "reserved" }),
+      created_at: NOW, updated_at: NOW,
       user: { login: "github-actions[bot]", type: "Bot" } };
     expect(readiness.inspectIntakeReceipts([receipt])).toMatchObject({
       reasons: ["intake-reservation-unresolved-human-recovery"],
