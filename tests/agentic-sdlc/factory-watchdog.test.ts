@@ -65,7 +65,7 @@ describe("model-independent native health and canonical publication", () => {
     const result = await watchdog.collectWatchdog({
       github: fixture.github, owner: "example", repo: "krypto", now: NOW,
       directory, repoRoot: root, runner: nativeRunner(fixture), mode: "daily",
-      sourceRunId: 310, runId: 320,
+      sourceRunId: 310, runId: 320, evidenceReader: null,
     });
     expect(result.errors).toEqual([]);
     expect(result.receipts[0]).toMatchObject({
@@ -214,17 +214,105 @@ describe("signal provenance -> genuine dev evidence -> measured outcome", () => 
     return { fixture, observed, child };
   }
 
-  it.each(["missing", "wrong-sha"])("never counts %s dev proof as completion", async (variant) => {
+  it.each(["unavailable", "pending", "status-only", "wrong-sha"])("never counts %s dev proof as completion", async (variant) => {
     const { fixture, observed } = await outcomeFixture();
+    const evidenceReader = variant === "unavailable" ? null : async () => {
+      if (variant === "pending") return { outcome: "pending", reason: "dev-proof-unavailable" };
+      if (variant === "status-only") return { outcome: "success" };
+      return { outcome: "success", receipt: { releaseSha: "c".repeat(40), environmentName: "dev" } };
+    };
     const result = await observation.readSignalOutcomes({
       github: fixture.github, owner: "example", repo: "krypto", observation: observed, repoRoot: root,
       window: { start: "2026-09-14T07:00:00Z", end: "2026-09-15T07:00:00Z" },
-      ...(variant === "wrong-sha" ? { evidenceReader: async () => ({ outcome: "success", receipt: { releaseSha: "c".repeat(40), environmentName: "dev" } }) } : {}),
+      evidenceReader,
     });
-    if (variant === "missing") expect(result.verifiedSubstantive).toBeNull();
+    if (variant === "unavailable") expect(result.verifiedSubstantive).toBeNull();
     else expect(result.verifiedSubstantive).toBe(0);
     expect(result.items[0]).toMatchObject({ fingerprint: expect.any(String), development: { outcome: "pending" }, measuredOutcome: { status: "pending" } });
     expect(result.paperMetrics).toBeNull();
+  });
+
+  describe("optional authoritative reader selection", () => {
+    let capabilityRoot: string;
+    let capabilityPath: string;
+    beforeEach(() => {
+      capabilityRoot = fs.mkdtempSync(path.join(os.tmpdir(), "watchdog-reader-"));
+      capabilityPath = path.join(capabilityRoot, ".github", "scripts", "azure", "dev-evidence.cjs");
+      fs.mkdirSync(path.dirname(capabilityPath), { recursive: true });
+      fs.writeFileSync(capabilityPath, "exports.readDevEvidence = (input) => input.github.installedEvidenceReader(input);\n");
+    });
+    afterEach(() => { fs.rmSync(capabilityRoot, { recursive: true, force: true }); });
+
+    it.each([{}, { evidenceReader: undefined }])("auto-loads the installed reader with the unchanged SDK client for %j", async (override) => {
+      const { fixture, observed } = await outcomeFixture();
+      const installedEvidenceReader = jest.fn(async () => ({ outcome: "pending", reason: "installed-proof-pending" }));
+      const github = { ...fixture.github, installedEvidenceReader };
+      const result = await observation.readSignalOutcomes({
+        github, owner: "example", repo: "krypto", observation: observed, repoRoot: capabilityRoot,
+        window: { start: "2026-09-14T07:00:00Z", end: "2026-09-15T07:00:00Z" }, ...override,
+      });
+      expect(installedEvidenceReader).toHaveBeenCalledTimes(1);
+      expect(installedEvidenceReader).toHaveBeenCalledWith({ github, owner: "example", repo: "krypto", sha: SHA, pullNumber: 600 });
+      expect(result).toMatchObject({ verifiedSubstantive: 0, reason: "collected" });
+      expect(result.items[0]).toMatchObject({ development: { outcome: "pending", reason: "installed-proof-pending" } });
+    });
+
+    it("keeps explicit null unavailable even when an authoritative reader is installed", async () => {
+      const { fixture, observed } = await outcomeFixture();
+      const installedEvidenceReader = jest.fn();
+      const result = await observation.readSignalOutcomes({
+        github: { ...fixture.github, installedEvidenceReader }, owner: "example", repo: "krypto",
+        observation: observed, repoRoot: capabilityRoot, evidenceReader: null,
+        window: { start: "2026-09-14T07:00:00Z", end: "2026-09-15T07:00:00Z" },
+      });
+      expect(installedEvidenceReader).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ verifiedSubstantive: null, reason: "dev-evidence-reader-unavailable" });
+    });
+
+    it("prefers an explicit reader over the installed capability", async () => {
+      const { fixture, observed } = await outcomeFixture();
+      const installedEvidenceReader = jest.fn();
+      const evidenceReader = jest.fn(async () => ({ outcome: "pending", reason: "injected-proof-pending" }));
+      const github = { ...fixture.github, installedEvidenceReader };
+      const result = await observation.readSignalOutcomes({
+        github, owner: "example", repo: "krypto", observation: observed, repoRoot: capabilityRoot, evidenceReader,
+        window: { start: "2026-09-14T07:00:00Z", end: "2026-09-15T07:00:00Z" },
+      });
+      expect(installedEvidenceReader).not.toHaveBeenCalled();
+      expect(evidenceReader).toHaveBeenCalledWith({ github, owner: "example", repo: "krypto", sha: SHA, pullNumber: 600 });
+      expect(result.items[0]).toMatchObject({ development: { outcome: "pending", reason: "injected-proof-pending" } });
+    });
+
+    it("reports unavailable when auto-loading has no installed capability", async () => {
+      fs.unlinkSync(capabilityPath);
+      const { fixture, observed } = await outcomeFixture();
+      const result = await observation.readSignalOutcomes({
+        github: fixture.github, owner: "example", repo: "krypto", observation: observed, repoRoot: capabilityRoot,
+        window: { start: "2026-09-14T07:00:00Z", end: "2026-09-15T07:00:00Z" },
+      });
+      expect(result).toMatchObject({ verifiedSubstantive: null, reason: "dev-evidence-reader-unavailable" });
+    });
+
+    it.each([false, 0, "", {}])("rejects invalid explicit reader %j instead of auto-loading", async (evidenceReader) => {
+      const { fixture, observed } = await outcomeFixture();
+      const installedEvidenceReader = jest.fn();
+      await expect(observation.readSignalOutcomes({
+        github: { ...fixture.github, installedEvidenceReader }, owner: "example", repo: "krypto",
+        observation: observed, repoRoot: capabilityRoot, evidenceReader,
+        window: { start: "2026-09-14T07:00:00Z", end: "2026-09-15T07:00:00Z" },
+      })).rejects.toThrow("invalid-dev-evidence-reader");
+      expect(installedEvidenceReader).not.toHaveBeenCalled();
+    });
+
+    it("propagates errors from the auto-loaded reader", async () => {
+      const { fixture, observed } = await outcomeFixture();
+      const installedEvidenceReader = jest.fn(async () => { throw new Error("installed-proof-api-unavailable"); });
+      await expect(observation.readSignalOutcomes({
+        github: { ...fixture.github, installedEvidenceReader }, owner: "example", repo: "krypto",
+        observation: observed, repoRoot: capabilityRoot,
+        window: { start: "2026-09-14T07:00:00Z", end: "2026-09-15T07:00:00Z" },
+      })).rejects.toThrow("installed-proof-api-unavailable");
+    });
   });
 
   it("binds genuine delivery to the merged SHA but keeps missing post-metrics pending", async () => {

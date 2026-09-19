@@ -189,7 +189,9 @@ async function readFactoryState({ github, owner, repo, now = new Date().toISOStr
 
 async function readSignalOutcomes({ github, owner, repo, observation, window, repoRoot, evidenceReader }) {
   const capability = path.join(repoRoot, ".github", "scripts", "azure", "dev-evidence.cjs");
-  const reader = evidenceReader || (fs.existsSync(capability) ? require(capability).readDevEvidence : null);
+  const reader = evidenceReader === undefined
+    ? (fs.existsSync(capability) ? require(capability).readDevEvidence : null)
+    : evidenceReader;
   if (reader !== null && typeof reader !== "function") throw new Error("invalid-dev-evidence-reader");
   const issueReadComplete = observation.sources.issues.completeness === "complete";
   const pullRead = await reads.readApiPages(github, "GET /repos/{owner}/{repo}/pulls",

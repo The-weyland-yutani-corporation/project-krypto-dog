@@ -156,6 +156,13 @@ available. Missing capability is explicitly `dev-evidence-reader-unavailable`,
 with verified throughput **null**, not zero or success. Actual reader errors
 fail collection; status-only `evaluateDevEvidence` is never a substitute.
 
+For injected/offline callers, an omitted or `undefined` `evidenceReader` retains
+production auto-loading. Explicit `null` forces the unavailable capability state;
+an explicit function supplies the reader. Tests must select unavailable or
+pending proof explicitly, not depend on which PRs are installed. The auto-loaded
+reader receives the unchanged full GitHub SDK client, and its errors still fail
+collection.
+
 The genuine receipt binds dev environment, release SHA, web/ops image digests,
 run/attempt, deployment/status IDs, immutable artifact identity/digest, and
 required operation report paths/hashes. Wrong or missing SHA/environment cannot
