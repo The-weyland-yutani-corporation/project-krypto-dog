@@ -212,23 +212,27 @@ function ciState(checks, sha) {
   return required.some((check) => check.conclusion === "failure") ? "failure" : "success";
 }
 
+function boundReviewReceipt(check, sha) {
+  const proof = receipt(check, REVIEW_MARKER);
+  return isActionsCheck(check, sha) && Boolean(REVIEW_WORKFLOWS[check.name]) &&
+    proof?.headSha === sha && proof.checkName === check.name &&
+    DIGEST.test(proof.packetDigest || "") &&
+    check.external_id === `agentic-review:v1:${proof.packetDigest}`;
+}
+
 function semanticReviewOutcome(check, sha) {
   if (!isActionsCheck(check, sha) || !REVIEW_WORKFLOWS[check.name]) return "unknown";
   if (check.status !== "completed") return "pending";
   const proof = receipt(check, REVIEW_MARKER);
-  if (check.conclusion === "failure") return "reject";
   if (proof?.headSha === sha && proof.checkName === check.name &&
       proof.verdict === "infrastructure" && check.conclusion === "action_required" &&
       INFRA_REASONS.has(proof.reason) &&
       check.external_id === `agentic-review-incomplete:v1:${proof.runId}:${proof.runAttempt}:${sha}`) {
     return "infrastructure";
   }
-  if (
-    proof?.headSha !== sha || proof.checkName !== check.name ||
-    !DIGEST.test(proof.packetDigest || "") ||
-    check.external_id !== `agentic-review:v1:${proof.packetDigest}`
-  ) return "unknown";
+  if (!boundReviewReceipt(check, sha)) return "unknown";
   if (proof.verdict === "pass" && check.conclusion === "success") return "pass";
+  if (proof.verdict === "reject" && check.conclusion === "failure") return "reject";
   if (proof.verdict === "infrastructure" && check.conclusion === "action_required" &&
       INFRA_REASONS.has(proof.reason)) return "infrastructure";
   return "unknown";
@@ -259,11 +263,17 @@ function isBoundCiRun(run, sha, number, repository, defaultBranch) {
 
 function trustedReviewSource(check, runs, repository, defaultBranch) {
   const proof = receipt(check, REVIEW_MARKER);
-  if (!proof || !SHA.test(proof.workflowSha || "")) return false;
+  if (!proof || !SHA.test(proof.workflowSha || "") ||
+      !Number.isSafeInteger(proof.runId) || proof.runId < 1 ||
+      !Number.isSafeInteger(proof.runAttempt) || proof.runAttempt < 1 ||
+      !Number.isSafeInteger(proof.pullNumber) || proof.pullNumber < 1 ||
+      typeof repository !== "string" || repository.length === 0 ||
+      typeof defaultBranch !== "string" || defaultBranch.length === 0) return false;
   const run = runs.find((candidate) => candidate.id === proof.runId);
   if (!run || run.path !== `.github/workflows/${REVIEW_WORKFLOWS[check.name]}` ||
       run.repository?.full_name?.toLowerCase() !== repository.toLowerCase() ||
-      proof.runAttempt < 1 || proof.runAttempt > run.run_attempt) return false;
+      !Number.isInteger(run.run_attempt) || run.run_attempt < 1 ||
+      proof.runAttempt > run.run_attempt) return false;
   if (run.event === "workflow_dispatch") {
     return run.head_sha === proof.workflowSha &&
       isBoundReviewRun(run, check.name, check.head_sha, proof.pullNumber, repository, defaultBranch);
@@ -271,6 +281,17 @@ function trustedReviewSource(check, runs, repository, defaultBranch) {
   return run.event === "pull_request" && run.head_sha === check.head_sha &&
     run.pull_requests?.some((pull) => pull.number === proof.pullNumber &&
       pull.head.sha === check.head_sha && pull.base.sha === proof.workflowSha);
+}
+
+function trustedReviewOutcome(check, sha, runs, repository, defaultBranch) {
+  const outcome = semanticReviewOutcome(check, sha);
+  if (!["pass", "reject", "infrastructure"].includes(outcome)) return outcome;
+  return trustedReviewSource(check, runs, repository, defaultBranch) ? outcome : "unknown";
+}
+
+function trustedReviewReceipt(check, sha, runs, repository, defaultBranch) {
+  return boundReviewReceipt(check, sha) &&
+    trustedReviewSource(check, runs, repository, defaultBranch);
 }
 
 function hasNewerReviewAttempt(check, runs, repository, defaultBranch) {
@@ -281,17 +302,25 @@ function hasNewerReviewAttempt(check, runs, repository, defaultBranch) {
     (latest.id === proof.runId && latest.run_attempt > proof.runAttempt)));
 }
 
-async function markIncompleteReviewAttempt({ github, context, checkName, sha, number, run, checks, defaultBranch }) {
+async function markIncompleteReviewAttempt({
+  github, context, checkName, sha, number, run, runs, checks, defaultBranch, pullCreatedAt,
+}) {
+  const repository = `${context.repo.owner}/${context.repo.repo}`;
+  const branch = defaultBranch || context.payload?.repository?.default_branch;
+  const reviewRuns = runs ||
+    await collectReviewRuns(github, context, REVIEW_WORKFLOWS[checkName], pullCreatedAt);
   if (!run || run.status !== "completed" || checks.some((check) =>
-    check.name === checkName && semanticReviewOutcome(check, sha) === "reject")) return null;
+    check.name === checkName &&
+      trustedReviewOutcome(check, sha, reviewRuns, repository, branch) === "reject")) return null;
   requireEvidence(isBoundReviewRun(run, checkName, sha, number,
-    `${context.repo.owner}/${context.repo.repo}`,
-    defaultBranch || context.payload?.repository?.default_branch),
+    repository, branch),
   "invalid_context", "authoritative incomplete review attempt");
   const existing = checks.find((check) => {
     const proof = receipt(check, REVIEW_MARKER);
     return isActionsCheck(check, sha) && check.name === checkName &&
-      proof?.runId === run.id && proof.runAttempt === run.run_attempt;
+      proof?.runId === run.id && proof.runAttempt === run.run_attempt &&
+      (trustedReviewReceipt(check, sha, reviewRuns, repository, branch) ||
+        trustedReviewOutcome(check, sha, reviewRuns, repository, branch) === "infrastructure");
   });
   if (existing?.status === "completed") return null;
   const proof = {
@@ -342,13 +371,17 @@ function infrastructureRetryDecision({ runs, now, reservation }) {
   return { dispatch: true, reason: "missing_or_infrastructure", attempt: attempts + 1 };
 }
 
-function reviewDispatchDecision({ checks, runs, checkName, sha, now, reservation }) {
+function reviewDispatchDecision({
+  checks, runs, checkName, sha, now, reservation, repository, defaultBranch,
+}) {
   const relevant = checks.filter((check) => check.name === checkName && isActionsCheck(check, sha));
-  if (relevant.some((check) => semanticReviewOutcome(check, sha) === "reject")) {
+  const outcomeFor = (check) =>
+    trustedReviewOutcome(check, sha, runs, repository, defaultBranch);
+  if (relevant.some((check) => outcomeFor(check) === "reject")) {
     return { dispatch: false, reason: "substantive_rejection" };
   }
   const current = latestCheck(relevant, checkName, sha);
-  const outcome = current ? semanticReviewOutcome(current, sha) : "unknown";
+  const outcome = current ? outcomeFor(current) : "unknown";
   const proof = current && receipt(current, REVIEW_MARKER);
   if (outcome === "pass" &&
       (checkName === CODE_REVIEW_CHECK || proof.ciFingerprint === ciFingerprint(checks, sha))) {
@@ -689,6 +722,15 @@ async function collectDiff(github, context, pull, files, includeContent) {
   return { ...identity, digest: digest(identity), contents, contentComplete: true };
 }
 
+async function collectReviewRuns(github, context, workflowId, createdAt) {
+  const params = { ...context.repo, workflow_id: workflowId };
+  if (createdAt) {
+    requireEvidence(Number.isFinite(Date.parse(createdAt)), "invalid_context", "review run lower bound");
+    params.created = `>=${createdAt}`;
+  }
+  return readPages(github.rest.actions.listWorkflowRuns, params, "workflow_runs");
+}
+
 async function collectReviewPacket({ github, context, env, includeContent = true }) {
   const identity = trustedContext(context, env);
   const checkName = env.CHECK_NAME;
@@ -707,6 +749,10 @@ async function collectReviewPacket({ github, context, env, includeContent = true
   const checks = await readPages(github.rest.checks.listForRef, {
     ...context.repo, ref: pull.head.sha, filter: "all",
   }, "check_runs");
+  const runs = await collectReviewRuns(github, context, identity.workflowId, pull.created_at);
+  const outcomeFor = (check) => trustedReviewOutcome(
+    check, pull.head.sha, runs, identity.repository, context.payload.repository.default_branch,
+  );
   let ci;
   try {
     ci = await collectCiEvidence(github, context, pull.head.sha, checks);
@@ -715,11 +761,11 @@ async function collectReviewPacket({ github, context, env, includeContent = true
     ci = { complete: false, state: "unavailable", reason: error.code, source: error.source };
   }
   const rejected = checks.some((check) => check.name === checkName &&
-    semanticReviewOutcome(check, pull.head.sha) === "reject");
+    outcomeFor(check) === "reject");
   const requiresCi = checkName !== CODE_REVIEW_CHECK;
   const prior = latestCheck(checks, checkName, pull.head.sha);
   const alreadyReviewed = context.eventName !== "workflow_dispatch" &&
-    prior && semanticReviewOutcome(prior, pull.head.sha) === "pass" &&
+    prior && outcomeFor(prior) === "pass" &&
     (!requiresCi || receipt(prior, REVIEW_MARKER).ciFingerprint === ci.fingerprint);
   const ready = !rejected && !alreadyReviewed &&
     (!requiresCi || (ci.complete && ["success", "failure"].includes(ci.state)));
@@ -739,7 +785,7 @@ async function collectReviewPacket({ github, context, env, includeContent = true
     "head_moved", "PR snapshot changed during collection",
   );
   const packet = {
-    schemaVersion: 1, ...identity, checkName, ready,
+    schemaVersion: 1, ...identity, checkName, pullCreatedAt: pull.created_at, ready,
     reason: rejected ? "substantive_rejection" : alreadyReviewed ? "current_verdict" :
       ready ? "ready" : ci.reason || "ci_pending",
     requiresCi, requiredChecks: [...new Set([
@@ -820,7 +866,11 @@ async function recordReviewAttempt({ github, context, env = process.env, packet 
   const checks = await readPages(github.rest.checks.listForRef, {
     ...context.repo, ref: pull.head.sha, filter: "all",
   }, "check_runs");
-  if (checks.some((check) => check.name === env.CHECK_NAME && semanticReviewOutcome(check, pull.head.sha) === "reject")) {
+  const runs = await collectReviewRuns(github, context, target.workflowId, pull.created_at);
+  if (checks.some((check) => check.name === env.CHECK_NAME &&
+      trustedReviewOutcome(
+        check, pull.head.sha, runs, target.repository, context.payload.repository.default_branch,
+      ) === "reject")) {
     return { ready: false, reason: "substantive_rejection_preserved" };
   }
   const proof = {
@@ -831,7 +881,12 @@ async function recordReviewAttempt({ github, context, env = process.env, packet 
     detail: packet.reason, ciFingerprint: packet.requiresCi ? packet.ci?.fingerprint : null,
   };
   const existing = checks.find((check) => check.name === env.CHECK_NAME &&
-    isActionsCheck(check, pull.head.sha) && check.external_id === `agentic-review:v1:${packetDigest}`);
+    isActionsCheck(check, pull.head.sha) &&
+    check.external_id === `agentic-review:v1:${packetDigest}` &&
+    receipt(check, REVIEW_MARKER)?.packetDigest === packetDigest &&
+    trustedReviewReceipt(
+      check, pull.head.sha, runs, target.repository, context.payload.repository.default_branch,
+    ));
   if (existing) return { ready: existing.status !== "completed" && packet.ready, checkId: existing.id };
   const { data: check } = await github.rest.checks.create({
     ...context.repo, name: env.CHECK_NAME, head_sha: pull.head.sha,
@@ -906,9 +961,6 @@ async function publishReviewVerdict({ github, context, env = process.env, packet
     ...context.repo, ref: packet.headSha, filter: "all",
   }, "check_runs");
   const previous = checks.filter((check) => check.name === packet.checkName && isActionsCheck(check, packet.headSha));
-  if (previous.some((check) => semanticReviewOutcome(check, packet.headSha) === "reject")) {
-    return { published: false, reason: "substantive_rejection_preserved" };
-  }
   const { data: executingRun } = await readApi(
     () => github.rest.actions.getWorkflowRun({ ...context.repo, run_id: packet.runId }),
     `actions/runs/${packet.runId}`,
@@ -917,10 +969,12 @@ async function publishReviewVerdict({ github, context, env = process.env, packet
     executingRun.repository?.full_name?.toLowerCase() === packet.repository.toLowerCase() &&
     executingRun.run_attempt === packet.runAttempt,
   "invalid_context", "review workflow run");
-  const runs = await readPages(github.rest.actions.listWorkflowRuns, {
-    ...context.repo, workflow_id: packet.workflowId,
-    created: `>=${executingRun.created_at}`,
-  }, "workflow_runs");
+  const runs = await collectReviewRuns(github, context, packet.workflowId, packet.pullCreatedAt);
+  if (previous.some((check) => trustedReviewOutcome(
+    check, packet.headSha, runs, packet.repository, context.payload.repository.default_branch,
+  ) === "reject")) {
+    return { published: false, reason: "substantive_rejection_preserved" };
+  }
   const latest = latestBoundReviewRun(runs, packet.checkName, packet.headSha, packet.number,
     packet.repository, context.payload.repository.default_branch);
   requireEvidence(!latest || latest.id < packet.runId ||
@@ -928,7 +982,11 @@ async function publishReviewVerdict({ github, context, env = process.env, packet
   "stale_evidence", "newer trusted review attempt");
   const replay = previous.find((check) => {
     const proof = receipt(check, REVIEW_MARKER);
-    return check.status === "completed" && proof?.runId === packet.runId && proof.runAttempt === packet.runAttempt;
+    return check.status === "completed" && proof?.packetDigest === packetDigest &&
+      proof.runId === packet.runId && proof.runAttempt === packet.runAttempt &&
+      ["pass", "reject", "infrastructure"].includes(trustedReviewOutcome(
+        check, packet.headSha, runs, packet.repository, context.payload.repository.default_branch,
+      ));
   });
   if (replay) {
     requireEvidence(receipt(replay, REVIEW_MARKER).verdict === item.verdict,
@@ -957,7 +1015,11 @@ async function publishReviewVerdict({ github, context, env = process.env, packet
     output: { title: item.title, summary: `<!-- ${REVIEW_MARKER} ${JSON.stringify(proof)} -->\n${item.summary}` },
   };
   const pending = previous.find((check) => check.status !== "completed" &&
-    check.external_id === `agentic-review:v1:${packetDigest}`);
+    check.external_id === `agentic-review:v1:${packetDigest}` &&
+    receipt(check, REVIEW_MARKER)?.packetDigest === packetDigest &&
+    trustedReviewReceipt(
+      check, packet.headSha, runs, packet.repository, context.payload.repository.default_branch,
+    ));
   const check = pending
     ? await github.rest.checks.update({ ...input, check_run_id: pending.id })
     : await github.rest.checks.create({ ...input, head_sha: packet.headSha });
@@ -1060,7 +1122,7 @@ module.exports = {
   readPages, digest, correlationId, latestCheck, ciFingerprint, ciState, receipt,
   getPolicyFiles, getDeclaredRiskLabel, getRequestedChecks,
   reviewVerdictItems,
-  semanticReviewOutcome, trustedReviewSource, infrastructureRetryDecision,
+  semanticReviewOutcome, trustedReviewSource, trustedReviewOutcome, infrastructureRetryDecision,
   isBoundReviewRun, latestBoundReviewRun, hasNewerReviewAttempt, markIncompleteReviewAttempt,
   isBoundCiRun,
   reviewDispatchDecision, reviewEventRelevant, dispatchReservation, collectCiEvidence, collectReviewPacket,

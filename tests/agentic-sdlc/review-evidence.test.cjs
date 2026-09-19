@@ -4,7 +4,104 @@ const { describe, expect, it } = require("@jest/globals");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { harness, verdict, page, blob, evidence, SHA, BASE, REPOSITORY } = require("./fixtures/review-evidence.cjs");
+const {
+  harness, verdict, page, blob, evidence, SHA, BASE, REPOSITORY, NOW,
+} = require("./fixtures/review-evidence.cjs");
+
+const REVIEW_NAME = "QA verification";
+const UNTRUSTED_FAILURES = [
+  "receipt-less failure",
+  "malformed receipt",
+  "missing attempt receipt",
+  "forged receipt",
+  "wrong workflow run",
+];
+
+function reviewRuns(h, name = REVIEW_NAME) {
+  return h.state.runs.filter((run) =>
+    run.path === `.github/workflows/${evidence.REVIEW_WORKFLOWS[name]}`);
+}
+
+function addUntrustedFailure(h, kind) {
+  if (kind === "receipt-less failure") {
+    return h.addReview(REVIEW_NAME, "reject", {
+      output: { title: "Legacy wrapper failure", summary: "No structured review receipt." },
+    });
+  }
+  if (kind === "malformed receipt") {
+    return h.addReview(REVIEW_NAME, "reject", {
+      output: {
+        title: "Malformed wrapper failure",
+        summary: `<!-- ${evidence.REVIEW_MARKER} {"verdict": -->\ninvalid`,
+      },
+    });
+  }
+  if (kind === "forged receipt") {
+    return h.addReview(REVIEW_NAME, "reject", {
+      external_id: `agentic-review:v1:${"f".repeat(64)}`,
+    });
+  }
+  if (kind === "missing attempt receipt") {
+    return h.addReview(REVIEW_NAME, "reject", {
+      proofOverrides: { runAttempt: null },
+    });
+  }
+  if (kind === "wrong workflow run") {
+    return h.addReview(REVIEW_NAME, "reject", {
+      proofOverrides: { runId: 500 },
+    });
+  }
+  throw new Error(`Unknown failure fixture: ${kind}`);
+}
+
+describe("trusted review outcome provenance", () => {
+  it.each(UNTRUSTED_FAILURES)("keeps a %s unknown and retryable", (kind) => {
+    const h = harness();
+    const check = addUntrustedFailure(h, kind);
+    const runs = reviewRuns(h);
+    expect(evidence.trustedReviewOutcome(check, SHA, runs, REPOSITORY, "main")).toBe("unknown");
+    expect(evidence.reviewDispatchDecision({
+      checks: h.state.checks, runs, checkName: REVIEW_NAME, sha: SHA, now: NOW,
+      repository: REPOSITORY, defaultBranch: "main",
+    })).toMatchObject({ dispatch: true, reason: "missing_or_infrastructure", attempt: 2 });
+  });
+
+  it("keeps a genuine trusted reject terminal", async () => {
+    const h = harness();
+    const check = h.addReview(REVIEW_NAME, "reject");
+    const runs = reviewRuns(h);
+    expect(evidence.trustedReviewOutcome(check, SHA, runs, REPOSITORY, "main")).toBe("reject");
+    expect(evidence.reviewDispatchDecision({
+      checks: h.state.checks, runs, checkName: REVIEW_NAME, sha: SHA, now: NOW,
+      repository: REPOSITORY, defaultBranch: "main",
+    })).toEqual({ dispatch: false, reason: "substantive_rejection" });
+    await expect(evidence.collectReviewPacket(h)).resolves.toMatchObject({
+      ready: false, reason: "substantive_rejection",
+    });
+    await expect(evidence.markIncompleteReviewAttempt({
+      ...h, checkName: REVIEW_NAME, sha: SHA, number: 7, run: runs[0],
+      runs, checks: h.state.checks, defaultBranch: "main",
+    })).resolves.toBeNull();
+  });
+
+  it.each(UNTRUSTED_FAILURES)("does not let a %s block collection", async (kind) => {
+    const h = harness();
+    addUntrustedFailure(h, kind);
+    await expect(evidence.collectReviewPacket(h)).resolves.toMatchObject({
+      ready: true, reason: "ready",
+    });
+  });
+
+  it.each(UNTRUSTED_FAILURES)("does not let a %s block incomplete-attempt evidence", async (kind) => {
+    const h = harness();
+    addUntrustedFailure(h, kind);
+    const run = reviewRuns(h)[0];
+    await expect(evidence.markIncompleteReviewAttempt({
+      ...h, checkName: REVIEW_NAME, sha: SHA, number: 7, run,
+      runs: reviewRuns(h), checks: h.state.checks, defaultBranch: "main",
+    })).resolves.toMatchObject({ conclusion: "action_required" });
+  });
+});
 
 describe("trusted exact-head review packet", () => {
   it("collects source-addressed scope, complete blobs, job outcomes and retained references without executing PR code", async () => {
@@ -240,6 +337,27 @@ describe("deterministic review verdict publication", () => {
       check_run_id: attempt.checkId, status: "completed", conclusion: "success",
     }));
   });
+
+  it.each(UNTRUSTED_FAILURES)(
+    "does not let a %s suppress attempt recording or verdict publication",
+    async (kind) => {
+      const h = harness();
+      const packet = await evidence.collectReviewPacket(h);
+      h.env.PACKET_DIGEST = packet.packetDigest;
+      const failure = addUntrustedFailure(h, kind);
+      if (kind === "forged receipt") {
+        failure.external_id = `agentic-review:v1:${packet.packetDigest}`;
+      }
+      const attempt = await evidence.recordReviewAttempt({ ...h, packet });
+      expect(attempt.ready).toBe(true);
+      expect(h.state.checks.find((check) => check.id === attempt.checkId)).toMatchObject({
+        head_sha: SHA, name: REVIEW_NAME, status: "in_progress",
+      });
+      await expect(evidence.publishReviewVerdict({
+        ...h, packet, items: [verdict(packet)],
+      })).resolves.toMatchObject({ published: true, checkId: attempt.checkId });
+    },
+  );
 
   it("keeps the real missing-target noop reproduction incomplete rather than synthesizing a verdict", async () => {
     const h = harness();

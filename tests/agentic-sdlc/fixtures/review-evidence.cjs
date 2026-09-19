@@ -203,19 +203,21 @@ function harness(checkName = "QA verification") {
     summary: { addRaw: mocker.fn().mockReturnThis(), write: mocker.fn() },
   };
   function addReview(name = "Agentic code review", verdict = "pass", overrides = {}) {
+    const { proofOverrides = {}, ...checkOverrides } = overrides;
     const run = state.runs.find((item) => item.path === `.github/workflows/${evidence.REVIEW_WORKFLOWS[name]}`);
     const proof = {
       packetDigest: "e".repeat(64), checkName: name, headSha: SHA, pullNumber: 7,
       workflowSha: BASE, runId: run.id, runAttempt: 1,
       ciFingerprint: name === "Agentic code review" ? null : evidence.ciFingerprint(state.checks, SHA),
       verdict,
+      ...proofOverrides,
     };
     const check = {
       id: state.nextCheckId++, name, head_sha: SHA, app: { slug: "github-actions" },
       status: "completed", conclusion: verdict === "pass" ? "success" : "failure",
       external_id: `agentic-review:v1:${proof.packetDigest}`,
       output: { title: name, summary: `<!-- ${evidence.REVIEW_MARKER} ${JSON.stringify(proof)} -->\nreview` },
-      ...overrides,
+      ...checkOverrides,
     };
     state.checks.push(check);
     return check;
