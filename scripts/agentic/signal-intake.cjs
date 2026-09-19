@@ -17,15 +17,16 @@ async function verifySource({ github, owner, repo, signal, proposal, repoRoot })
     if (!match) return ["source-run-ref-required"];
     const run = (await github.request("GET /repos/{owner}/{repo}/actions/runs/{run_id}",
       { owner, repo, run_id: Number(match[1]) })).data;
+    const workflowPath = reads.normalizeWorkflowPath(run.path);
     const when = Date.parse(run.created_at);
-    if (run.repository?.full_name !== `${owner}/${repo}` ||
+    if (typeof workflowPath !== "string" || run.repository?.full_name !== `${owner}/${repo}` ||
         run.head_sha !== signal.source.sha || run.status !== "completed" ||
         !["failure", "startup_failure", "timed_out", "cancelled"].includes(run.conclusion) ||
-        signal.source.key !== `${run.path}:${run.conclusion}` ||
+        signal.source.key !== `${workflowPath}:${run.conclusion}` ||
         !Number.isFinite(when) || when < Date.parse(signal.source.windowStart) ||
         when >= Date.parse(signal.source.windowEnd)) return ["source-run-not-corroborated"];
     const latestRuns = await reads.readApiPages(github, "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs", {
-      owner, repo, workflow_id: run.path.split("/").pop(), head_sha: run.head_sha, branch: run.head_branch,
+      owner, repo, workflow_id: workflowPath.split("/").pop(), head_sha: run.head_sha, branch: run.head_branch,
       created: `>=${signal.source.windowStart}`,
     }, { key: "workflow_runs" });
     const latest = reads.requireComplete(latestRuns, "source-run-freshness")

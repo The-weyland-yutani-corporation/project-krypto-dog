@@ -34,13 +34,14 @@ async function authorizeWatchdogEvent({ github, context }) {
   if (!Number.isSafeInteger(runId) || runId <= 0) return { allowed: false, reason: "invalid-source-run" };
   const run = (await github.request("GET /repos/{owner}/{repo}/actions/runs/{run_id}",
     { owner, repo, run_id: runId })).data;
+  const workflowPath = reads.normalizeWorkflowPath(run.path);
   if (run.repository?.full_name !== `${owner}/${repo}` || run.head_repository?.full_name !== `${owner}/${repo}` ||
       run.head_branch !== defaultBranch || run.status !== "completed" ||
-      !OBSERVER_SOURCES.has(run.path?.split("@")[0])) {
+      !OBSERVER_SOURCES.has(workflowPath)) {
     return { allowed: false, reason: "untrusted-source-workflow" };
   }
   if (run.event === "schedule") return { allowed: true, reason: "trusted-source-schedule" };
-  const commandSource = run.path.split("@")[0] === ".github/workflows/opportunity-discovery.lock.yml";
+  const commandSource = workflowPath === ".github/workflows/opportunity-discovery.lock.yml";
   if (!commandSource && run.actor?.type === "User" && ["workflow_dispatch", "issue_comment", "workflow_run"].includes(run.event)) {
     const permission = (await github.request("GET /repos/{owner}/{repo}/collaborators/{username}/permission",
       { owner, repo, username: run.actor.login })).data.permission;
@@ -77,7 +78,7 @@ function signalCandidates(snapshot, manifest, repository) {
     for (const run of workflow.usage?.evidence || []) {
       if (!factory.DEFAULT_FAILING_CONCLUSIONS.includes(run.conclusion) || !/^[a-f0-9]{40}$/.test(run.sha || "")) continue;
       add({
-        kind: "workflow-run", key: `${run.path}:${run.conclusion}`,
+        kind: "workflow-run", key: `${reads.normalizeWorkflowPath(run.path)}:${run.conclusion}`,
         ref: `https://github.com/${repository}/actions/runs/${run.runId}`, sha: run.sha,
         windowStart: snapshot.window.start, windowEnd: snapshot.window.end,
       }, `Observed ${workflow.id} ${run.conclusion}; independent diagnosis and validation required.`);
@@ -244,7 +245,7 @@ async function inspectReceiptRun({ github, owner, repo, runId, defaultBranch, no
     { owner, repo, run_id: Number(runId) })).data;
   const age = Date.parse(now) - Date.parse(run.updated_at || "");
   if (run.repository?.full_name !== `${owner}/${repo}` || run.head_branch !== defaultBranch ||
-      run.path?.split("@")[0] !== ".github/workflows/factory-watchdog.yml" ||
+      reads.normalizeWorkflowPath(run.path) !== ".github/workflows/factory-watchdog.yml" ||
       !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1 ||
       !Number.isFinite(age) || age < -300000 || age > signals.MAX_AGE_MS) {
     throw new Error("untrusted-or-stale-watchdog-receipt-run");

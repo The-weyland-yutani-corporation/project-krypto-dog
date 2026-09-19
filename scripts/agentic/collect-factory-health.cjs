@@ -475,7 +475,7 @@ function deriveWorkflowId(row) {
     row.workflow_name, row.name, row.file,
   ].find((value) => typeof value === "string" && value.trim() !== "");
   if (typeof candidate !== "string" || candidate.trim() === "") return null;
-  let value = candidate.trim();
+  let value = reads.normalizeWorkflowPath(candidate.trim());
   const slash = value.lastIndexOf("/");
   if (slash !== -1) value = value.slice(slash + 1);
   value = value.replace(/\.lock\.yml$/, "").replace(/\.(md|yml|yaml)$/, "");

@@ -3,6 +3,11 @@
 const PAGE_SIZE = 100;
 const MAX_PAGES = 10;
 
+function normalizeWorkflowPath(value) {
+  if (typeof value !== "string") return value;
+  return value.replace(/^(.+?\.ya?ml)@refs\/[^/\s]+\/\S+$/, "$1");
+}
+
 function source(completeness, records, observedAt, reason = null, total = null) {
   return { completeness, records, total, observedAt, reason };
 }
@@ -117,4 +122,4 @@ function createGhClient(runner) {
   };
 }
 
-module.exports = { PAGE_SIZE, MAX_PAGES, source, readJson, repositoryName, readPages, readApiPages, requireComplete, createGhClient };
+module.exports = { PAGE_SIZE, MAX_PAGES, normalizeWorkflowPath, source, readJson, repositoryName, readPages, readApiPages, requireComplete, createGhClient };

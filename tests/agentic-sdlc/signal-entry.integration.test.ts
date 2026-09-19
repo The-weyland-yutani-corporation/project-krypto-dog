@@ -69,6 +69,51 @@ describe("offline signal -> native goal child -> normal PM/EM intake", () => {
     expect(fixture.github.rest.actions.createWorkflowDispatch).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["", "@refs/heads/main", "@refs/tags/v2.1.0", "@refs/pull/600/merge"])(
+    "corroborates a canonical signal against a workflow path with suffix %j",
+    async (suffix) => {
+      const { fixture, options } = setup();
+      fixture.failedRun.path += suffix;
+      expect(await intake.runSignalIntake({ ...options, apply: true })).toMatchObject({ action: "created-triage-dispatched" });
+      expect(fixture.github.request).toHaveBeenCalledWith(
+        "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
+        expect.objectContaining({ workflow_id: "ci.yml", head_sha: SHA, branch: "main", created: `>=${options.signal.source.windowStart}` }),
+      );
+      expect(fixture.github.rest.issues.create).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["@notes", "@refs/", "@refs/heads/"])("rejects unrelated or incomplete workflow suffix %j", async (suffix) => {
+    const { fixture, options } = setup();
+    fixture.failedRun.path += suffix;
+    expect((await intake.runSignalIntake({ ...options, apply: true })).reasons).toContain("source-run-not-corroborated");
+    expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["wrong-sha", "outside-window", "recovered"])("preserves %s rejection for ref-suffixed workflow paths", async (variant) => {
+    const { fixture, options } = setup();
+    fixture.failedRun.path += "@refs/heads/main";
+    if (variant === "wrong-sha") fixture.failedRun.head_sha = "b".repeat(40);
+    if (variant === "outside-window") fixture.failedRun.created_at = options.signal.source.windowEnd;
+    if (variant === "recovered") fixture.failedRun.conclusion = "success";
+    expect((await intake.runSignalIntake({ ...options, apply: true })).reasons).toContain("source-run-not-corroborated");
+    expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a superseded ref-suffixed failure after querying the normalized workflow ID", async () => {
+    const { fixture, options } = setup();
+    fixture.failedRun.path += "@refs/tags/v2.1.0";
+    const request = fixture.github.request.getMockImplementation()!;
+    fixture.github.request.mockImplementation(async (route, params = {}) => {
+      if (route === "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs" && params.workflow_id === "ci.yml") {
+        return { data: { workflow_runs: [{ ...fixture.failedRun, id: 312, conclusion: "success" }], total_count: 1 } };
+      }
+      return request(route, params);
+    });
+    expect((await intake.runSignalIntake({ ...options, apply: true })).reasons).toContain("source-run-superseded");
+    expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
+  });
+
   it.each(["paused", "shadow"])("does not create work in %s mode", async (mode) => {
     const { fixture, options } = setup();
     fixture.issues[0].labels = ["factory-control", `factory-mode:${mode}`];

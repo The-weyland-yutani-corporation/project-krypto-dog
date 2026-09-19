@@ -49,7 +49,7 @@ has exactly `signal` and `proposal` and is capped at 24,000 UTF-8 bytes.
 | `fingerprint` | SHA-256 of `source.kind + ":" + source.key`; excludes window and SHA so a repeated problem does not create new work |
 | `source` | Exactly `kind`, `key`, `ref`, `sha`, `windowStart`, `windowEnd` |
 | `source.kind` | `workflow-run`, `repository-test`, `entropy-rule`, or `human-feedback`; unsupported write adapters reject explicitly |
-| `source.key` | For runs, exact workflow path plus `:` plus conclusion. For entropy, exact rule ID plus `:` plus owning path |
+| `source.key` | For runs, workflow file path without GitHub's terminal `@refs/...` suffix, plus `:` plus conclusion. For entropy, exact rule ID plus `:` plus owning path |
 | `source.ref` | Same-repository GitHub run/issue/immutable-blob URL; never an arbitrary external destination |
 | `source.sha` | Exact 40-character SHA; admission requires the current default-branch SHA |
 | `source.windowStart`, `source.windowEnd` | Ordered closed-window UTC timestamps, end exclusive, at most seven days |
@@ -62,6 +62,9 @@ has exactly `signal` and `proposal` and is capped at 24,000 UTF-8 bytes.
 Current write adapters independently corroborate a failed native workflow run
 or a currently reproduced local entropy rule. A run must still be the latest
 matching-head/branch run; a superseded or recovered failure creates no work.
+Workflow-path normalization removes only the documented ref suffix from a
+YAML workflow path before identity/corroboration checks; unrelated `@` text is
+preserved. The run's exact SHA, observation window and freshness still gate intake.
 Human-feedback absence stays **pending** in CorrectionOps, never automated
 truth. No adapter autonomously adopts prompts, policy, or evaluation truth.
 

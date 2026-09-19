@@ -15,6 +15,7 @@ const watchdog = jest.requireActual<{
   inspectReceiptRun(options: unknown): Promise<{ attempt: number; sha: string }>;
   mergeDiscoverySignals(options: unknown): void;
   authorizeWatchdogEvent(options: unknown): Promise<{ allowed: boolean; reason: string }>;
+  signalCandidates(snapshot: unknown, manifest: unknown, repository: string): Data[];
 }>("../../scripts/agentic/factory-watchdog.cjs");
 const factory = jest.requireActual<{
   collect(options: unknown): { snapshot: Data };
@@ -24,6 +25,7 @@ const factory = jest.requireActual<{
 }>("../../scripts/agentic/collect-factory-health.cjs");
 const reader = jest.requireActual<{
   readPages(runner: unknown, route: string, key: unknown, options: unknown): { data: unknown[]; source: Source };
+  normalizeWorkflowPath(value: unknown): unknown;
 }>("../../scripts/agentic/factory-read.cjs");
 const observation = jest.requireActual<{
   readFactoryState(options: unknown): Promise<{ state: Data; sources: Data; issues: unknown[]; details: Data }>;
@@ -119,6 +121,35 @@ describe("model-independent native health and canonical publication", () => {
     expect(snapshot).toMatchObject({ collection: { completeness: "partial" }, issues: { openedInWindow: null, openActionableOpportunities: null } });
   });
 
+  it.each(["", "@refs/heads/main", "@refs/tags/v2.1.0", "@refs/pull/600/merge"])(
+    "emits the same canonical signal identity for a native workflow path with suffix %j",
+    (suffix) => {
+      const fixture = makeGithub();
+      fixture.failedRun.path += suffix;
+      const { snapshot } = factory.collect({
+        repoRoot: root, repository: REPOSITORY, mode: "daily", now: NOW, runner: nativeRunner(fixture),
+      });
+      const candidates = watchdog.signalCandidates(snapshot, null, REPOSITORY);
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]).toMatchObject({
+        fingerprint: signalPayload(contract.fingerprintFor).signal.fingerprint,
+        source: { key: ".github/workflows/ci.yml:failure", sha: SHA },
+      });
+    },
+  );
+
+  it.each([
+    ".github/workflows/ci.yml@notes",
+    ".github/workflows/ci@nightly.yml",
+    ".github/workflows/ci.yml@refs/",
+    ".github/workflows/ci.yml@refs/heads/",
+    ".github/workflows/ci.txt@refs/heads/main",
+    null,
+    undefined,
+  ])("preserves path text that is not a documented workflow ref suffix: %j", (value) => {
+    expect(reader.normalizeWorkflowPath(value)).toBe(value);
+  });
+
   it("hashes gross churn, exact cost and closed windows, not just net issue change", () => {
     const base = { schemaVersion: 1, mode: "daily", window: { start: "a", end: "b" },
       issues: { openedInWindow: 2, closedInWindow: 2, netOpened: 0 }, workflows: [{ id: "ci", usage: { aiCredits: 1 } }] };
@@ -168,12 +199,12 @@ describe("model-independent native health and canonical publication", () => {
       .toThrow("invalid-watchdog-signal-receipt");
   });
 
-  it("accepts only successful trusted observation jobs from the exact current source attempt", async () => {
+  it.each(["", "@refs/heads/main", "@refs/tags/v2.1.0"])("accepts trusted exact-attempt receipt paths with suffix %j", async (suffix) => {
     const request = jest.fn(async (route: string) => ({
       data: route.endsWith("/jobs")
         ? { jobs: [{ name: "observe", status: "completed", conclusion: "success" }] }
         : { repository: { full_name: REPOSITORY }, head_branch: "main", head_sha: SHA,
-          path: ".github/workflows/factory-watchdog.yml", run_attempt: 2, updated_at: NOW },
+          path: `.github/workflows/factory-watchdog.yml${suffix}`, run_attempt: 2, updated_at: NOW },
     }));
     expect(await watchdog.inspectReceiptRun({
       github: { request }, owner: "example", repo: "krypto", runId: 320, defaultBranch: "main", now: NOW,
@@ -182,6 +213,16 @@ describe("model-independent native health and canonical publication", () => {
       "GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs",
       expect.objectContaining({ attempt_number: 2 }),
     );
+  });
+
+  it("does not accept a receipt workflow by discarding unrelated path text", async () => {
+    const request = jest.fn(async () => ({ data: {
+      repository: { full_name: REPOSITORY }, head_branch: "main", head_sha: SHA,
+      path: ".github/workflows/factory-watchdog.yml@notes", run_attempt: 2, updated_at: NOW,
+    } }));
+    await expect(watchdog.inspectReceiptRun({
+      github: { request }, owner: "example", repo: "krypto", runId: 320, defaultBranch: "main", now: NOW,
+    })).rejects.toThrow("untrusted-or-stale-watchdog-receipt-run");
   });
 });
 

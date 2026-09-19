@@ -226,6 +226,31 @@ describe("MonitorOps collector — workflow coverage", () => {
     });
   });
 
+  it.each([
+    [".github/workflows/ci.yml", "ci"],
+    [".github/workflows/ci.yml@refs/heads/main", "ci"],
+    [".github/workflows/ci.yml@refs/tags/v2.1.0", "ci"],
+    [".github/workflows/ci.yml@refs/pull/600/merge", "ci"],
+    [".github/workflows/pm-triage.lock.yml@refs/heads/feature/safety", "pm-triage"],
+    [".github/workflows/ci.yaml@refs/tags/v2.1.0", "ci"],
+  ])("attributes workflow %s before deriving its basename", (workflowPath, id) => {
+    expect(collector.deriveWorkflowId({ path: workflowPath })).toBe(id);
+    expect(collector.normalizeStatus([{ path: workflowPath, state: "active" }])[id]).toMatchObject({ enabled: true });
+    const window = collector.computeWindow("governance", fixtures.now);
+    expect(collector.normalizeUsage({ runs: [{
+      workflow_path: workflowPath, created_at: "2026-08-05T10:00:00Z", conclusion: "failure",
+    }] }, [id], window)[id]).toMatchObject({ runs: 1, conclusions: { failure: 1 } });
+  });
+
+  it.each([
+    ".github/workflows/ci.yml@notes",
+    ".github/workflows/ci@nightly.yml",
+    ".github/workflows/ci.yml@refs/",
+    ".github/workflows/ci.yml@refs/heads/",
+  ])("does not attribute unrelated or incomplete suffix text %s to ci", (workflowPath) => {
+    expect(collector.deriveWorkflowId({ path: workflowPath })).not.toBe("ci");
+  });
+
   it("represents every active workflow, including zero-run workflows", () => {
     const { snapshot } = collector.collect({
       mode: "governance",
