@@ -1069,7 +1069,6 @@ function buildContext(options) {
     inventory,
     requiredSupportFiles: (opts.requiredSupportFiles || [
       ".github/workflows/agentic_commands.yml",
-      ".github/workflows/agentics-maintenance.yml",
     ]).slice(),
     docSurfaces: discoverDocSurfaces(repoRoot),
     proseSurfaces: discoverProseSurfaces(repoRoot),

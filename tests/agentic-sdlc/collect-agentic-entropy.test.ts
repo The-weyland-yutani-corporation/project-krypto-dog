@@ -67,6 +67,7 @@ interface Entropy {
   };
   computeDelta(a: unknown, b: unknown): { added: string[]; removed: string[] };
   shouldReport(decision: unknown, manifest: unknown): boolean;
+  buildContext(options: Record<string, unknown>): Record<string, unknown>;
   buildManifest(ctx: Record<string, unknown>): Record<string, unknown>;
   collect(options: Record<string, unknown>): {
     manifest: Record<string, unknown>;
@@ -208,7 +209,25 @@ describe("entropy rule — workflow_sources_compiled", () => {
     });
   });
 
-  it("requires cache-memory maintenance support when configured", () => {
+  it("defaults to command-router support without requiring an ungenerated maintenance workflow", () => {
+    const repo = makeTmpRepo();
+    try {
+      write(repo, ".github/workflows/agentic_commands.yml", "on: {}\n");
+      const context = entropy.buildContext({ repoRoot: repo, commit: "fixture" });
+      expect(context.requiredSupportFiles).toEqual([".github/workflows/agentic_commands.yml"]);
+      expect(entropy.ruleWorkflowSourcesCompiled(context).check.status).toBe(entropy.PASS);
+
+      fs.unlinkSync(path.join(repo, ".github/workflows/agentic_commands.yml"));
+      expect(entropy.ruleWorkflowSourcesCompiled(context)).toMatchObject({
+        check: { status: entropy.FAIL },
+        violations: [{ path: ".github/workflows/agentic_commands.yml", evidence: { missingGeneratedSupportFile: true } }],
+      });
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("requires maintenance support when explicitly configured", () => {
     const repo = makeTmpRepo();
     write(repo, ".github/workflows/agentic_commands.yml", "on: {}\n");
     const r = entropy.ruleWorkflowSourcesCompiled(
