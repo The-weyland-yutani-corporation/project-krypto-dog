@@ -91,6 +91,7 @@ const AUTHORING_BLOCKED_REASONS = Object.freeze([
   "invalid-allowed-paths",
   "dependencies-unknown",
   "dependencies-not-closed",
+  "milestone-binding-requires-intake",
 ]);
 
 function normalizeStringArray(value) {
@@ -239,17 +240,15 @@ function evaluatePromotion(candidate, config) {
   }
 
   // --- Milestone ----------------------------------------------------------
-  // Promotion may bind an unmilestoned issue to the goal's milestone, because
-  // the issue already declares that goal as its parent. It must never move an
-  // issue off a milestone a human deliberately set.
+  // Promotion only advances already-bound leaves. Binding is performed at
+  // immutable intake creation, never by overwriting a human-owned milestone.
   const goalMilestone = typeof config.goalMilestone === "string" ? config.goalMilestone.trim() : "";
   const candidateMilestone =
     typeof candidate.milestone === "string" ? candidate.milestone.trim() : "";
-  let milestoneToSet = null;
   if (goalMilestone === "") {
     reasons.push("goal-missing-milestone");
   } else if (candidateMilestone === "") {
-    milestoneToSet = goalMilestone;
+    reasons.push("milestone-binding-requires-intake");
   } else if (candidateMilestone !== goalMilestone) {
     reasons.push("milestone-conflict");
   }
@@ -290,7 +289,6 @@ function evaluatePromotion(candidate, config) {
   const queueReasons = evaluateEligibility({
     ...candidate,
     labels: projectedLabels,
-    milestone: milestoneToSet || candidate.milestone,
     parentGoalApproved: config.goalApproved === true && candidate.parentGoalNumber === config.goalNumber,
     hasRiskAssessment: effectiveRiskTier !== null,
   }, { ...config, allowedMilestones: goalMilestone ? [goalMilestone] : [] });
@@ -319,7 +317,7 @@ function evaluatePromotion(candidate, config) {
     plan: {
       addLabels,
       removeLabels: lifecycleToRemove,
-      milestone: milestoneToSet,
+      milestone: null,
       riskTier: effectiveRiskTier,
     },
   };

@@ -8,7 +8,7 @@ const {
   resolveLatestLabelApplicationActorType, countInFlight, countBudgetConsumption, buildCandidate,
   resolveGoalScopeEvidence,
   nativeParentMatchesRepository,
-  formatMachineReceipt, parseMachineReceipt,
+  formatMachineReceipt, inspectMachineReceipt,
 } = require("./agentic-queue-runtime.cjs");
 const { evaluateEligibility } = require("./agentic-queue-controller.cjs");
 const {
@@ -18,7 +18,6 @@ const {
 const { REQUIRED_WORK_ITEM_HEADINGS, diagnoseGoalIssue, linkedPullRequestNumbers } = require("./agentic-factory-readiness.cjs");
 
 const RECEIPT = /<!-- factory-intake:v1 (.+?) -->/g;
-const RESULT_RECEIPT = /<!-- factory-intake-result:v1 (.+?) -->/g;
 const STAGES = Object.freeze({
   pm: { actor: "product-manager", from: "needs-triage", to: "ready-for-planning" },
   em: { actor: "engineering-manager", from: "ready-for-planning", to: QUEUE_READY_LABEL },
@@ -184,15 +183,16 @@ async function applySelectiveLabels({ github, owner, repo, issue, labels }) {
   }
 }
 
-function parseReceipts(comments, pattern, kind) {
+function parseReceipts(comments, kind, core) {
   const records = [];
+  let ignored = 0;
   for (const comment of comments) {
-    for (const match of (comment.body || "").matchAll(pattern)) {
-      const parsed = parseMachineReceipt(comment, kind);
-      if (!parsed) throw new Error(`Untrusted, wrapped or edited intake receipt: ${match[0].slice(0, 35)}`);
-      records.push(parsed);
-    }
+    const inspection = inspectMachineReceipt(comment, kind);
+    if (inspection.status === "invalid") throw new Error(`Malformed or edited trusted ${kind} receipt on comment ${comment.id}`);
+    if (inspection.status === "valid") records.push(inspection.receipt);
+    if (inspection.status === "ignored") ignored += 1;
   }
+  if (ignored > 0) core.info(`Ignored ${ignored} non-authoritative ${kind} receipt-shaped comment(s).`);
   return records;
 }
 
@@ -234,9 +234,9 @@ async function applyWorkItemProposal({ github, context, core, stage, proposal, n
   try {
     const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: target, per_page: 100 });
     if (!Array.isArray(comments)) throw new Error("Missing receipt list");
-    const reservations = parseReceipts(comments, RECEIPT, "reservation").filter((item) => item.stage === stage);
+    const reservations = parseReceipts(comments, "reservation", core).filter((item) => item.stage === stage);
     if (reservations.length) {
-      const results = parseReceipts(comments, RESULT_RECEIPT, "result").filter((item) => item.stage === stage && item.fingerprint === fingerprint);
+      const results = parseReceipts(comments, "result", core).filter((item) => item.stage === stage && item.fingerprint === fingerprint);
       if (reservations.length !== 1 || reservations[0].fingerprint !== fingerprint) return { ok: false, reasons: ["intake-already-reserved-different-proposal"] };
       if (results.length === 1 && results[0].completed === true) {
         return { ok: true, replayed: true, applied: false, dispatched: false, issue: results[0].issue, handoff: "previously-recorded" };

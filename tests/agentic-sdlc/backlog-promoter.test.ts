@@ -54,7 +54,7 @@ function baseCandidate(overrides: Record<string, unknown> = {}) {
   return {
     number: 300,
     labels: ["agentic-factory"],
-    milestone: null,
+    milestone: "v2.1 Safety and Correctness",
     parentGoalNumber: GOAL_NUMBER,
     declaredRiskTier: "risk:routine",
     allowedPaths: ["src/lib/**"],
@@ -74,13 +74,21 @@ function baseCandidate(overrides: Record<string, unknown> = {}) {
 }
 
 describe("backlog promoter decision core", () => {
-  it("promotes a complete, in-scope candidate and binds the goal milestone", () => {
+  it("promotes a complete candidate already bound to the goal milestone", () => {
     const result = promoter.evaluatePromotion(baseCandidate(), baseConfig());
 
     expect(result.promotable).toBe(true);
     expect(result.reasons).toEqual([]);
     expect(result.plan.addLabels).toEqual(["ready-for-ai-dev", "risk:routine"]);
-    expect(result.plan.milestone).toBe("v2.1 Safety and Correctness");
+    expect(result.plan.milestone).toBeNull();
+  });
+
+  it("rejects missing milestone binding before emitting any promotion plan", () => {
+    const result = promoter.evaluatePromotion(baseCandidate({ milestone: null }), baseConfig());
+    expect(result).toMatchObject({
+      promotable: false, plan: null, bucket: "authoring-incomplete",
+      reasons: expect.arrayContaining(["milestone-binding-requires-intake"]),
+    });
   });
 
   it("does not re-add a risk label the issue already carries", () => {

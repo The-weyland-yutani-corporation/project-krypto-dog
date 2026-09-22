@@ -244,6 +244,10 @@ Receipts must also match the exact machine-comment envelope and remain
 unedited (`created_at` equals `updated_at`). Model-owned GH-AW comments retain
 their workflow footers and cannot impersonate these bare machine records.
 Do not disable model-comment footers or quote a marker as evidence.
+Untrusted or quoted marker-shaped discussion is ignored, with a diagnostic
+count; commenters cannot reserve work or force human recovery simply by copying
+a receipt. Malformed or edited bare **trusted** receipts still fail closed,
+as do conflicting trusted reservations and uncertain handoffs.
 The signal adapter's versioned `factory-signal-admission:v1` receipt is also
 accepted when the trusted workflow-authored comment on the goal-listed source
 binds its source issue, emitted issue, current goal, fingerprint and exact body
@@ -266,6 +270,15 @@ transition. Selective label operations preserve concurrent human hard stops;
 pre/post reads refuse changed snapshots rather than replacing entire label
 sets. EM verifies the materialized body without rewriting it, then advances
 the leaf to the canonical `ready-for-ai-dev` label.
+
+The backlog promoter only advances leaves **already bound** to the approved
+goal's milestone. Its plan and runtime both reject a missing milestone with
+`milestone-binding-requires-intake`; neither reports that issue as promotable
+nor changes its milestone. Immutable PM intake can instead create one correctly
+bound leaf from an eligible source, preserving the source and replay guard.
+Planning-state legacy issues requiring re-triage remain explicit human recovery;
+the promoter does not clear or rewrite their lifecycle state to manufacture
+eligibility.
 
 PM explicitly dispatches `em-planning.lock.yml` with the materialized issue
 number. The existing scheduled queue controller observes final ready leaves.

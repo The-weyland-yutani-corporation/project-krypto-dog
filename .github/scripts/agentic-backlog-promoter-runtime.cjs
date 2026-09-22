@@ -7,8 +7,8 @@
  * Reads the factory control mode and the single approved goal, evaluates every
  * open `agentic-factory` backlog issue with the pure core
  * (`agentic-backlog-promoter.cjs`), and — only in `factory-mode:active` —
- * applies `ready-for-ai-dev` (plus the human-declared risk label and the goal's
- * milestone) so the existing queue controller can select the issue.
+ * applies `ready-for-ai-dev` (plus the declared risk label) to issues already
+ * bound to the goal milestone so the existing queue controller can select them.
  *
  * This workflow never executes issue-authored code. Issue and comment content
  * is treated strictly as untrusted data: it is parsed for structured fields and
@@ -141,8 +141,8 @@ async function buildCandidate({ github, owner, repo, issue, activeGoalNumber, co
 }
 
 /**
- * Applies the promotion plan for one issue: milestone binding, the declared
- * risk label, and `ready-for-ai-dev`.
+ * Applies only the declared risk and ready lifecycle labels. The candidate
+ * must already have the goal milestone; promotion never binds or rewrites it.
  */
 async function applyPromotion({ github, owner, repo, promotion, goalMilestoneNumber, core, candidate, expectedConfig }) {
   const issueNumber = promotion.number;
@@ -157,9 +157,6 @@ async function applyPromotion({ github, owner, repo, promotion, goalMilestoneNum
     const { evaluatePromotion } = require("./agentic-backlog-promoter.cjs");
     const verifiedPlan = evaluatePromotion(refreshed, authority.config);
     if (!verifiedPlan.promotable) return { ok: false, reason: verifiedPlan.reasons.join(",") };
-    // GitHub issue PATCH has no documented CAS. Do not overwrite a human's
-    // milestone; immutable PM intake can materialize a new, correctly bound leaf.
-    if (verifiedPlan.plan.milestone) return { ok: false, reason: "milestone-binding-requires-intake" };
     const labels = [...new Set(refreshed.labels.filter((label) => !verifiedPlan.plan.removeLabels.includes(label)).concat(verifiedPlan.plan.addLabels))];
     await applySelectiveLabels({ github, owner, repo, issue: fresh.data, labels });
     const persisted = await github.rest.issues.get({ owner, repo, issue_number: issueNumber });

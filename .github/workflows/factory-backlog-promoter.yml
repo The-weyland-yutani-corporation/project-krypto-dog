@@ -1,8 +1,9 @@
 name: Factory Backlog Promoter
 
 # Promotes ready, in-scope backlog issues into the factory queue by applying
-# `ready-for-ai-dev` (plus the human-declared risk label and the approved goal's
-# milestone), so the existing Factory Queue Controller can select them.
+# `ready-for-ai-dev` and the declared risk label to leaves already bound to the
+# approved goal's milestone. Missing milestones require immutable PM intake;
+# the promoter never rewrites a human-owned milestone.
 #
 # This workflow never executes issue/PR-authored code: it only reads issue,
 # label, and milestone state through the GitHub API and writes labels. It has

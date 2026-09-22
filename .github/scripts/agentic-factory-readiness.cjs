@@ -9,7 +9,7 @@ const {
   areAllCheckboxesChecked, findLatestLabelApplicationEvent, isHumanActorType, isValidTimestamp,
   resolveGoalScopeEvidence, getGoalScopeAnchors, hasVerifiedSignalScope,
   nativeParentMatchesRepository,
-  parseMachineReceipt,
+  inspectMachineReceipt,
 } = require("./agentic-queue-runtime.cjs");
 const { evaluateEligibility, evaluateClaimState, parseClaimPayload } = require("./agentic-queue-controller.cjs");
 const {
@@ -79,17 +79,23 @@ function inspectIntakeReceipts(comments) {
   const reservations = [];
   const results = [];
   const reasons = [];
+  let ignoredComments = 0;
   for (const comment of comments || []) {
-    for (const match of (comment.body || "").matchAll(/<!-- factory-intake(-result)?:v1 (.+?) -->/g)) {
-      const parsed = parseMachineReceipt(comment, match[1] ? "result" : "reservation");
-      if (!parsed) {
-        reasons.push("untrusted-intake-receipt");
+    for (const kind of ["reservation", "result"]) {
+      const inspection = inspectMachineReceipt(comment, kind);
+      if (inspection.status === "absent") continue;
+      if (inspection.status === "ignored") {
+        ignoredComments += 1;
+        continue;
+      }
+      if (inspection.status === "invalid") {
+        reasons.push("malformed-trusted-intake-receipt");
         continue;
       }
       try {
-        const record = parsed;
+        const record = inspection.receipt;
         if (!["pm", "em"].includes(record.stage) || typeof record.fingerprint !== "string") throw new Error("Invalid receipt");
-        (match[1] ? results : reservations).push(record);
+        (kind === "result" ? results : reservations).push(record);
       } catch {
         reasons.push("malformed-intake-receipt");
       }
@@ -103,7 +109,7 @@ function inspectIntakeReceipts(comments) {
       status: recorded ? "completion-recorded" : "reserved-unresolved",
       implementingIssue: recorded ? matches[0].issue : null };
   });
-  return { entries, reasons: unique(reasons) };
+  return { entries, reasons: unique(reasons), ignoredComments };
 }
 
 async function collectReadinessSnapshot({ github, context, config = {} }) {

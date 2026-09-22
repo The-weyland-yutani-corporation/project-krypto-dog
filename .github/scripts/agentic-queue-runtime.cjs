@@ -19,10 +19,14 @@ function formatMachineReceipt(kind, payload) {
   return `<!-- ${format.prefix}:v1 ${JSON.stringify(payload)} -->${format.suffix ? `\n\n${format.suffix}` : ""}`;
 }
 
+function isMachineReceiptAuthor(comment) {
+  return comment?.user?.type === "Bot" && comment.user.login === "github-actions[bot]" &&
+    trustedIntakeAuthors.includes(comment.user.login);
+}
+
 function parseMachineReceipt(comment, kind) {
   const format = MACHINE_RECEIPTS[kind];
-  if (!format || comment.user?.type !== "Bot" || comment.user?.login !== "github-actions[bot]" ||
-    !trustedIntakeAuthors.includes(comment.user.login) || !isValidTimestamp(comment.created_at) ||
+  if (!format || !isMachineReceiptAuthor(comment) || !isValidTimestamp(comment.created_at) ||
     comment.updated_at !== comment.created_at || typeof comment.body !== "string") return null;
   const start = `<!-- ${format.prefix}:v1 `;
   const end = ` -->${format.suffix ? `\n\n${format.suffix}` : ""}`;
@@ -36,6 +40,19 @@ function parseMachineReceipt(comment, kind) {
   } catch {
     return null;
   }
+}
+
+function inspectMachineReceipt(comment, kind) {
+  const format = MACHINE_RECEIPTS[kind];
+  const start = format && `<!-- ${format.prefix}:v1 `;
+  if (!start || typeof comment?.body !== "string" || !comment.body.includes(start)) return { status: "absent" };
+  // Marker-shaped discussion is not control-plane evidence. Only a bare
+  // machine-authored record can reserve work or require receipt recovery.
+  if (!isMachineReceiptAuthor(comment) || !comment.body.startsWith(start)) return { status: "ignored" };
+  if (!isValidTimestamp(comment.created_at) || comment.updated_at !== comment.created_at) return { status: "invalid" };
+  if (/^<!-- gh-aw-(?:agentic-workflow|workflow-call-id):/m.test(comment.body)) return { status: "ignored" };
+  const receipt = parseMachineReceipt(comment, kind);
+  return receipt ? { status: "valid", receipt } : { status: "invalid" };
 }
 /**
  * Deterministic GitHub queue-controller runtime for the safety-bounded
@@ -1887,6 +1904,7 @@ module.exports = {
   nativeParentMatchesRepository,
   formatMachineReceipt,
   parseMachineReceipt,
+  inspectMachineReceipt,
   buildClaimCommentBody,
   countInFlight,
   countBudgetConsumption,
