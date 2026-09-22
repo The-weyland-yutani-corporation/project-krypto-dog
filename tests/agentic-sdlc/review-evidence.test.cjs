@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
-  harness, verdict, page, blob, evidence, SHA, BASE, REPOSITORY, NOW,
+  harness, verdict, structuredVerdict, page, blob, evidence, SHA, BASE, REPOSITORY, NOW,
 } = require("./fixtures/review-evidence.cjs");
 
 const REVIEW_NAME = "QA verification";
@@ -61,7 +61,7 @@ describe("trusted review outcome provenance", () => {
     const runs = reviewRuns(h);
     expect(evidence.trustedReviewOutcome(check, SHA, runs, REPOSITORY, "main")).toBe("unknown");
     expect(evidence.reviewDispatchDecision({
-      checks: h.state.checks, runs, checkName: REVIEW_NAME, sha: SHA, now: NOW,
+      checks: h.state.checks, runs, checkName: REVIEW_NAME, sha: SHA, number: 7, now: NOW,
       repository: REPOSITORY, defaultBranch: "main",
     })).toMatchObject({ dispatch: true, reason: "missing_or_infrastructure", attempt: 2 });
   });
@@ -72,7 +72,7 @@ describe("trusted review outcome provenance", () => {
     const runs = reviewRuns(h);
     expect(evidence.trustedReviewOutcome(check, SHA, runs, REPOSITORY, "main")).toBe("reject");
     expect(evidence.reviewDispatchDecision({
-      checks: h.state.checks, runs, checkName: REVIEW_NAME, sha: SHA, now: NOW,
+      checks: h.state.checks, runs, checkName: REVIEW_NAME, sha: SHA, number: 7, now: NOW,
       repository: REPOSITORY, defaultBranch: "main",
     })).toEqual({ dispatch: false, reason: "substantive_rejection" });
     await expect(evidence.collectReviewPacket(h)).resolves.toMatchObject({
@@ -82,6 +82,51 @@ describe("trusted review outcome provenance", () => {
       ...h, checkName: REVIEW_NAME, sha: SHA, number: 7, run: runs[0],
       runs, checks: h.state.checks, defaultBranch: "main",
     })).resolves.toBeNull();
+  });
+
+  it("ignores unrelated workflow runs when computing retry state", () => {
+    const h = harness();
+    const runs = reviewRuns(h);
+    const workflow = evidence.REVIEW_WORKFLOWS[REVIEW_NAME];
+    runs.push({
+      ...runs[0], id: 1000, status: "in_progress", conclusion: null,
+      display_title: evidence.correlationId(workflow, 8, SHA),
+    });
+    runs.push({
+      ...runs[0], id: 1001, run_attempt: 3,
+      display_title: evidence.correlationId(workflow, 9, SHA),
+    });
+    expect(evidence.reviewDispatchDecision({
+      checks: h.state.checks, runs, checkName: REVIEW_NAME, sha: SHA, number: 7, now: NOW,
+      repository: REPOSITORY, defaultBranch: "main",
+    })).toEqual({ dispatch: true, reason: "missing_or_infrastructure", attempt: 2 });
+  });
+
+  it("invalidates an older pass when its exact bound run is rerun", async () => {
+    const h = harness();
+    const check = h.addReview(REVIEW_NAME, "pass");
+    const runs = reviewRuns(h);
+    Object.assign(runs[0], { run_attempt: 2, status: "in_progress", conclusion: null });
+    expect(evidence.hasNewerReviewAttempt(check, runs, REPOSITORY, "main")).toBe(true);
+    expect(evidence.trustedReviewOutcome(check, SHA, runs, REPOSITORY, "main")).toBe("unknown");
+    await expect(evidence.collectReviewPacket(h)).resolves.toMatchObject({ ready: true, reason: "ready" });
+    expect(evidence.reviewDispatchDecision({
+      checks: h.state.checks, runs, checkName: REVIEW_NAME, sha: SHA, number: 7, now: NOW,
+      repository: REPOSITORY, defaultBranch: "main",
+    })).toEqual({ dispatch: false, reason: "in_flight" });
+  });
+
+  it("preserves a trusted substantive rejection across a later rerun", () => {
+    const h = harness();
+    const check = h.addReview(REVIEW_NAME, "reject");
+    const runs = reviewRuns(h);
+    Object.assign(runs[0], { run_attempt: 2, status: "in_progress", conclusion: null });
+    expect(evidence.hasNewerReviewAttempt(check, runs, REPOSITORY, "main")).toBe(true);
+    expect(evidence.trustedReviewOutcome(check, SHA, runs, REPOSITORY, "main")).toBe("reject");
+    expect(evidence.reviewDispatchDecision({
+      checks: h.state.checks, runs, checkName: REVIEW_NAME, sha: SHA, number: 7, now: NOW,
+      repository: REPOSITORY, defaultBranch: "main",
+    })).toEqual({ dispatch: false, reason: "substantive_rejection" });
   });
 
   it.each(UNTRUSTED_FAILURES)("does not let a %s block collection", async (kind) => {
@@ -120,9 +165,28 @@ describe("trusted exact-head review packet", () => {
     expect(packet.ci.checks.map((check) => check.source)).toEqual(
       [501, 502].map((id) => `https://api.github.com/repos/${REPOSITORY}/check-runs/${id}`),
     );
+    expect(packet.ci.checks.map(({ checkId, jobId, event }) => ({ checkId, jobId, event }))).toEqual([
+      { checkId: 501, jobId: 1501, event: "pull_request" },
+      { checkId: 502, jobId: 1502, event: "pull_request" },
+    ]);
     expect(packet.ci.artifacts[0]).toMatchObject({ id: 700, attemptScope: "run_wide", headSha: SHA });
     expect(h.github.rest.checks.create).not.toHaveBeenCalled();
     expect(h.github.rest.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects native CI when the job does not link back to the exact check run", async () => {
+    const h = harness();
+    h.state.jobs.get(500)[0].check_run_url =
+      `https://api.github.com/repos/${REPOSITORY}/check-runs/999`;
+    await expect(evidence.collectCiEvidence(h.github, h.context, SHA, h.state.checks))
+      .rejects.toMatchObject({ code: "evidence_unavailable" });
+  });
+
+  it("rejects branch-push CI as trusted PR evidence", async () => {
+    const h = harness();
+    h.state.runs.find((run) => run.id === 500).event = "push";
+    await expect(evidence.collectCiEvidence(h.github, h.context, SHA, h.state.checks))
+      .rejects.toMatchObject({ code: "evidence_unavailable" });
   });
 
   it.each(["Bot", "Organization"])("does not trust a goal approval by %s or author-supplied proof", async (type) => {
@@ -307,12 +371,28 @@ describe("deterministic review verdict publication", () => {
   it("rejects empty, duplicate or contradictory safe-output envelopes", () => {
     expect(() => evidence.reviewVerdictItems({ items: [{ type: "noop" }], errors: [] }))
       .toThrow("Expected exactly one create_pr_check item; found 0");
-    const item = { type: "create_pr_check", verdict: "pass" };
+    const item = { type: "create_pr_check", conclusion: "success" };
     expect(() => evidence.reviewVerdictItems({ items: [item, item] })).toThrow("found 2");
     expect(() => evidence.reviewVerdictItems({ items: [item, { type: "report_incomplete" }] }))
       .toThrow("pass conflicts with incomplete safe outputs");
     expect(() => evidence.reviewVerdictItems({ items: [item], errors: ["tool failure"] }))
       .toThrow("pass conflicts with incomplete safe outputs");
+  });
+
+  it("rejects legacy conclusions that cannot express a substantive verdict", async () => {
+    const h = harness();
+    const packet = await evidence.collectReviewPacket(h);
+    await expect(evidence.publishReviewVerdict({
+      ...h, packet, items: [verdict(packet, "pass", { conclusion: "action_required" })],
+    })).rejects.toMatchObject({ code: "invalid_verdict" });
+  });
+
+  it("rejects a structured verdict that conflicts with a supplied conclusion", async () => {
+    const h = harness();
+    const packet = await evidence.collectReviewPacket(h);
+    await expect(evidence.publishReviewVerdict({
+      ...h, packet, items: [structuredVerdict(packet, "pass", { conclusion: "failure" })],
+    })).rejects.toMatchObject({ code: "invalid_verdict" });
   });
 
   it("keeps independent code review separate from specialist label escalation", async () => {
@@ -399,10 +479,29 @@ describe("deterministic review verdict publication", () => {
     expect(h.github.rest.checks.create).not.toHaveBeenCalled();
   });
 
+  it.each(["pass", "reject"])("publishes the live %s create_pr_check contract against the sealed packet", async (value) => {
+    const h = harness();
+    const packet = await evidence.collectReviewPacket(h);
+    const items = evidence.reviewVerdictItems({
+      items: [verdict(packet, value)], errors: [],
+    });
+    const result = await evidence.publishReviewVerdict({ ...h, packet, items });
+    expect(result.published).toBe(true);
+    expect(h.github.rest.checks.create.mock.calls[0][0]).toMatchObject({
+      head_sha: SHA, name: "QA verification",
+      conclusion: value === "pass" ? "success" : "failure",
+    });
+    expect(evidence.receipt(
+      h.github.rest.checks.create.mock.calls[0][0], evidence.REVIEW_MARKER,
+    )).toMatchObject({ packetDigest: packet.packetDigest, headSha: SHA, runId: 900 });
+  });
+
   it.each(["pass", "reject", "infrastructure"])("publishes %s only with the sealed packet and explicit schema", async (value) => {
     const h = harness();
     const packet = await evidence.collectReviewPacket(h);
-    const result = await evidence.publishReviewVerdict({ ...h, packet, items: [verdict(packet, value)] });
+    const result = await evidence.publishReviewVerdict({
+      ...h, packet, items: [structuredVerdict(packet, value)],
+    });
     expect(result.published).toBe(true);
     const created = h.github.rest.checks.create.mock.calls[0][0];
     expect(created).toMatchObject({
@@ -442,7 +541,7 @@ describe("deterministic review verdict publication", () => {
   it.each(["digest", "schema", "head", "duplicate", "attempt", "artifact"])("refuses invalid %s evidence", async (invalid) => {
     const h = harness();
     const packet = await evidence.collectReviewPacket(h);
-    const item = verdict(packet);
+    const item = structuredVerdict(packet);
     if (invalid === "digest") item.packet_digest = "f".repeat(64);
     if (invalid === "schema") item.schema_version = "2";
     if (invalid === "head") item.head_sha = BASE;

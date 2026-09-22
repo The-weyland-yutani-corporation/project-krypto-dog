@@ -177,11 +177,40 @@ function reviewVerdictItems(data) {
   const items = data.items.filter((item) => item.type === "create_pr_check");
   requireEvidence(items.length === 1, "invalid_verdict",
     `Expected exactly one create_pr_check item; found ${items.length}`);
-  requireEvidence(items[0].verdict !== "pass" ||
+  const verdict = items[0].verdict ||
+    ({ success: "pass", failure: "reject" })[items[0].conclusion];
+  requireEvidence(verdict !== "pass" ||
     ((!data.errors || (Array.isArray(data.errors) && data.errors.length === 0)) &&
       !data.items.some((item) => ["noop", "report_incomplete", "missing_tool", "missing_data"].includes(item.type))),
   "invalid_verdict", "pass conflicts with incomplete safe outputs");
   return items;
+}
+
+function normalizeReviewVerdict(item, packet) {
+  const structured = ["schema_version", "packet_digest", "verdict", "reason"]
+    .some((field) => Object.hasOwn(item || {}, field));
+  if (structured) {
+    if (item.conclusion !== undefined) {
+      requireEvidence(
+        ({ pass: "success", reject: "failure", infrastructure: "action_required" })[item.verdict] ===
+          item.conclusion,
+        "invalid_verdict", "structured verdict conflicts with conclusion",
+      );
+    }
+    return item;
+  }
+  requireEvidence(
+    item?.type === "create_pr_check" && ["success", "failure"].includes(item.conclusion),
+    "invalid_verdict", "legacy create_pr_check conclusion",
+  );
+  // Bind the existing GH-AW pass/reject contract to this sealed same-run packet.
+  return {
+    ...item,
+    schema_version: "1",
+    packet_digest: packet.packetDigest,
+    verdict: item.conclusion === "success" ? "pass" : "reject",
+    reason: "none",
+  };
 }
 
 function isActionsCheck(check, sha) {
@@ -252,6 +281,25 @@ function latestBoundReviewRun(runs, checkName, sha, number, repository, defaultB
     .sort((left, right) => right.id - left.id || right.run_attempt - left.run_attempt)[0];
 }
 
+function isReviewRunForPull(run, checkName, sha, number, repository, defaultBranch) {
+  if (run.path !== `.github/workflows/${REVIEW_WORKFLOWS[checkName]}` ||
+      run.repository?.full_name?.toLowerCase() !== repository.toLowerCase() ||
+      !Number.isSafeInteger(run.id) || !Number.isInteger(run.run_attempt) || run.run_attempt < 1) {
+    return false;
+  }
+  if (run.event === "workflow_dispatch") {
+    return isBoundReviewRun(run, checkName, sha, number, repository, defaultBranch);
+  }
+  return run.event === "pull_request" && run.head_sha === sha &&
+    run.pull_requests?.some((pull) => pull.number === number && pull.head?.sha === sha);
+}
+
+function latestReviewRun(runs, checkName, sha, number, repository, defaultBranch) {
+  return runs.filter((run) =>
+    isReviewRunForPull(run, checkName, sha, number, repository, defaultBranch))
+    .sort((left, right) => right.id - left.id || right.run_attempt - left.run_attempt)[0];
+}
+
 function isBoundCiRun(run, sha, number, repository, defaultBranch) {
   return run.path === ".github/workflows/ci.yml" &&
     run.repository?.full_name?.toLowerCase() === repository.toLowerCase() &&
@@ -286,7 +334,10 @@ function trustedReviewSource(check, runs, repository, defaultBranch) {
 function trustedReviewOutcome(check, sha, runs, repository, defaultBranch) {
   const outcome = semanticReviewOutcome(check, sha);
   if (!["pass", "reject", "infrastructure"].includes(outcome)) return outcome;
-  return trustedReviewSource(check, runs, repository, defaultBranch) ? outcome : "unknown";
+  if (!trustedReviewSource(check, runs, repository, defaultBranch)) return "unknown";
+  if (outcome === "pass" &&
+      hasNewerReviewAttempt(check, runs, repository, defaultBranch)) return "unknown";
+  return outcome;
 }
 
 function trustedReviewReceipt(check, sha, runs, repository, defaultBranch) {
@@ -297,7 +348,9 @@ function trustedReviewReceipt(check, sha, runs, repository, defaultBranch) {
 function hasNewerReviewAttempt(check, runs, repository, defaultBranch) {
   const proof = receipt(check, REVIEW_MARKER);
   if (!proof) return true;
-  const latest = latestBoundReviewRun(runs, check.name, check.head_sha, proof.pullNumber, repository, defaultBranch);
+  const latest = latestReviewRun(
+    runs, check.name, check.head_sha, proof.pullNumber, repository, defaultBranch,
+  );
   return Boolean(latest && (latest.id > proof.runId ||
     (latest.id === proof.runId && latest.run_attempt > proof.runAttempt)));
 }
@@ -372,11 +425,19 @@ function infrastructureRetryDecision({ runs, now, reservation }) {
 }
 
 function reviewDispatchDecision({
-  checks, runs, checkName, sha, now, reservation, repository, defaultBranch,
+  checks, runs, checkName, sha, number, now, reservation, repository, defaultBranch,
 }) {
+  requireEvidence(
+    Number.isSafeInteger(number) && number > 0 &&
+      typeof repository === "string" && repository.length > 0 &&
+      typeof defaultBranch === "string" && defaultBranch.length > 0,
+    "invalid_context", "review dispatch target",
+  );
+  const relevantRuns = runs.filter((run) =>
+    isReviewRunForPull(run, checkName, sha, number, repository, defaultBranch));
   const relevant = checks.filter((check) => check.name === checkName && isActionsCheck(check, sha));
   const outcomeFor = (check) =>
-    trustedReviewOutcome(check, sha, runs, repository, defaultBranch);
+    trustedReviewOutcome(check, sha, relevantRuns, repository, defaultBranch);
   if (relevant.some((check) => outcomeFor(check) === "reject")) {
     return { dispatch: false, reason: "substantive_rejection" };
   }
@@ -390,7 +451,7 @@ function reviewDispatchDecision({
   if (checkName !== CODE_REVIEW_CHECK && !["success", "failure"].includes(ciState(checks, sha))) {
     return { dispatch: false, reason: "ci_pending" };
   }
-  return infrastructureRetryDecision({ runs, now, reservation });
+  return infrastructureRetryDecision({ runs: relevantRuns, now, reservation });
 }
 
 function dispatchReservation(checks, workflowId, sha, number) {
@@ -620,8 +681,10 @@ async function collectCiEvidence(github, context, sha, checks) {
       );
     } else {
       requireEvidence(
-        run.head_sha === sha && ["pull_request", "push"].includes(run.event) &&
-          check.check_suite?.id === run.check_suite_id && job.id === check.id,
+        run.head_sha === sha && run.event === "pull_request" &&
+          check.check_suite?.id === run.check_suite_id &&
+          job.check_run_url?.toLowerCase() ===
+            sourceUrl(repository, `check-runs/${check.id}`).toLowerCase(),
         "evidence_unavailable", `${name} exact-head CI provenance`,
       );
     }
@@ -938,7 +1001,7 @@ async function publishReviewVerdict({ github, context, env = process.env, packet
     "invalid_packet", "immutable artifact from the trusted preparation job",
   );
   requireEvidence(Array.isArray(items) && items.length === 1, "invalid_verdict", "exactly one verdict");
-  const item = items[0];
+  const item = normalizeReviewVerdict(items[0], packet);
   requireEvidence(
     item.schema_version === "1" && Number(item.pull_request_number) === packet.number &&
       item.head_sha === packet.headSha && item.packet_digest === packetDigest &&
@@ -975,7 +1038,7 @@ async function publishReviewVerdict({ github, context, env = process.env, packet
   ) === "reject")) {
     return { published: false, reason: "substantive_rejection_preserved" };
   }
-  const latest = latestBoundReviewRun(runs, packet.checkName, packet.headSha, packet.number,
+  const latest = latestReviewRun(runs, packet.checkName, packet.headSha, packet.number,
     packet.repository, context.payload.repository.default_branch);
   requireEvidence(!latest || latest.id < packet.runId ||
     (latest.id === packet.runId && latest.run_attempt === packet.runAttempt),

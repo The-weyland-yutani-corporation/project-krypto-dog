@@ -67,8 +67,9 @@ function harness(checkName = "QA verification") {
     blobs: new Map([[before.sha, before], [after.sha, after]]),
     runs: [ciRun],
     jobs: new Map([[500, evidence.CI_CHECKS.map((name, index) => ({
-      id: 501 + index, name, status: "completed", conclusion: "success", run_attempt: 1,
+      id: 1501 + index, name, status: "completed", conclusion: "success", run_attempt: 1,
       started_at: START, completed_at: END,
+      check_run_url: `https://api.github.com/repos/${REPOSITORY}/check-runs/${501 + index}`,
     }))]]),
     artifacts: new Map([[500, [{ id: 700, name: "retained-test-evidence", digest: `sha256:${"c".repeat(64)}`,
       expired: false, size_in_bytes: 123, created_at: START, expires_at: "2026-09-29T00:00:00Z",
@@ -76,7 +77,7 @@ function harness(checkName = "QA verification") {
     checks: evidence.CI_CHECKS.map((name, index) => ({
       id: 501 + index, name, head_sha: SHA, app: { slug: "github-actions" },
       status: "completed", conclusion: "success", completed_at: END,
-      details_url: `https://github.com/${REPOSITORY}/actions/runs/500/job/${501 + index}`,
+      details_url: `https://github.com/${REPOSITORY}/actions/runs/500/job/${1501 + index}`,
       check_suite: { id: 600 },
     })),
     issues: new Map(),
@@ -247,8 +248,21 @@ function harness(checkName = "QA verification") {
 }
 
 function verdict(packet, value = "pass", overrides = {}) {
+  if (!["pass", "reject"].includes(value)) {
+    throw new Error(`Legacy create_pr_check cannot represent ${value}`);
+  }
   return {
-    schema_version: "1", pull_request_number: String(packet.number), head_sha: packet.headSha,
+    type: "create_pr_check", pull_request_number: String(packet.number), head_sha: packet.headSha,
+    conclusion: value === "pass" ? "success" : "failure",
+    title: "Exact-head result", summary: "Source-addressed review of the supplied immutable packet.",
+    ...overrides,
+  };
+}
+
+function structuredVerdict(packet, value = "pass", overrides = {}) {
+  return {
+    type: "create_pr_check", schema_version: "1",
+    pull_request_number: String(packet.number), head_sha: packet.headSha,
     packet_digest: packet.packetDigest, verdict: value,
     reason: value === "infrastructure" ? "provider_unavailable" : "none",
     title: "Exact-head result", summary: "Source-addressed review of the supplied immutable packet.",
@@ -256,4 +270,6 @@ function verdict(packet, value = "pass", overrides = {}) {
   };
 }
 
-module.exports = { harness, verdict, page, blob, evidence, SHA, BASE, REPOSITORY, NOW, START, END };
+module.exports = {
+  harness, verdict, structuredVerdict, page, blob, evidence, SHA, BASE, REPOSITORY, NOW, START, END,
+};
