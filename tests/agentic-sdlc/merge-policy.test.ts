@@ -62,6 +62,7 @@ interface PolicyResult {
   hasSelfHealBlockingLabel: boolean;
   hasCurrentHumanApproval: boolean;
   hasCurrentHumanChangesRequested: boolean;
+  waitingForHumanBoundaryApproval: boolean;
   riskTier: string;
   requiresHumanBoundaryApproval: boolean;
   factoryMode: string;
@@ -599,6 +600,7 @@ describe("deterministic merge policy", () => {
     ).toMatchObject({
       state: "success",
       description: "Current-head human and agent reviews approve boundary PR",
+      waitingForHumanBoundaryApproval: false,
       hasCurrentHumanApproval: true,
       riskTier: "risk:boundary",
       requiresHumanBoundaryApproval: true,
@@ -624,6 +626,7 @@ describe("deterministic merge policy", () => {
         state: "pending",
         description: "Boundary change requires current human approval",
         hasCurrentHumanApproval: false,
+        waitingForHumanBoundaryApproval: true,
       });
     }
   });
@@ -756,6 +759,7 @@ describe("deterministic merge policy", () => {
       state: "pending",
       description: "Boundary change requires current human approval",
       riskTier: "risk:boundary",
+      waitingForHumanBoundaryApproval: true,
     });
     expect(
       policy({

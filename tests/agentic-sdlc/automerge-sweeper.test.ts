@@ -230,6 +230,19 @@ describe("auto-merge arming policy", () => {
             id: 99,
             name: "Human boundary approval",
             status: "completed",
+            conclusion: "action_required",
+          },
+        ]),
+      }),
+    ).toEqual({ arm: false, reason: "boundary-approval:failure" });
+
+    expect(
+      decide({
+        checkRuns: greenChecks([
+          {
+            id: 99,
+            name: "Human boundary approval",
+            status: "completed",
             conclusion: "success",
           },
         ]),

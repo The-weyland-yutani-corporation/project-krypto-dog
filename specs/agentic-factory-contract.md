@@ -257,6 +257,12 @@ computed** and MUST be evaluated against the exact current head SHA. A check
 that ran on a previous commit does not satisfy a required check after a new
 commit lands, including a `[self-heal]` repair commit.
 
+While a boundary PR waits for current-head human approval, the reconciler
+publishes `Human boundary approval` and the dependent merge-policy verdict as
+completed `action_required` checks. This keeps the gate fail-closed without
+leaving checks falsely `in_progress` for days. A qualifying approval publishes
+a newer successful verdict for the same exact head.
+
 ## 8. Review-requirement labels are not lifecycle state
 
 `needs-qa`, `security-review`, and `trading-safety` are **review requirements,

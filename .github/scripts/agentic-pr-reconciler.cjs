@@ -618,6 +618,7 @@ function evaluateMergePolicy({
 
   let state = "pending";
   let description = "A current human approval is required";
+  let waitingForHumanBoundaryApproval = false;
 
   if (pullRequest.draft) {
     description = "Draft pull requests cannot merge";
@@ -654,6 +655,7 @@ function evaluateMergePolicy({
     agentApproval.requiresHumanBoundaryApproval &&
     !hasCurrentHumanApproval
   ) {
+    waitingForHumanBoundaryApproval = true;
     description = "Boundary change requires current human approval";
   } else if (agentApproval.approved) {
     state = "success";
@@ -679,6 +681,7 @@ function evaluateMergePolicy({
     hasSelfHealBlockingLabel: selfHealBlockingLabel,
     hasCurrentHumanApproval,
     hasCurrentHumanChangesRequested,
+    waitingForHumanBoundaryApproval,
     agentApproved: agentApproval.approved,
     agentCheckStates: agentApproval.checkStates,
     requiredSpecialistChecks: agentApproval.requiredSpecialistChecks,
@@ -960,8 +963,13 @@ async function reconcileAgenticPullRequests({
     checkRuns,
     contextName = MERGE_CONTEXT,
   ) => {
-    const status = state === "success" ? "completed" : "in_progress";
-    const conclusion = state === "success" ? "success" : null;
+    const conclusion =
+      state === "success"
+        ? "success"
+        : state === "action_required"
+          ? "action_required"
+          : null;
+    const status = conclusion ? "completed" : "in_progress";
     const namedChecks = checkRuns
       .filter((check) => check.name === contextName)
       .sort((left, right) => right.id - left.id);
@@ -1235,7 +1243,7 @@ async function reconcileAgenticPullRequests({
           policy.hasCurrentHumanApproval &&
             !policy.hasCurrentHumanChangesRequested
             ? "success"
-            : "pending",
+            : "action_required",
           policy.hasCurrentHumanApproval
             ? "Current-head human approval satisfies boundary policy"
             : "Boundary change requires current-head human approval",
@@ -1383,6 +1391,8 @@ async function reconcileAgenticPullRequests({
         sha,
         policy.state === "success" && hasPendingPolicyOperations
           ? "pending"
+          : policy.waitingForHumanBoundaryApproval
+            ? "action_required"
           : policy.state,
         policy.state === "success" && hasPendingPolicyOperations
           ? "Finalizing required reconciliation operations"

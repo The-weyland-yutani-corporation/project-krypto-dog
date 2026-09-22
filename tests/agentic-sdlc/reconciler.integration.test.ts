@@ -838,8 +838,14 @@ describe("agentic PR reconciler integration", () => {
     expectCheckRun(
       mocks.createCheckRun,
       "Agentic merge policy",
-      "in_progress",
+      "completed",
       "Boundary change requires current human approval",
+    );
+    expect(mocks.createCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Agentic merge policy",
+        conclusion: "action_required",
+      }),
     );
   });
 
@@ -1413,14 +1419,26 @@ describe("agentic PR reconciler integration", () => {
     expectCheckRun(
       withoutApproval.mocks.createCheckRun,
       "Agentic merge policy",
-      "in_progress",
+      "completed",
       "Boundary change requires current human approval",
+    );
+    expect(withoutApproval.mocks.createCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Agentic merge policy",
+        conclusion: "action_required",
+      }),
     );
     expectCheckRun(
       withoutApproval.mocks.createCheckRun,
       "Human boundary approval",
-      "in_progress",
+      "completed",
       "Boundary change requires current-head human approval",
+    );
+    expect(withoutApproval.mocks.createCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Human boundary approval",
+        conclusion: "action_required",
+      }),
     );
     expect(withoutApproval.mocks.addLabels).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
@@ -1463,6 +1481,83 @@ describe("agentic PR reconciler integration", () => {
       "completed",
       "Current-head human approval satisfies boundary policy",
     );
+  });
+
+  it("terminates active boundary checks while current-head approval is pending", async () => {
+    const { mocks } = await reconcile({
+      filesByPull: {
+        1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "QA verification",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 42,
+            name: "Security review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 43,
+            name: "Human boundary approval",
+            status: "in_progress",
+            conclusion: null,
+            output: {
+              title: "Human boundary approval",
+              summary: "Boundary change requires current-head human approval",
+            },
+          },
+          {
+            id: 44,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+            output: {
+              title: "Agentic merge policy",
+              summary: "Boundary change requires current human approval",
+            },
+          },
+        ],
+      },
+    });
+
+    expect(mocks.createCheckRun).not.toHaveBeenCalled();
+    for (const [checkRunId, name, summary] of [
+      [
+        43,
+        "Human boundary approval",
+        "Boundary change requires current-head human approval",
+      ],
+      [
+        44,
+        "Agentic merge policy",
+        "Boundary change requires current human approval",
+      ],
+    ] as const) {
+      expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          check_run_id: checkRunId,
+          name,
+          status: "completed",
+          conclusion: "action_required",
+          output: {
+            title: name,
+            summary,
+          },
+        }),
+      );
+    }
   });
 
   it("keeps merge policy pending when a final boundary-label write fails", async () => {
