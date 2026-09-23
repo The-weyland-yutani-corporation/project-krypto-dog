@@ -7,7 +7,7 @@ const {
   inspectIssueForm, getIssueFormSection, parseCandidateSections, isHumanActorType,
   resolveLatestLabelApplicationActorType, countInFlight, countBudgetConsumption, buildCandidate,
   resolveGoalScopeEvidence,
-  nativeParentMatchesRepository,
+  nativeParentMatchesRepository, resolveNativeParentGoalNumber,
   formatMachineReceipt, inspectMachineReceipt,
 } = require("./agentic-queue-runtime.cjs");
 const { evaluateEligibility } = require("./agentic-queue-controller.cjs");
@@ -123,10 +123,12 @@ function validateWorkItemProposal({ issue, candidate, authority, stage, body, ex
   if (original.allowedPaths.length && !areAllowedPathPatternsWithin(parsed.allowedPaths, original.allowedPaths)) reasons.push("proposal-widens-existing-scope");
   if (parsed.allowedPaths.some((path) => rankRiskTier(classifyPathTier(path)) > rankRiskTier(risk))) reasons.push("risk-below-path-floor");
   if (risk === "risk:boundary") reasons.push("risk-boundary-requires-human");
-  if (candidate.parentStatus === "unknown") reasons.push("native-parent-unknown");
+  if (candidate.parentStatus !== "present") {
+    reasons.push(candidate.parentStatus === "unknown" ? "native-parent-unknown" : "native-parent-required");
+  }
   if (candidate.parentStatus === "present" && candidate.nativeParentGoalNumber !== authority.config?.goalNumber) reasons.push("native-parent-mismatch");
   if (parsed.milestone && parsed.milestone !== authority.config?.goalMilestone) reasons.push("milestone-conflict");
-  const createLeaf = stage === "pm" && (cleanBody !== stripReceipts(issue.body) || !parsed.milestone || candidate.parentStatus === "absent");
+  const createLeaf = stage === "pm" && (cleanBody !== stripReceipts(issue.body) || !parsed.milestone);
   if (createLeaf && authority.config?.goalScopeAnchors?.length &&
     !authority.config.goalScopeAnchors.includes(issue.number)) reasons.push("derived-scope-revision-requires-anchor-planning");
   if (stage === "em" && (cleanBody !== stripReceipts(issue.body) || !parsed.milestone || candidate.parentStatus !== "present")) {
@@ -138,8 +140,9 @@ function validateWorkItemProposal({ issue, candidate, authority, stage, body, ex
     ...candidate, ...parsed, number: issue.number,
     labels: proposedLabels.filter((label) => label !== definition.to).concat(QUEUE_READY_LABEL),
     milestone: authority.config?.goalMilestone,
-    parentGoalApproved: authority.ok && parsed.parentGoalNumber === authority.config?.goalNumber &&
-      (candidate.parentStatus === "absent" || candidate.nativeParentGoalNumber === authority.config?.goalNumber),
+    parentGoalApproved: authority.ok && candidate.parentGoalApproved === true &&
+      parsed.parentGoalNumber === authority.config?.goalNumber && candidate.parentStatus === "present" &&
+      candidate.nativeParentGoalNumber === authority.config?.goalNumber,
   };
   reasons.push(...evaluateEligibility(projected, authority.config));
   return {
@@ -248,6 +251,9 @@ async function applyWorkItemProposal({ github, context, core, stage, proposal, n
   if (dryRun || authority.mode !== "active") return { ok: true, advisory: true, applied: false, plan: validation.plan };
   let materialized = issue;
   let reserved = false;
+  const sourceStillEnrolled = async () => await resolveNativeParentGoalNumber({
+    github, owner, repo, core, issueNumber: target,
+  }) === authority.config.goalNumber;
   try {
     const freshAuthority = await loadIntakeAuthority({ github, context, core, now });
     const fresh = await github.rest.issues.get({ owner, repo, issue_number: target });
@@ -255,11 +261,13 @@ async function applyWorkItemProposal({ github, context, core, stage, proposal, n
       fresh.data.updated_at !== issue.updated_at || !sameOwnedSnapshot(fresh.data, issue)) {
       return { ok: false, reasons: ["concurrent-intake-change"] };
     }
+    if (!await sourceStillEnrolled()) return { ok: false, reasons: ["source-native-parent-unverified"] };
     await github.rest.issues.createComment({
       owner, repo, issue_number: target,
       body: formatMachineReceipt("reservation", { stage, fingerprint, sourceIssue: target, state: "reserved" }),
     });
     reserved = true;
+    if (!await sourceStillEnrolled()) return { ok: false, reserved, reasons: ["source-native-parent-unverified"] };
     if (validation.plan.createLeaf) {
       let body = validation.plan.body;
       if (validation.plan.scopeSourceIssue && !/^Scope source:/m.test(body)) {
@@ -276,6 +284,9 @@ async function applyWorkItemProposal({ github, context, core, stage, proposal, n
       });
       materialized = created.data;
       if (!Number.isSafeInteger(materialized?.id) || !Number.isSafeInteger(materialized?.number)) throw new Error("Created leaf response is incomplete");
+      if (!await sourceStillEnrolled()) {
+        return { ok: false, reserved, createdIssue: materialized.number, reasons: ["source-native-parent-unverified"] };
+      }
       await github.request("POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues", {
         owner, repo, issue_number: authority.config.goalNumber, sub_issue_id: materialized.id, replace_parent: false,
       });
@@ -286,6 +297,7 @@ async function applyWorkItemProposal({ github, context, core, stage, proposal, n
     }
     const source = await github.rest.issues.get({ owner, repo, issue_number: target });
     if (!sameOwnedSnapshot(source.data, issue)) return { ok: false, reasons: ["concurrent-intake-change"], reserved };
+    if (!await sourceStillEnrolled()) return { ok: false, reserved, reasons: ["source-native-parent-unverified"] };
     await applySelectiveLabels({ github, owner, repo, issue: materialized, labels: validation.plan.labels });
     const verified = await github.rest.issues.get({ owner, repo, issue_number: materialized.number });
     if (verified.data.body !== materialized.body ||

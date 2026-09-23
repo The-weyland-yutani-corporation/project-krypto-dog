@@ -22,7 +22,7 @@ function apply(h: ReturnType<typeof harness>, stage = "pm", number = 300, body?:
 
 describe("bounded immutable PM/EM intake", () => {
   it("materializes an admitted proposal as one native goal leaf, then becomes genuinely queue eligible", async () => {
-    const h = harness({ parents: { 300: null } });
+    const h = harness();
     const original = structuredClone(h.requireIssue(300));
     const body = workBody({ "Acceptance criteria": "One precise, newly authored failure oracle." });
     const result = await apply(h, "pm", 300, body);
@@ -115,7 +115,7 @@ describe("bounded immutable PM/EM intake", () => {
   it("verifies a derived leaf against the goal-listed anchor's trusted immutable result receipt", async () => {
     const issues = [...baseIssues(), issue(16)];
     issues[1].body = goalBody({ "Allowed scope": "Only remaining software work for #16 and #44." });
-    const h = harness({ issues, parents: { 16: null } });
+    const h = harness({ issues, parents: { 16: 248 } });
     const result = await apply(h, "pm", 16, workBody({ "Acceptance criteria": "Concrete regression for scoped anchor #16." }));
     expect(result).toMatchObject({ ok: true, applied: true });
     expect(h.requireIssue(result.issue).body).toContain("Scope source: #16");

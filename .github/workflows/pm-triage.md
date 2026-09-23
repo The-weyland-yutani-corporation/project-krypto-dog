@@ -88,9 +88,11 @@ Refine the issue into an implementation-ready work item.
 
 - Read the issue title, body, comments, labels, and relevant repository context.
 - Identify the user/system problem, scope, non-goals, acceptance criteria, and validation plan.
-- Require a linked parent issue carrying `factory:goal-approved`. If the issue
-  is outside that goal or has no approved goal, keep `needs-triage` and explain
-  the missing authorization.
+- Require the source issue's existing, same-repository direct native parent
+  to be the single open human-approved goal. An `Approved parent goal` body
+  claim is not membership proof. A missing, unreadable or different native
+  parent must not be repaired by creating/reparenting work with workflow
+  credentials; use `noop` and explain the missing authorization.
 - Read that goal's Objective, Allowed scope and Explicit non-goals, not merely
   its path allow-list. Paths are a ceiling, never permission for novel work.
   Where scope names specific issues, require the original source to be one
@@ -110,8 +112,8 @@ Refine the issue into an implementation-ready work item.
 - Submit at most one complete proposal through `apply_work_item`, with the exact
   original body and `updated_at` as the expected snapshot. Use every exact
   rendered heading in `.github/ISSUE_TEMPLATE/agentic-work-item.yml`.
-- Never edit human-owned bodies, milestones, or native parents. If the proposal
-  differs, the deterministic safe-output job reserves one handoff and creates
+- Never edit human-owned bodies, milestones, or native parents. If an already
+  natively enrolled source needs refinement, the safe-output job reserves one handoff and creates
   at most one immutable planning leaf directly under the approved goal with
   its milestone. If the existing leaf already matches, only its legal
   lifecycle/risk/priority labels advance.

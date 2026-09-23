@@ -227,6 +227,16 @@ PRs and capacity. It accepts only the triggering issue plus the exact original
 body/`updated_at` snapshot. Incomplete, stale, blocked, boundary or
 out-of-scope work fails closed with structured reasons.
 
+The source itself must already be a same-repository **direct native child**
+of the active approved goal before PM can reserve, refine or materialize work.
+An issue author's `Approved parent goal` body field, account association,
+model proposal or the workflow's write credentials never substitute for native
+membership. Absent parents return `native-parent-required`; unreadable native
+evidence also blocks every write. Source membership is re-read at reservation,
+child-link and lifecycle boundaries. If membership disappears after a write,
+the existing reservation/partial leaf stays in explicit recovery without
+linking, dispatching, deleting or silently retrying it.
+
 When the approved goal's `Allowed scope` names particular source issues,
 the queue also requires that scoped issue number or a derived leaf proven by
 the listed anchor's trusted intake reservation/result receipts. A derived
@@ -261,7 +271,7 @@ evidence, require human scope clarification rather than a claimed live proof.
 
 GitHub does **not** document conditional issue `PATCH` as compare-and-swap.
 Accordingly intake never rewrites human-owned issue bodies/milestones or
-reparents existing issues. When PM's complete proposal differs, it reserves
+reparents existing issues. When an already enrolled source's complete proposal differs, PM reserves
 one bounded application and creates at most one immutable planning leaf,
 sets the existing goal milestone at creation, and links that **new** leaf
 directly to the goal (`replace_parent: false`). A leaf already matching the
