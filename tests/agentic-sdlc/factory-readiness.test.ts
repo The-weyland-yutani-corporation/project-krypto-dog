@@ -122,7 +122,7 @@ describe("bounded read-only GitHub adapter", () => {
   it("reads subsequent pages and reports truncation explicitly at the configured bound", async () => {
     const github = { request: jest.fn(async (_route: string, params: { page: number }) => ({
       data: params.page === 1 ? Array.from({ length: 100 }, (_, number) => ({ number })) : [{ number: 101 }],
-      headers: params.page === 1 ? { link: '<https://api.github.com/next>; rel="next"' } : {},
+      headers: params.page === 1 ? { link: '<https://api.github.com/repos/example/krypto/issues?page=2>; rel="next"' } : {},
     })) };
     const reader = createReadOnlyReader({ github, owner: "example", repo: "krypto" });
     expect(await reader.list("GET /repos/{owner}/{repo}/issues")).toHaveLength(101);

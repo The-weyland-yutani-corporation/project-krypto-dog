@@ -1,7 +1,7 @@
 "use strict";
 
 const {
-  CONTROL_LABEL, GOAL_LABEL, GOAL_APPROVED_LABEL, MODE_LABELS,
+  CONTROL_LABEL, GOAL_LABEL, GOAL_APPROVED_LABEL, FACTORY_LABEL, MODE_LABELS,
   CANDIDATE_FORM_HEADINGS, GOAL_FORM_HEADINGS, GOAL_REQUIRED_NARRATIVE_HEADINGS,
   IN_FLIGHT_LABELS, POST_QUEUE_LIFECYCLE_LABELS, CLAIM_MARKER_PATTERN,
   normalizeLabels, inspectIssueForm, getIssueFormSection, parseCandidateSections,
@@ -26,6 +26,12 @@ const MODEL_VARIABLES = Object.freeze([
   "GH_AW_MODEL_AGENT_COPILOT", "GH_AW_MODEL_DETECTION_COPILOT", "GH_AW_DEFAULT_MODEL_COPILOT",
 ]);
 const unique = (values) => [...new Set(values)];
+
+function isFactoryWorkItem(issue) {
+  const labels = normalizeLabels(issue.labels);
+  return !issue.pull_request && labels.includes(FACTORY_LABEL) &&
+    !labels.includes(GOAL_LABEL) && !labels.includes(CONTROL_LABEL);
+}
 
 function diagnoseGoalIssue(issue) {
   const inspected = inspectIssueForm(issue.body, Object.values(GOAL_FORM_HEADINGS));
@@ -121,8 +127,11 @@ async function collectReadinessSnapshot({ github, context, config = {} }) {
   const workflows = await reader.list(`${base}/actions/workflows`, {}, "workflows");
   const maxIssues = Number.isSafeInteger(config.maxIssues) && config.maxIssues > 0 ? config.maxIssues : 300;
   const scopeAnchors = issues.filter((issue) => normalizeLabels(issue.labels).includes(GOAL_LABEL)).flatMap((issue) => getGoalScopeAnchors(issue.body));
-  const relevant = issues.filter((issue) => issue.state === "open" || scopeAnchors.includes(issue.number) ||
-    normalizeLabels(issue.labels).some((label) => POST_QUEUE_LIFECYCLE_LABELS.includes(label)));
+  const relevant = issues.filter((issue) => {
+    const labels = normalizeLabels(issue.labels);
+    return labels.includes(CONTROL_LABEL) || labels.includes(GOAL_LABEL) || scopeAnchors.includes(issue.number) ||
+      isFactoryWorkItem(issue) && (issue.state === "open" || labels.some((label) => POST_QUEUE_LIFECYCLE_LABELS.includes(label)));
+  });
   if (relevant.length > maxIssues) {
     reader.reads.push({ resource: "issue-enrichment", complete: false, reason: "issue-limit-reached", count: maxIssues, total: relevant.length });
   }
@@ -164,6 +173,8 @@ async function collectReadinessSnapshot({ github, context, config = {} }) {
 
 function buildFactoryReadinessReport(snapshot) {
   const open = snapshot.issues.filter((issue) => issue.state === "open");
+  const factoryIssues = snapshot.issues.filter(isFactoryWorkItem);
+  const factoryOpen = factoryIssues.filter((issue) => issue.state === "open");
   const approved = open.filter((issue) => {
     const labels = normalizeLabels(issue.labels);
     return labels.includes(GOAL_LABEL) && labels.includes(GOAL_APPROVED_LABEL);
@@ -180,18 +191,18 @@ function buildFactoryReadinessReport(snapshot) {
   const modeReasons = mode.mode === "active" && !approvalHuman(mode.controlIssue, "factory-mode:active")
     ? ["active-mode-not-human-applied"] : [];
   const capacityComplete = !resourceIncomplete("/issues") && !resourceIncomplete("issue-enrichment");
-  const ambiguousBudgetIssues = snapshot.issues.filter((issue) =>
+  const ambiguousBudgetIssues = factoryIssues.filter((issue) =>
     normalizeLabels(issue.labels).some((label) => POST_QUEUE_LIFECYCLE_LABELS.includes(label)) &&
     !parseCandidateSections(issue).parentGoalNumber &&
     detailsFor(issue).comments?.some((comment) => CLAIM_MARKER_PATTERN.test(comment.body || ""))).map((issue) => issue.number);
-  const inFlight = open.filter((issue) => normalizeLabels(issue.labels).some((label) => IN_FLIGHT_LABELS.includes(label))).map((issue) => issue.number);
+  const inFlight = factoryOpen.filter((issue) => normalizeLabels(issue.labels).some((label) => IN_FLIGHT_LABELS.includes(label))).map((issue) => issue.number);
   const goals = open.filter((issue) => normalizeLabels(issue.labels).includes(GOAL_LABEL)).map((issue) => {
     const diagnostic = diagnoseGoalIssue(issue);
     const labels = normalizeLabels(issue.labels);
     const reasons = [...diagnostic.reasons];
     if (!labels.includes(GOAL_APPROVED_LABEL)) reasons.push("goal-not-approved");
     else if (!approvalHuman(issue, GOAL_APPROVED_LABEL)) reasons.push("goal-approval-not-human-applied");
-    const consumedIssues = snapshot.issues.filter((candidate) => {
+    const consumedIssues = factoryIssues.filter((candidate) => {
       const parsed = parseCandidateSections(candidate);
       return parsed.parentGoalNumber === issue.number &&
         parsed.labels.some((label) => POST_QUEUE_LIFECYCLE_LABELS.includes(label)) &&
@@ -209,10 +220,7 @@ function buildFactoryReadinessReport(snapshot) {
     ...(!isValidTimestamp(snapshot.observedAt) ? ["invalid-observed-at"] : []),
     ...(ambiguousBudgetIssues.length ? ["budget-association-ambiguous"] : []),
   ];
-  const candidateReports = open.filter((issue) => {
-    const labels = normalizeLabels(issue.labels);
-    return !labels.includes(GOAL_LABEL) && !labels.includes(CONTROL_LABEL);
-  }).sort((a, b) => a.number - b.number).map((issue) => {
+  const candidateReports = factoryOpen.sort((a, b) => a.number - b.number).map((issue) => {
     const parsed = parseCandidateSections(issue);
     const goal = goals.find((item) => item.number === parsed.parentGoalNumber);
     const goalIssue = snapshot.issues.find((item) => item.number === parsed.parentGoalNumber);
@@ -308,6 +316,7 @@ function buildFactoryReadinessReport(snapshot) {
       controls: controls.map((issue) => ({ number: issue.number, labels: normalizeLabels(issue.labels).filter((label) => MODE_LABELS.includes(label)) })) },
     goals: { resolution: goalResolution.reason, activeGoalNumber: goalResolution.goal?.number || null, items: goals },
     capacity: {
+      accountingScope: FACTORY_LABEL,
       inFlight, inFlightCount: capacityComplete ? inFlight.length : null, accountingBasis: "canonical-lifecycle-labels",
       ownershipSignals, unaccountedOwnership, ambiguousBudgetIssues,
       requiresHumanReconciliation: unaccountedOwnership.length > 0 || ambiguousBudgetIssues.length > 0,

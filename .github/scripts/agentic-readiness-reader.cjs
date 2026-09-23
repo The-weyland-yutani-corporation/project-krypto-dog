@@ -3,6 +3,30 @@
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 
+function hasNextPage(headers, page) {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) throw new Error("Pagination response headers missing");
+  const values = Object.entries(headers).filter(([name]) => name.toLowerCase() === "link").map(([, value]) => value);
+  if (values.length === 0) return false;
+  if (values.length !== 1 || typeof values[0] !== "string" || values[0].trim() === "") throw new Error("Ambiguous pagination Link header");
+  const relations = new Set();
+  for (const part of values[0].split(/,\s*(?=<)/)) {
+    const match = /^<([^<>\s]+)>\s*;\s*rel=(?:"(next|prev|first|last)"|(next|prev|first|last))\s*$/.exec(part.trim());
+    if (!match) throw new Error("Malformed pagination Link header");
+    const relation = match[2] || match[3];
+    if (relations.has(relation)) throw new Error("Duplicate pagination relation");
+    relations.add(relation);
+    const url = new URL(match[1]);
+    if (!["https:", "http:"].includes(url.protocol)) throw new Error("Invalid pagination URL");
+    if (relation === "next") {
+      const next = url.searchParams.getAll("page");
+      if (next.length !== 1 || !/^[1-9]\d*$/.test(next[0]) || Number(next[0]) !== page + 1) {
+        throw new Error("Unverifiable pagination progression");
+      }
+    }
+  }
+  return relations.has("next");
+}
+
 function createReadOnlyReader({ github, owner, repo, maxPages = 20, maxRequests = 1500 }) {
   const reads = [];
   let requests = 0;
@@ -32,12 +56,14 @@ function createReadOnlyReader({ github, owner, repo, maxPages = 20, maxRequests 
     const resource = route.replace(/\{(\w+)\}/g, (_, name) => String({ owner, repo, ...params }[name]));
     const items = [];
     let pages = 0;
+    let expectedTotal;
     try {
       for (let page = 1; page <= maxPages; page += 1) {
         const response = await request(route, { ...params, per_page: 100, page });
         pages += 1;
         const data = key ? response.data?.[key] : response.data;
-        if (!Array.isArray(data) || response.data?.incomplete_results === true) {
+        if (!Array.isArray(data) || data.length > 100 ||
+          response.data?.incomplete_results !== undefined && response.data.incomplete_results !== false) {
           throw new Error("Malformed or incomplete list response");
         }
         if (data.some((item) => !item || typeof item !== "object" || validateItem && !validateItem(item))) {
@@ -45,16 +71,21 @@ function createReadOnlyReader({ github, owner, repo, maxPages = 20, maxRequests 
         }
         items.push(...data);
         const total = response.data?.total_count;
-        const hasNext = response.headers?.link?.includes('rel="next"') === true;
-        if (!hasNext && data.length < 100 && (total === undefined || items.length >= total)) {
+        if (total !== undefined) {
+          if (!Number.isSafeInteger(total) || total < 0 || expectedTotal !== undefined && expectedTotal !== total) {
+            throw new Error("Invalid or inconsistent pagination total");
+          }
+          expectedTotal = total;
+        }
+        const hasNext = hasNextPage(response.headers, page);
+        if (!hasNext) {
+          if (expectedTotal !== undefined && items.length !== expectedTotal) throw new Error("Pagination ended before the advertised total");
           reads.push({ resource, complete: true, pages, count: items.length });
           return items;
         }
-        if (!hasNext && Number.isSafeInteger(total) && items.length === total) {
-          reads.push({ resource, complete: true, pages, count: items.length });
-          return items;
+        if (data.length === 0 || expectedTotal !== undefined && items.length >= expectedTotal) {
+          throw new Error("Pagination next link contradicts observed data");
         }
-        if (data.length === 0) throw new Error("Pagination ended before the advertised total");
       }
       throw new Error("Pagination limit reached");
     } catch (error) {

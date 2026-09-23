@@ -209,6 +209,19 @@ Capacity identifies its canonical lifecycle-label accounting basis separately
 from claim/assignee/open-PR ownership signals. Ownership not represented by
 in-flight labels produces `wip-label-accounting-inconsistent` and requires
 human reconciliation; a zero label count is not advertised as an empty system.
+Readiness scopes that accounting to `agentic-factory` work items, excluding
+goal/control records. An unrelated repository issue cannot enter capacity,
+budget or ownership merely through an assignee, copied claim marker, lifecycle
+label or linked PR. All issues remain available as dependency-state evidence;
+goal-scope anchors are still read for provenance. Malformed or unreadable
+evidence for actual factory work remains fail-closed.
+
+List completeness follows explicit pagination metadata, not page length.
+A response with available headers and no next link is terminal even at exactly
+100 items; an available total must agree. Missing/malformed headers, invalid or
+contradictory links/totals, unverified cursor progression and exhausted page or
+request bounds remain explicit incomplete reads. No guessed extra page is
+requested just because the terminal page is full.
 
 Capabilities include readable branch protection, Actions permissions, and
 stage/default `GH_AW_*_COPILOT` model overrides. The pinned compiler's fallback
