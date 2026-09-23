@@ -35,13 +35,18 @@ describe("canonical linked-open-PR detection", () => {
 
   it("matches native links by actual PR URL rather than a foreign issue's equal number", () => {
     const url = "https://api.github.com/repos/example/krypto/pulls/900";
-    const pulls = [{ number: 900, body: "Implementation details.", url }];
+    const repository = { owner: "example", repo: "krypto" };
+    const pulls = [{
+      number: 900, body: "Implementation details.", url,
+      head: { repo: { id: 10, full_name: "example/krypto" } },
+      base: { repo: { id: 10, full_name: "example/krypto" } },
+    }];
     expect(runtime.linkedPullRequestNumbers(pulls, 300, [{
       source: { issue: { number: 900, pull_request: { url } } },
-    }])).toEqual([900]);
+    }], repository)).toEqual([900]);
     expect(runtime.linkedPullRequestNumbers(pulls, 300, [{
       source: { issue: { number: 900, pull_request: { url: "https://api.github.com/repos/foreign/other/pulls/900" } } },
-    }])).toEqual([]);
+    }], repository)).toEqual([]);
   });
 
   it("does not claim or dispatch a ready issue whose implementation PR uses Closes", async () => {
@@ -76,7 +81,7 @@ describe("canonical linked-open-PR detection", () => {
   });
 
   it("fails closed when native link evidence is unavailable", async () => {
-    const h = harness();
+    const h = harness({ pulls: [{ number: 900, body: "Native-only link evidence." }] });
     h.github.rest.issues.listEventsForTimeline.mockRejectedValueOnce(new Error("timeline unavailable"));
     expect(await hasOpenPR(h)).toBe(true);
     expect(h.core.warning).toHaveBeenCalled();

@@ -79,7 +79,7 @@ export function harness(options: {
   issues?: FixtureIssue[];
   parents?: Record<number, number | null>;
   comments?: Record<number, FixtureComment[]>;
-  pulls?: { number: number; body: string }[];
+  pulls?: { number: number; body: string; url?: string; head?: unknown; base?: unknown }[];
   failWrite?: boolean;
   failDispatch?: boolean;
   beforeLabels?: (item: FixtureIssue) => void;
@@ -167,7 +167,11 @@ export function harness(options: {
     paginate: jest.fn(async (method: (params: Params) => Promise<unknown>, params: Params) => method(params)),
     rest: {
       issues: { listForRepo, get, listComments, listEventsForTimeline, addLabels, removeLabel, createComment, create, update: jest.fn() },
-      pulls: { list: jest.fn(async () => options.pulls || []) },
+      pulls: { list: jest.fn(async () => (options.pulls || []).map((pull) => ({
+        head: { repo: { id: 10, full_name: "example/krypto" } },
+        base: { repo: { id: 10, full_name: "example/krypto" } },
+        ...pull,
+      }))) },
       search: { issuesAndPullRequests: jest.fn(async () => ({ data: { items: [], total_count: 0, incomplete_results: false } })) },
       actions: { createWorkflowDispatch },
       repos: { get: jest.fn(async () => ({ data: { default_branch: "main" } })) },

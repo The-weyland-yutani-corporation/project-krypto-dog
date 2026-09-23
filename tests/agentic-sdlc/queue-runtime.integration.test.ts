@@ -474,7 +474,12 @@ function createHarness(options: HarnessOptions) {
 
   const listPullRequests = jest.fn(async () => {
     if (options.failPullRequestList) throw new Error("pull request list failed");
-    return (options.pullRequests || []).map((item, index) => ({ number: 10000 + index, ...item }));
+    return (options.pullRequests || []).map((item, index) => ({
+      number: 10000 + index,
+      head: { repo: { id: 10, full_name: `${owner}/${repo}` } },
+      base: { repo: { id: 10, full_name: `${owner}/${repo}` } },
+      ...item,
+    }));
   });
 
   const request = jest.fn(

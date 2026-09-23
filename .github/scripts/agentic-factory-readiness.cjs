@@ -10,7 +10,7 @@ const {
   resolveGoalScopeEvidence, getGoalScopeAnchors, hasVerifiedSignalScope,
   nativeParentMatchesRepository,
   inspectMachineReceipt,
-  linkedPullRequestNumbers,
+  linkedPullRequestNumbers, isAuthoritativePullRequest,
 } = require("./agentic-queue-runtime.cjs");
 const { evaluateEligibility, evaluateClaimState, parseClaimPayload } = require("./agentic-queue-controller.cjs");
 const {
@@ -224,7 +224,7 @@ function buildFactoryReadinessReport(snapshot) {
       hasVerifiedSignalScope(issue, parsed.scopeSourceIssueNumber, goalIssue?.number, scopeSource?.comments,
         nativeParentMatchesRepository(scopeSource?.parent, snapshot.repository.owner, snapshot.repository.repo) ? scopeSource.parent.number : null));
     const nativeParent = Number.isSafeInteger(detail.parent?.number) ? detail.parent.number : null;
-    const linkedPrs = linkedPullRequestNumbers(snapshot.pulls, issue.number, detail.timeline);
+    const linkedPrs = linkedPullRequestNumbers(snapshot.pulls, issue.number, detail.timeline, snapshot.repository);
     const activeClaim = readClaim(detail.comments, issue.number);
     const intake = inspectIntakeReceipts(detail.comments);
     const dependencies = unique([...(parsed.dependencyNumbers || []), ...(detail.blockedBy || []).map((item) => item.number)])
@@ -341,6 +341,8 @@ function buildFactoryReadinessReport(snapshot) {
     }),
     pullRequests: snapshot.pulls.map((pr) => ({
       number: pr.number, draft: pr.draft, head: pr.head?.sha || null,
+      ownershipAuthoritative: isAuthoritativePullRequest(pr, snapshot.repository),
+      headRepository: pr.head?.repo?.full_name || null,
       issues: candidateReports.filter((candidate) => candidate.linkedPullRequests.includes(pr.number)).map((candidate) => candidate.number),
       disposition: "preserve-existing-pr", apply: false,
     })),

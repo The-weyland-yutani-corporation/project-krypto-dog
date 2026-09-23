@@ -296,6 +296,14 @@ supported variants), claim markers and native links. This does not depend on
 the search index or a first-page `Refs` query; unreadable or malformed PR/link
 evidence blocks selection. Native links are matched to the actual PR API URL
 so an equal issue number in another repository is not treated as that PR.
+Before matching any keyword, claim marker or native link, both PR head and base
+must identify the trusted repository by the same positive repository ID and
+matching full repository name. Fork-backed or missing/ambiguous repository
+identities are non-authoritative: they neither own nor suppress factory work,
+even when their bodies copy a factory claim. The read-only manifest still lists
+those PRs for human visibility, with `ownershipAuthoritative: false`, without
+changing or closing them. This does not change human approval requirements for
+fork PRs or weaken failures to retrieve complete PR evidence.
 
 PM explicitly dispatches `em-planning.lock.yml` with the materialized issue
 number. The existing scheduled queue controller observes final ready leaves.

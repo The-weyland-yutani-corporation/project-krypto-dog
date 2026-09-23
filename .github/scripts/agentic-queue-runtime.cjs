@@ -1057,9 +1057,21 @@ async function resolveLatestLabelApplicationActorType({ github, owner, repo, iss
   return latest.actor && typeof latest.actor.type === "string" ? latest.actor.type : null;
 }
 
-function linkedPullRequestNumbers(pulls, issueNumber, timeline = []) {
+function isAuthoritativePullRequest(pull, repository) {
+  if (typeof repository?.owner !== "string" || typeof repository?.repo !== "string" ||
+    repository.owner === "" || repository.repo === "") return false;
+  const expectedName = `${repository.owner}/${repository.repo}`.toLowerCase();
+  const head = pull?.head?.repo;
+  const base = pull?.base?.repo;
+  return Number.isSafeInteger(base?.id) && base.id > 0 && head?.id === base.id &&
+    typeof base.full_name === "string" && base.full_name.toLowerCase() === expectedName &&
+    typeof head.full_name === "string" && head.full_name.toLowerCase() === expectedName;
+}
+
+function linkedPullRequestNumbers(pulls, issueNumber, timeline = [], repository) {
   const refs = new RegExp(`\\b(?:refs?|fix(?:es|ed)?|close[sd]?|resolve[sd]?)\\s+#${issueNumber}(?!\\d)`, "i");
   return [...new Set((pulls || []).filter((item) => {
+    if (!isAuthoritativePullRequest(item, repository)) return false;
     const body = typeof item.body === "string" ? item.body : "";
     if (refs.test(body)) return true;
     const markerMatch = CLAIM_MARKER_PATTERN.exec(body);
@@ -1072,7 +1084,8 @@ function linkedPullRequestNumbers(pulls, issueNumber, timeline = []) {
 
 /**
  * Enumerates all open PRs rather than trusting an indexed Refs-only search.
- * Closing keywords, claim markers and native links share one exact matcher.
+ * Only same-repository heads can own factory work. Closing keywords, claim
+ * markers and native links from forks or unverifiable repositories cannot.
  */
 async function resolveHasOpenPullRequest({ github, owner, repo, issueNumber, core }) {
   try {
@@ -1082,12 +1095,15 @@ async function resolveHasOpenPullRequest({ github, owner, repo, issueNumber, cor
       typeof item.body !== "string" && item.body !== null)) {
       throw new Error("Open pull request list is incomplete or malformed");
     }
-    if (linkedPullRequestNumbers(pulls, issueNumber).length > 0) return true;
+    const repository = { owner, repo };
+    const authoritativePulls = pulls.filter((pull) => isAuthoritativePullRequest(pull, repository));
+    if (authoritativePulls.length === 0) return false;
+    if (linkedPullRequestNumbers(authoritativePulls, issueNumber, [], repository).length > 0) return true;
     const timeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
       owner, repo, issue_number: issueNumber, per_page: 100,
     });
     if (!Array.isArray(timeline)) throw new Error("Native pull request link evidence is incomplete");
-    return linkedPullRequestNumbers(pulls, issueNumber, timeline).length > 0;
+    return linkedPullRequestNumbers(authoritativePulls, issueNumber, timeline, repository).length > 0;
   } catch (error) {
     core.warning(
       `Open pull request evidence failed for issue #${issueNumber}: ${describeError(error)}; treating issue as already having an open pull request (fail closed).`,
@@ -1909,6 +1925,7 @@ module.exports = {
   resolveLatestLabelApplicationActorType,
   resolveHasOpenPullRequest,
   linkedPullRequestNumbers,
+  isAuthoritativePullRequest,
   findActiveClaim,
   buildCandidate,
 };
