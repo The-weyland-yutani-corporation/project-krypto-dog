@@ -146,12 +146,16 @@ describe("bounded read-only GitHub adapter", () => {
   });
 
   it.each([
+    undefined,
     { items: [] },
-    { items: [], total_count: 10, incomplete_results: false },
-    { items: [], total_count: 0, incomplete_results: true },
-  ])("fails closed on incomplete or omitted PR search metadata: %j", async (data) => {
+    [{ number: 900 }],
+    [{ number: 900, body: 42 }],
+  ])("fails closed on incomplete or malformed PR list evidence: %j", async (data) => {
     const core = { warning: jest.fn() };
-    const github = { rest: { search: { issuesAndPullRequests: async () => ({ data }) } } };
+    const github = {
+      rest: { pulls: { list: async () => data } },
+      paginate: async (method: () => Promise<unknown>) => method(),
+    };
     expect(await resolveHasOpenPullRequest({ github, core, owner: "example", repo: "krypto", issueNumber: 300 })).toBe(true);
     expect(core.warning).toHaveBeenCalled();
   });

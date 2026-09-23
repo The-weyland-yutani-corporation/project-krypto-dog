@@ -15,7 +15,7 @@ const {
   LIFECYCLE_STATE_VALUES, RISK_TIER_LABELS, BLOCKING_QUEUE_LABELS, QUEUE_READY_LABEL,
   applyLifecycleTransition, isKnownRiskTier, rankRiskTier, classifyPathTier, areAllowedPathPatternsWithin,
 } = require("./agentic-factory-policy.cjs");
-const { REQUIRED_WORK_ITEM_HEADINGS, diagnoseGoalIssue, linkedPullRequestNumbers } = require("./agentic-factory-readiness.cjs");
+const { REQUIRED_WORK_ITEM_HEADINGS, diagnoseGoalIssue } = require("./agentic-factory-readiness.cjs");
 
 const RECEIPT = /<!-- factory-intake:v1 (.+?) -->/g;
 const STAGES = Object.freeze({
@@ -77,15 +77,6 @@ async function readIntakeCandidate({ github, context, core, issue, activeGoalNum
   } catch (error) {
     if (error.status === 404) parentStatus = "absent";
     else core.warning(`Intake native parent read failed for #${issue.number}: ${error.message}`);
-  }
-  try {
-    const pulls = await github.paginate(github.rest.pulls.list, { owner, repo, state: "open", per_page: 100 });
-    const timeline = await github.paginate(github.rest.issues.listEventsForTimeline, { owner, repo, issue_number: issue.number, per_page: 100 });
-    if (!Array.isArray(pulls) || !Array.isArray(timeline)) throw new Error("Incomplete open PR or timeline read");
-    candidate.hasOpenPullRequest ||= linkedPullRequestNumbers(pulls, issue.number, timeline).length > 0;
-  } catch (error) {
-    core.warning(`Intake open PR read failed for #${issue.number}: ${error.message}`);
-    candidate.hasOpenPullRequest = true;
   }
   return { ...candidate, parentStatus, dependencyNumbers: parseCandidateSections(issue).dependencyNumbers };
 }

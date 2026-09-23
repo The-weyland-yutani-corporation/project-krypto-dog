@@ -10,6 +10,7 @@ const {
   resolveGoalScopeEvidence, getGoalScopeAnchors, hasVerifiedSignalScope,
   nativeParentMatchesRepository,
   inspectMachineReceipt,
+  linkedPullRequestNumbers,
 } = require("./agentic-queue-runtime.cjs");
 const { evaluateEligibility, evaluateClaimState, parseClaimPayload } = require("./agentic-queue-controller.cjs");
 const {
@@ -62,17 +63,6 @@ function readClaim(comments, issueNumber) {
     claim = parsed.valid && parsed.claim.issueNumber === issueNumber ? parsed.claim : {};
   }
   return claim;
-}
-
-function linkedPullRequestNumbers(pulls, issueNumber, timeline = []) {
-  const refs = new RegExp(`\\b(?:refs?|fix(?:es|ed)?|close[sd]?|resolve[sd]?)\\s+#${issueNumber}(?!\\d)`, "i");
-  return unique((pulls || []).filter((pr) => {
-    if (refs.test(pr.body || "")) return true;
-    const marker = CLAIM_MARKER_PATTERN.exec(pr.body || "");
-    const parsed = marker ? parseClaimPayload(marker[1]) : null;
-    return parsed?.valid && parsed.claim.issueNumber === issueNumber ||
-      (timeline || []).some((event) => event.source?.issue?.pull_request && event.source.issue.number === pr.number);
-  }).map((pr) => pr.number)).sort((a, b) => a - b);
 }
 
 function inspectIntakeReceipts(comments) {

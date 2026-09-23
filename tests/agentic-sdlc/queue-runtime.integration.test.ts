@@ -39,7 +39,7 @@ interface MockIssue {
   comments: MockComment[];
 }
 
-interface MockSearchItem {
+interface MockPullRequestBody {
   body: string;
 }
 
@@ -331,8 +331,8 @@ interface HarnessOptions {
   failParentFor?: number[];
   defaultNativeParentGoalNumber?: number;
   failDependencyFetchFor?: number[];
-  searchResultsByIssue?: Record<number, MockSearchItem[]>;
-  failSearchFor?: number[];
+  pullRequests?: MockPullRequestBody[];
+  failPullRequestList?: boolean;
   failAddLabelsFor?: number[];
   failRemoveLabelFor?: number[];
   failRemoveLabelForNames?: Record<number, string[]>;
@@ -472,14 +472,9 @@ function createHarness(options: HarnessOptions) {
     return {};
   });
 
-  const search = jest.fn(async (params: ApiParams): Promise<{ data: { items: MockSearchItem[]; total_count: number; incomplete_results: boolean } }> => {
-    const match = /Refs #(\d+)/.exec(params.q ?? "");
-    const number = match ? Number(match[1]) : -1;
-    if ((options.failSearchFor ?? []).includes(number)) {
-      throw new Error(`search failed for #${number}`);
-    }
-    const items = options.searchResultsByIssue?.[number] ?? [];
-    return { data: { items, total_count: items.length, incomplete_results: false } };
+  const listPullRequests = jest.fn(async () => {
+    if (options.failPullRequestList) throw new Error("pull request list failed");
+    return (options.pullRequests || []).map((item, index) => ({ number: 10000 + index, ...item }));
   });
 
   const request = jest.fn(
@@ -561,8 +556,8 @@ function createHarness(options: HarnessOptions) {
         removeLabel,
         createComment,
       },
-      search: {
-        issuesAndPullRequests: search,
+      pulls: {
+        list: listPullRequests,
       },
       actions: {
         createWorkflowDispatch,
@@ -586,7 +581,7 @@ function createHarness(options: HarnessOptions) {
       addLabels,
       removeLabel,
       createComment,
-      search,
+      listPullRequests,
       request,
       createWorkflowDispatch,
       reposGet,
@@ -1702,7 +1697,7 @@ describe("factory queue-controller runtime: duplicate issue-form headings fail c
   });
 });
 
-describe("factory queue-controller runtime: dependency/sub-issue/search API failures fail closed", () => {
+describe("factory queue-controller runtime: dependency/sub-issue/PR API failures fail closed", () => {
   it("rejects a candidate when a dependency lookup fails", async () => {
     const { result } = await run({
       issues: [
@@ -1739,30 +1734,30 @@ describe("factory queue-controller runtime: dependency/sub-issue/search API fail
     expect(rejection?.reasons).toContain("not-open-leaf");
   });
 
-  it("treats a candidate as already having an open PR when the search API fails", async () => {
+  it("treats a candidate as already having an open PR when listing PRs fails", async () => {
     const { result } = await run({
       issues: [controlIssue(10, ["factory-mode:active"]), goalIssue(1), candidateIssue(100)],
-      failSearchFor: [100],
+      failPullRequestList: true,
     });
 
     const rejection = result.rejections.find((entry) => entry.number === 100);
     expect(rejection?.reasons).toContain("already-has-open-pull-request");
   });
 
-  it("treats a candidate as already having an open PR when search finds an exact Refs match", async () => {
+  it("treats a candidate as already having an open PR with an exact Refs match", async () => {
     const { result } = await run({
       issues: [controlIssue(10, ["factory-mode:active"]), goalIssue(1), candidateIssue(100)],
-      searchResultsByIssue: { 100: [{ body: "Implements the fix.\n\nRefs #100" }] },
+      pullRequests: [{ body: "Implements the fix.\n\nRefs #100" }],
     });
 
     const rejection = result.rejections.find((entry) => entry.number === 100);
     expect(rejection?.reasons).toContain("already-has-open-pull-request");
   });
 
-  it("does not flag an unrelated fuzzy search hit lacking the exact marker", async () => {
+  it("does not flag an unrelated issue-number prefix as a linked PR", async () => {
     const { result } = await run({
       issues: [controlIssue(10, ["factory-mode:active"]), goalIssue(1), candidateIssue(100)],
-      searchResultsByIssue: { 100: [{ body: "Mentions issue #1002 but not this one." }] },
+      pullRequests: [{ body: "Mentions issue #1002 but not this one." }],
     });
 
     expect(result.selected?.number).toBe(100);

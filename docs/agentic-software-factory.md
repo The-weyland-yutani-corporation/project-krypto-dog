@@ -280,6 +280,13 @@ Planning-state legacy issues requiring re-triage remain explicit human recovery;
 the promoter does not clear or rewrite their lifecycle state to manufacture
 eligibility.
 
+Queue selection and intake share the same complete open-PR enumeration and
+exact issue-reference matcher (`Refs`, `Fixes`, `Closes`, `Resolves` and their
+supported variants), claim markers and native links. This does not depend on
+the search index or a first-page `Refs` query; unreadable or malformed PR/link
+evidence blocks selection. Native links are matched to the actual PR API URL
+so an equal issue number in another repository is not treated as that PR.
+
 PM explicitly dispatches `em-planning.lock.yml` with the materialized issue
 number. The existing scheduled queue controller observes final ready leaves.
 Neither path relies on `GITHUB_TOKEN` label events recursively launching the

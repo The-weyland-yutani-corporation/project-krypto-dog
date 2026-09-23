@@ -1057,48 +1057,43 @@ async function resolveLatestLabelApplicationActorType({ github, owner, repo, iss
   return latest.actor && typeof latest.actor.type === "string" ? latest.actor.type : null;
 }
 
+function linkedPullRequestNumbers(pulls, issueNumber, timeline = []) {
+  const refs = new RegExp(`\\b(?:refs?|fix(?:es|ed)?|close[sd]?|resolve[sd]?)\\s+#${issueNumber}(?!\\d)`, "i");
+  return [...new Set((pulls || []).filter((item) => {
+    const body = typeof item.body === "string" ? item.body : "";
+    if (refs.test(body)) return true;
+    const markerMatch = CLAIM_MARKER_PATTERN.exec(body);
+    const parsed = markerMatch ? parseClaimPayload(markerMatch[1]) : null;
+    return parsed?.valid && parsed.claim.issueNumber === issueNumber ||
+      timeline.some((event) => event.source?.issue?.number === item.number &&
+        typeof item.url === "string" && event.source.issue.pull_request?.url === item.url);
+  }).map((item) => item.number))].sort((a, b) => a - b);
+}
+
 /**
- * Conservatively searches for an open pull request already linked to this
- * issue via an exact `Refs #N` marker or an embedded claim marker for this
- * issue number. A search failure fails closed to `true` (already has an
- * open PR) rather than risking a duplicate PR.
+ * Enumerates all open PRs rather than trusting an indexed Refs-only search.
+ * Closing keywords, claim markers and native links share one exact matcher.
  */
 async function resolveHasOpenPullRequest({ github, owner, repo, issueNumber, core }) {
-  const query = `repo:${owner}/${repo} is:pr is:open "Refs #${issueNumber}"`;
-  let items;
   try {
-    const response = await github.rest.search.issuesAndPullRequests({ q: query, per_page: 20 });
-    if (
-      !Array.isArray(response.data?.items) ||
-      response.data.incomplete_results !== false ||
-      !Number.isSafeInteger(response.data.total_count) ||
-      response.data.total_count !== response.data.items.length
-    ) {
-      throw new Error("Open pull request search is incomplete");
+    const pulls = await github.paginate(github.rest.pulls.list, { owner, repo, state: "open", per_page: 100 });
+    if (!Array.isArray(pulls) || pulls.some((item) =>
+      !Number.isSafeInteger(item?.number) || item.number <= 0 ||
+      typeof item.body !== "string" && item.body !== null)) {
+      throw new Error("Open pull request list is incomplete or malformed");
     }
-    items = response.data.items;
+    if (linkedPullRequestNumbers(pulls, issueNumber).length > 0) return true;
+    const timeline = await github.paginate(github.rest.issues.listEventsForTimeline, {
+      owner, repo, issue_number: issueNumber, per_page: 100,
+    });
+    if (!Array.isArray(timeline)) throw new Error("Native pull request link evidence is incomplete");
+    return linkedPullRequestNumbers(pulls, issueNumber, timeline).length > 0;
   } catch (error) {
     core.warning(
-      `Open pull request search failed for issue #${issueNumber}: ${describeError(
-        error,
-      )}; treating issue as already having an open pull request (fail closed).`,
+      `Open pull request evidence failed for issue #${issueNumber}: ${describeError(error)}; treating issue as already having an open pull request (fail closed).`,
     );
     return true;
   }
-
-  const refBoundary = new RegExp(`Refs #${issueNumber}(?!\\d)`);
-  return items.some((item) => {
-    const body = typeof item.body === "string" ? item.body : "";
-    if (refBoundary.test(body)) {
-      return true;
-    }
-    const markerMatch = CLAIM_MARKER_PATTERN.exec(body);
-    if (!markerMatch) {
-      return false;
-    }
-    const parsed = parseClaimPayload(markerMatch[1]);
-    return parsed.valid && parsed.claim.issueNumber === issueNumber;
-  });
 }
 
 /**
@@ -1913,6 +1908,7 @@ module.exports = {
   resolveNativeParentGoalNumber,
   resolveLatestLabelApplicationActorType,
   resolveHasOpenPullRequest,
+  linkedPullRequestNumbers,
   findActiveClaim,
   buildCandidate,
 };
