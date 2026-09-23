@@ -97,8 +97,11 @@ export function makeGithub() {
       case "GET /repos/{owner}/{repo}/issues/{issue_number}/parent":
         if (!parents.has(number)) throw Object.assign(new Error("no parent"), { status: 404 });
         return { data: { number: parents.get(number), repository_url: `https://api.github.com/repos/${REPOSITORY}` } };
-      case "GET /repos/{owner}/{repo}/issues/{issue_number}":
-        return { data: issues.find((item) => item.number === number) };
+      case "GET /repos/{owner}/{repo}/issues/{issue_number}": {
+        const result = issues.find((item) => item.number === number);
+        if (!result) throw Object.assign(new Error("issue not found"), { status: 404 });
+        return { data: result };
+      }
       case "POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues": {
         const child = issues.find((item) => item.id === Number(params.sub_issue_id));
         if (!child) throw new Error("unknown sub-issue");

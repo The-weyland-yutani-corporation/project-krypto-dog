@@ -529,6 +529,7 @@ function normalizeUsage(logsJson, knownIds, window, options) {
     entry.runs += 1;
     if (runId) entry._evidence.push({
       runId, sha: run.head_sha || null, path: reads.normalizeWorkflowPath(run.path || run.workflow_path || null),
+      headBranch: run.head_branch ?? run.headBranch ?? run.branch ?? null,
       conclusion: normalizeConclusion(run), createdAt: when, attempt: run.run_attempt || 1,
     });
 
@@ -850,6 +851,7 @@ function buildMaterialView(snapshot) {
   return {
     schemaVersion: snapshot.schemaVersion,
     mode: snapshot.mode,
+    defaultBranch: snapshot.defaultBranch || null,
     window: snapshot.window || null,
     collection: snapshot.collection || null,
     sources: Object.fromEntries(Object.entries(snapshot.sources || {}).map(([key, value]) => [
@@ -1259,6 +1261,7 @@ function buildSnapshot(inputs) {
   const snapshot = {
     schemaVersion: SNAPSHOT_SCHEMA_VERSION,
     mode,
+    defaultBranch: inputs.defaultBranch || null,
     generatedAt: (now instanceof Date ? now : new Date(now)).toISOString(),
     window,
     workflows,
@@ -1296,11 +1299,12 @@ function buildSnapshot(inputs) {
 // GitHub read helpers (via injected runner) — orchestration only
 // ---------------------------------------------------------------------------
 
-function ghUsageTelemetry(runner, window, outputDir, now) {
+function ghUsageTelemetry(runner, window, outputDir, now, repository, defaultBranch) {
   fs.mkdirSync(outputDir, { recursive: true });
   try {
     const parsed = runJson(runner, [
-      "aw", "logs", "--json", "--start-date", window.start.slice(0, 10),
+      "aw", "logs", "--json", "--verbose", "--repo", repository, "--ref", defaultBranch,
+      "--start-date", window.start.slice(0, 10),
       "--end-date", window.end.slice(0, 10), "--count", "200",
       "--artifacts", "all", "--no-staged", "--output", outputDir,
     ], "gh aw logs");
@@ -1329,13 +1333,50 @@ function withCompleteness(normalized, observation, fields) {
   return { ...normalized, observed };
 }
 
-function collectGitHubInputs({ runner, repository, inventory, window, policy, now, logsOutputDir, includeUsage, auxiliaryFiles }) {
+function scopeRunBranch(observation, defaultBranch) {
+  const branchOf = (run) => run.head_branch ?? run.headBranch ?? run.branch;
+  const missingBranchRecords = observation.data.filter((run) =>
+    typeof branchOf(run) !== "string" || branchOf(run).length === 0).length;
+  const data = observation.data.filter((run) => defaultBranch && branchOf(run) === defaultBranch);
+  const incompleteBranch = missingBranchRecords > 0 && observation.source.completeness === "complete";
+  return {
+    data,
+    source: {
+      ...observation.source,
+      branch: defaultBranch,
+      includedRecords: data.length,
+      excludedBranchRecords: observation.data.length - data.length - missingBranchRecords,
+      missingBranchRecords,
+      completeness: incompleteBranch ? "partial" : observation.source.completeness,
+      reason: incompleteBranch ? "run-branch-unavailable" : observation.source.reason,
+    },
+  };
+}
+
+function collectGitHubInputs({ runner, repository, defaultBranch, inventory, window, policy, now, logsOutputDir, includeUsage, auxiliaryFiles }) {
   const base = `repos/${repository}`;
   const observedAt = new Date(now).toISOString();
   const options = { now: observedAt };
+  let repositorySource = reads.source("complete", 1, observedAt);
+  if (defaultBranch === undefined) {
+    try {
+      defaultBranch = reads.readJson(runner, ["api", "--method", "GET", base]).default_branch;
+    } catch (error) {
+      repositorySource = reads.source("unavailable", 0, observedAt, error.message);
+    }
+  }
+  if (typeof defaultBranch !== "string" || defaultBranch.trim() === "") {
+    defaultBranch = null;
+    if (repositorySource.completeness === "complete") {
+      repositorySource = reads.source("unavailable", 0, observedAt, "default-branch-unavailable");
+    }
+  }
   const status = reads.readPages(runner, `${base}/actions/workflows`, "workflows", options);
-  const runs = reads.readPages(runner,
-    `${base}/actions/runs?created=${encodeURIComponent(`${window.start}..${window.end}`)}`, "workflow_runs", options);
+  const runs = scopeRunBranch(defaultBranch ? reads.readPages(runner,
+    `${base}/actions/runs?branch=${encodeURIComponent(defaultBranch)}&created=${encodeURIComponent(`${window.start}..${window.end}`)}`,
+    "workflow_runs", options) : {
+      data: [], source: reads.source("unavailable", 0, observedAt, "default-branch-unavailable"),
+    }, defaultBranch);
   const issueRows = reads.readPages(runner, `${base}/issues?state=all&sort=updated&direction=desc`, null, options);
   let prRows;
   try {
@@ -1349,9 +1390,10 @@ function collectGitHubInputs({ runner, repository, inventory, window, policy, no
   } catch {
     prRows = { data: [], source: reads.source("unavailable", 0, observedAt, "pull-request-read-failed") };
   }
-  const telemetry = includeUsage
-    ? ghUsageTelemetry(runner, window, logsOutputDir, observedAt)
-    : { data: [], source: reads.source("unavailable", 0, observedAt, "optional-usage-not-requested") };
+  const telemetry = scopeRunBranch(includeUsage && defaultBranch
+    ? ghUsageTelemetry(runner, window, logsOutputDir, observedAt, repository, defaultBranch)
+    : { data: [], source: reads.source("unavailable", 0, observedAt,
+      includeUsage ? "default-branch-unavailable" : "optional-usage-not-requested") }, defaultBranch);
   const knownIds = inventory.map((workflow) => workflow.id).concat(auxiliaryFiles.map((file) => file.replace(/\.ya?ml$/, "")));
   const usage = normalizeUsage({ runs: runs.data }, knownIds, window);
   const cost = normalizeUsage({ runs: telemetry.data }, knownIds, window);
@@ -1385,9 +1427,9 @@ function collectGitHubInputs({ runner, repository, inventory, window, policy, no
     };
   });
   return {
-    status: statusById, usage, issues, auxiliaryWorkflows, issueRows,
+    status: statusById, usage, issues, auxiliaryWorkflows, issueRows, defaultBranch,
     pullRequests: withCompleteness(normalizePullRequests(prRows.data), prRows, ["open", "byReviewState", "byCheckState"]),
-    sources: { workflows: status.source, runs: runs.source, issues: issueRows.source, pullRequests: prRows.source, usage: telemetry.source },
+    sources: { repository: repositorySource, workflows: status.source, runs: runs.source, issues: issueRows.source, pullRequests: prRows.source, usage: telemetry.source },
   };
 }
 
@@ -1498,6 +1540,7 @@ function collect(options) {
   const repository = reads.repositoryName(runner, opts.repository);
   const gathered = collectGitHubInputs({
     runner, repository, inventory, window, policy, now, logsOutputDir,
+    defaultBranch: opts.factoryState?.defaultBranch,
     includeUsage: opts.includeUsage ?? mode === "governance",
     auxiliaryFiles: opts.auxiliaryWorkflowFiles || DEFAULT_AUXILIARY_WORKFLOWS,
   });
@@ -1521,6 +1564,7 @@ function collect(options) {
 
   const snapshot = buildSnapshot({
     mode,
+    defaultBranch: gathered.defaultBranch,
     now,
     inventory,
     status,

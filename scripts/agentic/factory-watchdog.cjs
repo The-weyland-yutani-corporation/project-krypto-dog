@@ -76,6 +76,8 @@ function save(directory, name, value) {
 
 function signalCandidates(snapshot, manifest, repository) {
   if (snapshot.collection.completeness !== "complete") return [];
+  const defaultBranch = snapshot.defaultBranch || snapshot.factory?.defaultBranch;
+  if (typeof defaultBranch !== "string" || !defaultBranch) return [];
   const candidates = [];
   const add = (source, summary) => candidates.push({
     schemaVersion: 1, fingerprint: signals.fingerprintFor(source), source,
@@ -84,7 +86,8 @@ function signalCandidates(snapshot, manifest, repository) {
   });
   for (const workflow of snapshot.workflows) {
     for (const run of workflow.usage?.evidence || []) {
-      if (!factory.DEFAULT_FAILING_CONCLUSIONS.includes(run.conclusion) || !/^[a-f0-9]{40}$/.test(run.sha || "")) continue;
+      if (run.headBranch !== defaultBranch || !factory.DEFAULT_FAILING_CONCLUSIONS.includes(run.conclusion) ||
+          !/^[a-f0-9]{40}$/.test(run.sha || "")) continue;
       add({
         kind: "workflow-run", key: `${reads.normalizeWorkflowPath(run.path)}:${run.conclusion}`,
         ref: `https://github.com/${repository}/actions/runs/${run.runId}`, sha: run.sha,
@@ -171,8 +174,10 @@ async function collectWatchdog(options) {
       const run = (await github.request("GET /repos/{owner}/{repo}/actions/runs/{run_id}",
         { owner, repo, run_id: options.sourceRunId })).data;
       if (run.repository?.full_name !== `${owner}/${repo}`) throw new Error("foreign-monitored-run");
+      if (run.head_branch !== state.state.defaultBranch) throw new Error("non-default-branch-monitored-run");
       snapshot.monitoredRun = {
-        runId: run.id, sha: run.head_sha, workflow: reads.normalizeWorkflowPath(run.path), status: run.status, conclusion: run.conclusion,
+        runId: run.id, sha: run.head_sha, headBranch: run.head_branch,
+        workflow: reads.normalizeWorkflowPath(run.path), status: run.status, conclusion: run.conclusion,
       };
     }
     snapshot.materialState.hash = digest({ reportHash: factory.computeMaterialHash(snapshot), monitoredRun: snapshot.monitoredRun || null });

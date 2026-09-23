@@ -70,6 +70,10 @@ existing collector/policy failure vocabulary. It does not launch signal intake
 for `develop/**` runs or `action_required` approvals; the latter remain an
 operator decision, not a code-repair signal. Manual diagnosis never relaxes
 the current-default-SHA or approved-goal admission checks.
+Native run and usage queries are scoped to the repository's discovered default
+branch, and returned rows are filtered again before totals, thresholds and
+signals. Intake also requires the corroborated run's `head_branch` to match:
+a release branch with the same commit SHA is not default-branch evidence.
 Workflow-path normalization removes only the documented ref suffix from a
 YAML workflow path before identity/corroboration checks; unrelated `@` text is
 preserved. The run's exact SHA, observation window and freshness still gate intake.
@@ -106,6 +110,10 @@ goal scope and native ancestry; risk/path containment; known closed dependencies
 free WIP1 and lifetime assignment budget; and a successful, recent current-SHA
 evaluation with no evaluation run in flight. Missing reads are not zero capacity.
 Existing ready work and outstanding signal proposals reserve intake capacity.
+Missing dependency issues and immutable oracle blobs (HTTP 404) produce explicit
+fail-closed rejection reasons without creating work. Authentication, rate-limit
+and other API failures still surface as errors rather than missing-reference
+results.
 Bounded observation reads prioritize open control and approved-goal timelines
 before work-item detail samples. Truncated work detail still makes capacity
 unknown and blocks admission; it does not misrepresent the observed control

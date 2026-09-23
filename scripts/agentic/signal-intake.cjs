@@ -12,7 +12,7 @@ const reads = require("./factory-read.cjs");
 const TRIAGE_WORKFLOW = "pm-triage.lock.yml";
 const MAX_PAYLOAD_BYTES = 24000;
 
-async function verifySource({ github, owner, repo, signal, proposal, repoRoot }) {
+async function verifySource({ github, owner, repo, signal, proposal, repoRoot, defaultBranch }) {
   if (signal.source.kind === "workflow-run" || signal.source.kind === "repository-test") {
     const match = signal.source.ref.match(/\/actions\/runs\/(\d+)$/);
     if (!match) return ["source-run-ref-required"];
@@ -20,18 +20,19 @@ async function verifySource({ github, owner, repo, signal, proposal, repoRoot })
       { owner, repo, run_id: Number(match[1]) })).data;
     const workflowPath = reads.normalizeWorkflowPath(run.path);
     const when = Date.parse(run.created_at);
-    if (typeof workflowPath !== "string" || run.repository?.full_name !== `${owner}/${repo}` ||
+    if (typeof defaultBranch !== "string" || !defaultBranch || run.head_branch !== defaultBranch ||
+        typeof workflowPath !== "string" || run.repository?.full_name !== `${owner}/${repo}` ||
         run.head_sha !== signal.source.sha || run.status !== "completed" ||
         !DEFAULT_FAILING_CONCLUSIONS.includes(run.conclusion) ||
         signal.source.key !== `${workflowPath}:${run.conclusion}` ||
         !Number.isFinite(when) || when < Date.parse(signal.source.windowStart) ||
         when >= Date.parse(signal.source.windowEnd)) return ["source-run-not-corroborated"];
     const latestRuns = await reads.readApiPages(github, "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs", {
-      owner, repo, workflow_id: workflowPath.split("/").pop(), head_sha: run.head_sha, branch: run.head_branch,
+      owner, repo, workflow_id: workflowPath.split("/").pop(), head_sha: run.head_sha, branch: defaultBranch,
       created: `>=${signal.source.windowStart}`,
     }, { key: "workflow_runs" });
     const latest = reads.requireComplete(latestRuns, "source-run-freshness")
-      .filter((item) => item.head_sha === run.head_sha && item.head_branch === run.head_branch)
+      .filter((item) => item.head_sha === run.head_sha && item.head_branch === defaultBranch)
       .sort((a, b) => b.id - a.id)[0];
     if (!latest || latest.id !== run.id || latest.conclusion !== run.conclusion) return ["source-run-superseded"];
     if (proposal.baseline.metric !== "failing-workflow-runs" || proposal.baseline.value !== 1 ||
@@ -71,21 +72,33 @@ async function inspectIntake({ github, owner, repo, signal, proposal, now, repoR
   const parent = await nativeParent(github, owner, repo, proposal.scopeIssueNumber);
   const dependencyStates = [];
   for (const issueNumber of proposal.dependencyNumbers) {
-    const issue = (await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}",
-      { owner, repo, issue_number: issueNumber })).data;
-    dependencyStates.push(issue.state === "closed" ? "closed" : "open");
+    try {
+      const issue = (await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}",
+        { owner, repo, issue_number: issueNumber })).data;
+      dependencyStates.push(issue.state === "closed" ? "closed" : "open");
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      dependencyStates.push("missing");
+    }
   }
   const decision = contract.preflight({
     signal, proposal, observation, nativeScopeParent: parent,
     dependencyStates, now, repository: `${owner}/${repo}`,
   });
-  const sourceReasons = decision.eligible ? await verifySource({ github, owner, repo, signal, proposal, repoRoot }) : [];
-  if (decision.eligible) {
+  const sourceReasons = decision.eligible ? await verifySource({
+    github, owner, repo, signal, proposal, repoRoot, defaultBranch: observation.state.defaultBranch,
+  }) : [];
+  if (decision.eligible && sourceReasons.length === 0) {
     const prefix = `https://github.com/${owner}/${repo}/blob/${signal.source.sha}/`;
     const oraclePath = proposal.oracle.evidenceRef.slice(prefix.length);
-    const oracle = (await github.request("GET /repos/{owner}/{repo}/contents/{path}",
-      { owner, repo, path: oraclePath, ref: signal.source.sha })).data;
-    if (oracle.type !== "file") sourceReasons.push("independent-oracle-unavailable");
+    try {
+      const oracle = (await github.request("GET /repos/{owner}/{repo}/contents/{path}",
+        { owner, repo, path: oraclePath, ref: signal.source.sha })).data;
+      if (oracle.type !== "file") sourceReasons.push("independent-oracle-unavailable");
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      sourceReasons.push("independent-oracle-unavailable");
+    }
   }
   decision.reasons = [...new Set([...decision.reasons, ...sourceReasons])].sort();
   decision.eligible = decision.reasons.length === 0;

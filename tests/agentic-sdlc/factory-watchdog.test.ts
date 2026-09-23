@@ -53,6 +53,7 @@ function nativeRunner(fixture: ReturnType<typeof makeGithub>) {
     else if (joined.includes("/actions/runs?")) data = { workflow_runs: [fixture.failedRun] };
     else if (joined.includes("/issues?")) data = fixture.issues;
     else if (joined.includes("pr list")) data = [];
+    else if (args[0] === "api" && args.some((arg) => /^repos\/[^/]+\/[^/?]+$/.test(arg))) data = { default_branch: "main" };
     else throw new Error(`unexpected native command: ${joined}`);
     return { status: 0, stdout: JSON.stringify(data), stderr: "" };
   };
@@ -152,6 +153,55 @@ describe("model-independent native health and canonical publication", () => {
         ? { status: 1, stdout: "", stderr: "HTTP 503" } : normal(command, args),
     });
     expect(snapshot).toMatchObject({ collection: { completeness: "partial" }, issues: { openedInWindow: null, openActionableOpportunities: null } });
+  });
+
+  it("excludes release-branch failures with the default tip SHA from repository health and emitted signals", () => {
+    const fixture = makeGithub();
+    const normal = nativeRunner(fixture);
+    const runner = jest.fn((command: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/actions/runs?"))) {
+        return { status: 0, stderr: "", stdout: JSON.stringify({ workflow_runs: [
+          { ...fixture.failedRun, conclusion: "success" },
+          { ...fixture.failedRun, id: 312, head_branch: "release/v2.1" },
+          { ...fixture.failedRun, id: 313, head_branch: "release/v2.1" },
+        ] }) };
+      }
+      return normal(command, args);
+    });
+    const { snapshot } = factory.collect({ repoRoot: root, repository: REPOSITORY, mode: "daily", now: NOW, runner });
+    expect(runner).toHaveBeenCalledWith("gh", expect.arrayContaining([expect.stringContaining("/actions/runs?branch=main&")]));
+    expect(snapshot).toMatchObject({
+      defaultBranch: "main",
+      workflows: expect.arrayContaining([expect.objectContaining({
+        id: "ci", usage: expect.objectContaining({
+          runs: 1, repeatedFailures: 0, conclusions: { success: 1 },
+          evidence: [expect.objectContaining({ headBranch: "main" })],
+        }),
+      })]),
+      thresholds: { breaches: [] },
+    });
+    expect(watchdog.signalCandidates(snapshot, null, REPOSITORY)).toEqual([]);
+  });
+
+  it("refuses foreign-branch evidence at signal emission even if the snapshot claims complete", () => {
+    expect(watchdog.signalCandidates({
+      collection: { completeness: "complete" }, defaultBranch: "main",
+      workflows: [{ id: "ci", usage: { evidence: [
+        { runId: 310, sha: SHA, headBranch: "release/v2.1", path: ".github/workflows/ci.yml", conclusion: "failure" },
+      ] } }],
+    }, null, REPOSITORY)).toEqual([]);
+  });
+
+  it("rejects a monitored non-default-branch run even when its SHA is the default tip", async () => {
+    const fixture = makeGithub();
+    fixture.failedRun.head_branch = "release/v2.1";
+    const result = await watchdog.collectWatchdog({
+      github: fixture.github, owner: "example", repo: "krypto", now: NOW,
+      directory, repoRoot: root, runner: nativeRunner(fixture), mode: "daily",
+      sourceRunId: 310, evidenceReader: null,
+    });
+    expect(result.errors).toEqual([{ collector: "daily", reason: "non-default-branch-monitored-run" }]);
+    expect(result.receipts[0]).toMatchObject({ status: "failed" });
   });
 
   it("observes older control and approval timelines before bounded work detail without granting incomplete capacity", async () => {

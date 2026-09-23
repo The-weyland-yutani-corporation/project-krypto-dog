@@ -216,6 +216,52 @@ describe("offline signal -> native goal child -> normal PM/EM intake", () => {
     expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
   });
 
+  it("rejects a release-branch source with the exact default-branch tip SHA", async () => {
+    const { fixture, options } = setup();
+    fixture.failedRun.head_branch = "release/v2.1";
+    expect(fixture.failedRun.head_sha).toBe(options.signal.source.sha);
+    expect((await intake.runSignalIntake({ ...options, apply: true })).reasons).toContain("source-run-not-corroborated");
+    expect(fixture.github.request).not.toHaveBeenCalledWith(
+      "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
+      expect.objectContaining({ workflow_id: "ci.yml", branch: "release/v2.1" }),
+    );
+    expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
+    expect(fixture.github.rest.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it("returns a deterministic dependency rejection for a missing issue", async () => {
+    const { fixture, options } = setup();
+    options.proposal.dependencyNumbers = [999];
+    expect(await intake.runSignalIntake({ ...options, apply: true })).toMatchObject({
+      action: "rejected", reasons: expect.arrayContaining(["dependencies-not-closed"]),
+    });
+    expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
+    expect(fixture.github.rest.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it("returns a deterministic oracle rejection for a missing immutable blob", async () => {
+    const { fixture, options } = setup();
+    fixture.failures.set("GET /repos/{owner}/{repo}/contents/{path}", 404);
+    expect(await intake.runSignalIntake({ ...options, apply: true })).toMatchObject({
+      action: "rejected", reasons: ["independent-oracle-unavailable"],
+    });
+    expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
+    expect(fixture.github.rest.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["dependency", 403], ["dependency", 500], ["oracle", 403], ["oracle", 500],
+  ])("surfaces %s HTTP %i rather than treating it as a missing reference", async (kind, status) => {
+    const { fixture, options } = setup();
+    const route = kind === "dependency"
+      ? "GET /repos/{owner}/{repo}/issues/{issue_number}" : "GET /repos/{owner}/{repo}/contents/{path}";
+    if (kind === "dependency") options.proposal.dependencyNumbers = [16];
+    fixture.failures.set(route, Number(status));
+    await expect(intake.runSignalIntake({ ...options, apply: true })).rejects.toMatchObject({ status });
+    expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
+    expect(fixture.github.rest.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
   it.each(DEFAULT_FAILING_CONCLUSIONS)("admits the supported %s conclusion through the ordinary intake", async (conclusion) => {
     const { fixture, options } = setup();
     fixture.failedRun.conclusion = conclusion;

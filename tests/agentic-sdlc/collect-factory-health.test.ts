@@ -129,6 +129,7 @@ const workflowsDir = path.join(root, ".github", "workflows");
  * hash is read from.
  */
 function fakeRunner(overrides: {
+  defaultBranch?: string;
   status?: unknown;
   logs?: unknown;
   auxRuns?: Record<string, unknown[]>;
@@ -136,6 +137,8 @@ function fakeRunner(overrides: {
   prs?: unknown;
   reportIssues?: unknown;
 } = {}): Runner {
+  const defaultBranch = overrides.defaultBranch || "main";
+  const branchRows = (rows: unknown[]) => rows.map((row) => ({ head_branch: defaultBranch, ...row as object }));
   const json = (value: unknown) => ({
     status: 0,
     stdout: JSON.stringify(value ?? []),
@@ -145,6 +148,9 @@ function fakeRunner(overrides: {
     expect(command).toBe("gh");
     const joined = args.join(" ");
     if (joined.includes("repo view")) return json({ nameWithOwner: "example/repo" });
+    if (args[0] === "api" && args.some((arg) => /^repos\/[^/]+\/[^/?]+$/.test(arg))) {
+      return json({ default_branch: defaultBranch });
+    }
     if (joined.includes("/actions/workflows")) return json({ workflows: [
       ...(overrides.status ?? fixtures.status) as unknown[],
       { id: "agentic-evals", enabled: true }, { id: "ci", enabled: true },
@@ -153,7 +159,7 @@ function fakeRunner(overrides: {
       const logs = (overrides.logs ?? fixtures.logsGovernance) as { runs: unknown[] };
       const auxiliary = Object.entries(overrides.auxRuns ?? fixtures.auxRuns)
         .flatMap(([workflow, rows]) => rows.map((row) => ({ ...row as object, workflow })));
-      return json({ workflow_runs: [...logs.runs, ...auxiliary] });
+      return json({ workflow_runs: branchRows([...logs.runs, ...auxiliary]) });
     }
     if (joined.includes("/issues?")) {
       const reportIssues = (overrides.reportIssues ?? fixtures.reportIssuesNone) as Array<Record<string, unknown>>;
@@ -167,7 +173,10 @@ function fakeRunner(overrides: {
       ]);
     }
     if (joined.includes("aw status")) return json(overrides.status ?? fixtures.status);
-    if (joined.includes("aw logs")) return json(overrides.logs ?? fixtures.logsGovernance);
+    if (joined.includes("aw logs")) {
+      const logs = (overrides.logs ?? fixtures.logsGovernance) as { runs: unknown[] };
+      return json({ ...logs, runs: branchRows(logs.runs) });
+    }
     if (joined.includes("run list")) {
       const wfIndex = args.indexOf("--workflow");
       const file = wfIndex >= 0 ? args[wfIndex + 1] : "";
@@ -397,6 +406,70 @@ describe("MonitorOps collector — null-not-zero telemetry", () => {
     expect(collector.parseDurationSeconds("1h2m3s")).toBe(3723);
     expect(collector.parseDurationSeconds("5.3m")).toBe(318);
     expect(collector.parseDurationSeconds("not-a-duration")).toBeNull();
+  });
+});
+
+describe("MonitorOps collector — exact default-branch scope", () => {
+  it("queries the discovered default branch and excludes same-SHA release runs before costs or failure thresholds", () => {
+    const defaultBranch = "release-default/stable";
+    const run = {
+      workflow: "pm-triage", createdAt: "2026-08-05T10:00:00Z", head_sha: "a".repeat(40),
+      head_branch: defaultBranch, conclusion: "success", aiCredits: 7,
+    };
+    const runner = jest.fn(fakeRunner({
+      defaultBranch,
+      logs: { runs: [
+        { ...run, id: 1 },
+        { ...run, id: 2, head_branch: "release/v2.1", conclusion: "failure", aiCredits: 9000 },
+        { ...run, id: 3, head_branch: "release/v2.1", conclusion: "failure", aiCredits: 9000 },
+      ] },
+      auxRuns: {},
+    }));
+    const { snapshot } = collector.collect({ repoRoot: root, repository: "example/repo", now: fixtures.now, runner, policy });
+    expect(snapshot.defaultBranch).toBe(defaultBranch);
+    expect(runner).toHaveBeenCalledWith("gh", expect.arrayContaining([
+      expect.stringContaining("actions/runs?branch=release-default%2Fstable&created="),
+    ]));
+    expect(runner).toHaveBeenCalledWith("gh", expect.arrayContaining(["--repo", "example/repo", "--ref", defaultBranch]));
+    const workflow = (snapshot.workflows as Array<Record<string, unknown>>).find((item) => item.id === "pm-triage");
+    expect(workflow).toMatchObject({ usage: { runs: 1, conclusions: { success: 1 }, aiCredits: 7, repeatedFailures: 0 } });
+    expect((snapshot.thresholds as { breaches: unknown[] }).breaches).toEqual([]);
+    expect(snapshot.sources).toMatchObject({
+      runs: { branch: defaultBranch, excludedBranchRecords: 2, includedRecords: 1 },
+      usage: { branch: defaultBranch, excludedBranchRecords: 2, includedRecords: 1 },
+    });
+  });
+
+  it("keeps absent run-branch data incomplete rather than treating it as zero/pass", () => {
+    const { snapshot } = collector.collect({
+      repoRoot: root, now: fixtures.now, policy,
+      runner: fakeRunner({ logs: { runs: [
+        { workflow: "pm-triage", head_branch: null, createdAt: "2026-08-05T10:00:00Z", conclusion: "failure" },
+      ] } }),
+    });
+    expect(snapshot).toMatchObject({
+      collection: { completeness: "partial" },
+      sources: { runs: { completeness: "partial", reason: "run-branch-unavailable", missingBranchRecords: 1 } },
+    });
+    expect((snapshot.workflows as Array<Record<string, unknown>>).find((item) => item.id === "pm-triage"))
+      .toMatchObject({ usage: { runs: null, aiCredits: null } });
+  });
+
+  it("does not fall back to repository-wide runs when the default branch is unavailable", () => {
+    const normal = fakeRunner();
+    const runner = jest.fn((command: string, args: string[]) => {
+      if (args[0] === "api" && args.some((arg) => /^repos\/[^/]+\/[^/?]+$/.test(arg))) {
+        return { status: 1, stdout: "", stderr: "HTTP 503" };
+      }
+      return normal(command, args);
+    });
+    const { snapshot } = collector.collect({ repoRoot: root, repository: "example/repo", now: fixtures.now, policy, runner });
+    expect(snapshot).toMatchObject({
+      defaultBranch: null, collection: { completeness: "partial" },
+      sources: { runs: { completeness: "unavailable", reason: "default-branch-unavailable" } },
+    });
+    expect(runner.mock.calls.some(([, args]) => args.some((arg) => arg.includes("/actions/runs?")))).toBe(false);
+    expect(runner.mock.calls.some(([, args]) => args[0] === "aw" && args[1] === "logs")).toBe(false);
   });
 });
 
