@@ -297,6 +297,15 @@ for the existing operation report schemas. An unreadable, expired,
 incomplete, or mismatched artifact is never a pass. Proof validation and
 upload happen inside final verification, before the rollback decision.
 
+The gate accepts only the `main` workflow definition. Operation/activation
+report validators, final proof verification, and the status publisher are
+checked out at GitHub's immutable `github.workflow_sha`, with checkout
+credentials disabled, **not** at the release SHA being attested. The subject
+SHA still selects the built/deployed images and the exact report paths;
+it cannot select the verifier implementation. Downloaded reports stay in
+the separate `proof-reports` data directory. Missing trusted tooling fails
+closed; there is no fallback to subject code or a moving branch ref.
+
 Lifecycle and full-cycle canary verification share
 `.github/scripts/azure/dev-evidence.cjs`:
 `readDevEvidence({github, owner, repo, sha, pullNumber})` returns

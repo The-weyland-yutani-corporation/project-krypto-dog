@@ -7,7 +7,17 @@ interface Workflow {
     needs?: string[];
     if?: string;
     permissions?: Record<string, string>;
-    steps: { name: string; with?: { script?: string }; run?: string }[];
+    steps: {
+      name: string;
+      uses?: string;
+      with?: {
+        script?: string;
+        ref?: string;
+        path?: string;
+        "persist-credentials"?: boolean;
+      };
+      run?: string;
+    }[];
   }>;
 }
 
@@ -33,6 +43,8 @@ describe("executed development workflow evidence integration", () => {
       GITHUB_REPOSITORY: "example/krypto",
       GITHUB_RUN_ID: "731",
       GITHUB_RUN_ATTEMPT: "1",
+      TRUSTED_WORKFLOW_REF: "example/krypto/.github/workflows/azure-deploy-dev.yml@refs/heads/main",
+      TRUSTED_WORKFLOW_SHA: "b".repeat(40),
       RESOLVED_SHA: DEV_SHA,
       PROOF_ARTIFACT_ID: "601",
       PROOF_ARTIFACT_DIGEST: "a".repeat(64),
@@ -53,6 +65,60 @@ describe("executed development workflow evidence integration", () => {
       },
     };
   }
+
+  it("accepts only the GitHub-provided main workflow identity before checkout or deployment", async () => {
+    const gate = deployment.jobs.gate;
+    expect(gate.steps[0].name).toBe("Require the trusted main workflow definition");
+    await expect(script(deployment, "gate", gate.steps[0].name)(
+      {}, { repo: { owner: "example", repo: "krypto" } }, {}, () => moduleUnderTest,
+    )).resolves.toBeUndefined();
+    expect(process.env.TRUSTED_WORKFLOW_SHA).not.toBe(process.env.RESOLVED_SHA);
+  });
+
+  it.each([
+    ["TRUSTED_WORKFLOW_REF", "example/krypto/.github/workflows/azure-deploy-dev.yml@refs/heads/feature"],
+    ["TRUSTED_WORKFLOW_REF", "example/krypto/.github/workflows/azure-deploy-dev.yml@refs/tags/main"],
+    ["TRUSTED_WORKFLOW_REF", "attacker/krypto/.github/workflows/azure-deploy-dev.yml@refs/heads/main"],
+    ["TRUSTED_WORKFLOW_REF", ""],
+    ["TRUSTED_WORKFLOW_SHA", ""],
+    ["TRUSTED_WORKFLOW_SHA", "main"],
+  ])("rejects an untrusted or missing workflow identity (%s=%s)", async (field, value) => {
+    process.env[field] = value;
+    await expect(script(deployment, "gate", "Require the trusted main workflow definition")(
+      {}, { repo: { owner: "example", repo: "krypto" } }, {}, () => moduleUnderTest,
+    )).rejects.toThrow("exact trusted main workflow commit");
+  });
+
+  it.each(["gate", "ops-validate", "validate-shadow", "verify-final-state", "publish-deployment-evidence"])(
+    "loads %s authority only from the immutable workflow commit, never the release subject",
+    (job) => {
+      const checkouts = deployment.jobs[job].steps.filter((step) => step.uses?.startsWith("actions/checkout@"));
+      expect(checkouts).toHaveLength(1);
+      expect(checkouts[0].with?.ref).toBe("${{ github.workflow_sha }}");
+      expect(checkouts[0].with?.["persist-credentials"]).toBe(false);
+      expect(checkouts[0].with?.ref).not.toContain("needs.gate.outputs.sha");
+    },
+  );
+
+  it("keeps subject report downloads in a data-only directory away from trusted verifier code", () => {
+    const downloads = deployment.jobs["verify-final-state"].steps.filter(
+      (step) => step.uses?.startsWith("actions/download-artifact@"),
+    );
+    expect(downloads).toHaveLength(2);
+    for (const step of downloads) expect(step.with?.path).toBe("proof-reports");
+    const publish = deployment.jobs["publish-deployment-evidence"];
+    expect(publish.steps.some((step) => step.uses?.startsWith("actions/download-artifact@"))).toBe(false);
+  });
+
+  it("authenticates the manual ancestor fetch without persisting checkout credentials", () => {
+    const step = deployment.jobs.gate.steps.find(
+      (entry) => entry.name === "Verify manually-dispatched SHA is an ancestor of main with a successful push CI run",
+    );
+    expect(step?.run).toContain('gh auth setup-git --hostname "${GITHUB_SERVER_URL#https://}"');
+    expect(step?.run?.indexOf("gh auth setup-git")).toBeLessThan(
+      step?.run?.indexOf(".github/scripts/azure/verify-deploy-sha.sh") ?? -1,
+    );
+  });
 
   it("publishes a pending authoritative attempt before any full environment mutation", async () => {
     expect(deployment.jobs["deploy-environment"].needs).toContain("begin-deployment-evidence");

@@ -69,12 +69,27 @@ jobs:
       INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
       INPUT_DEPLOYMENT_STAGE: ${{ inputs.deployment_stage }}
       WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      TRUSTED_WORKFLOW_REF: ${{ github.workflow_ref }}
+      TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
       GH_TOKEN: ${{ github.token }}
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       deployment_stage: ${{ steps.resolve.outputs.deployment_stage }}
       requires_verified_backup: ${{ steps.resolve.outputs.requires_verified_backup }}
     steps:
+      - name: Require the trusted main workflow definition
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const expectedRef =
+              `${context.repo.owner}/${context.repo.repo}/.github/workflows/azure-deploy-dev.yml@refs/heads/main`;
+            if (
+              process.env.TRUSTED_WORKFLOW_REF !== expectedRef ||
+              !/^[0-9a-f]{40}$/.test(process.env.TRUSTED_WORKFLOW_SHA || "")
+            ) {
+              throw new Error("Development evidence requires the exact trusted main workflow commit.");
+            }
+
       # fetch-depth: 0 is required so verify-deploy-sha.sh's
       # `git merge-base --is-ancestor` (manual-dispatch path only) can
       # walk the FULL commit history, not just a shallow tip -- a
@@ -84,6 +99,8 @@ jobs:
       - name: Checkout (full history, for lib/common.sh and SHA verification)
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Resolve and format-validate the exact commit SHA to deploy
@@ -138,6 +155,7 @@ jobs:
           TARGET_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          gh auth setup-git --hostname "${GITHUB_SERVER_URL#https://}"
           .github/scripts/azure/verify-deploy-sha.sh \
             --sha "${RESOLVED_SHA}" \
             --branch main \
@@ -621,10 +639,11 @@ jobs:
       TARGET_SMOKE_JOB_NAME: ${{ needs.deploy-release.outputs.target_smoke_job_name }}
       WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
     steps:
-      - name: Checkout ${{ needs.gate.outputs.sha }}
+      - name: Checkout trusted operation evidence tooling
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.gate.outputs.sha }}
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
 
       - name: Require a full-template Container Apps execution helper
         run: |
@@ -889,10 +908,11 @@ jobs:
       manual_shadow_idempotency_key: ${{ steps.manual.outputs.idempotency_key }}
       manual_shadow_started_after: ${{ steps.manual.outputs.started_after }}
     steps:
-      - name: Checkout ${{ needs.gate.outputs.sha }}
+      - name: Checkout trusted activation evidence tooling
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.gate.outputs.sha }}
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -1299,10 +1319,11 @@ jobs:
       MANUAL_SHADOW_STARTED_AFTER: ${{ needs.validate-shadow.outputs.manual_shadow_started_after }}
       REQUIRES_VERIFIED_BACKUP: ${{ needs.gate.outputs.requires_verified_backup }}
     steps:
-      - name: Checkout ${{ needs.gate.outputs.sha }}
+      - name: Checkout trusted final evidence verifier
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.gate.outputs.sha }}
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -1621,10 +1642,10 @@ jobs:
       PROOF_ARTIFACT_ID: ${{ needs.verify-final-state.outputs.proof_artifact_id }}
       PROOF_ARTIFACT_DIGEST: ${{ needs.verify-final-state.outputs.proof_artifact_digest }}
     steps:
-      - name: Checkout the exact validated evidence implementation
+      - name: Checkout trusted evidence publisher
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.gate.outputs.sha }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Publish commit status and GitHub Deployment
