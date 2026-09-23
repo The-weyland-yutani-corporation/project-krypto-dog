@@ -528,7 +528,7 @@ function normalizeUsage(logsJson, knownIds, window, options) {
     if (runKey) seen.add(runKey);
     entry.runs += 1;
     if (runId) entry._evidence.push({
-      runId, sha: run.head_sha || null, path: run.path || run.workflow_path || null,
+      runId, sha: run.head_sha || null, path: reads.normalizeWorkflowPath(run.path || run.workflow_path || null),
       conclusion: normalizeConclusion(run), createdAt: when, attempt: run.run_attempt || 1,
     });
 

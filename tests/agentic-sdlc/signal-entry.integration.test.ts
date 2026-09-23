@@ -21,6 +21,9 @@ const policy = jest.requireActual<{
   isLegalLifecycleTransition(from: string, to: string): boolean;
   getLifecycleTransitionOwner(from: string, to: string): string;
 }>("../../.github/scripts/agentic-factory-policy.cjs");
+const { DEFAULT_FAILING_CONCLUSIONS } = jest.requireActual<{ DEFAULT_FAILING_CONCLUSIONS: string[] }>(
+  "../../scripts/agentic/collect-factory-health.cjs",
+);
 
 function setup() {
   const fixture = makeGithub();
@@ -211,6 +214,27 @@ describe("offline signal -> native goal child -> normal PM/EM intake", () => {
     fixture.failedRun.conclusion = "success";
     expect((await intake.runSignalIntake({ ...options, apply: true })).reasons).toContain("source-run-not-corroborated");
     expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
+  });
+
+  it.each(DEFAULT_FAILING_CONCLUSIONS)("admits the supported %s conclusion through the ordinary intake", async (conclusion) => {
+    const { fixture, options } = setup();
+    fixture.failedRun.conclusion = conclusion;
+    options.signal.source.key = `.github/workflows/ci.yml:${conclusion}`;
+    options.signal.fingerprint = contract.fingerprintFor(options.signal.source);
+    expect(await intake.runSignalIntake({ ...options, apply: true })).toMatchObject({
+      action: "created-triage-dispatched", ready: false, completed: false,
+    });
+    expect(fixture.github.rest.issues.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps action_required approval outside automated repair admission", async () => {
+    const { fixture, options } = setup();
+    fixture.failedRun.conclusion = "action_required";
+    options.signal.source.key = ".github/workflows/ci.yml:action_required";
+    options.signal.fingerprint = contract.fingerprintFor(options.signal.source);
+    expect((await intake.runSignalIntake({ ...options, apply: true })).reasons).toContain("source-run-not-corroborated");
+    expect(fixture.github.rest.issues.create).not.toHaveBeenCalled();
+    expect(fixture.github.rest.actions.createWorkflowDispatch).not.toHaveBeenCalled();
   });
 
   it("leaves explicit partial creation evidence on link failure and never duplicates it on replay", async () => {

@@ -22,6 +22,14 @@ function digest(value) {
   return crypto.createHash("sha256").update(factory.stableStringify(value)).digest("hex");
 }
 
+function resolveWatchdogMode(context) {
+  const mode = context.eventName === "workflow_dispatch"
+    ? context.payload.inputs?.mode || "daily"
+    : context.eventName === "schedule" && context.payload.schedule === "30 7 * * 1" ? "governance" : "daily";
+  if (!["daily", "governance"].includes(mode)) throw new Error("invalid-watchdog-mode");
+  return mode;
+}
+
 async function authorizeWatchdogEvent({ github, context }) {
   const defaultBranch = context.payload.repository.default_branch;
   if (context.ref !== `refs/heads/${defaultBranch}`) return { allowed: false, reason: "not-default-branch" };
@@ -164,7 +172,7 @@ async function collectWatchdog(options) {
         { owner, repo, run_id: options.sourceRunId })).data;
       if (run.repository?.full_name !== `${owner}/${repo}`) throw new Error("foreign-monitored-run");
       snapshot.monitoredRun = {
-        runId: run.id, sha: run.head_sha, workflow: run.path, status: run.status, conclusion: run.conclusion,
+        runId: run.id, sha: run.head_sha, workflow: reads.normalizeWorkflowPath(run.path), status: run.status, conclusion: run.conclusion,
       };
     }
     snapshot.materialState.hash = digest({ reportHash: factory.computeMaterialHash(snapshot), monitoredRun: snapshot.monitoredRun || null });
@@ -218,10 +226,12 @@ async function collectWatchdog(options) {
   return result;
 }
 
-async function publishWatchdog({ github, owner, repo, directory, apply = false, now = new Date().toISOString() }) {
+async function publishWatchdog({ github, owner, repo, directory, mode = "daily", apply = false, now = new Date().toISOString() }) {
+  if (!["daily", "governance"].includes(mode)) throw new Error("invalid-watchdog-mode");
+  const expectedSeries = mode === "governance" ? ["governance", "entropy", "corrections"] : ["daily"];
   const file = path.join(directory, "receipts.json");
   const batch = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {
-    receipts: [reports.failureReceipt("daily", now, "collection-receipt-unavailable")],
+    receipts: expectedSeries.map((series) => reports.failureReceipt(series, now, "collection-receipt-unavailable")),
   };
   if (!Array.isArray(batch.receipts) || batch.receipts.length > 4) throw new Error("invalid-watchdog-receipts");
   if (new Set(batch.receipts.map((receipt) => receipt.series)).size !== batch.receipts.length) {
@@ -315,4 +325,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
-module.exports = { MAX_SIGNALS, signalCandidates, canDiscover, receiptFor, collectWatchdog, publishWatchdog, inspectReceiptRun, mergeDiscoverySignals, runCollectionStep, authorizeWatchdogEvent };
+module.exports = { MAX_SIGNALS, signalCandidates, canDiscover, receiptFor, collectWatchdog, publishWatchdog, inspectReceiptRun, mergeDiscoverySignals, runCollectionStep, authorizeWatchdogEvent, resolveWatchdogMode };

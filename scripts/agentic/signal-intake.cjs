@@ -6,6 +6,7 @@ const crypto = require("node:crypto");
 const runtime = require("../../.github/scripts/agentic-queue-runtime.cjs");
 const contract = require("./signal-contract.cjs");
 const { readFactoryState } = require("./factory-observation.cjs");
+const { DEFAULT_FAILING_CONCLUSIONS } = require("./collect-factory-health.cjs");
 const reads = require("./factory-read.cjs");
 
 const TRIAGE_WORKFLOW = "pm-triage.lock.yml";
@@ -21,7 +22,7 @@ async function verifySource({ github, owner, repo, signal, proposal, repoRoot })
     const when = Date.parse(run.created_at);
     if (typeof workflowPath !== "string" || run.repository?.full_name !== `${owner}/${repo}` ||
         run.head_sha !== signal.source.sha || run.status !== "completed" ||
-        !["failure", "startup_failure", "timed_out", "cancelled"].includes(run.conclusion) ||
+        !DEFAULT_FAILING_CONCLUSIONS.includes(run.conclusion) ||
         signal.source.key !== `${workflowPath}:${run.conclusion}` ||
         !Number.isFinite(when) || when < Date.parse(signal.source.windowStart) ||
         when >= Date.parse(signal.source.windowEnd)) return ["source-run-not-corroborated"];

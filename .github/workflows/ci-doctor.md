@@ -7,8 +7,7 @@ on:
     types: [completed]
     branches:
       - main
-      - "develop/**"
-if: github.event_name != 'workflow_run' || contains(fromJSON('["failure","cancelled","timed_out","action_required"]'), github.event.workflow_run.conclusion)
+if: github.event_name != 'workflow_run' || (github.event.workflow_run.head_branch == github.event.repository.default_branch && contains(fromJSON('["cancelled","failure","startup_failure","timed_out"]'), github.event.workflow_run.conclusion))
 concurrency:
   group: factory-queue-controller
   cancel-in-progress: false
@@ -99,6 +98,9 @@ publishes canonical failure even when this model is unavailable.
 
 ## Task
 
+- Automatic diagnosis is limited to supported CI failure conclusions on the
+  default branch. Non-default-branch runs and `action_required` approvals do
+  not authorize signal intake; leave operator approval to a human.
 - Inspect the failed workflow run, failing jobs, failing steps, and relevant logs.
 - Identify whether the failure is deterministic, flaky, infrastructure-related, or caused by a recent code change.
 - Search existing issues for the same stable source/problem fingerprint.

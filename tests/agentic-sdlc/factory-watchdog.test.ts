@@ -16,8 +16,10 @@ const watchdog = jest.requireActual<{
   mergeDiscoverySignals(options: unknown): void;
   authorizeWatchdogEvent(options: unknown): Promise<{ allowed: boolean; reason: string }>;
   signalCandidates(snapshot: unknown, manifest: unknown, repository: string): Data[];
+  resolveWatchdogMode(context: unknown): string;
 }>("../../scripts/agentic/factory-watchdog.cjs");
 const factory = jest.requireActual<{
+  DEFAULT_FAILING_CONCLUSIONS: string[];
   collect(options: unknown): { snapshot: Data };
   computeMaterialHash(snapshot: unknown): string;
   buildSnapshot(options: unknown): Data;
@@ -28,6 +30,7 @@ const reader = jest.requireActual<{
   normalizeWorkflowPath(value: unknown): unknown;
 }>("../../scripts/agentic/factory-read.cjs");
 const observation = jest.requireActual<{
+  MAX_DETAIL_ISSUES: number;
   readFactoryState(options: unknown): Promise<{ state: Data; sources: Data; issues: unknown[]; details: Data }>;
   readSignalOutcomes(options: unknown): Promise<{ verifiedSubstantive: number | null; reason: string; items: Data[]; paperMetrics: null }>;
 }>("../../scripts/agentic/factory-observation.cjs");
@@ -92,6 +95,36 @@ describe("model-independent native health and canonical publication", () => {
     expect(fixture.issues.at(-1)?.body).toContain("unavailable");
   });
 
+  it.each([
+    { eventName: "schedule", payload: { schedule: "30 7 * * 1" } },
+    { eventName: "workflow_dispatch", payload: { inputs: { mode: "governance" } } },
+  ])("publishes a missing weekly receipt to every weekly series for %j", async (context) => {
+    const fixture = makeGithub();
+    const mode = watchdog.resolveWatchdogMode(context);
+    expect(mode).toBe("governance");
+    const options = { github: fixture.github, owner: "example", repo: "krypto", directory, mode, apply: true, now: NOW };
+    expect(await watchdog.publishWatchdog(options)).toMatchObject([
+      { action: "created" }, { action: "created" }, { action: "created" },
+    ]);
+    for (const series of ["governance", "entropy", "corrections"]) {
+      expect(fixture.issues.some((item) => item.body.includes(`<!-- factory-report:v1 ${series} -->`) &&
+        item.body.includes("collection-receipt-unavailable"))).toBe(true);
+    }
+    expect(fixture.issues.some((item) => item.body.includes("<!-- factory-report:v1 daily -->"))).toBe(false);
+    expect(await watchdog.publishWatchdog(options)).toMatchObject([
+      { action: "unchanged" }, { action: "unchanged" }, { action: "unchanged" },
+    ]);
+    expect(fixture.github.rest.issues.create).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves daily mode and rejects invalid explicit reporting modes", () => {
+    expect(watchdog.resolveWatchdogMode({ eventName: "schedule", payload: { schedule: "15 7 * * *" } })).toBe("daily");
+    expect(watchdog.resolveWatchdogMode({ eventName: "workflow_run", payload: {} })).toBe("daily");
+    expect(() => watchdog.resolveWatchdogMode({
+      eventName: "workflow_dispatch", payload: { inputs: { mode: "invented" } },
+    })).toThrow("invalid-watchdog-mode");
+  });
+
   it("distinguishes no work, budget exhaustion, conflicting goals and infrastructure failure", async () => {
     const fixture = makeGithub();
     const options = { github: fixture.github, owner: "example", repo: "krypto", now: NOW };
@@ -119,6 +152,45 @@ describe("model-independent native health and canonical publication", () => {
         ? { status: 1, stdout: "", stderr: "HTTP 503" } : normal(command, args),
     });
     expect(snapshot).toMatchObject({ collection: { completeness: "partial" }, issues: { openedInWindow: null, openActionableOpportunities: null } });
+  });
+
+  it("observes older control and approval timelines before bounded work detail without granting incomplete capacity", async () => {
+    const fixture = makeGithub();
+    fixture.issues.unshift(...Array.from({ length: observation.MAX_DETAIL_ISSUES + 1 }, (_, index) =>
+      issue(1000 + index, ["agentic-factory"])));
+    const result = await observation.readFactoryState({
+      github: fixture.github, owner: "example", repo: "krypto", now: NOW,
+    });
+    expect(result.state).toMatchObject({
+      mode: { mode: "active", reason: "ok", controlIssue: 233 },
+      goals: { resolution: "ok", active: { number: 248 } },
+      capacity: { completeness: "partial", inFlight: null, budgetUsed: null },
+      workState: "observation-incomplete",
+    });
+    expect(result.sources.details).toMatchObject({ completeness: "partial", reason: "issue-detail-limit-reached" });
+    const timelines = fixture.github.request.mock.calls.filter(([route]) => route.endsWith("/timeline"));
+    expect(timelines).toHaveLength(observation.MAX_DETAIL_ISSUES);
+    expect(timelines.slice(0, 2).map(([, params]) => params?.issue_number)).toEqual([233, 248]);
+  });
+
+  it("normalizes persisted paths as well as identities so equivalent native observations do not churn report hashes", async () => {
+    const fixture = makeGithub();
+    const options = {
+      github: fixture.github, owner: "example", repo: "krypto", now: NOW, directory, repoRoot: root,
+      runner: nativeRunner(fixture), mode: "daily", sourceRunId: 310, evidenceReader: null,
+    };
+    const plain = await watchdog.collectWatchdog(options);
+    fixture.failedRun.path += "@refs/heads/main";
+    const suffixed = await watchdog.collectWatchdog(options);
+    expect(plain.errors).toEqual([]);
+    expect(suffixed.errors).toEqual([]);
+    expect(suffixed.receipts[0].materialHash).toBe(plain.receipts[0].materialHash);
+    expect(suffixed.receipts[0].report).toMatchObject({
+      monitoredRun: { workflow: ".github/workflows/ci.yml" },
+      workflows: expect.arrayContaining([expect.objectContaining({
+        id: "ci", usage: expect.objectContaining({ evidence: [expect.objectContaining({ path: ".github/workflows/ci.yml" })] }),
+      })]),
+    });
   });
 
   it.each(["", "@refs/heads/main", "@refs/tags/v2.1.0", "@refs/pull/600/merge"])(
@@ -405,6 +477,22 @@ describe("signal provenance -> genuine dev evidence -> measured outcome", () => 
 });
 
 describe("trusted model-independent workflow wiring", () => {
+  it("limits CI Doctor triggers to default-branch failures the collector and intake support", () => {
+    const source = fs.readFileSync(path.join(root, ".github/workflows/ci-doctor.md"), "utf8");
+    const frontmatter = parseYaml(source.split(/^---\s*$/m)[1]);
+    const lock = parseYaml(fs.readFileSync(path.join(root, ".github/workflows/ci-doctor.lock.yml"), "utf8"));
+    const policyData = JSON.parse(fs.readFileSync(path.join(root, ".github/agentic-policy.json"), "utf8"));
+    expect(frontmatter.on.workflow_run.branches).toEqual(["main"]);
+    expect(lock.on.workflow_run.branches).toEqual(["main"]);
+    expect(frontmatter.if).toContain("github.event.workflow_run.head_branch == github.event.repository.default_branch");
+    const conclusions = frontmatter.if.match(/contains\(fromJSON\('([^']+)'\), github\.event\.workflow_run\.conclusion\)/);
+    expect(conclusions).not.toBeNull();
+    const allowed: string[] = JSON.parse(conclusions![1]);
+    expect(allowed.slice().sort()).toEqual(factory.DEFAULT_FAILING_CONCLUSIONS.slice().sort());
+    expect(allowed.slice().sort()).toEqual(policyData.conclusions.failing.slice().sort());
+    expect(allowed).not.toContain("action_required");
+  });
+
   it("uses a complete GitHub SDK client for real dev-proof readers and exact-attempt artifacts", () => {
     const source = fs.readFileSync(path.join(root, ".github/workflows/factory-watchdog.yml"), "utf8");
     expect(source).toContain("uses: actions/github-script@v9");
@@ -416,6 +504,11 @@ describe("trusted model-independent workflow wiring", () => {
     expect(workflow.jobs.observe.if).toContain("needs.authorize.outputs.allowed == 'true'");
     expect(workflow.jobs.publish.if).toContain("needs.authorize.outputs.allowed == 'true'");
     expect(workflow.jobs.publish.needs).toContain("authorize");
+    expect(workflow.jobs.authorize.outputs.mode).toBe("${{ steps.authorize.outputs.mode }}");
+    const publishStep = workflow.jobs.publish.steps.find((step: { name?: string }) =>
+      step.name === "Publish owned canonical status or explicit missing-receipt failure");
+    expect(publishStep.env.WATCHDOG_MODE).toBe("${{ needs.authorize.outputs.mode }}");
+    expect(publishStep.with.script).toContain("mode: process.env.WATCHDOG_MODE");
     expect(workflow.jobs.observe.steps.find((step: { id?: string }) => step.id === "collect").uses).toBe("actions/github-script@v9");
   });
 

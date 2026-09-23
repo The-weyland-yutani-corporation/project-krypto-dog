@@ -155,6 +155,13 @@ async function readFactoryState({ github, owner, repo, now = new Date().toISOStr
     return labels.includes(runtime.FACTORY_LABEL) || labels.includes(runtime.CONTROL_LABEL) ||
       labels.includes(runtime.GOAL_LABEL) || SIGNAL_MARKER.test(issue.body || "");
   });
+  const authorityPriority = (issue) => {
+    const labels = runtime.normalizeLabels(issue.labels);
+    if (issue.state !== "open") return 2;
+    if (labels.includes(runtime.CONTROL_LABEL)) return 0;
+    return labels.includes(runtime.GOAL_LABEL) && labels.includes(runtime.GOAL_APPROVED_LABEL) ? 1 : 2;
+  };
+  relevant.sort((left, right) => authorityPriority(left) - authorityPriority(right));
   if (relevant.length > MAX_DETAIL_ISSUES) {
     sources.details = reads.source("partial", MAX_DETAIL_ISSUES, now, "issue-detail-limit-reached", relevant.length);
   }

@@ -21,6 +21,9 @@ authority; a command-capable source must have passed GH-AW activation (and thus
 its membership gate), even when its dispatcher uses a maintainer's delegated
 token. Skipped/denied command activation cannot trigger even a
 missing-receipt fallback write. Authorized model failures remain observable.
+The trusted authorization job also resolves the reporting mode before collection
+starts. If weekly collection produces no artifact, publication records failure
+for all three weekly series, not an unrelated daily status.
 
 Weekly substantive, dev-verified improvement is an **eligibility-dependent
 objective**, not a guarantee or a reason to manufacture work. When a fresh
@@ -62,6 +65,11 @@ has exactly `signal` and `proposal` and is capped at 24,000 UTF-8 bytes.
 Current write adapters independently corroborate a failed native workflow run
 or a currently reproduced local entropy rule. A run must still be the latest
 matching-head/branch run; a superseded or recovered failure creates no work.
+CI Doctor automatically observes only default-branch CI failures from the
+existing collector/policy failure vocabulary. It does not launch signal intake
+for `develop/**` runs or `action_required` approvals; the latter remain an
+operator decision, not a code-repair signal. Manual diagnosis never relaxes
+the current-default-SHA or approved-goal admission checks.
 Workflow-path normalization removes only the documented ref suffix from a
 YAML workflow path before identity/corroboration checks; unrelated `@` text is
 preserved. The run's exact SHA, observation window and freshness still gate intake.
@@ -98,6 +106,10 @@ goal scope and native ancestry; risk/path containment; known closed dependencies
 free WIP1 and lifetime assignment budget; and a successful, recent current-SHA
 evaluation with no evaluation run in flight. Missing reads are not zero capacity.
 Existing ready work and outstanding signal proposals reserve intake capacity.
+Bounded observation reads prioritize open control and approved-goal timelines
+before work-item detail samples. Truncated work detail still makes capacity
+unknown and blocks admission; it does not misrepresent the observed control
+mode or current human approval merely because those issues are older.
 
 ## Write path and replay
 

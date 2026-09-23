@@ -35,6 +35,7 @@ jobs:
       actions: read
     outputs:
       allowed: ${{ steps.authorize.outputs.allowed }}
+      mode: ${{ steps.authorize.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,9 +50,11 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const { authorizeWatchdogEvent } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+            const { authorizeWatchdogEvent, resolveWatchdogMode } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
+            const mode = resolveWatchdogMode(context);
             const decision = await authorizeWatchdogEvent({ github, context });
             core.setOutput("allowed", String(decision.allowed));
+            core.setOutput("mode", mode);
             core.info(`Watchdog authorization: ${decision.reason}`);
 
   observe:
@@ -76,19 +79,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-      - name: Set closed reporting window
-        id: window
-        env:
-          REQUESTED_MODE: ${{ inputs.mode }}
-          SCHEDULE: ${{ github.event.schedule }}
-        run: |
-          if [ "$REQUESTED_MODE" = governance ] || [ "$SCHEDULE" = '30 7 * * 1' ]; then
-            echo 'mode=governance' >> "$GITHUB_OUTPUT"
-          else
-            echo 'mode=daily' >> "$GITHUB_OUTPUT"
-          fi
       - name: Install pinned optional usage and correction tooling
-        if: steps.window.outputs.mode == 'governance'
+        if: needs.authorize.outputs.mode == 'governance'
         continue-on-error: true
         uses: github/gh-aw-actions/setup-cli@v0.81.6
         with:
@@ -98,9 +90,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/gh-aw/watchdog/cache
-          key: factory-watchdog-${{ steps.window.outputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: factory-watchdog-${{ needs.authorize.outputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            factory-watchdog-${{ steps.window.outputs.mode }}-
+            factory-watchdog-${{ needs.authorize.outputs.mode }}-
       - name: Verify required tooling
         run: |
           node --version
@@ -110,8 +102,8 @@ jobs:
         uses: actions/github-script@v9
         env:
           GH_TOKEN: ${{ github.token }}
-          WATCHDOG_MODE: ${{ steps.window.outputs.mode }}
-          WATCHDOG_INCLUDE_USAGE: ${{ steps.window.outputs.mode == 'governance' }}
+          WATCHDOG_MODE: ${{ needs.authorize.outputs.mode }}
+          WATCHDOG_INCLUDE_USAGE: ${{ needs.authorize.outputs.mode == 'governance' }}
           WATCHDOG_SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
         with:
           script: |
@@ -161,11 +153,13 @@ jobs:
           path: /tmp/gh-aw/watchdog
       - name: Publish owned canonical status or explicit missing-receipt failure
         uses: actions/github-script@v9
+        env:
+          WATCHDOG_MODE: ${{ needs.authorize.outputs.mode }}
         with:
           script: |
             const { publishWatchdog } = require(`${process.env.GITHUB_WORKSPACE}/scripts/agentic/factory-watchdog.cjs`);
             const result = await publishWatchdog({
-              github, ...context.repo, directory: "/tmp/gh-aw/watchdog", apply: true,
+              github, ...context.repo, directory: "/tmp/gh-aw/watchdog", mode: process.env.WATCHDOG_MODE, apply: true,
             });
             await core.summary.addHeading("Canonical factory receipts")
               .addCodeBlock(JSON.stringify(result, null, 2), "json").write();
