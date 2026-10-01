@@ -1800,28 +1800,37 @@ describe("agentic PR reconciler integration", () => {
             status: "in_progress",
             conclusion: null,
           },
+          {
+            id: 81,
+            name: "Agentic merge policy",
+            status: "completed",
+            conclusion: "action_required",
+          },
         ],
       },
     });
 
-    expect(mocks.updateCheckRun).toHaveBeenCalledWith(
-      expect.objectContaining({
-        check_run_id: 80,
-        conclusion: "cancelled",
-        output: expect.objectContaining({
-          summary: "Pull request is closed or merged",
+    for (const checkRunId of [80, 81]) {
+      expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          check_run_id: checkRunId,
+          conclusion: "cancelled",
+          output: expect.objectContaining({
+            summary: "Pull request is closed or merged",
+          }),
         }),
-      }),
-    );
+      );
+    }
     expect(mocks.createCheckRun).not.toHaveBeenCalled();
   });
 
-  it("backfills stale closed checks without rewriting completed results", async () => {
+  it("backfills stale closed checks without rewriting final completed results", async () => {
     const { mocks } = await reconcile({
       pullRequests: [
         pullRequest(1),
         pullRequest(2, { state: "closed" }),
         pullRequest(3, { state: "closed" }),
+        pullRequest(4, { state: "closed" }),
       ],
       context: {
         eventName: "workflow_dispatch",
@@ -1846,6 +1855,14 @@ describe("agentic PR reconciler integration", () => {
             conclusion: "cancelled",
           },
         ],
+        "sha-4": [
+          {
+            id: 92,
+            name: "Agentic merge policy",
+            status: "completed",
+            conclusion: "action_required",
+          },
+        ],
       },
     });
 
@@ -1857,6 +1874,12 @@ describe("agentic PR reconciler integration", () => {
     );
     expect(mocks.updateCheckRun).not.toHaveBeenCalledWith(
       expect.objectContaining({ check_run_id: 91 }),
+    );
+    expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        check_run_id: 92,
+        conclusion: "cancelled",
+      }),
     );
     expectCheckRun(
       mocks.createCheckRun,

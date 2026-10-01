@@ -1094,9 +1094,10 @@ async function reconcileAgenticPullRequests({
     });
     for (const check of checkRuns) {
       if (
-        check.status === "completed" ||
         (check.name !== MERGE_CONTEXT &&
-          check.name !== HUMAN_BOUNDARY_APPROVAL_CHECK)
+          check.name !== HUMAN_BOUNDARY_APPROVAL_CHECK) ||
+        (check.status === "completed" &&
+          check.conclusion !== "action_required")
       ) {
         continue;
       }
