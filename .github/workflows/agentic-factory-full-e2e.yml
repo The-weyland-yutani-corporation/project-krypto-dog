@@ -23,16 +23,39 @@ permissions:
   statuses: read
 
 jobs:
-  full-cycle:
-    name: Exercise issue through exact-SHA dev evidence
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      vars.FACTORY_CANARY_GOAL != ''
+  readiness:
+    name: Require a configured full-cycle canary
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 5
     env:
       INPUT_GOAL_ISSUE: ${{ inputs.goal_issue }}
       SCHEDULED_GOAL_ISSUE: ${{ vars.FACTORY_CANARY_GOAL }}
+    outputs:
+      goal_issue: ${{ steps.resolve.outputs.goal_issue }}
+    steps:
+      - name: Resolve the approved canary goal
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            goal_issue="${INPUT_GOAL_ISSUE}"
+          else
+            goal_issue="${SCHEDULED_GOAL_ISSUE}"
+          fi
+          if ! [[ "${goal_issue}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "A positive approved goal issue is required. Configure FACTORY_CANARY_GOAL for scheduled runs." >&2
+            exit 1
+          fi
+          echo "goal_issue=${goal_issue}" >> "${GITHUB_OUTPUT}"
+
+  full-cycle:
+    name: Exercise issue through exact-SHA dev evidence
+    needs: readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GOAL_ISSUE: ${{ needs.readiness.outputs.goal_issue }}
     steps:
       - name: Create authorized canary issue
         id: create
@@ -40,10 +63,7 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const rawGoal =
-              context.eventName === "workflow_dispatch"
-                ? process.env.INPUT_GOAL_ISSUE
-                : process.env.SCHEDULED_GOAL_ISSUE;
+            const rawGoal = process.env.GOAL_ISSUE;
             if (!/^[1-9]\d*$/.test(rawGoal || "")) {
               throw new Error("A positive approved goal issue number is required.");
             }
