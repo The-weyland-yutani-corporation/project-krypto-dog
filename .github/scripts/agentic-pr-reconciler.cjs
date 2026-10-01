@@ -1544,21 +1544,30 @@ async function reconcileAgenticPullRequests({
           policy.agentCheckStates[name] === "missing" ||
           policy.agentCheckStates[name] === "pending",
       );
-      const hasPendingPolicyOperations =
+      const hasPendingWorkflowDispatches =
         ciShouldDispatch ||
         reviewShouldDispatch ||
         securityShouldDispatch ||
         qaShouldDispatch ||
-        tradingSafetyShouldDispatch ||
-        humanBoundaryLabelNeeded;
+        tradingSafetyShouldDispatch;
+      const hasPendingPolicyOperations =
+        hasPendingWorkflowDispatches || humanBoundaryLabelNeeded;
+      const shouldPublishTransientPolicy =
+        policy.state === "success"
+          ? hasPendingPolicyOperations
+          : hasPendingWorkflowDispatches;
+      const transientPolicyDescription =
+        policy.checkDisposition === "in_progress"
+          ? policy.description
+          : "Finalizing required reconciliation operations";
 
       await ensureCheckRun(
         sha,
-        policy.state === "success" && hasPendingPolicyOperations
+        shouldPublishTransientPolicy
           ? "in_progress"
           : policy.checkDisposition,
-        policy.state === "success" && hasPendingPolicyOperations
-          ? "Finalizing required reconciliation operations"
+        shouldPublishTransientPolicy
+          ? transientPolicyDescription
           : policy.description,
         pullRequest.html_url,
         checkRuns,

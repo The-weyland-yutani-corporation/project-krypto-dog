@@ -2126,6 +2126,60 @@ describe("agentic PR reconciler integration", () => {
     ).toBe(false);
   });
 
+  it("publishes a transient policy while redispatching a held specialist review", async () => {
+    const { mocks } = await reconcile({
+      filesByPull: {
+        1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "QA verification",
+            status: "completed",
+            conclusion: "action_required",
+          },
+          {
+            id: 42,
+            name: "Security review",
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+      runs: {
+        [runKey("qa-test-plan.lock.yml", "sha-1")]: [
+          successRun(203, "QA Test Plan", {
+            conclusion: "action_required",
+          }),
+        ],
+        [runKey("security-review.lock.yml", "sha-1")]: [
+          successRun(204, "Security Review"),
+        ],
+      },
+    });
+
+    expect(mocks.createWorkflowDispatch).toHaveBeenCalledWith({
+      owner: "VeVarunSharma",
+      repo: "project-krypto-dog",
+      workflow_id: "qa-test-plan.lock.yml",
+      ref: "main",
+      inputs: targetInputs("qa-test-plan.lock.yml", 1),
+    });
+    expectCheckRun(
+      mocks.createCheckRun,
+      "Agentic merge policy",
+      "in_progress",
+      "Finalizing required reconciliation operations",
+    );
+  });
+
   it.each(["CI", "review"] as const)(
     "dispatches self-heal for a completed failed %s check",
     async (failureSource) => {
