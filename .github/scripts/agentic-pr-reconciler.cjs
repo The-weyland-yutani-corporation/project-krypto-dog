@@ -1126,6 +1126,22 @@ async function reconcileAgenticPullRequests({
     });
   };
 
+  const reconciliationErrors = [];
+  const recordReconciliationError = (pullRequest, error) => {
+    const message = `Failed to reconcile PR #${pullRequest.number}: ${getErrorMessage(error)}`;
+    core.warning(message);
+    reconciliationErrors.push(new Error(message));
+  };
+  const runPolicyCleanup = async (label, operation) => {
+    try {
+      await operation();
+    } catch (error) {
+      const message = `Failed to clean up ${label}: ${getErrorMessage(error)}`;
+      core.warning(message);
+      reconciliationErrors.push(new Error(message));
+    }
+  };
+
   let factoryPausedThisRun = false;
   const pauseFactoryControl = async (controlIssue, reason) => {
     if (factoryPausedThisRun || factoryMode !== FACTORY_MODES.ACTIVE) {
@@ -1182,20 +1198,28 @@ async function reconcileAgenticPullRequests({
     context.payload.before &&
     context.payload.before !== eventPullRequest?.head?.sha
   ) {
-    await cancelActivePolicyChecks(
-      context.payload.before,
-      eventPullRequest?.html_url,
-      "Superseded by a newer pull request head",
+    await runPolicyCleanup(
+      `superseded head ${context.payload.before}`,
+      () =>
+        cancelActivePolicyChecks(
+          context.payload.before,
+          eventPullRequest?.html_url,
+          "Superseded by a newer pull request head",
+        ),
     );
   }
   if (
     context.eventName === "pull_request_target" &&
     context.payload.action === "closed"
   ) {
-    await cancelActivePolicyChecks(
-      eventPullRequest?.head?.sha,
-      eventPullRequest?.html_url,
-      "Pull request is closed or merged",
+    await runPolicyCleanup(
+      `closed PR #${eventPullRequest?.number || "unknown"}`,
+      () =>
+        cancelActivePolicyChecks(
+          eventPullRequest?.head?.sha,
+          eventPullRequest?.html_url,
+          "Pull request is closed or merged",
+        ),
     );
   }
 
@@ -1208,10 +1232,14 @@ async function reconcileAgenticPullRequests({
       if (pullRequest.state === "open") {
         continue;
       }
-      await cancelActivePolicyChecks(
-        pullRequest.head?.sha,
-        pullRequest.html_url,
-        "Pull request is closed or merged",
+      await runPolicyCleanup(
+        `closed PR #${pullRequest.number}`,
+        () =>
+          cancelActivePolicyChecks(
+            pullRequest.head?.sha,
+            pullRequest.html_url,
+            "Pull request is closed or merged",
+          ),
       );
     }
   }
@@ -1248,13 +1276,6 @@ async function reconcileAgenticPullRequests({
       );
     }
   }
-
-  const reconciliationErrors = [];
-  const recordReconciliationError = (pullRequest, error) => {
-    const message = `Failed to reconcile PR #${pullRequest.number}: ${getErrorMessage(error)}`;
-    core.warning(message);
-    reconciliationErrors.push(new Error(message));
-  };
 
   for (const pullRequest of pullRequests) {
     try {

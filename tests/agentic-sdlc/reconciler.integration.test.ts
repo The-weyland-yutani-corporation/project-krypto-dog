@@ -1607,6 +1607,48 @@ describe("agentic PR reconciler integration", () => {
     );
   });
 
+  it("continues current-head reconciliation when stale cleanup fails", async () => {
+    const context = {
+      eventName: "pull_request_target",
+      payload: {
+        action: "synchronize",
+        before: "old-sha",
+        pull_request: pullRequest(1),
+      },
+    };
+    const harness = createHarness({
+      checksBySha: {
+        "old-sha": [
+          {
+            id: 70,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+          },
+        ],
+      },
+      updateCheckErrors: [70],
+    });
+
+    await expect(
+      reconcileAgenticPullRequests({
+        github: harness.github,
+        context: reconcilerContext(context),
+        core: harness.core,
+      }),
+    ).rejects.toThrow("Failed to reconcile 1 pull request operation(s)");
+
+    expect(harness.core.warning).toHaveBeenCalledWith(
+      "Failed to clean up superseded head old-sha: check update forbidden",
+    );
+    expectCheckRun(
+      harness.mocks.createCheckRun,
+      "Agentic merge policy",
+      "completed",
+      "Current-head agent reviews approve this PR",
+    );
+  });
+
   it("cancels final policy checks when a pull request closes", async () => {
     const closed = pullRequest(1, { state: "closed" });
     const { mocks } = await reconcile({
