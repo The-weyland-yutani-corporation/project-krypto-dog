@@ -197,13 +197,25 @@ async function resolveRepositoryCopilotIdentity({
     after = connection.pageInfo.endCursor;
   } while (after);
 
-  if (matches.length !== 1) {
-    throw new AgenticIdentityError(
-      "copilot-identity-not-unique",
-      `Expected exactly one ${suggestedActorLogin} Bot; found ${matches.length}`,
+  const uniqueMatches = new Map();
+  for (const actor of matches) {
+    const normalized = normalizeResolvedCopilotActor(
+      actor,
+      suggestedActorLogin,
+    );
+    uniqueMatches.set(
+      `${normalized.nodeId}:${normalized.databaseId}`,
+      normalized,
     );
   }
-  return normalizeResolvedCopilotActor(matches[0], suggestedActorLogin);
+
+  if (uniqueMatches.size !== 1) {
+    throw new AgenticIdentityError(
+      "copilot-identity-not-unique",
+      `Expected exactly one ${suggestedActorLogin} Bot identity; found ${uniqueMatches.size}`,
+    );
+  }
+  return uniqueMatches.values().next().value;
 }
 
 function isResolvedCopilotActor(actor, identity) {

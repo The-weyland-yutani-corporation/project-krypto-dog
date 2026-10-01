@@ -68,6 +68,22 @@ describe("canonical Copilot identity", () => {
     expect(graphql.mock.calls[1][1]).toMatchObject({ after: "next" });
   });
 
+  it("deduplicates repeated rows for the same stable Copilot Bot", async () => {
+    const graphql = jest.fn().mockResolvedValue(page([copilot, { ...copilot }]));
+
+    await expect(
+      identity.resolveRepositoryCopilotIdentity({
+        github: { graphql },
+        owner: "org",
+        repo: "repo",
+      }),
+    ).resolves.toEqual({
+      nodeId: "BOT_stable",
+      databaseId: 198982749,
+      suggestedLogin: "copilot-swe-agent",
+    });
+  });
+
   it.each([
     ["missing", []],
     ["duplicate", [copilot, { ...copilot, id: "BOT_other", databaseId: 2 }]],
