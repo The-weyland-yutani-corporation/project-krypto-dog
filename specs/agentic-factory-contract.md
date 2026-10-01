@@ -257,6 +257,23 @@ computed** and MUST be evaluated against the exact current head SHA. A check
 that ran on a previous commit does not satisfy a required check after a new
 commit lands, including a `[self-heal]` repair commit.
 
+Synthetic policy checks distinguish durable holds from transient automation:
+
+- a passing current-head verdict is completed with `success`;
+- a draft, human change request, blocking label, invalid provenance or scope,
+  risk violation, paused/shadow factory, required human approval, or failed
+  required review is completed with `action_required`;
+- only an actively pending required workflow or reconciliation write remains
+  `in_progress`.
+
+Both `action_required` and `in_progress` remain non-passing and fail closed.
+When a PR head is superseded or the PR is closed or merged, active
+`Agentic merge policy` and `Human boundary approval` checks on that stale head
+are completed with `cancelled`. The reconciler's explicit manual backfill mode
+applies the same cleanup once to recorded closed and merged PR heads while open
+PRs are reconciled normally; scheduled runs do not repeatedly scan historical
+heads for check cleanup.
+
 ## 8. Review-requirement labels are not lifecycle state
 
 `needs-qa`, `security-review`, and `trading-safety` are **review requirements,

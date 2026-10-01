@@ -118,6 +118,10 @@ interface HarnessOptions {
   >;
   goalMaxRiskTier?: string;
   goalAllowedPaths?: string;
+  context?: {
+    eventName?: string;
+    payload?: Record<string, unknown>;
+  };
 }
 
 interface ReconcilerModule {
@@ -214,13 +218,19 @@ function assignmentAttestation(issueNumber: number, nonce: string) {
   };
 }
 
-function reconcilerContext() {
+function reconcilerContext(
+  overrides: {
+    eventName?: string;
+    payload?: Record<string, unknown>;
+  } = {},
+) {
   return {
     repo: {
       owner: "VeVarunSharma",
       repo: "project-krypto-dog",
       default_branch: "main",
     },
+    ...overrides,
   };
 }
 
@@ -614,7 +624,7 @@ async function reconcile(
   const harness = createHarness(options);
   await reconcileAgenticPullRequests({
     github: harness.github,
-    context: reconcilerContext(),
+    context: reconcilerContext(options.context),
     core: harness.core,
     assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
   });
@@ -652,7 +662,7 @@ describe("agentic PR reconciler integration", () => {
     expectCheckRun(
       mocks.createCheckRun,
       "Agentic merge policy",
-      "in_progress",
+      "completed",
       "Factory is paused",
     );
     expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
@@ -673,7 +683,7 @@ describe("agentic PR reconciler integration", () => {
     expectCheckRun(
       mocks.createCheckRun,
       "Agentic merge policy",
-      "in_progress",
+      "completed",
       "Factory shadow mode does not authorize merge",
     );
     expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
@@ -693,7 +703,7 @@ describe("agentic PR reconciler integration", () => {
     expectCheckRun(
       mocks.createCheckRun,
       "Agentic merge policy",
-      "in_progress",
+      "completed",
       "Factory is paused",
     );
     expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
@@ -838,7 +848,7 @@ describe("agentic PR reconciler integration", () => {
     expectCheckRun(
       mocks.createCheckRun,
       "Agentic merge policy",
-      "in_progress",
+      "completed",
       "Boundary change requires current human approval",
     );
   });
@@ -909,7 +919,7 @@ describe("agentic PR reconciler integration", () => {
     expectCheckRun(
       mocks.createCheckRun,
       "Agentic merge policy",
-      "in_progress",
+      "completed",
       "PR risk exceeds approved goal",
     );
     expect(mocks.addLabels).toHaveBeenCalledWith(
@@ -953,7 +963,7 @@ describe("agentic PR reconciler integration", () => {
       expectCheckRun(
         mocks.createCheckRun,
         "Agentic merge policy",
-        "in_progress",
+        "completed",
         "Factory claim provenance is invalid",
       );
       expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
@@ -1413,14 +1423,26 @@ describe("agentic PR reconciler integration", () => {
     expectCheckRun(
       withoutApproval.mocks.createCheckRun,
       "Agentic merge policy",
-      "in_progress",
+      "completed",
       "Boundary change requires current human approval",
     );
     expectCheckRun(
       withoutApproval.mocks.createCheckRun,
       "Human boundary approval",
-      "in_progress",
+      "completed",
       "Boundary change requires current-head human approval",
+    );
+    expect(withoutApproval.mocks.createCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Agentic merge policy",
+        conclusion: "action_required",
+      }),
+    );
+    expect(withoutApproval.mocks.createCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Human boundary approval",
+        conclusion: "action_required",
+      }),
     );
     expect(withoutApproval.mocks.addLabels).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
@@ -1462,6 +1484,211 @@ describe("agentic PR reconciler integration", () => {
       "Human boundary approval",
       "completed",
       "Current-head human approval satisfies boundary policy",
+    );
+  });
+
+  it("terminates active boundary checks while current-head approval is pending", async () => {
+    const { mocks } = await reconcile({
+      filesByPull: {
+        1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "QA verification",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 42,
+            name: "Security review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 43,
+            name: "Human boundary approval",
+            status: "in_progress",
+            conclusion: null,
+            output: {
+              title: "Human boundary approval",
+              summary: "Boundary change requires current-head human approval",
+            },
+          },
+          {
+            id: 44,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+            output: {
+              title: "Agentic merge policy",
+              summary: "Boundary change requires current human approval",
+            },
+          },
+        ],
+      },
+      runs: {
+        [runKey("qa-test-plan.lock.yml", "sha-1")]: [
+          successRun(49, "QA Test Plan"),
+        ],
+        [runKey("security-review.lock.yml", "sha-1")]: [
+          successRun(50, "Security Review"),
+        ],
+      },
+    });
+
+    expect(mocks.createCheckRun).not.toHaveBeenCalled();
+    for (const checkRunId of [43, 44]) {
+      expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          check_run_id: checkRunId,
+          status: "completed",
+          conclusion: "action_required",
+        }),
+      );
+    }
+  });
+
+  it("cancels active policy checks on a superseded pull request head", async () => {
+    const { mocks } = await reconcile({
+      context: {
+        eventName: "pull_request_target",
+        payload: {
+          action: "synchronize",
+          before: "old-sha",
+          pull_request: pullRequest(1),
+        },
+      },
+      checksBySha: {
+        "old-sha": [
+          {
+            id: 70,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+          },
+          {
+            id: 71,
+            name: "Human boundary approval",
+            status: "in_progress",
+            conclusion: null,
+          },
+          {
+            id: 72,
+            name: "Agentic code review",
+            status: "in_progress",
+            conclusion: null,
+          },
+        ],
+      },
+    });
+
+    for (const checkRunId of [70, 71]) {
+      expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          check_run_id: checkRunId,
+          status: "completed",
+          conclusion: "cancelled",
+          output: expect.objectContaining({
+            summary: "Superseded by a newer pull request head",
+          }),
+        }),
+      );
+    }
+    expect(mocks.updateCheckRun).not.toHaveBeenCalledWith(
+      expect.objectContaining({ check_run_id: 72 }),
+    );
+  });
+
+  it("cancels final policy checks when a pull request closes", async () => {
+    const closed = pullRequest(1, { state: "closed" });
+    const { mocks } = await reconcile({
+      pullRequests: [closed],
+      context: {
+        eventName: "pull_request_target",
+        payload: {
+          action: "closed",
+          pull_request: closed,
+        },
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 80,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+          },
+        ],
+      },
+    });
+
+    expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        check_run_id: 80,
+        conclusion: "cancelled",
+        output: expect.objectContaining({
+          summary: "Pull request is closed or merged",
+        }),
+      }),
+    );
+    expect(mocks.createCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("backfills stale closed checks without rewriting completed results", async () => {
+    const { mocks } = await reconcile({
+      pullRequests: [
+        pullRequest(1),
+        pullRequest(2, { state: "closed" }),
+        pullRequest(3, { state: "closed" }),
+      ],
+      context: {
+        eventName: "workflow_dispatch",
+        payload: {
+          inputs: { backfill_stale_checks: "true" },
+        },
+      },
+      checksBySha: {
+        "sha-2": [
+          {
+            id: 90,
+            name: "Human boundary approval",
+            status: "in_progress",
+            conclusion: null,
+          },
+        ],
+        "sha-3": [
+          {
+            id: 91,
+            name: "Agentic merge policy",
+            status: "completed",
+            conclusion: "cancelled",
+          },
+        ],
+      },
+    });
+
+    expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        check_run_id: 90,
+        conclusion: "cancelled",
+      }),
+    );
+    expect(mocks.updateCheckRun).not.toHaveBeenCalledWith(
+      expect.objectContaining({ check_run_id: 91 }),
+    );
+    expectCheckRun(
+      mocks.createCheckRun,
+      "Agentic merge policy",
+      "completed",
+      "Current-head agent reviews approve this PR",
     );
   });
 

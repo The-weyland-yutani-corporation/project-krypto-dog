@@ -55,6 +55,7 @@ interface CheckRun {
 interface PolicyResult {
   state: string;
   description: string;
+  checkDisposition: "success" | "action_required" | "in_progress";
   sameRepository: boolean;
   trustedAgent: boolean;
   lowRisk: boolean;
@@ -575,8 +576,29 @@ describe("deterministic merge policy", () => {
     ).toMatchObject({
       state: "pending",
       description: "A current human approval is required for forked changes",
+      checkDisposition: "action_required",
       sameRepository: false,
       trustedAgent: false,
+    });
+  });
+
+  it("completes fork policy after a current-head human approval", () => {
+    expect(
+      policy({
+        pullRequest: pullRequest({
+          head: {
+            sha: "head-sha",
+            ref: "docs/fork",
+            repo: { full_name: "attacker/project-krypto-dog" },
+          },
+        }),
+        reviews: [review()],
+      }),
+    ).toMatchObject({
+      state: "success",
+      description: "Current human approval satisfies fork policy",
+      checkDisposition: "success",
+      sameRepository: false,
     });
   });
 
@@ -599,6 +621,7 @@ describe("deterministic merge policy", () => {
     ).toMatchObject({
       state: "success",
       description: "Current-head human and agent reviews approve boundary PR",
+      checkDisposition: "success",
       hasCurrentHumanApproval: true,
       riskTier: "risk:boundary",
       requiresHumanBoundaryApproval: true,
@@ -623,6 +646,7 @@ describe("deterministic merge policy", () => {
       ).toMatchObject({
         state: "pending",
         description: "Boundary change requires current human approval",
+        checkDisposition: "action_required",
         hasCurrentHumanApproval: false,
       });
     }
@@ -660,6 +684,7 @@ describe("deterministic merge policy", () => {
     ).toMatchObject({
       state: "pending",
       description: "A current human review requests changes",
+      checkDisposition: "action_required",
       hasCurrentHumanApproval: true,
       hasCurrentHumanChangesRequested: true,
     });
@@ -700,6 +725,7 @@ describe("deterministic merge policy", () => {
     expect(policy({ pullRequest: request })).toMatchObject({
       state: "pending",
       description: `Waiting for ${checkName}`,
+      checkDisposition: "in_progress",
       hasBlockingLabel: true,
     });
     expect(
@@ -738,6 +764,7 @@ describe("deterministic merge policy", () => {
     ).toMatchObject({
       state: "pending",
       description: "QA verification requires changes",
+      checkDisposition: "action_required",
     });
   });
 
@@ -846,6 +873,7 @@ describe("deterministic merge policy", () => {
     ).toMatchObject({
       state: "pending",
       description: "Draft pull requests cannot merge",
+      checkDisposition: "action_required",
     });
   });
 
@@ -867,6 +895,7 @@ describe("deterministic merge policy", () => {
     ).toMatchObject({
       state: "pending",
       description: "Factory claim provenance is invalid",
+      checkDisposition: "action_required",
       requiresVerifiedAgentProvenance: true,
       riskExceedsGoal: false,
     });
@@ -938,6 +967,7 @@ describe("deterministic merge policy", () => {
     expect(policy({ factoryMode })).toMatchObject({
       state: "pending",
       description,
+      checkDisposition: "action_required",
       factoryModeBlocksAction: true,
     });
     expect(
