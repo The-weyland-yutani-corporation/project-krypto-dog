@@ -291,7 +291,7 @@ describe("minimum-risk path classification", () => {
 
   it("classifies factory control-plane, agent/skill definitions, and unknown paths as boundary", () => {
     expect(policy.classifyPathTier(".github/workflows/ci.yml")).toBe(RISK_TIERS.BOUNDARY);
-    expect(policy.classifyPathTier(".github/scripts/agentic-pr-reconciler.cjs")).toBe(
+    expect(policy.classifyPathTier(".github/scripts/agentic-factory-policy.cjs")).toBe(
       RISK_TIERS.BOUNDARY,
     );
     expect(policy.classifyPathTier(".github/agents/project-krypto-dev.md")).toBe(

@@ -37,25 +37,20 @@ factory goal:
    agent. The coding-agent session opens exactly one `[ai-dev] `-prefixed
    pull request.
 9. CI and agentic code review run on every current PR head.
-10. A capped, risk-tiered self-heal loop may repair failed checks on
-    eligible agent PRs: 2 repair commits for `risk:routine`, 1 for
-    `risk:sensitive`, 0 for `risk:boundary` (no automated repair at the
-    boundary tier).
-11. A deterministic merge policy approves same-repository PRs once every
-    required check passes on the exact current head: baseline CI + code
-    review for `risk:routine`; plus `QA verification` and any
-    path-selected `Security review` / `Trading safety review` for
-    `risk:sensitive` (independent agent-check consensus, no human review
-    required); plus current-head human approval for `risk:boundary`.
+10. `pr-self-heal` remains available only by explicit manual dispatch; no
+    scheduled PR reconciler dispatches repair commits.
+11. A human merges same-repository PRs after verifying every applicable check
+    on the exact current head: baseline CI + code review for `risk:routine`;
+    plus `QA verification` and any path-selected `Security review` /
+    `Trading safety review` for `risk:sensitive`; plus current-head human
+    approval for `risk:boundary`.
 12. `needs-qa`, `security-review`, and `trading-safety` are review-requirement
-    labels, not lifecycle states. They persist across PR head changes so the
-    reconciler can rerun the matching exact-current-head check
-    (`QA verification`, `Security review`, `Trading safety review`); that check
-    result, not label removal, clears the merge gate.
+    labels, not lifecycle states. Operators use them to identify the matching
+    current-head checks (`QA verification`, `Security review`,
+    `Trading safety review`) required before merge.
 13. `agentic-lifecycle-reconciler` independently binds the issue claim,
     Copilot assignee, exactly one `[ai-dev]` PR, merge SHA, and development
-    evidence. It enrolls only matching claim provenance, enables native
-    auto-merge without bypassing protection, and closes the issue only after
+    evidence. It enrolls only matching claim provenance and closes the issue only after
     the exact merge SHA passes `Dev deployment evidence` and a successful
     `development` Deployment.
 14. A successful push CI run on `main` automatically invokes the exact-SHA dev
@@ -84,7 +79,7 @@ Use labels as workflow state. These are the exact, durable lifecycle labels
 | `factory:repairing` | A capped, risk-tiered self-heal attempt is in progress |
 | `ready-for-human-review` | Boundary-tier work, exhausted repair, or an explicit reconciler failure |
 | `blocked` | Hard stop; only a human may resume out of it |
-| `factory:merged` | PR merged by the deterministic merge policy or human boundary approval |
+| `factory:merged` | PR merged by a human after required current-head evidence passes |
 | `factory:deployed-dev` | Dev evidence validated for the exact merged SHA |
 | `factory:done` | Terminal; no further factory action occurs |
 
@@ -94,7 +89,7 @@ Risk labels (exactly one per work item; see `specs/agentic-factory-contract.md` 
 |---|---|
 | `risk:routine` | Reversible, low-blast-radius change |
 | `risk:sensitive` | Reversible but reviewable change (trading/guardrail/agent/db/deployment code, dependency/infra manifests, most of `specs/`) |
-| `risk:boundary` | Irreversible or control-plane/human-boundary scope; never auto-merged, never auto-repaired |
+| `risk:boundary` | Irreversible or control-plane/human-boundary scope; requires current-head human approval and is never auto-repaired |
 
 Goal-authorization labels (not lifecycle states):
 
@@ -125,26 +120,24 @@ Remaining discovery/review/reporting labels:
 | `needs-ai-review` | PR needs automated review |
 | `docs-sync` | Documentation/spec alignment required |
 | `release-readiness` | Release manager review required |
-| `agentic-automerge` | Agent-created PR opted into native auto-merge and reconciliation |
+| `agentic-automerge` | Legacy enrollment marker; no longer arms native auto-merge |
 | `self-heal-exhausted` | Automatic repair stopped after the tier's retry cap |
 | `report` | Canonical status/governance report issue |
 
 ## Approval model
 
 Automation may create issues, comments, labels, and PRs through safe outputs
-only. Same-repository PRs are approved by the deterministic merge policy
-once every required check passes on the exact current head SHA:
+only. A human merges same-repository PRs after every required check passes on
+the exact current head SHA:
 
 - every PR requires CI and `Agentic code review`
 - `risk:sensitive` PRs also require `QA verification`, decided by
-  independent, current-head agent-check consensus — reversible/sensitive
-  work does **not** require a human review to auto-merge
+  independent, current-head agent-check consensus
 - auth, dependency, deployment, agent, skill, and workflow changes also
   require `Security review`; trading, guardrail, agent, backtest, database,
   migration, and trading RFC changes also require `Trading safety review`
 - `risk:boundary` PRs require every applicable check above **plus a
-  current-head human approval**; they are never auto-merged on agent
-  checks alone and never receive automated repair
+  current-head human approval** and never receive automated repair
 
 Humans may still veto a PR with a current-head change request or blocking
 label, and retain control over:
@@ -184,11 +177,9 @@ QA and docs-sync are label-triggered with `needs-qa` and `docs-sync` so routine 
 
 The autonomous path is fail-closed unless the repository is configured with:
 
-- native auto-merge enabled
 - strict required checks for `Quality and evidence gates`, `PostgreSQL migrations and execution`, and `Agentic code review`
-- zero unconditional approving reviews; the reconciler evaluates conditional
-  specialist checks and current-head boundary approval before arming native
-  auto-merge
+- human review of conditional specialist checks and current-head boundary
+  approval before merge
 - required conversation resolution and admin enforcement enabled
 - force pushes and protected-branch deletion disabled
 - default Actions workflow permissions set to read
@@ -238,8 +229,8 @@ tests locally:
 npm run test:agentic-sdlc
 ```
 
-These tests cover, across `agentic-factory-policy.cjs`,
-`agentic-queue-controller.cjs`, and `agentic-pr-reconciler.cjs`:
+These tests cover, across `agentic-factory-policy.cjs` and
+`agentic-queue-controller.cjs`:
 
 - **Risk classification:** path-derived tier floor, issue-declared risk
   raise-not-lower, destructive-migration detection, and fail-closed
@@ -255,14 +246,7 @@ These tests cover, across `agentic-factory-policy.cjs`,
   `Trading safety review`), and the `QA verification` gate for
   `risk:sensitive`/`risk:boundary`.
 - **Repair caps:** the tiered self-heal budget (routine 2 / sensitive 1 /
-  boundary 0) and the forbidden-scope exclusions the reconciler and
-  `pr-self-heal` enforce.
-- Trusted identity and same-repository checks, current-head review state,
-  blocking labels, held/missing workflow runs, and isolated API failures in
-  `agentic-pr-reconciler.cjs`.
-
-Workflow-contract tests keep the reconciler on a trusted default-branch
-checkout and keep the E2E workflow manual-only.
+  boundary 0) and the forbidden-scope exclusions `pr-self-heal` enforces.
 
 After changing a GH-AW source or compiled workflow, also run:
 
@@ -282,7 +266,7 @@ npm run agentic:evals:check    # deterministic safety/contract gate (in harness:
 
 The gate is blocking: every `critical` safety/routing fixture must pass 100% and
 the forbidden-action rate must be zero. Routing fixtures are scored by invoking
-the canonical reconciler helpers, so the real routing policy is under test.
+the canonical factory-policy helpers, so the real routing policy is under test.
 Scoring baseline observations verifies the scorer and the data contract only —
 it does **not** run a model. Semantic prompt quality requires manual TrialOps
 (`gh aw trial --repeat 3`) plus `npm run agentic:evals:compare`. The full
@@ -371,41 +355,6 @@ never invokes execution. See
 [`../specs/decisions/0011-mock-first-worktree-harness.md`](../specs/decisions/0011-mock-first-worktree-harness.md)
 and [`../specs/local-testing.md`](../specs/local-testing.md).
 
-### Manual merge/review canary
-
-The traditional `Agentic SDLC E2E` workflow is intentionally
-`workflow_dispatch`-only and portable (no hardcoded repository owner). Run
-either mode from `main`:
-
-```bash
-gh workflow run agentic-sdlc-e2e.yml --ref main -f mode=happy-path
-gh workflow run agentic-sdlc-e2e.yml --ref main -f mode=self-heal
-```
-
-This canary exercises the **merge and review path** only — required
-contexts, bounded self-heal, and native auto-merge on a constrained,
-same-repository docs PR. It is **not** the full issue-to-coding-agent
-cycle canary; that is a separate workflow described next.
-
-- `happy-path` creates a same-repository `github-actions[bot]` PR that changes
-  only `docs/e2e/factory-heartbeat.md`, enrolls it with `agentic-factory`,
-  `docs-sync`, and `agentic-automerge`, invokes the reconciler, verifies all
-  four protected contexts plus a fully settled check suite, applies a
-  pending-only E2E policy hold, and only then enables native auto-merge. The
-  trusted reconciler releases the hold.
-- `self-heal` adds the exact deterministic E2E marker. Code review must fail
-  the initial head, `pr-self-heal` must remove only that marker in a
-  `[self-heal]` commit, and all checks must pass on the repaired head before
-  native auto-merge.
-
-A successful run updates the stable heartbeat file on `main`, providing
-auditable evidence without accumulating files. Cleanup deletes the canary
-branch after success and closes any still-open PR before deleting the branch
-on failure. A blocked label, missing required context, missing repair evidence,
-or non-merged PR fails the run. The canary depends on the repository settings
-listed above and never touches trading, auth, database, deployment, policy, or
-workflow files.
-
 ### Full issue-to-coding-agent cycle canary
 
 `agentic-factory-full-e2e.yml` exercises the complete goal-bound path: it
@@ -438,9 +387,8 @@ touches `production-deploy`/`production-promotion` or live trading.
 - No discovery, planning, or implementation work is selectable without an active, human-approved `factory:goal` + `factory:goal-approved` ancestor.
 - Changes to trading, guardrails, auth, secrets, workflows, database state, deployment procedure, or operator behavior require current-head specialist agent checks selected from deterministic path rules.
 - `risk:sensitive` (reversible) work merges on independent current-head agent-check consensus alone; `risk:boundary` (irreversible/control-plane) work additionally requires current-head human approval and never receives automated repair.
-- The reconciler does not publish synthetic policy checks. It arms native
-  auto-merge only after all applicable agent checks and any boundary-tier human
-  approval pass; a human change request or blocking label still vetoes arming.
+- No PR reconciler or synthetic merge-policy check is installed. A human
+  verifies applicable current-head checks and approvals before merging.
 - Self-heal is capped by risk tier (routine 2, sensitive 1, boundary 0 repair commits) and structurally restricted to forbidden-scope exclusions (`.github/**`, `infra/**`, `specs/**`, package manifests, environment files, and unrelated files are never touched by a repair commit).
 - Automatic deployment stops at exact-SHA `development` (shadow-only); production deployment and live trading remain human-only. See [`specs/deployment.md`](../specs/deployment.md) and [`specs/readiness.md`](../specs/readiness.md).
 - Automation may pause itself on a detected safety trigger; only a human operator may return the factory to `active`.

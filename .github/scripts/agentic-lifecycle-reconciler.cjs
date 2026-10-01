@@ -536,7 +536,7 @@ function hasConflictingPullRequestRiskLabel(pullRequestRiskLabels, issueRiskLabe
  * from a rendered issue body. Fails closed to `undefined` -- never a partial
  * or best-guess value -- when the body isn't a string, the heading doesn't
  * appear exactly once, or its value is empty/`_No response_`. Mirrors
- * `agentic-pr-reconciler.cjs`'s own `getIssueFormSection` exactly, since
+ * the shared issue-form parsing convention exactly, since
  * both read the same issue-form convention.
  *
  * @param {unknown} body
@@ -2167,7 +2167,7 @@ function findLatestLabelApplicationEvent(events, labelName) {
 /**
  * Resolves the singleton `factory-control` issue's mode. Fails closed to
  * `paused` whenever the control issue is missing, duplicated, its mode
- * can't be read at all, or -- matching `agentic-pr-reconciler.cjs` and
+ * can't be read at all, or -- matching the shared policy convention and
  * `agentic-queue-runtime.cjs`'s own human-authorization gate -- an
  * `active` label was not most recently applied by a human (`actor.type ===
  * "User"`) on the control issue's timeline. A bot/app-applied

@@ -11,7 +11,7 @@
  *   - a supplied `--results <file>` produced by translating a live TrialOps run.
  *
  * Specialist-routing fixtures are scored by invoking the *canonical* routing
- * helpers in `.github/scripts/agentic-pr-reconciler.cjs`, so the code under test
+ * helpers in `.github/scripts/agentic-factory-policy.cjs`, so the code under test
  * is the real deterministic routing policy, not a reimplementation.
  *
  * The emitted report (`--out <file>`) is deterministic: it carries no wall-clock
@@ -404,30 +404,30 @@ export function loadResultObservations(file: string): Record<string, Observation
 /* Canonical routing                                                           */
 /* -------------------------------------------------------------------------- */
 
-interface ReconcilerModule {
-  requiresSecurityReview(filename: string): boolean;
-  requiresTradingSafetyReview(filename: string): boolean;
+interface FactoryPolicyModule {
+  requiresSecurityCheck(filename: string): boolean;
+  requiresTradingSafetyCheck(filename: string): boolean;
 }
 
-let reconcilerModule: ReconcilerModule | undefined;
+let factoryPolicyModule: FactoryPolicyModule | undefined;
 
-function reconciler(): ReconcilerModule {
-  if (!reconcilerModule) {
+function factoryPolicy(): FactoryPolicyModule {
+  if (!factoryPolicyModule) {
     const require = createRequire(path.join(REPO_ROOT, "package.json"));
-    reconcilerModule = require(
-      path.join(REPO_ROOT, ".github", "scripts", "agentic-pr-reconciler.cjs"),
-    ) as ReconcilerModule;
+    factoryPolicyModule = require(
+      path.join(REPO_ROOT, ".github", "scripts", "agentic-factory-policy.cjs"),
+    ) as FactoryPolicyModule;
   }
-  return reconcilerModule;
+  return factoryPolicyModule;
 }
 
 /** Derive specialist routes for a changeset using the canonical helpers. */
 export function deriveRoutes(changedFiles: string[]): Route[] {
-  const mod = reconciler();
+  const mod = factoryPolicy();
   const routes = new Set<Route>();
   for (const file of changedFiles) {
-    if (mod.requiresSecurityReview(file)) routes.add("security");
-    if (mod.requiresTradingSafetyReview(file)) routes.add("tradingSafety");
+    if (mod.requiresSecurityCheck(file)) routes.add("security");
+    if (mod.requiresTradingSafetyCheck(file)) routes.add("tradingSafety");
   }
   return ROUTES.filter((route) => routes.has(route));
 }

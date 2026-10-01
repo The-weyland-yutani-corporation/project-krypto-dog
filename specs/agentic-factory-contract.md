@@ -31,8 +31,7 @@ identifiers. Anything not yet implemented is written as a requirement
 | `queue-controller` | The deterministic module (`agentic-queue-controller.cjs`) that selects at most one eligible issue. |
 | `assignment-worker` | The workflow step that turns a queue-controller selection into a claimed, dispatched implementation session. |
 | `implementation-agent` | Copilot coding-agent session that opens a PR for a claimed issue. |
-| `lifecycle-reconciler` | The workflow that reconciles PR/check state into lifecycle-label transitions (opens/closes duplicate PRs, applies repair/blocked/human-review labels). |
-| `merge-policy` | The deterministic reconciler decision that arms native auto-merge only after current-head required evidence passes. |
+| `lifecycle-reconciler` | The workflow that reconciles issue/PR/deployment evidence into lifecycle-label transitions. |
 | `deployment-reconciler` | The workflow that validates dev evidence and applies `factory:deployed-dev`. |
 
 ## 2. Factory modes
@@ -44,8 +43,8 @@ queue adapter maps the suffix to `config.factoryMode`:
 
 | Mode | Queue controller behavior | Merge/deploy behavior |
 |---|---|---|
-| `shadow` | Runs `selectNextIssue`; result is `advisory: true`. Nothing is claimed or dispatched. | Merge policy and deployment reconciler compute results but do not act. |
-| `active` | Dispatches the selected candidate (if any) for real. | Merge policy and deployment reconciler act within the bounds of this contract. |
+| `shadow` | Runs `selectNextIssue`; result is `advisory: true`. Nothing is claimed or dispatched. | Deployment reconciliation computes results but does not act. |
+| `active` | Dispatches the selected candidate (if any) for real. | Deployment reconciliation acts within the bounds of this contract. |
 | `paused` | No selection is attempted. | No merge or deploy action is attempted. Existing in-flight work is left exactly as-is (no forced cancellation). |
 
 Any other value, or a missing value, MUST be treated as `paused` (fail
@@ -261,8 +260,7 @@ commit lands, including a `[self-heal]` repair commit.
 
 `needs-qa`, `security-review`, and `trading-safety` are **review requirements,
 not lifecycle states**. They MUST NOT appear in the lifecycle table (§5) or be
-treated as a phase a PR "is in." They persist across PR head changes so the
-reconciler can dispatch a fresh exact-current-head check. Each is:
+treated as a phase a PR "is in." Each is:
 
 | Label | Machine-readable check it gates | Deterministic clearer |
 |---|---|---|
@@ -271,9 +269,9 @@ reconciler can dispatch a fresh exact-current-head check. Each is:
 | `trading-safety` | `Trading safety review` (`TRADING_SAFETY_CHECK`) | A successful check on the exact current head clears the merge gate; a new head makes it pending again. |
 
 A label is applied when its corresponding check becomes required and remains
-until the lifecycle ends or a human explicitly changes scope. It causes the
-reconciler to dispatch that check again whenever the PR head changes. If the
-current-head conclusion cannot be resolved, merge MUST NOT proceed.
+until the lifecycle ends or a human explicitly changes scope. The matching
+workflow must run against the current head before a human merges the PR. If
+the current-head conclusion cannot be resolved, merge MUST NOT proceed.
 
 ## 9. Claim / provenance nonce contract
 
@@ -377,11 +375,11 @@ directly to `ready-for-human-review`.
   it):
   1. At least 10 consecutive eligible factory-dispatched issues reached
      `factory:done` after exact-SHA dev evidence, with **zero** cases of a
-     human needing to override an autonomous merge decision after the fact.
+     human needing to remediate a merge-safety decision after the fact.
   2. **Zero** stale-claim recoveries (§9) were required in that window.
   3. **Zero** `risk:boundary` misclassifications were discovered after the
-     fact (i.e., no case where a change later found to be boundary-tier had
-     been auto-merged as routine/sensitive).
+     fact (i.e., no case where a change later found to be boundary-tier was
+     merged without the required current-head human approval).
   4. Dev evidence (§13) validated cleanly for every `factory:merged` change
      in that window -- no rollback was triggered by missing/mismatched
      evidence.

@@ -140,9 +140,8 @@ goal/risk/path ceiling without weakening those routes.
   Boundary PRs require all of those plus current-head human approval.
 - A current human change request always vetoes merge.
 - Required contexts are `Quality and evidence gates`,
-  `PostgreSQL migrations and execution`, `Agentic code review`, and
-  the reconciler's internal policy evaluation; required conversation resolution
-  still applies.
+  `PostgreSQL migrations and execution`, and `Agentic code review`; required
+  conversation resolution still applies.
 - Self-heal never treats missing or held checks as failures. It stops after two
   routine attempts, one sensitive attempt, or zero boundary attempts, and
   never edits factory, production, live, permission, or unrelated scope.

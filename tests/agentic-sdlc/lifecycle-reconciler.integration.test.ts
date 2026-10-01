@@ -1513,7 +1513,7 @@ describe("agentic lifecycle reconciler integration", () => {
         // one is authoritative is genuinely ambiguous, so this must fail
         // closed exactly like a missing section -- never guess by picking
         // the first/last/most-permissive one. This mirrors
-        // `agentic-pr-reconciler.cjs`'s own `getAgentImplementationReference`
+        // The shared implementation-reference parser
         // provenance parser, which likewise treats anything other than
         // exactly one match as invalid (0 or >1 are both rejected).
         body: "### Allowed paths\n\nsrc/app/**\n\n### Allowed paths\n\ndocs/**\n",

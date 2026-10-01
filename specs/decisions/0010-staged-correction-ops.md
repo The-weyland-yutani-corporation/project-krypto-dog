@@ -38,7 +38,7 @@ correction rate for two prediction sources:
    `security-review`/`trading-safety`, stored as *semantic* routes, kept
    **separate** from the *immutable* routes derived deterministically from the
    PR's changed filenames via the canonical reconciler helper
-   (`.github/scripts/agentic-pr-reconciler.cjs`).
+   (`.github/scripts/agentic-factory-policy.cjs`).
 
 Trusted truth comes only from later GitHub label events authored by a
 `User` collaborator with `admin`/`maintain`/`write` permission, after the

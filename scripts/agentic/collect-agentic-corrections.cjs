@@ -15,7 +15,7 @@
  *       * Specialist-routing runs (`code-review`): the requested `add-labels`
  *         limited to `security-review` / `trading-safety`, plus the *immutable*
  *         path routes derived deterministically from the PR's changed filenames
- *         via the canonical reconciler helper.
+ *         via the canonical factory-policy helper.
  *   - Reconstructs *trusted truth* from later GitHub label events authored
  *     by a `User` collaborator with `admin`/`maintain`/`write` permission, after
  *     the prediction was applied. Bot and untrusted-user activity is retained as
@@ -95,7 +95,7 @@ const PM_TRIAGE_RELEVANT_LABELS = Object.freeze([
  * Canonical specialist routes. Each route has:
  *   - `id`         — the immutable canonical route id.
  *   - `label`      — the semantic escalation label a run may request.
- *   - `checkName`  — the reconciler's required-check name for the immutable path.
+ *   - `checkName`  — the policy's required-check name for the immutable path.
  * Human disagreement may correct the *semantic* label but never the immutable
  * route (see `diffRoutingRecord`).
  */
@@ -360,7 +360,8 @@ function extractPmTriagePrediction(input) {
  * Build a specialist-routing prediction record from a `code-review` run.
  * `semanticPredictedRoutes` come from requested `add-labels` limited to the
  * route labels; `immutableRoutes` are derived deterministically from the PR's
- * changed filenames via the canonical reconciler helper (`deriveImmutableRoutes`).
+ * changed filenames via the canonical factory-policy helper
+ * (`deriveImmutableRoutes`).
  * The two are stored separately and never merged. Returns null when no PR number
  * resolves.
  */
@@ -428,37 +429,37 @@ function labelToRouteId(label) {
 
 /**
  * Derive the canonical immutable specialist routes from a list of changed
- * filenames, reusing the reconciler's authoritative helper so the routing policy
- * is never re-derived here. Falls back to an empty route set when the reconciler
+ * filenames, reusing the factory policy's authoritative helper so the routing policy
+ * is never re-derived here. Falls back to an empty route set when the policy
  * is unavailable (it is always present in a real checkout).
  */
-function deriveImmutableRoutes(changedFiles, reconcilerOverride) {
-  const reconciler = reconcilerOverride || loadReconciler();
-  if (!reconciler || typeof reconciler.getRequiredSpecialistChecks !== "function") {
+function deriveImmutableRoutes(changedFiles, policyOverride) {
+  const policy = policyOverride || loadFactoryPolicy();
+  if (!policy || typeof policy.getSpecialistChecks !== "function") {
     return [];
   }
   const files = (Array.isArray(changedFiles) ? changedFiles : [])
     .map((f) => (typeof f === "string" ? { filename: f } : f))
     .filter((f) => f && typeof f.filename === "string");
-  const checks = reconciler.getRequiredSpecialistChecks(files);
+  const checks = policy.getSpecialistChecks(files);
   const byCheck = new Map(SPECIALIST_ROUTES.map((r) => [r.checkName, r.id]));
   return uniqueSorted(
     checks.map((name) => byCheck.get(name)).filter(Boolean),
   );
 }
 
-let _reconcilerCache;
-function loadReconciler(repoRoot) {
-  if (_reconcilerCache !== undefined) return _reconcilerCache;
+let _factoryPolicyCache;
+function loadFactoryPolicy(repoRoot) {
+  if (_factoryPolicyCache !== undefined) return _factoryPolicyCache;
   try {
     const root = repoRoot || factory.resolveRepoRoot();
-    _reconcilerCache = require(
-      path.join(root, ".github", "scripts", "agentic-pr-reconciler.cjs"),
+    _factoryPolicyCache = require(
+      path.join(root, ".github", "scripts", "agentic-factory-policy.cjs"),
     );
   } catch {
-    _reconcilerCache = null;
+    _factoryPolicyCache = null;
   }
-  return _reconcilerCache;
+  return _factoryPolicyCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,7 +1174,6 @@ function collect(options) {
       logsRoot,
       count: opts.count || 50,
       permCache,
-      reconciler: loadReconciler(repoRoot),
       priorPredictions:
         cache && Array.isArray(cache.predictions) ? cache.predictions : [],
     });
@@ -1320,7 +1320,7 @@ function livePredictionsAndTruth(ctx) {
           ? ghChangedFiles(ctx.runner, ctx.repository, itemNumber)
           : [];
         prediction = extractSpecialistRoutingPrediction(
-          Object.assign({}, raw, { changedFiles, reconciler: ctx.reconciler }),
+          Object.assign({}, raw, { changedFiles }),
         );
       } else {
         prediction = extractPmTriagePrediction(raw);

@@ -50,8 +50,8 @@ behavior. They are scored with no model call and no network. This lane is
 blocking in ordinary PR CI:
 
 - **Specialist routing** fixtures are scored by invoking the *canonical* routing
-  helpers (`requiresSecurityReview`, `requiresTradingSafetyReview` in
-  `.github/scripts/agentic-pr-reconciler.cjs`, backed by
+  helpers (`requiresSecurityCheck`, `requiresTradingSafetyCheck` in
+  `.github/scripts/agentic-factory-policy.cjs`, backed by
   `specialistRouting` in the policy). This lane tests the *real* deterministic
   routing code, not a reimplementation.
 - **PM triage** fixtures are scored against committed **baseline observations**
