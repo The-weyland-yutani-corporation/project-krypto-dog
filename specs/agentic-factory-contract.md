@@ -2,7 +2,9 @@
 
 This is the normative, machine-oriented contract for the safety-bounded
 autonomous SDLC factory approved in
-[ADR 0013](./decisions/0013-autonomous-agentic-sdlc-factory.md). It defines
+[ADR 0013](./decisions/0013-autonomous-agentic-sdlc-factory.md), with boundary
+merge authority refined by
+[ADR 0014](./decisions/0014-explicit-admin-merge-for-boundary-changes.md). It defines
 every field, label, transition, and boundary that governs whether a piece of
 work may be autonomously claimed, implemented, merged, and deployed to dev --
 and exactly where autonomy stops.
@@ -159,7 +161,7 @@ never more than one).
 | `factory:repairing` | A capped self-heal attempt (§11) is in progress on the open PR. | `lifecycle-reconciler` |
 | `ready-for-human-review` | A human-boundary gate: boundary-tier work, an exhausted repair budget, or an explicit reconciler failure. | `lifecycle-reconciler` / `human-operator` |
 | `blocked` | Hard stop; only `human-operator` may resume out of it. | any actor (fail-closed) / `human-operator` |
-| `factory:merged` | PR merged by `merge-policy` or by `human-operator` approval on a boundary-tier PR. | `merge-policy` / `human-operator` |
+| `factory:merged` | PR merged by `merge-policy` or by an authorized repository administrator's explicit merge on a boundary-tier PR. | `merge-policy` / `human-operator` |
 | `factory:deployed-dev` | Dev evidence (§13) validated for the exact merged SHA. | `deployment-reconciler` |
 | `factory:done` | Terminal: no further factory action occurs. | `lifecycle-reconciler` |
 
@@ -236,11 +238,11 @@ There is no "unknown, assume safe" path anywhere in this contract.
 `getRequiredChecks(tier, files)` in `agentic-factory-policy.cjs` computes the
 required-check set:
 
-| Tier | Baseline | + | + path-selected | + |
+| Tier | Baseline | + | + path-selected | Merge authority |
 |---|---|---|---|---|
-| `risk:routine` | `Quality and evidence gates`, `PostgreSQL migrations and execution`, `Agentic code review` | -- | `Security review` / `Trading safety review` if changed paths match (§8) | -- |
-| `risk:sensitive` | same baseline | `QA verification` | same path-selected rule | -- |
-| `risk:boundary` | same baseline | `QA verification` | same path-selected rule | current-head human approval |
+| `risk:routine` | `Quality and evidence gates`, `PostgreSQL migrations and execution`, `Agentic code review` | -- | `Security review` / `Trading safety review` if changed paths match (§8) | human merge after current-head evidence passes |
+| `risk:sensitive` | same baseline | `QA verification` | same path-selected rule | human merge after current-head evidence passes |
+| `risk:boundary` | same baseline | `QA verification` | same path-selected rule | only an authorized repository administrator's explicit merge |
 
 Path-selected specialist checks (`requiresSecurityCheck`,
 `requiresTradingSafetyCheck`) are independent of tier: they trigger on the
@@ -255,6 +257,19 @@ The **required check set for a PR is fixed at the moment its risk tier is
 computed** and MUST be evaluated against the exact current head SHA. A check
 that ran on a previous commit does not satisfy a required check after a new
 commit lands, including a `[self-heal]` repair commit.
+
+The repository publishes no synthetic merge-policy or boundary-approval check.
+Humans inspect the exact-current-head baseline, QA, and path-selected specialist
+checks directly. A draft, human change request, blocking label, invalid
+provenance or scope, risk violation, paused/shadow factory, failed required
+review, or unresolved required check remains a fail-closed reason not to merge.
+
+For a same-repository boundary PR, an authorized repository administrator's
+explicit merge is the human boundary decision and GitHub records that
+administrator as the merge actor. Automation MUST NOT perform or emulate that
+merge. Historical `Agentic merge policy` and `Human boundary approval` check
+runs may remain visible on older commits, but repository automation no longer
+creates or manages them.
 
 ## 8. Review-requirement labels are not lifecycle state
 

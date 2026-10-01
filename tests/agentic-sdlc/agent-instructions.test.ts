@@ -92,8 +92,10 @@ describe("progressive agent instructions", () => {
     expect(rootDoc).toContain("QA verification");
     expect(rootDoc).toContain("Security review");
     expect(rootDoc).toContain("Trading safety review");
-    expect(rootDoc).toContain("current-head human approval");
-    expect(rootDoc).toContain("does not publish synthetic policy checks");
+    expect(rootDoc).toContain("authorized");
+    expect(rootDoc).toContain("repository administrator");
+    expect(rootDoc).toContain("explicit merge");
+    expect(rootDoc).toContain("no PR reconciler publishes synthetic policy checks");
     expect(rootDoc.toLowerCase()).toContain("fork");
     expect(rootDoc.toLowerCase()).toContain("human approval");
     expect(rootDoc).toContain("live-trading enablement");

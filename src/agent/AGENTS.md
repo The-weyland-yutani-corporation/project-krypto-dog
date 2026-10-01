@@ -40,7 +40,8 @@ proposal), `run-flow.ts` (invocation lease + journaling), `llm.ts`, `index.ts`.
 - Changing the paper/live boundary, adding trade tools, or altering guardrail
   authorization → **trading safety review** and, if live-adjacent, an RFC.
 - Agents may author control-plane implementation changes, but they are
-  `risk:boundary`: never auto-repaired or auto-merged, and gated by a
-  current-head **Human boundary approval**. Do not edit
+  `risk:boundary`: never auto-repaired or auto-merged, and gated by an
+  authorized repository administrator's explicit merge after all applicable
+  current-head checks pass. Do not edit
   `.github/agentic-policy.json` merge/authority semantics or perform a
   human-only action listed in the root map.
