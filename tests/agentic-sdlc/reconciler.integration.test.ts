@@ -1649,6 +1649,57 @@ describe("agentic PR reconciler integration", () => {
     );
   });
 
+  it("does not cancel a superseded SHA still used by another open PR", async () => {
+    const first = pullRequest(1);
+    const second = pullRequest(2, {
+      head: {
+        sha: "shared-sha",
+        ref: "docs/shared-head",
+        repo: { full_name: repository },
+      },
+    });
+    const { core, mocks } = await reconcile({
+      pullRequests: [first, second],
+      context: {
+        eventName: "pull_request_target",
+        payload: {
+          action: "synchronize",
+          before: "shared-sha",
+          pull_request: first,
+        },
+      },
+      checksBySha: {
+        "shared-sha": [
+          {
+            id: 75,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 76,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+          },
+        ],
+      },
+    });
+
+    expect(core.info).toHaveBeenCalledWith(
+      "Skipping policy-check cleanup for shared-sha; it is still the current head of an open pull request.",
+    );
+    expect(mocks.updateCheckRun).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        check_run_id: 76,
+        conclusion: "cancelled",
+        output: expect.objectContaining({
+          summary: "Superseded by a newer pull request head",
+        }),
+      }),
+    );
+  });
+
   it("cancels final policy checks when a pull request closes", async () => {
     const closed = pullRequest(1, { state: "closed" });
     const { mocks } = await reconcile({

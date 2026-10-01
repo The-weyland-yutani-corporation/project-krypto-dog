@@ -833,6 +833,16 @@ async function reconcileAgenticPullRequests({
   const pullRequests = allPullRequests.filter(
     (pullRequest) => pullRequest.state === "open",
   );
+  const openPullRequestNumbersByHead = new Map();
+  for (const pullRequest of pullRequests) {
+    const sha = pullRequest.head?.sha;
+    if (!sha) {
+      continue;
+    }
+    const numbers = openPullRequestNumbersByHead.get(sha) || new Set();
+    numbers.add(pullRequest.number);
+    openPullRequestNumbersByHead.set(sha, numbers);
+  }
   let factoryMode = FACTORY_MODES.PAUSED;
   let factoryControlIssue;
   try {
@@ -1065,20 +1075,28 @@ async function reconcileAgenticPullRequests({
     sha,
     targetUrl,
     summary,
-    existingCheckRuns,
+    excludedPullNumber,
   ) => {
     if (!sha) {
       return;
     }
-    const checkRuns =
-      existingCheckRuns ||
-      (await github.paginate(github.rest.checks.listForRef, {
-        owner,
-        repo,
-        ref: sha,
-        filter: "all",
-        per_page: 100,
-      }));
+    const openOwners = openPullRequestNumbersByHead.get(sha);
+    if (
+      openOwners &&
+      [...openOwners].some((number) => number !== excludedPullNumber)
+    ) {
+      core.info(
+        `Skipping policy-check cleanup for ${sha}; it is still the current head of an open pull request.`,
+      );
+      return;
+    }
+    const checkRuns = await github.paginate(github.rest.checks.listForRef, {
+      owner,
+      repo,
+      ref: sha,
+      filter: "all",
+      per_page: 100,
+    });
     for (const check of checkRuns) {
       if (
         check.status === "completed" ||
@@ -1205,6 +1223,7 @@ async function reconcileAgenticPullRequests({
           context.payload.before,
           eventPullRequest?.html_url,
           "Superseded by a newer pull request head",
+          eventPullRequest?.number,
         ),
     );
   }
@@ -1219,6 +1238,7 @@ async function reconcileAgenticPullRequests({
           eventPullRequest?.head?.sha,
           eventPullRequest?.html_url,
           "Pull request is closed or merged",
+          eventPullRequest?.number,
         ),
     );
   }
@@ -1239,6 +1259,7 @@ async function reconcileAgenticPullRequests({
             pullRequest.head?.sha,
             pullRequest.html_url,
             "Pull request is closed or merged",
+            pullRequest.number,
           ),
       );
     }
