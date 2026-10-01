@@ -1,4 +1,4 @@
-# 0014 -- Owner admin merge is the boundary-change authority gate
+# 0014 -- Explicit admin merge is the boundary-change authority gate
 
 - **Status:** Accepted
 - **Date:** 2026-10-01
@@ -14,14 +14,15 @@ addition to the required `Agentic merge policy` check.
 That duplicated authority state across two synthetic checks. Both checks could
 remain visibly running when the state was actually a durable human hold, and a
 review-based success transition risked making a boundary pull request look
-eligible for auto-merge. GitHub also prohibits a pull-request author from
-approving their own change, which made the extra check unusable when the
-repository owner was the only eligible maintainer.
+eligible for auto-merge. GitHub also prohibits a pull-request author from approving their own change,
+which made the extra check unusable when the author was the only eligible
+maintainer.
 
 The repository already has one deterministic required aggregator,
 `Agentic merge policy`. Repository administrators are not bound by required
-status checks, so an explicit owner admin merge can record the human boundary
-decision without introducing another synthetic approval lifecycle.
+status checks, so an authorized repository administrator's explicit merge can
+record the human boundary decision without introducing another synthetic
+approval lifecycle.
 
 ## Decision
 
@@ -32,10 +33,10 @@ For same-repository `risk:boundary` pull requests:
   check passes or a trusted human submits an approving review;
 - once automated checks pass, `Agentic merge policy` completes with
   `action_required` and the summary
-  `Owner admin merge required for boundary PR`;
+  `Explicit admin merge required for boundary PR`;
 - auto-repair and auto-merge remain disabled;
-- only an explicit admin merge performed by the repository owner may merge the
-  pull request;
+- only an explicit merge performed by an authorized repository administrator
+  may merge the pull request;
 - automation must not perform, proxy, or emulate the admin merge.
 
 The reconciler no longer creates `Human boundary approval` checks. It retains
@@ -52,12 +53,12 @@ fail-closed vetoes for every risk tier.
   merge state; boundary authority is not duplicated across synthetic checks.
 - **Positive:** Boundary pull requests cannot accidentally become auto-merge
   eligible after a review approval.
-- **Positive:** The owner's merge identity is recorded by GitHub as the
+- **Positive:** The administrator's merge identity is recorded by GitHub as the
   explicit human boundary decision.
 - **Positive:** Durable human intervention is terminal `action_required`, not
   a misleading indefinitely running check.
-- **Negative:** Every boundary change requires the repository owner to use an
-  admin merge after reviewing the automated evidence.
+- **Negative:** Every boundary change requires an authorized repository
+  administrator to merge explicitly after reviewing the automated evidence.
 - **Negative:** Branch protection must continue allowing repository
   administrators to perform that explicit override.
 

@@ -58,4 +58,4 @@ What did we choose, in one or two paragraphs?
 | [0011](./0011-mock-first-worktree-harness.md) | Mock-first, per-worktree application harness | Accepted |
 | [0012](./0012-evidence-gated-automation-authority.md) | Evidence-gated automation authority | Accepted |
 | [0013](./0013-autonomous-agentic-sdlc-factory.md) | Safety-bounded autonomous agentic SDLC factory (goal-bound queue controller, tiered risk/repair caps, dev-only auto-deploy) | Accepted |
-| [0014](./0014-owner-admin-merge-for-boundary-changes.md) | Owner admin merge is the boundary-change authority gate | Accepted |
+| [0014](./0014-explicit-admin-merge-for-boundary-changes.md) | Explicit admin merge is the boundary-change authority gate | Accepted |

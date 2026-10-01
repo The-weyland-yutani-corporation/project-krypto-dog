@@ -118,8 +118,8 @@ sensitive merges without blanket per-change human approval:
   **Trading safety review**;
 - agents may author `risk:boundary` changes, but those changes are never
   auto-repaired or auto-merged; after all current-head automated checks pass,
-  **Agentic merge policy** remains `action_required` until the repository owner
-  performs an explicit admin merge;
+  **Agentic merge policy** remains `action_required` until an authorized
+  repository administrator performs an explicit merge;
 - a current trusted human change request or blocking review label keeps the
   **Agentic merge policy** pending (human veto is fail-closed).
 

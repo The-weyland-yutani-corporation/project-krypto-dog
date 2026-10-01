@@ -849,7 +849,7 @@ describe("agentic PR reconciler integration", () => {
       mocks.createCheckRun,
       "Agentic merge policy",
       "completed",
-      "Owner admin merge required for boundary PR",
+      "Explicit admin merge required for boundary PR",
     );
   });
 
@@ -1424,7 +1424,7 @@ describe("agentic PR reconciler integration", () => {
       withoutApproval.mocks.createCheckRun,
       "Agentic merge policy",
       "completed",
-      "Owner admin merge required for boundary PR",
+      "Explicit admin merge required for boundary PR",
     );
     expect(withoutApproval.mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1466,7 +1466,7 @@ describe("agentic PR reconciler integration", () => {
         conclusion: "action_required",
         output: {
           title: "Agentic merge policy",
-          summary: "Owner admin merge required for boundary PR",
+          summary: "Explicit admin merge required for boundary PR",
         },
       }),
     );
@@ -1541,7 +1541,7 @@ describe("agentic PR reconciler integration", () => {
         output: {
           title: "Human boundary approval",
           summary:
-            "Replaced by the Agentic merge policy owner admin-merge gate",
+            "Replaced by the Agentic merge policy explicit admin-merge gate",
         },
       }),
     );
@@ -1552,7 +1552,7 @@ describe("agentic PR reconciler integration", () => {
         conclusion: "action_required",
         output: {
           title: "Agentic merge policy",
-          summary: "Owner admin merge required for boundary PR",
+          summary: "Explicit admin merge required for boundary PR",
         },
       }),
     );
@@ -1929,7 +1929,7 @@ describe("agentic PR reconciler integration", () => {
         conclusion: "action_required",
         output: {
           title: "Agentic merge policy",
-          summary: "Owner admin merge required for boundary PR",
+          summary: "Explicit admin merge required for boundary PR",
         },
       }),
     );

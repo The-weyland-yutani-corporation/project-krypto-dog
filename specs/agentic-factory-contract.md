@@ -4,7 +4,7 @@ This is the normative, machine-oriented contract for the safety-bounded
 autonomous SDLC factory approved in
 [ADR 0013](./decisions/0013-autonomous-agentic-sdlc-factory.md), with boundary
 merge authority refined by
-[ADR 0014](./decisions/0014-owner-admin-merge-for-boundary-changes.md). It defines
+[ADR 0014](./decisions/0014-explicit-admin-merge-for-boundary-changes.md). It defines
 every field, label, transition, and boundary that governs whether a piece of
 work may be autonomously claimed, implemented, merged, and deployed to dev --
 and exactly where autonomy stops.
@@ -162,7 +162,7 @@ never more than one).
 | `factory:repairing` | A capped self-heal attempt (§11) is in progress on the open PR. | `lifecycle-reconciler` |
 | `ready-for-human-review` | A human-boundary gate: boundary-tier work, an exhausted repair budget, or an explicit reconciler failure. | `lifecycle-reconciler` / `human-operator` |
 | `blocked` | Hard stop; only `human-operator` may resume out of it. | any actor (fail-closed) / `human-operator` |
-| `factory:merged` | PR merged by `merge-policy` or by an explicit repository-owner admin merge on a boundary-tier PR. | `merge-policy` / `human-operator` |
+| `factory:merged` | PR merged by `merge-policy` or by an authorized repository administrator's explicit merge on a boundary-tier PR. | `merge-policy` / `human-operator` |
 | `factory:deployed-dev` | Dev evidence (§13) validated for the exact merged SHA. | `deployment-reconciler` |
 | `factory:done` | Terminal: no further factory action occurs. | `lifecycle-reconciler` |
 
@@ -243,7 +243,7 @@ required-check set:
 |---|---|---|---|---|
 | `risk:routine` | `Quality and evidence gates`, `PostgreSQL migrations and execution`, `Agentic code review` | -- | `Security review` / `Trading safety review` if changed paths match (§8) | `Agentic merge policy` may pass and auto-merge |
 | `risk:sensitive` | same baseline | `QA verification` | same path-selected rule | `Agentic merge policy` may pass and auto-merge |
-| `risk:boundary` | same baseline | `QA verification` | same path-selected rule | `Agentic merge policy` remains `action_required`; only an explicit repository-owner admin merge may merge |
+| `risk:boundary` | same baseline | `QA verification` | same path-selected rule | `Agentic merge policy` remains `action_required`; only an authorized repository administrator's explicit merge may merge |
 
 Path-selected specialist checks (`requiresSecurityCheck`,
 `requiresTradingSafetyCheck`) are independent of tier: they trigger on the
@@ -271,10 +271,11 @@ Synthetic policy checks distinguish durable holds from transient automation:
 Both `action_required` and `in_progress` remain non-passing and fail closed.
 For a same-repository boundary PR, successful current-head automated checks do
 not turn `Agentic merge policy` green: its terminal summary is
-`Owner admin merge required for boundary PR`. A GitHub review approval does not
-change that result or arm auto-merge. The repository owner's explicit admin
-merge is the human boundary decision and GitHub records that owner as the merge
-actor. Automation MUST NOT perform or emulate that admin merge.
+`Explicit admin merge required for boundary PR`. A GitHub review approval does
+not change that result or arm auto-merge. An authorized repository
+administrator's explicit merge is the human boundary decision and GitHub
+records that administrator as the merge actor. Automation MUST NOT perform or
+emulate that merge.
 
 When a PR head is superseded or the PR is closed or merged, active
 `Agentic merge policy` and `Human boundary approval` checks on that stale head

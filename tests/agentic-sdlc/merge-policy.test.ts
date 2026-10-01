@@ -620,7 +620,7 @@ describe("deterministic merge policy", () => {
       }),
     ).toMatchObject({
       state: "pending",
-      description: "Owner admin merge required for boundary PR",
+      description: "Explicit admin merge required for boundary PR",
       checkDisposition: "action_required",
       hasCurrentHumanApproval: true,
       riskTier: "risk:boundary",
@@ -645,7 +645,7 @@ describe("deterministic merge policy", () => {
         }),
       ).toMatchObject({
         state: "pending",
-        description: "Owner admin merge required for boundary PR",
+        description: "Explicit admin merge required for boundary PR",
         checkDisposition: "action_required",
         hasCurrentHumanApproval: false,
       });
@@ -781,7 +781,7 @@ describe("deterministic merge policy", () => {
     ];
     expect(policy({ pullRequest: escalated, checkRuns: checks })).toMatchObject({
       state: "pending",
-      description: "Owner admin merge required for boundary PR",
+      description: "Explicit admin merge required for boundary PR",
       riskTier: "risk:boundary",
     });
     expect(
@@ -792,7 +792,7 @@ describe("deterministic merge policy", () => {
       }),
     ).toMatchObject({
       state: "pending",
-      description: "Owner admin merge required for boundary PR",
+      description: "Explicit admin merge required for boundary PR",
       checkDisposition: "action_required",
     });
   });
@@ -926,7 +926,7 @@ describe("deterministic merge policy", () => {
       }),
     ).toMatchObject({
       state: "pending",
-      description: "Owner admin merge required for boundary PR",
+      description: "Explicit admin merge required for boundary PR",
       riskTier: "risk:boundary",
     });
 

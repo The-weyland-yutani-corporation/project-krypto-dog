@@ -654,7 +654,7 @@ function evaluateMergePolicy({
     checkDisposition = "in_progress";
     description = `Waiting for ${agentApproval.waitingCheck}`;
   } else if (agentApproval.requiresHumanBoundaryApproval) {
-    description = "Owner admin merge required for boundary PR";
+    description = "Explicit admin merge required for boundary PR";
   } else if (agentApproval.approved) {
     state = "success";
     checkDisposition = "success";
@@ -1146,7 +1146,7 @@ async function reconcileAgenticPullRequests({
         output: {
           title: check.name,
           summary:
-            "Replaced by the Agentic merge policy owner admin-merge gate",
+            "Replaced by the Agentic merge policy explicit admin-merge gate",
         },
       });
       Object.assign(check, {
@@ -1155,7 +1155,7 @@ async function reconcileAgenticPullRequests({
         output: {
           title: check.name,
           summary:
-            "Replaced by the Agentic merge policy owner admin-merge gate",
+            "Replaced by the Agentic merge policy explicit admin-merge gate",
         },
       });
     }

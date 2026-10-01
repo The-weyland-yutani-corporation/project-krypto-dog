@@ -41,7 +41,7 @@ proposal), `run-flow.ts` (invocation lease + journaling), `llm.ts`, `index.ts`.
   authorization → **trading safety review** and, if live-adjacent, an RFC.
 - Agents may author control-plane implementation changes, but they are
   `risk:boundary`: never auto-repaired or auto-merged, and gated by a terminal
-  **Agentic merge policy** result plus an explicit repository-owner admin
-  merge. Do not edit
+  **Agentic merge policy** result plus an authorized repository
+  administrator's explicit merge. Do not edit
   `.github/agentic-policy.json` merge/authority semantics or perform a
   human-only action listed in the root map.
