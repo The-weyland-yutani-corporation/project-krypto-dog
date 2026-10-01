@@ -618,6 +618,7 @@ function evaluateMergePolicy({
 
   let state = "pending";
   let description = "A current human approval is required";
+  let checkDisposition = "action_required";
 
   if (pullRequest.draft) {
     description = "Draft pull requests cannot merge";
@@ -642,6 +643,7 @@ function evaluateMergePolicy({
   } else if (!sameRepository) {
     if (hasCurrentHumanApproval) {
       state = "success";
+      checkDisposition = "success";
       description = "Current human approval satisfies fork policy";
     } else {
       description = "A current human approval is required for forked changes";
@@ -649,22 +651,20 @@ function evaluateMergePolicy({
   } else if (agentApproval.failedCheck) {
     description = `${agentApproval.failedCheck} requires changes`;
   } else if (agentApproval.waitingCheck) {
+    checkDisposition = "in_progress";
     description = `Waiting for ${agentApproval.waitingCheck}`;
-  } else if (
-    agentApproval.requiresHumanBoundaryApproval &&
-    !hasCurrentHumanApproval
-  ) {
-    description = "Boundary change requires current human approval";
+  } else if (agentApproval.requiresHumanBoundaryApproval) {
+    description = "Explicit admin merge required for boundary PR";
   } else if (agentApproval.approved) {
     state = "success";
-    description = agentApproval.requiresHumanBoundaryApproval
-      ? "Current-head human and agent reviews approve boundary PR"
-      : "Current-head agent reviews approve this PR";
+    checkDisposition = "success";
+    description = "Current-head agent reviews approve this PR";
   }
 
   return {
     state,
     description,
+    checkDisposition,
     sameRepository,
     trustedAgent,
     agentImplementationProvenance,
@@ -828,6 +828,16 @@ async function reconcileAgenticPullRequests({
   const pullRequests = allPullRequests.filter(
     (pullRequest) => pullRequest.state === "open",
   );
+  const openPullRequestNumbersByHead = new Map();
+  for (const pullRequest of pullRequests) {
+    const sha = pullRequest.head?.sha;
+    if (!sha) {
+      continue;
+    }
+    const numbers = openPullRequestNumbersByHead.get(sha) || new Set();
+    numbers.add(pullRequest.number);
+    openPullRequestNumbersByHead.set(sha, numbers);
+  }
   let factoryMode = FACTORY_MODES.PAUSED;
   let factoryControlIssue;
   try {
@@ -960,8 +970,13 @@ async function reconcileAgenticPullRequests({
     checkRuns,
     contextName = MERGE_CONTEXT,
   ) => {
-    const status = state === "success" ? "completed" : "in_progress";
-    const conclusion = state === "success" ? "success" : null;
+    const conclusions = {
+      success: "success",
+      action_required: "action_required",
+      cancelled: "cancelled",
+    };
+    const conclusion = conclusions[state] || null;
+    const status = conclusion ? "completed" : "in_progress";
     const namedChecks = checkRuns
       .filter((check) => check.name === contextName)
       .sort((left, right) => right.id - left.id);
@@ -1051,6 +1066,102 @@ async function reconcileAgenticPullRequests({
     return resolvedCurrent;
   };
 
+  const cancelActivePolicyChecks = async (
+    sha,
+    targetUrl,
+    summary,
+    excludedPullNumber,
+  ) => {
+    if (!sha) {
+      return;
+    }
+    const openOwners = openPullRequestNumbersByHead.get(sha);
+    if (
+      openOwners &&
+      [...openOwners].some((number) => number !== excludedPullNumber)
+    ) {
+      core.info(
+        `Skipping policy-check cleanup for ${sha}; it is still the current head of an open pull request.`,
+      );
+      return;
+    }
+    const checkRuns = await github.paginate(github.rest.checks.listForRef, {
+      owner,
+      repo,
+      ref: sha,
+      filter: "all",
+      per_page: 100,
+    });
+    for (const check of checkRuns) {
+      if (
+        (check.name !== MERGE_CONTEXT &&
+          check.name !== HUMAN_BOUNDARY_APPROVAL_CHECK) ||
+        (check.status === "completed" &&
+          check.conclusion !== "action_required")
+      ) {
+        continue;
+      }
+      await github.rest.checks.update({
+        owner,
+        repo,
+        check_run_id: check.id,
+        name: check.name,
+        status: "completed",
+        conclusion: "cancelled",
+        details_url: check.details_url || targetUrl,
+        output: {
+          title: check.name,
+          summary,
+        },
+      });
+      Object.assign(check, {
+        status: "completed",
+        conclusion: "cancelled",
+        output: {
+          title: check.name,
+          summary,
+        },
+      });
+    }
+  };
+
+  const cancelDeprecatedBoundaryApprovalChecks = async (
+    checkRuns,
+    targetUrl,
+  ) => {
+    for (const check of checkRuns) {
+      if (
+        check.name !== HUMAN_BOUNDARY_APPROVAL_CHECK ||
+        check.status === "completed"
+      ) {
+        continue;
+      }
+      await github.rest.checks.update({
+        owner,
+        repo,
+        check_run_id: check.id,
+        name: check.name,
+        status: "completed",
+        conclusion: "cancelled",
+        details_url: check.details_url || targetUrl,
+        output: {
+          title: check.name,
+          summary:
+            "Replaced by the Agentic merge policy explicit admin-merge gate",
+        },
+      });
+      Object.assign(check, {
+        status: "completed",
+        conclusion: "cancelled",
+        output: {
+          title: check.name,
+          summary:
+            "Replaced by the Agentic merge policy explicit admin-merge gate",
+        },
+      });
+    }
+  };
+
   const addLabels = async (pullRequest, labels) => {
     const present = getLabels(pullRequest);
     const missing = labels.filter((label) => !present.has(label));
@@ -1064,6 +1175,22 @@ async function reconcileAgenticPullRequests({
       issue_number: pullRequest.number,
       labels: missing,
     });
+  };
+
+  const reconciliationErrors = [];
+  const recordReconciliationError = (pullRequest, error) => {
+    const message = `Failed to reconcile PR #${pullRequest.number}: ${getErrorMessage(error)}`;
+    core.warning(message);
+    reconciliationErrors.push(new Error(message));
+  };
+  const runPolicyCleanup = async (label, operation) => {
+    try {
+      await operation();
+    } catch (error) {
+      const message = `Failed to clean up ${label}: ${getErrorMessage(error)}`;
+      core.warning(message);
+      reconciliationErrors.push(new Error(message));
+    }
   };
 
   let factoryPausedThisRun = false;
@@ -1115,6 +1242,62 @@ async function reconcileAgenticPullRequests({
     factoryMode = FACTORY_MODES.PAUSED;
   };
 
+  const eventPullRequest = context.payload && context.payload.pull_request;
+  if (
+    context.eventName === "pull_request_target" &&
+    context.payload.action === "synchronize" &&
+    context.payload.before &&
+    context.payload.before !== eventPullRequest?.head?.sha
+  ) {
+    await runPolicyCleanup(
+      `superseded head ${context.payload.before}`,
+      () =>
+        cancelActivePolicyChecks(
+          context.payload.before,
+          eventPullRequest?.html_url,
+          "Superseded by a newer pull request head",
+          eventPullRequest?.number,
+        ),
+    );
+  }
+  if (
+    context.eventName === "pull_request_target" &&
+    context.payload.action === "closed"
+  ) {
+    await runPolicyCleanup(
+      `closed PR #${eventPullRequest?.number || "unknown"}`,
+      () =>
+        cancelActivePolicyChecks(
+          eventPullRequest?.head?.sha,
+          eventPullRequest?.html_url,
+          "Pull request is closed or merged",
+          eventPullRequest?.number,
+        ),
+    );
+  }
+
+  const backfillStaleChecks =
+    context.eventName === "workflow_dispatch" &&
+    (context.payload?.inputs?.backfill_stale_checks === true ||
+      context.payload?.inputs?.backfill_stale_checks === "true");
+  if (backfillStaleChecks) {
+    for (const pullRequest of allPullRequests) {
+      if (pullRequest.state === "open") {
+        continue;
+      }
+      await runPolicyCleanup(
+        `closed PR #${pullRequest.number}`,
+        () =>
+          cancelActivePolicyChecks(
+            pullRequest.head?.sha,
+            pullRequest.html_url,
+            "Pull request is closed or merged",
+            pullRequest.number,
+          ),
+      );
+    }
+  }
+
   const hasCopilotCandidate = pullRequests.some(
     (pullRequest) =>
       (pullRequest.title || "").startsWith("[ai-dev] ") ||
@@ -1147,13 +1330,6 @@ async function reconcileAgenticPullRequests({
       );
     }
   }
-
-  const reconciliationErrors = [];
-  const recordReconciliationError = (pullRequest, error) => {
-    const message = `Failed to reconcile PR #${pullRequest.number}: ${getErrorMessage(error)}`;
-    core.warning(message);
-    reconciliationErrors.push(new Error(message));
-  };
 
   for (const pullRequest of pullRequests) {
     try {
@@ -1203,6 +1379,16 @@ async function reconcileAgenticPullRequests({
       const securityRuns = dispatchedRuns(rawSecurityRuns);
       const tradingSafetyRuns = dispatchedRuns(rawTradingSafetyRuns);
 
+      const cleanupDeprecatedBoundaryApprovalChecks = () =>
+        runPolicyCleanup(
+          `deprecated boundary checks for PR #${number}`,
+          () =>
+            cancelDeprecatedBoundaryApprovalChecks(
+              checkRuns,
+              pullRequest.html_url,
+            ),
+        );
+
       const implementationProvenance =
         await verifyAgentImplementationProvenance({
           github,
@@ -1229,30 +1415,15 @@ async function reconcileAgenticPullRequests({
         copilotIdentity,
       });
 
-      if (policy.requiresHumanBoundaryApproval) {
-        await ensureCheckRun(
-          sha,
-          policy.hasCurrentHumanApproval &&
-            !policy.hasCurrentHumanChangesRequested
-            ? "success"
-            : "pending",
-          policy.hasCurrentHumanApproval
-            ? "Current-head human approval satisfies boundary policy"
-            : "Boundary change requires current-head human approval",
-          pullRequest.html_url,
-          checkRuns,
-          HUMAN_BOUNDARY_APPROVAL_CHECK,
-        );
-      }
-
       if (implementationProvenance.pauseFactory) {
         await ensureCheckRun(
           sha,
-          policy.state,
+          policy.checkDisposition,
           policy.description,
           pullRequest.html_url,
           checkRuns,
         );
+        await cleanupDeprecatedBoundaryApprovalChecks();
         await pauseFactoryControl(
           factoryControlIssue,
           `PR #${number} has invalid assignment/PR provenance (${implementationProvenance.reason || "unknown"}).`,
@@ -1265,11 +1436,12 @@ async function reconcileAgenticPullRequests({
       ) {
         await ensureCheckRun(
           sha,
-          policy.state,
+          policy.checkDisposition,
           policy.description,
           pullRequest.html_url,
           checkRuns,
         );
+        await cleanupDeprecatedBoundaryApprovalChecks();
         continue;
       }
 
@@ -1280,11 +1452,12 @@ async function reconcileAgenticPullRequests({
       if (policyOperationsBlocked) {
         await ensureCheckRun(
           sha,
-          policy.state,
+          policy.checkDisposition,
           policy.description,
           pullRequest.html_url,
           checkRuns,
         );
+        await cleanupDeprecatedBoundaryApprovalChecks();
         continue;
       }
 
@@ -1321,11 +1494,12 @@ async function reconcileAgenticPullRequests({
       if (policy.riskExceedsGoal) {
         await ensureCheckRun(
           sha,
-          policy.state,
+          policy.checkDisposition,
           policy.description,
           pullRequest.html_url,
           checkRuns,
         );
+        await cleanupDeprecatedBoundaryApprovalChecks();
         await addHumanBoundaryLabel();
         await pauseFactoryControl(
           factoryControlIssue,
@@ -1371,25 +1545,35 @@ async function reconcileAgenticPullRequests({
           policy.agentCheckStates[name] === "missing" ||
           policy.agentCheckStates[name] === "pending",
       );
-      const hasPendingPolicyOperations =
+      const hasPendingWorkflowDispatches =
         ciShouldDispatch ||
         reviewShouldDispatch ||
         securityShouldDispatch ||
         qaShouldDispatch ||
-        tradingSafetyShouldDispatch ||
-        humanBoundaryLabelNeeded;
+        tradingSafetyShouldDispatch;
+      const hasPendingPolicyOperations =
+        hasPendingWorkflowDispatches || humanBoundaryLabelNeeded;
+      const shouldPublishTransientPolicy =
+        policy.state === "success"
+          ? hasPendingPolicyOperations
+          : hasPendingWorkflowDispatches;
+      const transientPolicyDescription =
+        policy.checkDisposition === "in_progress"
+          ? policy.description
+          : "Finalizing required reconciliation operations";
 
       await ensureCheckRun(
         sha,
-        policy.state === "success" && hasPendingPolicyOperations
-          ? "pending"
-          : policy.state,
-        policy.state === "success" && hasPendingPolicyOperations
-          ? "Finalizing required reconciliation operations"
+        shouldPublishTransientPolicy
+          ? "in_progress"
+          : policy.checkDisposition,
+        shouldPublishTransientPolicy
+          ? transientPolicyDescription
           : policy.description,
         pullRequest.html_url,
         checkRuns,
       );
+      await cleanupDeprecatedBoundaryApprovalChecks();
 
       if (ciShouldDispatch) {
         await dispatchForPullRequest("ci.yml");
@@ -1428,7 +1612,7 @@ async function reconcileAgenticPullRequests({
       if (policy.state === "success" && hasPendingPolicyOperations) {
         await ensureCheckRun(
           sha,
-          policyWriteFailed ? "pending" : "success",
+          policyWriteFailed ? "in_progress" : "success",
           policyWriteFailed
             ? "Reconciler operation failed; retrying"
             : policy.description,

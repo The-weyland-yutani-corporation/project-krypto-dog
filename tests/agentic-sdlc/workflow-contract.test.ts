@@ -67,6 +67,10 @@ describe("agentic SDLC workflow contracts", () => {
     );
     expect(reconcilerScript).not.toContain("approveWorkflowRun");
     expect(reconciler).not.toContain("statuses: write");
+    expect(reconciler).toContain("backfill_stale_checks:");
+    expect(reconciler).toMatch(
+      /pull_request_target:\s*\n\s+types: \[[^\]]*\bclosed\b/,
+    );
   });
 
   it.each([

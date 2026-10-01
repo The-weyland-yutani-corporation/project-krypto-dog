@@ -519,10 +519,10 @@ describe("required checks", () => {
     expect(checks).toContain(policy.TRADING_SAFETY_CHECK);
   });
 
-  it("requires human boundary approval only at the boundary tier", () => {
+  it("requires owner boundary authority without adding a synthetic check", () => {
     expect(policy.requiresHumanBoundaryApproval(RISK_TIERS.BOUNDARY)).toBe(true);
     expect(policy.requiresHumanBoundaryApproval(RISK_TIERS.SENSITIVE)).toBe(false);
-    expect(policy.getRequiredChecks(RISK_TIERS.BOUNDARY, [])).toContain(
+    expect(policy.getRequiredChecks(RISK_TIERS.BOUNDARY, [])).not.toContain(
       policy.HUMAN_BOUNDARY_APPROVAL_CHECK,
     );
   });
@@ -538,8 +538,8 @@ describe("required checks", () => {
 
   it("fails closed to the boundary check set for an unknown tier", () => {
     const checks = policy.getRequiredChecks("risk:unknown" as string, []);
-    expect(checks).toContain(policy.HUMAN_BOUNDARY_APPROVAL_CHECK);
     expect(checks).toContain(policy.QA_CHECK);
+    expect(checks).not.toContain(policy.HUMAN_BOUNDARY_APPROVAL_CHECK);
   });
 });
 

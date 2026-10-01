@@ -117,8 +117,9 @@ sensitive merges without blanket per-change human approval:
 - trading/guardrail/agent/backtest/db/migration/RFC paths also require a passing
   **Trading safety review**;
 - agents may author `risk:boundary` changes, but those changes are never
-  auto-repaired or auto-merged; **Human boundary approval** is required on the
-  current head;
+  auto-repaired or auto-merged; after all current-head automated checks pass,
+  **Agentic merge policy** remains `action_required` until an authorized
+  repository administrator performs an explicit merge;
 - a current trusted human change request or blocking review label keeps the
   **Agentic merge policy** pending (human veto is fail-closed).
 
