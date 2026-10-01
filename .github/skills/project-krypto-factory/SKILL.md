@@ -141,7 +141,8 @@ goal/risk/path ceiling without weakening those routes.
 - A current human change request always vetoes merge.
 - Required contexts are `Quality and evidence gates`,
   `PostgreSQL migrations and execution`, `Agentic code review`, and
-  `Agentic merge policy`; required conversation resolution still applies.
+  the reconciler's internal policy evaluation; required conversation resolution
+  still applies.
 - Self-heal never treats missing or held checks as failures. It stops after two
   routine attempts, one sensitive attempt, or zero boundary attempts, and
   never edits factory, production, live, permission, or unrelated scope.

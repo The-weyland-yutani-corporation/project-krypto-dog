@@ -117,10 +117,9 @@ sensitive merges without blanket per-change human approval:
 - trading/guardrail/agent/backtest/db/migration/RFC paths also require a passing
   **Trading safety review**;
 - agents may author `risk:boundary` changes, but those changes are never
-  auto-repaired or auto-merged; **Human boundary approval** is required on the
-  current head;
-- a current trusted human change request or blocking review label keeps the
-  **Agentic merge policy** pending (human veto is fail-closed).
+  auto-repaired or auto-merged; current-head human approval is required;
+- the PR reconciler evaluates conditional checks and human vetoes internally
+  before it arms native auto-merge. It does not publish synthetic policy checks.
 
 **Forked** pull requests require a current trusted **human approval**. The
 low-risk non-sensitive `docs/**` allowlist is only a *self-heal repair-commit*

@@ -51,7 +51,7 @@ flowchart TD
 
   subgraph Release
     rel["release-readiness<br/>operator handoff"]
-    policy["Agentic merge policy<br/>conditional agent approval"]
+    policy["Internal merge policy<br/>conditional evidence evaluation"]
     automerge["Native auto-merge<br/>all required checks pass"]
     human["Human veto / approval<br/>boundary / prod / live"]
     dev["Azure deploy dev<br/>exact main SHA, shadow + rollback"]
@@ -63,7 +63,6 @@ flowchart TD
     doctor["ci-doctor<br/>CI incident issue/comment"]
     reconcile["agentic-pr-reconciler<br/>checks / dispatch / policy"]
     lifecycle["agentic-lifecycle-reconciler<br/>claim / PR / merge / dev state"]
-    sweeper["agentic-automerge-sweeper<br/>re-arms native auto-merge, never merges"]
     heal["pr-self-heal<br/>2 routine / 1 sensitive / 0 boundary"]
     e2e["agentic-sdlc-e2e<br/>manual docs canary"]
     evals["agentic-evals<br/>deterministic scorer"]
@@ -146,10 +145,6 @@ flowchart TD
   trade --> policy
   docs --> policy
   policy --> automerge
-  policy --> sweeper
-  sweeper --> automerge
-  reconcile --> sweeper
-  schedule --> sweeper
   policy --> human
   human --> automerge
   automerge --> lifecycle
@@ -177,15 +172,13 @@ flowchart TD
 
 This is why workflow markdown is the source of truth, while lock files are committed generated artifacts for transparency.
 
-`agentic-pr-reconciler.yml`, `factory-queue-controller.yml`,
-`agentic-lifecycle-reconciler.yml`, and `agentic-automerge-sweeper.yml` are
+`agentic-pr-reconciler.yml`, `factory-queue-controller.yml`, and
+`agentic-lifecycle-reconciler.yml` are
 traditional deterministic workflows.
 Each loads only trusted default-branch scripts and never executes PR code.
-`agentic-automerge-sweeper.yml` is a backstop that re-arms GitHub's native
-auto-merge for enrolled pull requests whose required contexts are already
-green on the current head; it holds no permission to merge, to push, or to
-publish the `Agentic merge policy` verdict it reads, so branch protection
-remains the enforcement point.
+The PR reconciler evaluates current-head policy evidence internally and arms
+GitHub's native auto-merge only after every applicable check and approval is
+complete. It never calls the merge endpoint.
 `agentic-sdlc-e2e.yml` is the narrow manual merge/review/self-heal canary;
 `agentic-factory-full-e2e.yml` exercises the full goal-authorized issue-to-dev
 path. `agentic-evals.yml` runs deterministic, read-only SDLC evaluation on a
@@ -377,7 +370,23 @@ The factory is designed to automate work without letting the agent directly muta
 - **Opportunity discovery:** creates software tickets and experiments behind rubber-duck review; it does not provide trading advice, execute trades, or bypass safety review.
 - **Cost/noise controls:** workflows use `max-ai-credits`, `max-daily-ai-credits`, deduplication where appropriate, and `noop.report-as-issue: false`. Status and governance reports update one canonical tracking issue each, including an autonomy-funnel count per lifecycle label and a hard-invariants check, instead of creating a new issue every run.
 
-Required repository configuration: native auto-merge enabled; strict required checks for both CI jobs, `Agentic code review`, and `Agentic merge policy`; zero unconditional approving reviews; required conversation resolution and admin enforcement enabled; force pushes and protected-branch deletion disabled. Conditional security and trading-safety checks, and boundary-tier human approval, are enforced through `Agentic merge policy`. Separately, repository Environments split human-gated deploy scope from the one environment (`development`) the factory may mutate autonomously — see [`specs/deployment.md`](../specs/deployment.md) §2.
+Required repository configuration: native auto-merge enabled; strict required
+checks for both CI jobs and `Agentic code review`; zero unconditional approving
+reviews; required conversation resolution and admin enforcement enabled; force
+pushes and protected-branch deletion disabled. Conditional security and
+trading-safety checks, and boundary-tier human approval, are evaluated by the
+PR reconciler before it arms native auto-merge. Separately, repository
+Environments split human-gated deploy scope from the one environment
+(`development`) the factory may mutate autonomously — see
+[`specs/deployment.md`](../specs/deployment.md) §2.
+
+Repository administrators must remove the retired `Agentic merge policy`
+required context from `main` branch protection and disable GitHub Code Quality
+under **Settings → Security → Code quality** when its dynamic
+`Analyze (javascript-typescript)` job is not wanted. The reconciler's
+`backfill_deprecated_checks` manual input cancels active historical
+`Agentic merge policy` and `Human boundary approval` check runs; it does not
+alter branch protection or GitHub Code Quality settings.
 
 GitHub Actions must be allowed to create pull requests while default workflow permissions remain read-only. For trusted enrolled same-repository agent PRs, held CI runs are approved and held agentic-review runs are replaced by a PR-head manual review dispatch; neither condition is treated as a code failure or sent to self-heal.
 
@@ -436,11 +445,10 @@ GitHub Actions must be allowed to create pull requests while default workflow pe
 2. The workflow creates an enrolled `github-actions[bot]` PR that changes only
    `docs/e2e/factory-heartbeat.md` and invokes the reconciler.
 3. It requires successful `Quality and evidence gates`,
-   `PostgreSQL migrations and execution`, `Agentic code review`, and
-   `Agentic merge policy` contexts on the current head.
-4. After observing a fully settled head, it holds merge policy pending, enables
-   native auto-merge, and lets the reconciler restore success. Self-heal mode
-   additionally requires an initial review failure, a
+   `PostgreSQL migrations and execution`, and `Agentic code review` contexts
+   on the current head.
+4. After observing a fully settled head, it enables native auto-merge.
+   Self-heal mode additionally requires an initial review failure, a
    `[self-heal]` commit, and removal of the deterministic marker.
 5. Only after those assertions and the full check suite settle does the E2E
    workflow place a temporary pending merge-policy hold and enable native

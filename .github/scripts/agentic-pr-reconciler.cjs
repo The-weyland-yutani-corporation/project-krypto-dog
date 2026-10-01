@@ -5,7 +5,6 @@ const {
   CODE_REVIEW_CHECK,
   FACTORY_MODE_LABELS,
   FACTORY_MODES,
-  HUMAN_BOUNDARY_APPROVAL_CHECK,
   QA_CHECK,
   RISK_TIERS,
   SECURITY_CHECK,
@@ -27,6 +26,7 @@ const {
   resolveRepositoryCopilotIdentity,
 } = require("./agentic-identity.cjs");
 const {
+  ensureAutoMergeEnabled,
   resolveLatestIssueClaim,
   verifyPersistedAssignmentProvenance,
 } = require("./agentic-lifecycle-reconciler.cjs");
@@ -40,7 +40,6 @@ const {
   lowRiskStatuses: LOW_RISK_STATUSES,
   maxRepairCommits: MAX_REPAIR_COMMITS,
   mergeBlockingLabels: MERGE_BLOCKING_LABELS,
-  mergeContext: MERGE_CONTEXT,
   nonRepairableReviewConclusions: NON_REPAIRABLE_REVIEW_CONCLUSIONS,
   passingCheckConclusions: PASSING_CHECK_CONCLUSIONS,
   securityExactPaths: SECURITY_EXACT_PATHS,
@@ -57,6 +56,10 @@ const REVIEW_CHECK_NAME = CODE_REVIEW_CHECK;
 const QA_CHECK_NAME = QA_CHECK;
 const SECURITY_CHECK_NAME = SECURITY_CHECK;
 const TRADING_SAFETY_CHECK_NAME = TRADING_SAFETY_CHECK;
+const DEPRECATED_POLICY_CHECKS = Object.freeze([
+  "Agentic merge policy",
+  "Human boundary approval",
+]);
 
 function getLabels(pullRequest) {
   return new Set(
@@ -952,103 +955,53 @@ async function reconcileAgenticPullRequests({
     }
   };
 
-  const ensureCheckRun = async (
+  const cancelDeprecatedPolicyChecks = async (
     sha,
-    state,
-    description,
     targetUrl,
-    checkRuns,
-    contextName = MERGE_CONTEXT,
+    summary,
+    existingCheckRuns,
   ) => {
-    const status = state === "success" ? "completed" : "in_progress";
-    const conclusion = state === "success" ? "success" : null;
-    const namedChecks = checkRuns
-      .filter((check) => check.name === contextName)
-      .sort((left, right) => right.id - left.id);
-    const current = namedChecks[0];
-    const currentMatches =
-      current &&
-      current.status === status &&
-      (current.conclusion || null) === conclusion &&
-      current.output &&
-      current.output.summary === description;
-
-    const desiredCheck = {
-      name: contextName,
-      status,
-      conclusion,
-      details_url: targetUrl,
-      output: {
-        title: contextName,
-        summary: description,
-      },
-    };
-    const input = {
-      owner,
-      repo,
-      name: desiredCheck.name,
-      status,
-      ...(conclusion ? { conclusion } : {}),
-      details_url: targetUrl,
-      output: desiredCheck.output,
-    };
-
-    let resolvedCurrent = current;
-    if (currentMatches) {
-      resolvedCurrent = current;
-    } else if (!current || current.status === "completed") {
-      const response = await github.rest.checks.create({
-        ...input,
-        head_sha: sha,
-      });
-      const created =
-        response && response.data
-          ? response.data
-          : {
-              id:
-                Math.max(0, ...checkRuns.map((check) => Number(check.id) || 0)) +
-                1,
-              ...desiredCheck,
-            };
-      checkRuns.push(created);
-      resolvedCurrent = created;
-    } else {
-      const response = await github.rest.checks.update({
-        ...input,
-        check_run_id: current.id,
-      });
-      Object.assign(current, desiredCheck, response && response.data);
-      resolvedCurrent = current;
+    if (!sha) {
+      return;
     }
-
-    for (const stale of namedChecks.slice(1)) {
-      if (stale.status === "completed") {
+    const checkRuns =
+      existingCheckRuns ||
+      (await github.paginate(github.rest.checks.listForRef, {
+        owner,
+        repo,
+        ref: sha,
+        filter: "all",
+        per_page: 100,
+      }));
+    for (const check of checkRuns) {
+      if (
+        check.status === "completed" ||
+        !DEPRECATED_POLICY_CHECKS.includes(check.name)
+      ) {
         continue;
       }
       await github.rest.checks.update({
         owner,
         repo,
-        check_run_id: stale.id,
-        name: contextName,
+        check_run_id: check.id,
+        name: check.name,
         status: "completed",
         conclusion: "cancelled",
-        details_url: stale.details_url || targetUrl,
+        details_url: check.details_url || targetUrl,
         output: {
-          title: contextName,
-          summary: "Superseded by a newer reconciliation for this head",
+          title: check.name,
+          summary,
         },
       });
-      Object.assign(stale, {
+      Object.assign(check, {
         status: "completed",
         conclusion: "cancelled",
         output: {
-          title: contextName,
-          summary: "Superseded by a newer reconciliation for this head",
+          title: check.name,
+          summary,
         },
       });
     }
-
-    return resolvedCurrent;
   };
 
   const addLabels = async (pullRequest, labels) => {
@@ -1114,6 +1067,46 @@ async function reconcileAgenticPullRequests({
     factoryPausedThisRun = true;
     factoryMode = FACTORY_MODES.PAUSED;
   };
+
+  const eventPullRequest = context.payload && context.payload.pull_request;
+  if (
+    context.eventName === "pull_request_target" &&
+    context.payload?.action === "synchronize" &&
+    context.payload?.before &&
+    context.payload.before !== eventPullRequest?.head?.sha
+  ) {
+    await cancelDeprecatedPolicyChecks(
+      context.payload.before,
+      eventPullRequest?.html_url,
+      "Superseded by a newer pull request head",
+    );
+  }
+  if (
+    context.eventName === "pull_request_target" &&
+    context.payload?.action === "closed"
+  ) {
+    await cancelDeprecatedPolicyChecks(
+      eventPullRequest?.head?.sha,
+      eventPullRequest?.html_url,
+      "Pull request is closed or merged",
+    );
+  }
+
+  const backfillDeprecatedChecks =
+    context.eventName === "workflow_dispatch" &&
+    (context.payload?.inputs?.backfill_deprecated_checks === true ||
+      context.payload?.inputs?.backfill_deprecated_checks === "true");
+  if (backfillDeprecatedChecks) {
+    for (const pullRequest of allPullRequests) {
+      await cancelDeprecatedPolicyChecks(
+        pullRequest.head?.sha,
+        pullRequest.html_url,
+        pullRequest.state === "open"
+          ? "Synthetic policy checks are retired; policy is enforced before auto-merge"
+          : "Pull request is closed or merged",
+      );
+    }
+  }
 
   const hasCopilotCandidate = pullRequests.some(
     (pullRequest) =>
@@ -1202,6 +1195,12 @@ async function reconcileAgenticPullRequests({
       const qaRuns = dispatchedRuns(rawQaRuns);
       const securityRuns = dispatchedRuns(rawSecurityRuns);
       const tradingSafetyRuns = dispatchedRuns(rawTradingSafetyRuns);
+      await cancelDeprecatedPolicyChecks(
+        sha,
+        pullRequest.html_url,
+        "Synthetic policy checks are retired; policy is enforced before auto-merge",
+        checkRuns,
+      );
 
       const implementationProvenance =
         await verifyAgentImplementationProvenance({
@@ -1229,30 +1228,7 @@ async function reconcileAgenticPullRequests({
         copilotIdentity,
       });
 
-      if (policy.requiresHumanBoundaryApproval) {
-        await ensureCheckRun(
-          sha,
-          policy.hasCurrentHumanApproval &&
-            !policy.hasCurrentHumanChangesRequested
-            ? "success"
-            : "pending",
-          policy.hasCurrentHumanApproval
-            ? "Current-head human approval satisfies boundary policy"
-            : "Boundary change requires current-head human approval",
-          pullRequest.html_url,
-          checkRuns,
-          HUMAN_BOUNDARY_APPROVAL_CHECK,
-        );
-      }
-
       if (implementationProvenance.pauseFactory) {
-        await ensureCheckRun(
-          sha,
-          policy.state,
-          policy.description,
-          pullRequest.html_url,
-          checkRuns,
-        );
         await pauseFactoryControl(
           factoryControlIssue,
           `PR #${number} has invalid assignment/PR provenance (${implementationProvenance.reason || "unknown"}).`,
@@ -1263,13 +1239,6 @@ async function reconcileAgenticPullRequests({
         policy.requiresVerifiedAgentProvenance &&
         !implementationProvenance.valid
       ) {
-        await ensureCheckRun(
-          sha,
-          policy.state,
-          policy.description,
-          pullRequest.html_url,
-          checkRuns,
-        );
         continue;
       }
 
@@ -1278,13 +1247,6 @@ async function reconcileAgenticPullRequests({
         pullRequest.draft ||
         policy.factoryModeBlocksAction;
       if (policyOperationsBlocked) {
-        await ensureCheckRun(
-          sha,
-          policy.state,
-          policy.description,
-          pullRequest.html_url,
-          checkRuns,
-        );
         continue;
       }
 
@@ -1319,13 +1281,6 @@ async function reconcileAgenticPullRequests({
         );
       };
       if (policy.riskExceedsGoal) {
-        await ensureCheckRun(
-          sha,
-          policy.state,
-          policy.description,
-          pullRequest.html_url,
-          checkRuns,
-        );
         await addHumanBoundaryLabel();
         await pauseFactoryControl(
           factoryControlIssue,
@@ -1379,18 +1334,6 @@ async function reconcileAgenticPullRequests({
         tradingSafetyShouldDispatch ||
         humanBoundaryLabelNeeded;
 
-      await ensureCheckRun(
-        sha,
-        policy.state === "success" && hasPendingPolicyOperations
-          ? "pending"
-          : policy.state,
-        policy.state === "success" && hasPendingPolicyOperations
-          ? "Finalizing required reconciliation operations"
-          : policy.description,
-        pullRequest.html_url,
-        checkRuns,
-      );
-
       if (ciShouldDispatch) {
         await dispatchForPullRequest("ci.yml");
       }
@@ -1425,15 +1368,13 @@ async function reconcileAgenticPullRequests({
 
       await addHumanBoundaryLabel();
 
-      if (policy.state === "success" && hasPendingPolicyOperations) {
-        await ensureCheckRun(
-          sha,
-          policyWriteFailed ? "pending" : "success",
-          policyWriteFailed
-            ? "Reconciler operation failed; retrying"
-            : policy.description,
-          pullRequest.html_url,
-          checkRuns,
+      if (
+        policy.state === "success" &&
+        !hasPendingPolicyOperations &&
+        !policyWriteFailed
+      ) {
+        await runPolicyOperation(() =>
+          ensureAutoMergeEnabled({ github, core, pullRequest }),
         );
       }
 
@@ -1520,7 +1461,7 @@ module.exports = {
   EXHAUSTED_LABEL,
   LOW_RISK_STATUSES,
   MAX_REPAIR_COMMITS,
-  MERGE_CONTEXT,
+  DEPRECATED_POLICY_CHECKS,
   QA_CHECK_NAME,
   REVIEW_CHECK_NAME,
   SECURITY_CHECK_NAME,

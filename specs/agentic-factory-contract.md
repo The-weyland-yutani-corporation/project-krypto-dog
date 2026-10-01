@@ -32,7 +32,7 @@ identifiers. Anything not yet implemented is written as a requirement
 | `assignment-worker` | The workflow step that turns a queue-controller selection into a claimed, dispatched implementation session. |
 | `implementation-agent` | Copilot coding-agent session that opens a PR for a claimed issue. |
 | `lifecycle-reconciler` | The workflow that reconciles PR/check state into lifecycle-label transitions (opens/closes duplicate PRs, applies repair/blocked/human-review labels). |
-| `merge-policy` | The deterministic `Agentic merge policy` check that approves same-repository PRs after current-head required checks pass. |
+| `merge-policy` | The deterministic reconciler decision that arms native auto-merge only after current-head required evidence passes. |
 | `deployment-reconciler` | The workflow that validates dev evidence and applies `factory:deployed-dev`. |
 
 ## 2. Factory modes
@@ -241,7 +241,7 @@ required-check set:
 |---|---|---|---|---|
 | `risk:routine` | `Quality and evidence gates`, `PostgreSQL migrations and execution`, `Agentic code review` | -- | `Security review` / `Trading safety review` if changed paths match (§8) | -- |
 | `risk:sensitive` | same baseline | `QA verification` | same path-selected rule | -- |
-| `risk:boundary` | same baseline | `QA verification` | same path-selected rule | `Human boundary approval` |
+| `risk:boundary` | same baseline | `QA verification` | same path-selected rule | current-head human approval |
 
 Path-selected specialist checks (`requiresSecurityCheck`,
 `requiresTradingSafetyCheck`) are independent of tier: they trigger on the

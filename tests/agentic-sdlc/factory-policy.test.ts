@@ -72,7 +72,6 @@ interface FactoryPolicyModule {
   QA_CHECK: string;
   SECURITY_CHECK: string;
   TRADING_SAFETY_CHECK: string;
-  HUMAN_BOUNDARY_APPROVAL_CHECK: string;
   BASELINE_REQUIRED_CHECKS: string[];
   requiresSecurityCheck(filename: string): boolean;
   requiresTradingSafetyCheck(filename: string): boolean;
@@ -523,7 +522,7 @@ describe("required checks", () => {
     expect(policy.requiresHumanBoundaryApproval(RISK_TIERS.BOUNDARY)).toBe(true);
     expect(policy.requiresHumanBoundaryApproval(RISK_TIERS.SENSITIVE)).toBe(false);
     expect(policy.getRequiredChecks(RISK_TIERS.BOUNDARY, [])).toContain(
-      policy.HUMAN_BOUNDARY_APPROVAL_CHECK,
+      policy.QA_CHECK,
     );
   });
 
@@ -538,7 +537,6 @@ describe("required checks", () => {
 
   it("fails closed to the boundary check set for an unknown tier", () => {
     const checks = policy.getRequiredChecks("risk:unknown" as string, []);
-    expect(checks).toContain(policy.HUMAN_BOUNDARY_APPROVAL_CHECK);
     expect(checks).toContain(policy.QA_CHECK);
   });
 });

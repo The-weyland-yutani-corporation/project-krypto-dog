@@ -92,8 +92,8 @@ describe("progressive agent instructions", () => {
     expect(rootDoc).toContain("QA verification");
     expect(rootDoc).toContain("Security review");
     expect(rootDoc).toContain("Trading safety review");
-    expect(rootDoc).toContain("Human boundary approval");
-    expect(rootDoc).toContain("Agentic merge policy");
+    expect(rootDoc).toContain("current-head human approval");
+    expect(rootDoc).toContain("does not publish synthetic policy checks");
     expect(rootDoc.toLowerCase()).toContain("fork");
     expect(rootDoc.toLowerCase()).toContain("human approval");
     expect(rootDoc).toContain("live-trading enablement");

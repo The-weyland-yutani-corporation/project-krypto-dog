@@ -185,8 +185,10 @@ QA and docs-sync are label-triggered with `needs-qa` and `docs-sync` so routine 
 The autonomous path is fail-closed unless the repository is configured with:
 
 - native auto-merge enabled
-- strict required checks for `Quality and evidence gates`, `PostgreSQL migrations and execution`, `Agentic code review`, and `Agentic merge policy`
-- zero unconditional approving reviews, because `Agentic merge policy` combines the current-head code-review and conditional specialist checks
+- strict required checks for `Quality and evidence gates`, `PostgreSQL migrations and execution`, and `Agentic code review`
+- zero unconditional approving reviews; the reconciler evaluates conditional
+  specialist checks and current-head boundary approval before arming native
+  auto-merge
 - required conversation resolution and admin enforcement enabled
 - force pushes and protected-branch deletion disabled
 - default Actions workflow permissions set to read
@@ -436,7 +438,9 @@ touches `production-deploy`/`production-promotion` or live trading.
 - No discovery, planning, or implementation work is selectable without an active, human-approved `factory:goal` + `factory:goal-approved` ancestor.
 - Changes to trading, guardrails, auth, secrets, workflows, database state, deployment procedure, or operator behavior require current-head specialist agent checks selected from deterministic path rules.
 - `risk:sensitive` (reversible) work merges on independent current-head agent-check consensus alone; `risk:boundary` (irreversible/control-plane) work additionally requires current-head human approval and never receives automated repair.
-- The required `Agentic merge policy` check run remains pending until all applicable agent checks (and, at the boundary tier, human approval) pass; a human change request or blocking label still vetoes approval.
+- The reconciler does not publish synthetic policy checks. It arms native
+  auto-merge only after all applicable agent checks and any boundary-tier human
+  approval pass; a human change request or blocking label still vetoes arming.
 - Self-heal is capped by risk tier (routine 2, sensitive 1, boundary 0 repair commits) and structurally restricted to forbidden-scope exclusions (`.github/**`, `infra/**`, `specs/**`, package manifests, environment files, and unrelated files are never touched by a repair commit).
 - Automatic deployment stops at exact-SHA `development` (shadow-only); production deployment and live trading remain human-only. See [`specs/deployment.md`](../specs/deployment.md) and [`specs/readiness.md`](../specs/readiness.md).
 - Automation may pause itself on a detected safety trigger; only a human operator may return the factory to `active`.

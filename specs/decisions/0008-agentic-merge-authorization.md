@@ -7,7 +7,7 @@
 ## Context
 
 Project Krypto's deterministic merge reconciler allows a same-repository pull
-request to pass `Agentic merge policy` after the current head passes `Agentic
+request to arm native auto-merge after the current head passes `Agentic
 code review` and every specialist check selected from changed paths. Several
 factory instructions instead described the low-risk documentation self-heal
 allowlist as the only path that did not require a current human approval.
