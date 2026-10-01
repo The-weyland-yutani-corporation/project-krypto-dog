@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-08-18
 - **Deciders:** @VeVarunSharma
+- **Amended by:** [ADR 0014](./0014-owner-admin-merge-for-boundary-changes.md)
+  for the boundary-change merge authority gate.
 
 ## Context
 

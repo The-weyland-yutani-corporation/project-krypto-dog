@@ -653,17 +653,12 @@ function evaluateMergePolicy({
   } else if (agentApproval.waitingCheck) {
     checkDisposition = "in_progress";
     description = `Waiting for ${agentApproval.waitingCheck}`;
-  } else if (
-    agentApproval.requiresHumanBoundaryApproval &&
-    !hasCurrentHumanApproval
-  ) {
-    description = "Boundary change requires current human approval";
+  } else if (agentApproval.requiresHumanBoundaryApproval) {
+    description = "Owner admin merge required for boundary PR";
   } else if (agentApproval.approved) {
     state = "success";
     checkDisposition = "success";
-    description = agentApproval.requiresHumanBoundaryApproval
-      ? "Current-head human and agent reviews approve boundary PR"
-      : "Current-head agent reviews approve this PR";
+    description = "Current-head agent reviews approve this PR";
   }
 
   return {
@@ -1129,6 +1124,43 @@ async function reconcileAgenticPullRequests({
     }
   };
 
+  const cancelDeprecatedBoundaryApprovalChecks = async (
+    checkRuns,
+    targetUrl,
+  ) => {
+    for (const check of checkRuns) {
+      if (
+        check.name !== HUMAN_BOUNDARY_APPROVAL_CHECK ||
+        check.status === "completed"
+      ) {
+        continue;
+      }
+      await github.rest.checks.update({
+        owner,
+        repo,
+        check_run_id: check.id,
+        name: check.name,
+        status: "completed",
+        conclusion: "cancelled",
+        details_url: check.details_url || targetUrl,
+        output: {
+          title: check.name,
+          summary:
+            "Replaced by the Agentic merge policy owner admin-merge gate",
+        },
+      });
+      Object.assign(check, {
+        status: "completed",
+        conclusion: "cancelled",
+        output: {
+          title: check.name,
+          summary:
+            "Replaced by the Agentic merge policy owner admin-merge gate",
+        },
+      });
+    }
+  };
+
   const addLabels = async (pullRequest, labels) => {
     const present = getLabels(pullRequest);
     const missing = labels.filter((label) => !present.has(label));
@@ -1346,6 +1378,16 @@ async function reconcileAgenticPullRequests({
       const securityRuns = dispatchedRuns(rawSecurityRuns);
       const tradingSafetyRuns = dispatchedRuns(rawTradingSafetyRuns);
 
+      const cleanupDeprecatedBoundaryApprovalChecks = () =>
+        runPolicyCleanup(
+          `deprecated boundary checks for PR #${number}`,
+          () =>
+            cancelDeprecatedBoundaryApprovalChecks(
+              checkRuns,
+              pullRequest.html_url,
+            ),
+        );
+
       const implementationProvenance =
         await verifyAgentImplementationProvenance({
           github,
@@ -1372,22 +1414,6 @@ async function reconcileAgenticPullRequests({
         copilotIdentity,
       });
 
-      if (policy.requiresHumanBoundaryApproval) {
-        await ensureCheckRun(
-          sha,
-          policy.hasCurrentHumanApproval &&
-            !policy.hasCurrentHumanChangesRequested
-            ? "success"
-            : "action_required",
-          policy.hasCurrentHumanApproval
-            ? "Current-head human approval satisfies boundary policy"
-            : "Boundary change requires current-head human approval",
-          pullRequest.html_url,
-          checkRuns,
-          HUMAN_BOUNDARY_APPROVAL_CHECK,
-        );
-      }
-
       if (implementationProvenance.pauseFactory) {
         await ensureCheckRun(
           sha,
@@ -1396,6 +1422,7 @@ async function reconcileAgenticPullRequests({
           pullRequest.html_url,
           checkRuns,
         );
+        await cleanupDeprecatedBoundaryApprovalChecks();
         await pauseFactoryControl(
           factoryControlIssue,
           `PR #${number} has invalid assignment/PR provenance (${implementationProvenance.reason || "unknown"}).`,
@@ -1413,6 +1440,7 @@ async function reconcileAgenticPullRequests({
           pullRequest.html_url,
           checkRuns,
         );
+        await cleanupDeprecatedBoundaryApprovalChecks();
         continue;
       }
 
@@ -1428,6 +1456,7 @@ async function reconcileAgenticPullRequests({
           pullRequest.html_url,
           checkRuns,
         );
+        await cleanupDeprecatedBoundaryApprovalChecks();
         continue;
       }
 
@@ -1469,6 +1498,7 @@ async function reconcileAgenticPullRequests({
           pullRequest.html_url,
           checkRuns,
         );
+        await cleanupDeprecatedBoundaryApprovalChecks();
         await addHumanBoundaryLabel();
         await pauseFactoryControl(
           factoryControlIssue,
@@ -1533,6 +1563,7 @@ async function reconcileAgenticPullRequests({
         pullRequest.html_url,
         checkRuns,
       );
+      await cleanupDeprecatedBoundaryApprovalChecks();
 
       if (ciShouldDispatch) {
         await dispatchForPullRequest("ci.yml");

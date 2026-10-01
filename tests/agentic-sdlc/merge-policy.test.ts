@@ -602,7 +602,7 @@ describe("deterministic merge policy", () => {
     });
   });
 
-  it("requires current-head agent checks plus trusted human approval for boundary work", () => {
+  it("keeps boundary work non-autonomous after all reviews pass", () => {
     const boundaryFiles = [
       { filename: ".github/workflows/ci.yml", status: "modified" },
     ];
@@ -619,9 +619,9 @@ describe("deterministic merge policy", () => {
         checkRuns: boundaryChecks,
       }),
     ).toMatchObject({
-      state: "success",
-      description: "Current-head human and agent reviews approve boundary PR",
-      checkDisposition: "success",
+      state: "pending",
+      description: "Owner admin merge required for boundary PR",
+      checkDisposition: "action_required",
       hasCurrentHumanApproval: true,
       riskTier: "risk:boundary",
       requiresHumanBoundaryApproval: true,
@@ -645,7 +645,7 @@ describe("deterministic merge policy", () => {
         }),
       ).toMatchObject({
         state: "pending",
-        description: "Boundary change requires current human approval",
+        description: "Owner admin merge required for boundary PR",
         checkDisposition: "action_required",
         hasCurrentHumanApproval: false,
       });
@@ -781,7 +781,7 @@ describe("deterministic merge policy", () => {
     ];
     expect(policy({ pullRequest: escalated, checkRuns: checks })).toMatchObject({
       state: "pending",
-      description: "Boundary change requires current human approval",
+      description: "Owner admin merge required for boundary PR",
       riskTier: "risk:boundary",
     });
     expect(
@@ -791,8 +791,9 @@ describe("deterministic merge policy", () => {
         reviews: [review()],
       }),
     ).toMatchObject({
-      state: "success",
-      description: "Current-head human and agent reviews approve boundary PR",
+      state: "pending",
+      description: "Owner admin merge required for boundary PR",
+      checkDisposition: "action_required",
     });
   });
 
@@ -925,7 +926,7 @@ describe("deterministic merge policy", () => {
       }),
     ).toMatchObject({
       state: "pending",
-      description: "Boundary change requires current human approval",
+      description: "Owner admin merge required for boundary PR",
       riskTier: "risk:boundary",
     });
 

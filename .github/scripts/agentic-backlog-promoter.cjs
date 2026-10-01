@@ -218,7 +218,7 @@ function evaluatePromotion(candidate, config) {
   }
 
   if (effectiveRiskTier === RISK_TIERS.BOUNDARY) {
-    // Boundary work requires `Human boundary approval` and is never
+    // Boundary work requires an explicit owner admin merge and is never
     // auto-merged; dispatching it autonomously only consumes a WIP slot.
     reasons.push("risk-boundary-requires-human");
   }

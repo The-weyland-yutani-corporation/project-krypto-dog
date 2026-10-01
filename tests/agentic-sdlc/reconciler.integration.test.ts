@@ -849,7 +849,7 @@ describe("agentic PR reconciler integration", () => {
       mocks.createCheckRun,
       "Agentic merge policy",
       "completed",
-      "Boundary change requires current human approval",
+      "Owner admin merge required for boundary PR",
     );
   });
 
@@ -1384,7 +1384,7 @@ describe("agentic PR reconciler integration", () => {
     ).toBe(false);
   });
 
-  it("keeps boundary work pending until a current-head human approves", async () => {
+  it("keeps boundary work owner-controlled after automated reviews pass", async () => {
     const checks = [
       {
         id: 40,
@@ -1424,13 +1424,7 @@ describe("agentic PR reconciler integration", () => {
       withoutApproval.mocks.createCheckRun,
       "Agentic merge policy",
       "completed",
-      "Boundary change requires current human approval",
-    );
-    expectCheckRun(
-      withoutApproval.mocks.createCheckRun,
-      "Human boundary approval",
-      "completed",
-      "Boundary change requires current-head human approval",
+      "Owner admin merge required for boundary PR",
     );
     expect(withoutApproval.mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1438,11 +1432,8 @@ describe("agentic PR reconciler integration", () => {
         conclusion: "action_required",
       }),
     );
-    expect(withoutApproval.mocks.createCheckRun).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "Human boundary approval",
-        conclusion: "action_required",
-      }),
+    expect(withoutApproval.mocks.createCheckRun).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: "Human boundary approval" }),
     );
     expect(withoutApproval.mocks.addLabels).toHaveBeenCalledWith({
       owner: "VeVarunSharma",
@@ -1468,26 +1459,23 @@ describe("agentic PR reconciler integration", () => {
       checksBySha: { "sha-1": checks },
       runs,
     });
-    expect(withApproval.mocks.updateCheckRun).toHaveBeenCalledWith(
+    expect(withApproval.mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "Agentic merge policy",
         status: "completed",
-        conclusion: "success",
+        conclusion: "action_required",
         output: {
           title: "Agentic merge policy",
-          summary: "Current-head human and agent reviews approve boundary PR",
+          summary: "Owner admin merge required for boundary PR",
         },
       }),
     );
-    expectCheckRun(
-      withApproval.mocks.createCheckRun,
-      "Human boundary approval",
-      "completed",
-      "Current-head human approval satisfies boundary policy",
+    expect(withApproval.mocks.createCheckRun).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: "Human boundary approval" }),
     );
   });
 
-  it("terminates active boundary checks while current-head approval is pending", async () => {
+  it("cancels deprecated boundary checks and terminalizes merge policy", async () => {
     const { mocks } = await reconcile({
       filesByPull: {
         1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
@@ -1545,15 +1533,108 @@ describe("agentic PR reconciler integration", () => {
     });
 
     expect(mocks.createCheckRun).not.toHaveBeenCalled();
-    for (const checkRunId of [43, 44]) {
-      expect(mocks.updateCheckRun).toHaveBeenCalledWith(
-        expect.objectContaining({
-          check_run_id: checkRunId,
-          status: "completed",
-          conclusion: "action_required",
-        }),
-      );
-    }
+    expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        check_run_id: 43,
+        status: "completed",
+        conclusion: "cancelled",
+        output: {
+          title: "Human boundary approval",
+          summary:
+            "Replaced by the Agentic merge policy owner admin-merge gate",
+        },
+      }),
+    );
+    expect(mocks.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        check_run_id: 44,
+        status: "completed",
+        conclusion: "action_required",
+        output: {
+          title: "Agentic merge policy",
+          summary: "Owner admin merge required for boundary PR",
+        },
+      }),
+    );
+  });
+
+  it("publishes boundary policy before deprecated-check cleanup fails", async () => {
+    const harness = createHarness({
+      filesByPull: {
+        1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+      },
+      checksBySha: {
+        "sha-1": [
+          {
+            id: 40,
+            name: "Agentic code review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 41,
+            name: "QA verification",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 42,
+            name: "Security review",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 43,
+            name: "Human boundary approval",
+            status: "in_progress",
+            conclusion: null,
+          },
+          {
+            id: 44,
+            name: "Agentic merge policy",
+            status: "in_progress",
+            conclusion: null,
+          },
+        ],
+      },
+      runs: {
+        [runKey("qa-test-plan.lock.yml", "sha-1")]: [
+          successRun(49, "QA Test Plan"),
+        ],
+        [runKey("security-review.lock.yml", "sha-1")]: [
+          successRun(50, "Security Review"),
+        ],
+      },
+      updateCheckErrors: [43],
+    });
+
+    await expect(
+      reconcileAgenticPullRequests({
+        github: harness.github,
+        context: reconcilerContext(),
+        core: harness.core,
+        assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+      }),
+    ).rejects.toThrow("Failed to reconcile 1 pull request operation(s)");
+
+    const policyCallIndex = harness.mocks.updateCheckRun.mock.calls.findIndex(
+      ([params]: [ApiParams]) =>
+        params.check_run_id === 44 && params.conclusion === "action_required",
+    );
+    const cleanupCallIndex = harness.mocks.updateCheckRun.mock.calls.findIndex(
+      ([params]: [ApiParams]) =>
+        params.check_run_id === 43 && params.conclusion === "cancelled",
+    );
+    expect(policyCallIndex).toBeGreaterThanOrEqual(0);
+    expect(cleanupCallIndex).toBeGreaterThanOrEqual(0);
+    expect(
+      harness.mocks.updateCheckRun.mock.invocationCallOrder[policyCallIndex],
+    ).toBeLessThan(
+      harness.mocks.updateCheckRun.mock.invocationCallOrder[cleanupCallIndex],
+    );
+    expect(harness.core.warning).toHaveBeenCalledWith(
+      "Failed to clean up deprecated boundary checks for PR #1: check update forbidden",
+    );
   });
 
   it("cancels active policy checks on a superseded pull request head", async () => {
@@ -1785,7 +1866,7 @@ describe("agentic PR reconciler integration", () => {
     );
   });
 
-  it("keeps merge policy pending when a final boundary-label write fails", async () => {
+  it("keeps boundary policy terminal when its review-label write fails", async () => {
     const harness = createHarness({
       filesByPull: {
         1: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
@@ -1841,17 +1922,18 @@ describe("agentic PR reconciler integration", () => {
       }),
     ).rejects.toThrow("Failed to reconcile 1 pull request operation(s)");
 
-    expect(harness.mocks.updateCheckRun).toHaveBeenCalledWith(
+    expect(harness.mocks.createCheckRun).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "Agentic merge policy",
-        status: "in_progress",
+        status: "completed",
+        conclusion: "action_required",
         output: {
           title: "Agentic merge policy",
-          summary: "Reconciler operation failed; retrying",
+          summary: "Owner admin merge required for boundary PR",
         },
       }),
     );
-    expect(harness.mocks.updateCheckRun).not.toHaveBeenCalledWith(
+    expect(harness.mocks.createCheckRun).not.toHaveBeenCalledWith(
       expect.objectContaining({
         name: "Agentic merge policy",
         status: "completed",

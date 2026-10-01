@@ -92,7 +92,7 @@ describe("progressive agent instructions", () => {
     expect(rootDoc).toContain("QA verification");
     expect(rootDoc).toContain("Security review");
     expect(rootDoc).toContain("Trading safety review");
-    expect(rootDoc).toContain("Human boundary approval");
+    expect(rootDoc).toContain("explicit admin merge");
     expect(rootDoc).toContain("Agentic merge policy");
     expect(rootDoc.toLowerCase()).toContain("fork");
     expect(rootDoc.toLowerCase()).toContain("human approval");

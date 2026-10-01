@@ -543,10 +543,6 @@ function getRequiredChecks(tier, files) {
 
   checks.push(...getSpecialistChecks(files));
 
-  if (requiresHumanBoundaryApproval(resolvedTier)) {
-    checks.push(HUMAN_BOUNDARY_APPROVAL_CHECK);
-  }
-
   return [...new Set(checks)];
 }
 
