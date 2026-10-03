@@ -4,11 +4,26 @@ Project Krypto is an autonomous ETH/USDC **paper-trading** app. This file is a
 map for coding agents, not an encyclopedia. Read the authoritative document a
 route points to; do not re-derive policy from memory.
 
+<!-- safety-kernel:start -->
+## Safety kernel (never weaken)
+
+- **Paper only.** v2 executes paper trades exclusively. Live execution is a
+  separate RFC + explicit rollout; do not enable it here.
+- **Model is read-only.** The LLM returns exactly one structured `HOLD`, `BUY`,
+  or `SELL` proposal and must never receive a mutating trade tool.
+- **Deterministic guardrails hold.** Do not silently weaken
+  `evaluateTradePolicy`, `authorizeTradeIntent`, the transactional paper
+  executor, accounting reconciliation, drawdown lock, cooldown, operator pause,
+  idempotent invocation, or the owned/expiring run lease.
+- **Fail loud.** No broad catches or silent fallbacks; journal and alert on
+  failure using existing patterns.
+- **Design system is binding.** Any frontend, admin UI, chart, or user-facing
+  copy/layout change follows root [`DESIGN.md`](./DESIGN.md).
+<!-- safety-kernel:end -->
 
 Canonical machine-readable policy data lives in
 [`.github/agentic-policy.json`](./.github/agentic-policy.json). Do not duplicate
 its lists in prose; reference it.
-<!-- safety-kernel:end -->
 
 ## Authoritative links
 

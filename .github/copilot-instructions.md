@@ -1,5 +1,13 @@
 # Copilot instructions for Project Krypto
 
+<!-- safety-kernel:start -->
+Project Krypto is an autonomous ETH/USDC **paper-trading** app. Preserve trading
+safety first: do not weaken guardrails, mutex behavior, admin auth, journaling,
+or paper/live boundaries. The model is read-only (one structured
+`HOLD`/`BUY`/`SELL` proposal, no mutating trade tool). Production deployment,
+live-trading enablement, secrets, and architecture acceptance are human-only.
+<!-- safety-kernel:end -->
+
 ## Read the shared instructions first
 
 This is a thin platform shim. Copilot does not reliably auto-load nested
