@@ -30,6 +30,8 @@ on:
       - "drizzle/**"
       - "supabase/migrations/**"
       - "specs/product.md"
+      - "specs/operations.md"
+      - "specs/evaluation.md"
       - "specs/governance.md"
   issues:
     types: [labeled]

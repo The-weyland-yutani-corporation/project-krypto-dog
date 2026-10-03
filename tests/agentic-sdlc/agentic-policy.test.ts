@@ -121,6 +121,8 @@ describe("canonical agentic policy", () => {
     "drizzle/0001.sql",
     "supabase/migrations/0001.sql",
     "specs/product.md",
+    "specs/operations.md",
+    "specs/evaluation.md",
     "specs/governance.md",
   ])("preserves trading-safety routing for %s", (filename) => {
     expect(reconciler.requiresTradingSafetyReview(filename)).toBe(true);

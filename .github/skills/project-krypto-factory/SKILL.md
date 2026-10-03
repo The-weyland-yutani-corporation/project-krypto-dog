@@ -113,6 +113,8 @@ The automatic `trading-safety-review` PR path filter covers:
 - `drizzle/**`
 - `supabase/migrations/**`
 - `specs/product.md`
+- `specs/operations.md`
+- `specs/evaluation.md`
 - `specs/governance.md`
 
 That filter is not the risk classifier. Use
