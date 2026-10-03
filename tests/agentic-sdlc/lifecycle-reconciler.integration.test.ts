@@ -1393,11 +1393,7 @@ describe("agentic lifecycle reconciler integration", () => {
     expect(labelsOf(harness.pulls.get(101))).toEqual(
       expect.arrayContaining(["agentic-factory", "agentic-automerge", "needs-ai-review", "risk:routine"]),
     );
-    // Enrollment happens in the same pass: auto-merge is enabled immediately.
-    expect(harness.mocks.graphql).toHaveBeenCalledWith(
-      expect.stringContaining("enablePullRequestAutoMerge"),
-      { pullRequestId: "pr-node-101" },
-    );
+    expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
   });
 
   describe("Allowed paths scope invariant", () => {
@@ -1549,7 +1545,7 @@ describe("agentic lifecycle reconciler integration", () => {
       expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
     });
 
-    it("re-validates scope on every pass while the PR is open, before enabling auto-merge, even after initial enrollment", async () => {
+    it("re-validates scope on every pass while the PR is open, even after initial enrollment", async () => {
       const issue = issueFixture(96, "factory:pr-open", {
         body: "### Allowed paths\n\nsrc/app/**\n",
       });
@@ -1573,78 +1569,6 @@ describe("agentic lifecycle reconciler integration", () => {
       expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
       expect(labelsOf(harness.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
     });
-  });
-
-  it("enables native squash auto-merge only for an already-enrolled, non-draft, open PR", async () => {
-    const issue = issueFixture(9, "factory:pr-open");
-    const pull = pullRequestFixture(102, 9, {
-      labels: [{ name: "agentic-factory" }, { name: "agentic-automerge" }, { name: "needs-ai-review" }, { name: "risk:routine" }],
-    });
-    const harness = await reconcile({ issues: [issue], pullRequests: [pull] });
-
-    expect(harness.mocks.graphql).toHaveBeenCalledWith(
-      expect.stringContaining("mergeMethod: SQUASH"),
-      { pullRequestId: "pr-node-102" },
-    );
-    expect(harness.mocks.addLabels).not.toHaveBeenCalled();
-  });
-
-  it("never calls auto-merge for a draft PR", async () => {
-    const issue = issueFixture(55, "factory:pr-open");
-    const pull = pullRequestFixture(155, 55, {
-      draft: true,
-      labels: [{ name: "agentic-automerge" }],
-    });
-    const harness = await reconcile({ issues: [issue], pullRequests: [pull] });
-
-    expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
-  });
-
-  it("treats a clean/unstable/pending mergeable-state error as a retryable no-op, not a block", async () => {
-    const issue = issueFixture(75, "factory:pr-open");
-    const pull = pullRequestFixture(175, 75, {
-      labels: [{ name: "agentic-factory" }, { name: "agentic-automerge" }, { name: "needs-ai-review" }, { name: "risk:routine" }],
-    });
-    const harness = createHarness({ issues: [issue], pullRequests: [pull] });
-    harness.mocks.graphql.mockImplementation(
-      async (query: string) => {
-        if (query.includes("ResolveCopilotSuggestedActor")) {
-          return {
-            repository: {
-              suggestedActors: {
-                nodes: [
-                  {
-                    __typename: "Bot",
-                    login: "copilot-swe-agent",
-                    id: COPILOT_ACTOR.node_id,
-                    databaseId: COPILOT_ACTOR.id,
-                  },
-                ],
-                pageInfo: { hasNextPage: false, endCursor: null },
-              },
-            },
-          };
-        }
-        throw new Error(
-          "Pull request Auto merge is not allowed for pull request because it is in clean status.",
-        );
-      },
-    );
-
-    await reconcileFactoryLifecycle({
-      github: harness.github,
-      context: { repo: { owner, repo } },
-      core: harness.core,
-      now: DEFAULT_NOW,
-      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
-    });
-
-    expect(harness.mocks.graphql).toHaveBeenCalledTimes(2);
-    expect(labelsOf(harness.issues.get(75))).not.toContain("blocked");
-    expect(harness.mocks.createComment).not.toHaveBeenCalled();
-    expect(harness.core.info).toHaveBeenCalledWith(
-      expect.stringContaining("has not settled yet"),
-    );
   });
 
   it("directly: ensureAutoMergeEnabled swallows a retryable clean/unstable/pending-status error", async () => {
@@ -2062,7 +1986,7 @@ describe("agentic lifecycle reconciler integration", () => {
     expect(harness.mocks.updateComment).not.toHaveBeenCalled();
   });
 
-  it("re-running to a settled factory:pr-open + already-enabled auto-merge state performs zero additional mutations", async () => {
+  it("re-running a settled factory:pr-open state performs zero additional mutations", async () => {
     const issue = issueFixture(22, "factory:implementing");
     const pull = pullRequestFixture(113, 22);
     const harness = createHarness({ issues: [issue], pullRequests: [pull] });
@@ -2075,7 +1999,7 @@ describe("agentic lifecycle reconciler integration", () => {
       assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
     expect(labelsOf(harness.issues.get(22))).toContain("factory:pr-open");
-    expect(harness.mocks.graphql).toHaveBeenCalledTimes(2);
+    expect(harness.mocks.graphql).toHaveBeenCalledTimes(1);
     const firstCommentCalls = harness.mocks.createComment.mock.calls.length;
     const firstAddLabelCalls = harness.mocks.addLabels.mock.calls.length;
 
@@ -2087,9 +2011,7 @@ describe("agentic lifecycle reconciler integration", () => {
       assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
 
-    // Steady state: PR is already open, already enrolled, and auto-merge is
-    // already enabled -- nothing further should be written.
-    expect(harness.mocks.graphql).toHaveBeenCalledTimes(3);
+    expect(harness.mocks.graphql).toHaveBeenCalledTimes(2);
     expect(harness.mocks.createComment.mock.calls.length).toBe(firstCommentCalls);
     expect(harness.mocks.addLabels.mock.calls.length).toBe(firstAddLabelCalls);
     expect(harness.mocks.updateComment).not.toHaveBeenCalled();

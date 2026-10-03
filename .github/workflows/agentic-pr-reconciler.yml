@@ -3,11 +3,11 @@ name: Agentic PR Reconciler
 on:
   workflow_dispatch:
     inputs:
-      backfill_stale_checks:
-        description: Cancel stale policy checks on closed and merged PR heads
+      backfill_deprecated_checks:
+        description: Cancel active legacy policy checks on historical PR heads
         required: false
-        default: false
         type: boolean
+        default: false
   schedule:
     - cron: "*/5 * * * *"
   pull_request_target:

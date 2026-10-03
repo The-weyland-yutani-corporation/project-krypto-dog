@@ -61,16 +61,16 @@ describe("agentic SDLC workflow contracts", () => {
     );
     expect(reconciler).toContain("checks: write");
     expect(reconciler).toContain("pull-requests: write");
+    expect(reconciler).toContain("backfill_deprecated_checks");
+    expect(reconciler).toContain("default: false");
     expect(reconcilerScript).toContain("run.display_title === correlationId");
+    expect(reconcilerScript).not.toContain("checks.create");
+    expect(reconcilerScript).toContain("DEPRECATED_POLICY_CHECKS");
     expect(reconcilerScript).toContain(
       "dispatch(workflowId, defaultBranch",
     );
     expect(reconcilerScript).not.toContain("approveWorkflowRun");
     expect(reconciler).not.toContain("statuses: write");
-    expect(reconciler).toContain("backfill_stale_checks:");
-    expect(reconciler).toMatch(
-      /pull_request_target:\s*\n\s+types: \[[^\]]*\bclosed\b/,
-    );
   });
 
   it.each([
@@ -111,8 +111,8 @@ describe("agentic SDLC workflow contracts", () => {
 
   it("keeps the auto-merge sweeper unable to merge or forge evidence", () => {
     // The sweeper only queues a merge that branch protection still gates. It
-    // must never hold a scope that lets it push, publish the verdict it reads,
-    // or bypass a required context.
+    // must never hold a scope that lets it push, publish evidence, or bypass a
+    // required context.
     expect(autoMergeSweeper).toContain("pull-requests: write");
     expect(autoMergeSweeper).toContain("contents: read");
     expect(autoMergeSweeper).not.toContain("contents: write");
@@ -327,7 +327,6 @@ describe("agentic SDLC workflow contracts", () => {
     "Quality and evidence gates",
     "PostgreSQL migrations and execution",
     "Agentic code review",
-    "Agentic merge policy",
   ])("asserts the required %s context", (contextName) => {
     expect(e2e).toContain(`"${contextName}"`);
   });
@@ -346,9 +345,9 @@ describe("agentic SDLC workflow contracts", () => {
     expect(e2e.indexOf('status: "in_progress"')).toBeLessThan(
       e2e.indexOf("enablePullRequestAutoMerge"),
     );
-    expect(e2e).toContain("github.rest.checks.create");
+    expect(e2e).not.toContain("github.rest.checks.create");
     expect(e2e).not.toContain("createCommitStatus");
-    expect(e2e).toContain("checks: write");
+    expect(e2e).toContain("checks: read");
     expect(e2e).toContain("if: always()");
     expect(e2e).toContain(
       "CANARY_BRANCH: agentic-e2e/${{ github.run_id }}-${{ github.run_attempt }}",

@@ -23,20 +23,19 @@
 const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const {
   FACTORY_MODES,
-  HUMAN_BOUNDARY_APPROVAL_CHECK,
   resolveFactoryModeFromLabels,
 } = require("./agentic-factory-policy.cjs");
 
 const {
   autoMergeLabel: AUTO_MERGE_LABEL,
   mergeBlockingLabels: MERGE_BLOCKING_LABELS,
-  mergeContext: MERGE_CONTEXT,
   passingCheckConclusions: PASSING_CHECK_CONCLUSIONS,
   requiredContexts: REQUIRED_CONTEXTS,
 } = AGENTIC_POLICY;
 
 const FACTORY_CONTROL_LABEL = "factory-control";
 const ACTIVE_MODE_LABEL = "factory-mode:active";
+const HUMAN_REVIEW_LABEL = "ready-for-human-review";
 
 const ENABLE_AUTO_MERGE_MUTATION = `
   mutation EnableAgenticAutoMerge($pullRequestId: ID!) {
@@ -141,6 +140,12 @@ function evaluateAutoMergeArming({
   if (blockingLabel) {
     return { arm: false, reason: `blocking-label:${blockingLabel}` };
   }
+  if (labels.has(HUMAN_REVIEW_LABEL)) {
+    return {
+      arm: false,
+      reason: `blocking-label:${HUMAN_REVIEW_LABEL}`,
+    };
+  }
   if (factoryMode !== FACTORY_MODES.ACTIVE) {
     return { arm: false, reason: `factory-mode:${factoryMode}` };
   }
@@ -154,30 +159,8 @@ function evaluateAutoMergeArming({
     return { arm: false, reason: "missing-node-id" };
   }
 
-  // The deterministic verdict published by the PR reconciler. It already
-  // encodes provenance, allowed-path containment, risk ceiling, specialist
-  // checks, and the current human veto, so it is the primary gate here.
-  const mergePolicyState = getCheckState(checkRuns, MERGE_CONTEXT);
-  if (mergePolicyState !== "success") {
-    return { arm: false, reason: `merge-policy:${mergePolicyState}` };
-  }
-
-  // A boundary PR publishes a separate human-approval check. If that check
-  // exists on this head at all, it must be green before arming.
-  if (latestNamedCheck(checkRuns, HUMAN_BOUNDARY_APPROVAL_CHECK)) {
-    const boundaryState = getCheckState(
-      checkRuns,
-      HUMAN_BOUNDARY_APPROVAL_CHECK,
-    );
-    if (boundaryState !== "success") {
-      return { arm: false, reason: `boundary-approval:${boundaryState}` };
-    }
-  }
-
-  // Belt-and-braces: this is a backstop for PRs that are *already* complete,
-  // so every required context must be green before arming. Branch protection
-  // enforces these independently; requiring them here only means the sweeper
-  // never arms ahead of the evidence.
+  // This is a backstop for PRs that are already complete, so every required
+  // branch-protection context must be green before arming.
   const pendingContext = REQUIRED_CONTEXTS.find(
     (name) => getCheckState(checkRuns, name) !== "success",
   );
@@ -364,7 +347,6 @@ module.exports = {
   AUTO_MERGE_LABEL,
   ENABLE_AUTO_MERGE_MUTATION,
   FACTORY_CONTROL_LABEL,
-  MERGE_CONTEXT,
   REQUIRED_CONTEXTS,
   evaluateAutoMergeArming,
   getCheckState,

@@ -46,7 +46,6 @@ describe("canonical agentic policy", () => {
       "Quality and evidence gates",
       "PostgreSQL migrations and execution",
       "Agentic code review",
-      "Agentic merge policy",
     ]);
     expect(
       policyModule.AGENTIC_POLICY.mergeBlockingLabels,
