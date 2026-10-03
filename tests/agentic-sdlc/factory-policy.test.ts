@@ -264,6 +264,15 @@ describe("minimum-risk path classification", () => {
     expect(policy.classifyPathTier("specs/governance.md")).toBe(
       RISK_TIERS.BOUNDARY,
     );
+    expect(policy.classifyPathTier("specs/product.md")).toBe(
+      RISK_TIERS.BOUNDARY,
+    );
+    expect(policy.classifyPathTier("specs/operations.md")).toBe(
+      RISK_TIERS.BOUNDARY,
+    );
+    expect(policy.classifyPathTier("specs/evaluation.md")).toBe(
+      RISK_TIERS.SENSITIVE,
+    );
   });
 
   it("classifies reversible trading, guardrail, auth, db/migration, agent, deployment, dependency, and infra code as sensitive", () => {
@@ -520,6 +529,21 @@ describe("required checks", () => {
     expect(policy.requiresTradingSafetyCheck("src/components/ui/button.tsx")).toBe(false);
     const checks = policy.getRequiredChecks(RISK_TIERS.SENSITIVE, [file("src/trading/policy.ts")]);
     expect(checks).toContain(policy.TRADING_SAFETY_CHECK);
+  });
+
+  it.each([
+    "specs/product.md",
+    "specs/operations.md",
+    "specs/evaluation.md",
+    "specs/governance.md",
+  ])("requires trading-safety review for canonical safety spec %s", (filename) => {
+    expect(policy.requiresTradingSafetyCheck(filename)).toBe(true);
+    expect(
+      policy.getRequiredChecks(
+        policy.classifyPathTier(filename),
+        [file(filename)],
+      ),
+    ).toContain(policy.TRADING_SAFETY_CHECK);
   });
 
   it("requires owner boundary authority without adding a synthetic check", () => {

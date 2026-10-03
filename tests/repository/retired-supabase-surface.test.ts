@@ -43,7 +43,6 @@ const HISTORICAL_PREFIXES = [
 const IMMUTABLE_HISTORY_FILES = new Set([
   "drizzle/0007_azure_retire_supabase_http_functions.sql",
   "drizzle/meta/_journal.json",
-  "specs/governance.md",
 ]);
 
 // These files intentionally retain conservative path tombstones so deletion of
@@ -60,6 +59,7 @@ const GOVERNANCE_TOMBSTONES = new Set([
   ".github/workflows/trading-safety-review.md",
   "docs/agentic-workflows-map.md",
   "evals/agentic-sdlc/fixtures/specialist-routing.json",
+  "specs/governance.md",
   "tests/agentic-sdlc/agentic-policy.test.ts",
   "tests/agentic-sdlc/factory-policy.test.ts",
 ]);
