@@ -868,6 +868,24 @@ describe("deterministic merge policy", () => {
     });
   });
 
+  it("allows a review-routing docs-sync label on a manual pull request", () => {
+    expect(
+      policy({
+        pullRequest: pullRequest({
+          title: "docs: update operator guidance",
+          labels: [{ name: "docs-sync" }],
+          user: {
+            login: "maintainer",
+            type: "User",
+          },
+        }),
+      }),
+    ).toMatchObject({
+      state: "success",
+      hasBlockingLabel: false,
+    });
+  });
+
   it("keeps draft pull requests pending", () => {
     expect(
       policy({ pullRequest: pullRequest({ draft: true }) }),
