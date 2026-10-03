@@ -1414,7 +1414,7 @@ describe("agentic PR reconciler integration", () => {
     expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
   });
 
-  it("fails loud when deprecated-check cleanup fails", async () => {
+  it("keeps reconciliation running when deprecated-check cleanup fails", async () => {
     const harness = createHarness({
       checksBySha: {
         "sha-1": [
@@ -1441,18 +1441,18 @@ describe("agentic PR reconciler integration", () => {
       updateCheckErrors: [41],
     });
 
-    await expect(
-      reconcileAgenticPullRequests({
-        github: harness.github,
-        context: reconcilerContext(),
-        core: harness.core,
-      }),
-    ).rejects.toThrow("Failed to reconcile 1 pull request operation(s)");
+    await reconcileAgenticPullRequests({
+      github: harness.github,
+      context: reconcilerContext(),
+      core: harness.core,
+    });
 
     expect(harness.core.warning).toHaveBeenCalledWith(
-      "Failed to reconcile PR #1: check update forbidden",
+      "Could not cancel deprecated Agentic merge policy check 41 on sha-1: check update forbidden",
     );
-    expect(autoMergeCalls(harness.mocks.graphql)).toHaveLength(0);
+    expect(harness.mocks.updateCheckRun).toHaveBeenCalledWith(
+      expect.objectContaining({ check_run_id: 42 }),
+    );
   });
 
   it("dispatches the trusted default workflow when the PR modifies its copy", async () => {

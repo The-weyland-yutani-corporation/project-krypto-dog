@@ -958,15 +958,23 @@ async function reconcileAgenticPullRequests({
     if (!sha) {
       return;
     }
-    const checkRuns =
-      existingCheckRuns ||
-      (await github.paginate(github.rest.checks.listForRef, {
-        owner,
-        repo,
-        ref: sha,
-        filter: "all",
-        per_page: 100,
-      }));
+    let checkRuns = existingCheckRuns;
+    if (!checkRuns) {
+      try {
+        checkRuns = await github.paginate(github.rest.checks.listForRef, {
+          owner,
+          repo,
+          ref: sha,
+          filter: "all",
+          per_page: 100,
+        });
+      } catch (error) {
+        core.warning(
+          `Could not enumerate deprecated policy checks for ${sha}: ${getErrorMessage(error)}`,
+        );
+        return;
+      }
+    }
     for (const check of checkRuns) {
       if (
         check.status === "completed" ||
@@ -974,19 +982,26 @@ async function reconcileAgenticPullRequests({
       ) {
         continue;
       }
-      await github.rest.checks.update({
-        owner,
-        repo,
-        check_run_id: check.id,
-        name: check.name,
-        status: "completed",
-        conclusion: "cancelled",
-        details_url: check.details_url || targetUrl,
-        output: {
-          title: check.name,
-          summary,
-        },
-      });
+      try {
+        await github.rest.checks.update({
+          owner,
+          repo,
+          check_run_id: check.id,
+          name: check.name,
+          status: "completed",
+          conclusion: "cancelled",
+          details_url: check.details_url || targetUrl,
+          output: {
+            title: check.name,
+            summary,
+          },
+        });
+      } catch (error) {
+        core.warning(
+          `Could not cancel deprecated ${check.name} check ${check.id} on ${sha}: ${getErrorMessage(error)}`,
+        );
+        continue;
+      }
       Object.assign(check, {
         status: "completed",
         conclusion: "cancelled",
