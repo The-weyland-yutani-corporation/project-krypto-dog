@@ -1,12 +1,10 @@
 {
   "schemaVersion": 1,
   "merge": {
-    "context": "Agentic merge policy",
     "requiredContexts": [
       "Quality and evidence gates",
       "PostgreSQL migrations and execution",
-      "Agentic code review",
-      "Agentic merge policy"
+      "Agentic code review"
     ],
     "reviewCheck": "Agentic code review",
     "securityCheck": "Security review",

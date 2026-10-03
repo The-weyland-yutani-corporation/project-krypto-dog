@@ -1939,7 +1939,6 @@ async function handlePullRequestState({
     }
   }
 
-  await ensureAutoMergeEnabled({ github, core, pullRequest });
 }
 
 async function handleDeployedDevState({ github, owner, repo, issue, comments, claim, currentState }) {

@@ -460,7 +460,6 @@ const CODE_REVIEW_CHECK = "Agentic code review";
 const QA_CHECK = "QA verification";
 const SECURITY_CHECK = "Security review";
 const TRADING_SAFETY_CHECK = "Trading safety review";
-const HUMAN_BOUNDARY_APPROVAL_CHECK = "Human boundary approval";
 
 const BASELINE_REQUIRED_CHECKS = Object.freeze([
   QUALITY_GATES_CHECK,
@@ -703,7 +702,6 @@ module.exports = {
   QA_CHECK,
   SECURITY_CHECK,
   TRADING_SAFETY_CHECK,
-  HUMAN_BOUNDARY_APPROVAL_CHECK,
   BASELINE_REQUIRED_CHECKS,
   requiresSecurityCheck,
   requiresTradingSafetyCheck,
