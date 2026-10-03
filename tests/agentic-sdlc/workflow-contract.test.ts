@@ -8,7 +8,14 @@ function read(relativePath: string): string {
 }
 
 describe("agentic SDLC workflow contracts", () => {
+  const reconciler = read(
+    ".github/workflows/agentic-pr-reconciler.yml",
+  );
+  const reconcilerScript = read(
+    ".github/scripts/agentic-pr-reconciler.cjs",
+  );
   const ci = read(".github/workflows/ci.yml");
+  const e2e = read(".github/workflows/agentic-sdlc-e2e.yml");
   const codeReview = read(".github/workflows/code-review.md");
   const implementTicket = read(".github/workflows/implement-ticket.md");
   const qaReview = read(".github/workflows/qa-test-plan.md");
@@ -25,12 +32,46 @@ describe("agentic SDLC workflow contracts", () => {
   const lifecycleWorkflow = read(
     ".github/workflows/agentic-lifecycle-reconciler.yml",
   );
+  const autoMergeSweeper = read(
+    ".github/workflows/agentic-automerge-sweeper.yml",
+  );
+  const autoMergeSweeperScript = read(
+    ".github/scripts/agentic-automerge-sweeper.cjs",
+  );
   const fullE2e = read(
     ".github/workflows/agentic-factory-full-e2e.yml",
   );
   const copilotSetup = read(
     ".github/workflows/copilot-setup-steps.yml",
   );
+
+  it("loads the tested reconciler implementation only from the trusted base", () => {
+    expect(reconciler).toContain(
+      "ref: ${{ github.event.repository.default_branch }}",
+    );
+    expect(reconciler).toContain("persist-credentials: false");
+    expect(reconciler).toContain("sparse-checkout: |");
+    expect(reconciler).toContain(".github/scripts");
+    expect(reconciler).toContain(".github/agentic-policy.json");
+    expect(reconciler).toContain(
+      '".github/scripts/agentic-pr-reconciler.cjs"',
+    );
+    expect(reconciler).toContain(
+      "await reconcileAgenticPullRequests({",
+    );
+    expect(reconciler).toContain("checks: write");
+    expect(reconciler).toContain("pull-requests: write");
+    expect(reconciler).toContain("backfill_deprecated_checks");
+    expect(reconciler).toContain("default: false");
+    expect(reconcilerScript).toContain("run.display_title === correlationId");
+    expect(reconcilerScript).not.toContain("checks.create");
+    expect(reconcilerScript).toContain("DEPRECATED_POLICY_CHECKS");
+    expect(reconcilerScript).toContain(
+      "dispatch(workflowId, defaultBranch",
+    );
+    expect(reconcilerScript).not.toContain("approveWorkflowRun");
+    expect(reconciler).not.toContain("statuses: write");
+  });
 
   it.each([
     ["queue controller", queueWorkflow, "agentic-queue-runtime.cjs"],
@@ -47,6 +88,52 @@ describe("agentic SDLC workflow contracts", () => {
     expect(workflow).toContain(".github/scripts");
     expect(workflow).toContain(script);
     expect(workflow).not.toContain("ref: ${{ github.event.pull_request.head");
+  });
+
+  it("loads the auto-merge sweeper only from the trusted default branch", () => {
+    expect(autoMergeSweeper).toContain(
+      "ref: ${{ github.event.repository.default_branch }}",
+    );
+    expect(autoMergeSweeper).toContain("persist-credentials: false");
+    expect(autoMergeSweeper).toContain("sparse-checkout: |");
+    expect(autoMergeSweeper).toContain(".github/scripts");
+    expect(autoMergeSweeper).toContain(".github/agentic-policy.json");
+    expect(autoMergeSweeper).toContain(
+      '".github/scripts/agentic-automerge-sweeper.cjs"',
+    );
+    expect(autoMergeSweeper).toContain(
+      "await sweepAutoMergeReadyPullRequests({ github, context, core });",
+    );
+    expect(autoMergeSweeper).not.toContain(
+      "ref: ${{ github.event.pull_request.head",
+    );
+  });
+
+  it("keeps the auto-merge sweeper unable to merge or forge evidence", () => {
+    // The sweeper only queues a merge that branch protection still gates. It
+    // must never hold a scope that lets it push, publish evidence, or bypass a
+    // required context.
+    expect(autoMergeSweeper).toContain("pull-requests: write");
+    expect(autoMergeSweeper).toContain("contents: read");
+    expect(autoMergeSweeper).not.toContain("contents: write");
+    expect(autoMergeSweeper).not.toContain("checks: write");
+    expect(autoMergeSweeper).not.toContain("statuses: write");
+    // Never checks out an untrusted head.
+    expect(autoMergeSweeper).not.toContain("pull_request_target:");
+    expect(autoMergeSweeper).toContain("group: agentic-automerge-sweeper");
+    expect(autoMergeSweeper).toContain("cancel-in-progress: false");
+
+    for (const forbidden of [
+      "pulls.merge",
+      "pulls.updateBranch",
+      "checks.create",
+      "createCommitStatus",
+      "addLabels",
+    ]) {
+      expect(autoMergeSweeperScript).not.toContain(forbidden);
+    }
+    expect(autoMergeSweeperScript).toContain("enablePullRequestAutoMerge");
+    expect(autoMergeSweeperScript).toContain("mergeMethod: SQUASH");
   });
 
   it("serializes deterministic queue and lifecycle mutation", () => {
@@ -67,6 +154,26 @@ describe("agentic SDLC workflow contracts", () => {
     expect(lifecycleWorkflow).toContain(
       "assignmentActorNodeId:",
     );
+    expect(reconciler).toContain(
+      "FACTORY_ASSIGNMENT_ACTOR_NODE_ID: ${{ vars.FACTORY_ASSIGNMENT_ACTOR_NODE_ID }}",
+    );
+  });
+
+  it("keeps the traditional E2E workflow manual-only", () => {
+    const triggerBlock = e2e.slice(
+      e2e.indexOf("on:"),
+      e2e.indexOf("concurrency:"),
+    );
+
+    expect(triggerBlock).toContain("workflow_dispatch:");
+    expect(triggerBlock).not.toMatch(
+      /^\s+(pull_request|pull_request_target|push|schedule|workflow_run):/m,
+    );
+    expect(triggerBlock).toContain("- happy-path");
+    expect(triggerBlock).toContain("- self-heal");
+    expect(e2e).toContain("Require human-activated factory mode");
+    expect(e2e).toContain('labels: "factory-control"');
+    expect(e2e).toContain('actor?.type !== "User"');
   });
 
   it("assigns claimed issues to the coding agent instead of editing directly", () => {
@@ -201,6 +308,54 @@ describe("agentic SDLC workflow contracts", () => {
     expect(fullE2e).not.toContain("addLabels");
   });
 
+  it("constrains the canary to the enrolled same-repository docs path", () => {
+    expect(e2e).not.toContain("if: github.repository ==");
+    expect(e2e).toContain(
+      "CANARY_PATH: docs/e2e/factory-heartbeat.md",
+    );
+    expect(e2e).toContain(
+      "title: `[docs-sync] Agentic SDLC E2E ${mode} canary`",
+    );
+    expect(e2e).toContain('"agentic-factory"');
+    expect(e2e).toContain('"docs-sync"');
+    expect(e2e).toContain('"agentic-automerge"');
+    expect(e2e).toContain("enablePullRequestAutoMerge");
+    expect(e2e).toContain('workflow_id: "agentic-pr-reconciler.yml"');
+  });
+
+  it.each([
+    "Quality and evidence gates",
+    "PostgreSQL migrations and execution",
+    "Agentic code review",
+  ])("asserts the required %s context", (contextName) => {
+    expect(e2e).toContain(`"${contextName}"`);
+  });
+
+  it("asserts merge and always cleans up the branch and failed PR", () => {
+    expect(e2e).toContain("pull.merged_at");
+    expect(e2e).toContain("readyForAutoMerge");
+    expect(e2e).toContain("headIsStable");
+    expect(e2e).toContain("autoMergeEnabledAt");
+    expect(e2e).toContain(
+      "merged before required contexts were verified",
+    );
+    expect(e2e.indexOf("readyForAutoMerge")).toBeLessThan(
+      e2e.indexOf("enablePullRequestAutoMerge"),
+    );
+    expect(e2e.indexOf('status: "in_progress"')).toBeLessThan(
+      e2e.indexOf("enablePullRequestAutoMerge"),
+    );
+    expect(e2e).not.toContain("github.rest.checks.create");
+    expect(e2e).not.toContain("createCommitStatus");
+    expect(e2e).toContain("checks: read");
+    expect(e2e).toContain("if: always()");
+    expect(e2e).toContain(
+      "CANARY_BRANCH: agentic-e2e/${{ github.run_id }}-${{ github.run_attempt }}",
+    );
+    expect(e2e).toContain('state: "closed"');
+    expect(e2e).toContain("github.rest.git.deleteRef");
+  });
+
   it("wires the deterministic self-heal marker through review and repair", () => {
     const marker = "<!-- agentic-e2e:self-heal -->";
 
@@ -208,6 +363,11 @@ describe("agentic SDLC workflow contracts", () => {
     expect(codeReview).toContain("failing `Agentic code review` check");
     expect(selfHeal).toContain(marker);
     expect(selfHeal).toContain("remove only that marker");
+    expect(e2e).toContain(marker);
+    expect(e2e).toContain('message.includes("[self-heal]")');
+    expect(e2e).toContain("selfHealCommits.length <= 2");
+    expect(e2e).toContain("agentic-identity.cjs");
+    expect(e2e).toContain("isResolvedCopilotActor");
   });
 
   it("allows only trusted factory bots to activate manual code review", () => {

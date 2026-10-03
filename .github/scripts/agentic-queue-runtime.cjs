@@ -148,7 +148,7 @@ const GOAL_REQUIRED_NARRATIVE_HEADINGS = Object.freeze([
  * "last value wins," never "first value wins") so every downstream reader
  * (`getIssueFormSection`) sees it as missing. This mirrors the
  * `matches.length === 1` rule the PR merge-provenance parser
- * (the shared issue-form parsing convention) already applies,
+ * (`getIssueFormSection` in `agentic-pr-reconciler.cjs`) already applies,
  * so queue-selection parsing and merge-provenance parsing agree on
  * ambiguous/duplicated issue-form content instead of silently disagreeing.
  *

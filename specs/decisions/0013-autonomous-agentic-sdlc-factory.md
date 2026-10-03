@@ -77,7 +77,7 @@ Adopt a safety-bounded autonomous SDLC factory with the following bounds:
 
 5. **`risk:boundary` changes always require current-head, trusted human
    approval.** They are never auto-merged, never auto-repaired (repair cap
-   0), and current-head human approval is added to their required evidence.
+   0), and the `Human boundary approval` check is added to their required set.
 
 6. **Automatic deployment stops at exact-SHA dev/staging, with fail-closed
    rollback.** This factory reuses, and does not loosen, ADR 0008's

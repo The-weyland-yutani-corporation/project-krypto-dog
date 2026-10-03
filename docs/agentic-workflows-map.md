@@ -51,8 +51,9 @@ flowchart TD
 
   subgraph Release
     rel["release-readiness<br/>operator handoff"]
-    policy["Current-head evidence<br/>required checks pass"]
-    human["Human merge / approval<br/>boundary / prod / live"]
+    policy["Agentic merge policy<br/>conditional agent approval"]
+    automerge["Native auto-merge<br/>all required checks pass"]
+    human["Human veto / approval<br/>boundary / prod / live"]
     dev["Azure deploy dev<br/>exact main SHA, shadow + rollback"]
   end
 
@@ -60,8 +61,11 @@ flowchart TD
     status["daily-repo-status<br/>factory status issue"]
     governance["agentic-governance<br/>cost, outcomes, noise"]
     doctor["ci-doctor<br/>CI incident issue/comment"]
+    reconcile["agentic-pr-reconciler<br/>checks / dispatch / policy"]
     lifecycle["agentic-lifecycle-reconciler<br/>claim / PR / merge / dev state"]
+    sweeper["agentic-automerge-sweeper<br/>re-arms native auto-merge, never merges"]
     heal["pr-self-heal<br/>2 routine / 1 sensitive / 0 boundary"]
+    e2e["agentic-sdlc-e2e<br/>manual docs canary"]
     evals["agentic-evals<br/>deterministic scorer"]
     entropy["harness-entropy<br/>report-only hygiene"]
     corrections["agentic-corrections<br/>report-only correction evidence"]
@@ -84,6 +88,7 @@ flowchart TD
   manual --> duck
   manual --> em
   manual --> rel
+  manual --> e2e
   manual --> qc
   slash --> discover
   slash --> research
@@ -105,6 +110,8 @@ flowchart TD
   pr --> sec
   pr --> docs
   ci --> doctor
+  pr --> reconcile
+  ci --> reconcile
   schedule --> status
   schedule --> governance
   schedule --> qc
@@ -128,15 +135,24 @@ flowchart TD
   code --> sec
   code --> trade
   code --> docs
+  draftpr --> reconcile
   draftpr --> lifecycle
+  e2e --> reconcile
+  reconcile --> heal
   heal --> draftpr
   code --> policy
   qa --> policy
   sec --> policy
   trade --> policy
   docs --> policy
+  policy --> automerge
+  policy --> sweeper
+  sweeper --> automerge
+  reconcile --> sweeper
+  schedule --> sweeper
   policy --> human
-  human --> lifecycle
+  human --> automerge
+  automerge --> lifecycle
   lifecycle --> dev
   dev --> lifecycle
   rel --> human
@@ -161,9 +177,16 @@ flowchart TD
 
 This is why workflow markdown is the source of truth, while lock files are committed generated artifacts for transparency.
 
-`factory-queue-controller.yml` and `agentic-lifecycle-reconciler.yml` are
+`agentic-pr-reconciler.yml`, `factory-queue-controller.yml`,
+`agentic-lifecycle-reconciler.yml`, and `agentic-automerge-sweeper.yml` are
 traditional deterministic workflows.
 Each loads only trusted default-branch scripts and never executes PR code.
+`agentic-automerge-sweeper.yml` is a backstop that re-arms GitHub's native
+auto-merge for enrolled pull requests whose required contexts are already
+green on the current head; it holds no permission to merge, to push, or to
+publish the `Agentic merge policy` verdict it reads, so branch protection
+remains the enforcement point.
+`agentic-sdlc-e2e.yml` is the narrow manual merge/review/self-heal canary;
 `agentic-factory-full-e2e.yml` exercises the full goal-authorized issue-to-dev
 path. `agentic-evals.yml` runs deterministic, read-only SDLC evaluation on a
 manual/weekly schedule with no live-model call.
@@ -187,9 +210,11 @@ manual/weekly schedule with no live-model call.
 | Docs/spec sync | `docs-sync`, manual | `docs-sync` | Docs/Spec Writer | Docs PR, comment, or docs-gap issues |
 | Release | `/release-readiness`, `release-readiness`, manual | `release-readiness` | Release Manager | Release checklist comment or blocker issues |
 | CI incident | Failed/cancelled/timed-out `CI` workflow run | `ci-doctor` | CI Doctor | Incident issue/comment |
-| Lifecycle reconciliation | Issue/PR/dev-workflow events, 15-minute schedule | `agentic-lifecycle-reconciler` | Deterministic Actions gate | Verify claim/PR provenance, persist lifecycle transitions, close only after exact-SHA dev evidence |
-| PR self-heal | Manual dispatch | `pr-self-heal` | Project Krypto Developer | One focused repair commit or blocked handoff |
+| PR reconciliation | PR/review/workflow events, 5-minute schedule | `agentic-pr-reconciler` | Deterministic Actions gate | Dispatch missing checks, publish merge policy, cap repair attempts |
+| Lifecycle reconciliation | Issue/PR/dev-workflow events, 15-minute schedule | `agentic-lifecycle-reconciler` | Deterministic Actions gate | Verify claim/PR provenance, enroll native auto-merge, persist lifecycle transitions, close only after exact-SHA dev evidence |
+| PR self-heal | Reconciler dispatch after a failed required check | `pr-self-heal` | Project Krypto Developer | One focused repair commit or blocked handoff |
 | Dev delivery | Successful push CI on `main` | `azure-deploy-dev` | Deterministic deployment workflow | Exact-SHA shadow deployment, activation/schedule proof, `Dev deployment evidence`, fail-closed rollback |
+| Factory E2E | Manual `happy-path` or `self-heal` dispatch | `agentic-sdlc-e2e` | Deterministic Actions canary | Required-context, repair, native auto-merge, and cleanup evidence |
 | SDLC evaluation | Manual/weekly schedule | `agentic-evals` | Deterministic Actions scorer | Read-only eval report artifact; no live-model call |
 | Factory entropy | Manual/weekly schedule | `harness-entropy` | Entropy Reporter | One report-only issue or noop; no fix authority |
 | Correction evidence | Manual/weekly schedule | `agentic-corrections` | Correction Reporter | Trusted-human label correction metrics or noop |
@@ -223,8 +248,10 @@ manual/weekly schedule with no live-model call.
 | PR opened/synchronize/reopened/ready | `code-review` | Lightweight automatic review; can add specialist labels. |
 | PR high-risk paths | `trading-safety-review` | Automatic for `src/trading/**`, `src/tools/**`, `src/guardrails/**`, `src/agent/**`, `src/backtest/**`, `src/app/api/agent/**`, `src/db/**`, `drizzle/**`, `supabase/migrations/**`, and `specs/rfcs/**`. PR label events are still path-scoped. |
 | CI workflow failure | `ci-doctor` | Watches `CI` on `main` and `develop/**`. |
+| PR/check/review event or 5-minute schedule | `agentic-pr-reconciler` | Restores missed CI/review dispatches, publishes merge policy, and dispatches bounded repair. |
 | Issue/PR/Azure-dev event or 15-minute schedule | `agentic-lifecycle-reconciler` | Correlates the factory issue, claim, Copilot PR, merge SHA, and dev evidence without executing PR code. |
 | Successful push CI on `main` | `azure-deploy-dev` | Deploys the exact CI-passed SHA to dev shadow, publishes a commit status and development Deployment, and verifies rollback on activation failure. |
+| Manual factory E2E | `agentic-sdlc-e2e` | Updates one stable docs heartbeat through the happy path or deterministic self-heal path; never runs on a schedule or PR event. |
 | Manual/weekly schedule | `agentic-evals` | Runs deterministic SDLC safety/contract fixtures and uploads an artifact; no model call. |
 | Manual/weekly schedule | `harness-entropy` | Reports material harness entropy without fix authority. |
 | Manual/weekly schedule | `agentic-corrections` | Reports PM-triage and specialist-label corrections from trusted-human label events. |
@@ -252,7 +279,8 @@ QA and docs-sync intentionally do not have slash commands. They are label-trigge
 The table below is generated from GH-AW source frontmatter. It covers the
 agent workflows compiled from `.github/workflows/*.md`. Traditional
 deterministic workflows — `factory-queue-controller`,
-`agentic-lifecycle-reconciler`, `agentic-factory-full-e2e`, `agentic-evals`, and the
+`agentic-pr-reconciler`, `agentic-lifecycle-reconciler`,
+`agentic-sdlc-e2e`, `agentic-factory-full-e2e`, `agentic-evals`, and the
 Azure deployment workflows — are not GH-AW sources; their behavior is
 described in the SDLC lifecycle and safety sections. `agentic-evals` runs the
 deterministic SDLC evaluation (see
@@ -321,7 +349,7 @@ Labels are workflow state transitions:
 | `factory:merged` | Merged by the deterministic merge policy or human boundary approval. |
 | `factory:deployed-dev` | Dev evidence validated for the exact merged SHA. |
 | `factory:done` | Terminal; no further factory action occurs. |
-| `agentic-automerge` | Legacy enrollment marker; it no longer arms native auto-merge. |
+| `agentic-automerge` | Agent PR is enrolled in reconciliation and native auto-merge. |
 | `self-heal-exhausted` | Repair stopped after the tier's cap (routine 2, sensitive 1, boundary 0 commits). |
 
 ## Safety and governance model
@@ -332,10 +360,8 @@ The factory is designed to automate work without letting the agent directly muta
 - **Safe outputs:** comments, labels, issues, and PRs are applied by separate safe-output jobs.
 - **Goal-bound discovery:** no issue is selectable by the queue controller without an active, human-approved `factory:goal` + `factory:goal-approved` ancestor whose allowed scope, risk ceiling, WIP, and assignment budget still cover it.
 - **One issue in flight at a time:** `factory-queue-controller` claims and dispatches at most one eligible `ready-for-ai-dev` issue per pass, and `implement-ticket` never edits code or opens a PR itself — it hands off to the Copilot coding agent via `assign-to-agent`, which opens exactly one `[ai-dev] ` PR.
-- **Human merge:** the coding agent's PR remains open for human merge after
-  branch protection, current-head review evidence, and conversation resolution
-  are satisfied. No repository workflow arms native auto-merge.
-- **Tiered required checks:** `risk:routine` requires baseline CI + `Agentic code review`; `risk:sensitive` also requires `QA verification` plus any path-selected `Security review`/`Trading safety review`; `risk:boundary` requires the same checks **plus current-head human approval**.
+- **Native auto-merge:** the coding agent's PR enrolls in auto-merge, while every same-repository PR requires CI, current-head code review, conversation resolution, and the deterministic merge-policy status.
+- **Tiered required checks:** `risk:routine` requires baseline CI + `Agentic code review`; `risk:sensitive` also requires `QA verification` plus any path-selected `Security review`/`Trading safety review` (independent agent-check consensus is sufficient — no human review is required to merge); `risk:boundary` requires the same checks **plus current-head human approval**, and is never auto-merged on agent checks alone.
 - **Bounded, tiered self-heal:** eligible agent PRs receive at most 2 (`risk:routine`), 1 (`risk:sensitive`), or 0 (`risk:boundary`) focused repair commits before being blocked; `.github/**`, `infra/**`, `specs/**`, package manifests, environment files, and PRs already carrying `ready-for-human-review` are excluded structurally.
 - **Allowed paths:** every approved goal and queue-ready issue declares exact
   files or terminal `path/**` globs. Child patterns cannot widen the goal, and
@@ -344,29 +370,14 @@ The factory is designed to automate work without letting the agent directly muta
   from editing factory control, branch protection, production/live, secret, or
   permission boundaries.
 - **Protected files:** protected file changes fall back to issues instead of being silently committed.
-- **Specialist reviews:** security and trading-safety checks are selected
-  deterministically from changed paths; QA and docs remain label-driven.
-  Operators must verify applicable current-head results before merging.
+- **Specialist reviews:** security and trading-safety checks are selected deterministically from changed paths; QA and docs remain label-driven. `needs-qa`, `security-review`, and `trading-safety` are persistent review requirements (not lifecycle state), so the reconciler requests a fresh check on every new head.
 - **High-risk paths:** trading-safety review runs for trading, agent, guardrail, backtest, DB, migration, and RFC paths.
 - **Human control:** a current-head change request or blocking label vetoes agent approval; humans retain deployment, live-trading, secret, and architecture-decision authority, and are the only actors who may return a paused factory to `active`.
 - **Factory modes:** the singleton `factory-control` issue's mode label (`factory-mode:shadow`/`active`/`paused`) gates the queue controller and the merge policy; missing, duplicate, or conflicting mode labels fail closed to `paused`. Automation may pause itself on a detected safety trigger; it may never unpause itself.
 - **Opportunity discovery:** creates software tickets and experiments behind rubber-duck review; it does not provide trading advice, execute trades, or bypass safety review.
 - **Cost/noise controls:** workflows use `max-ai-credits`, `max-daily-ai-credits`, deduplication where appropriate, and `noop.report-as-issue: false`. Status and governance reports update one canonical tracking issue each, including an autonomy-funnel count per lifecycle label and a hard-invariants check, instead of creating a new issue every run.
 
-Required repository configuration: strict required
-checks for both CI jobs and `Agentic code review`; zero unconditional approving
-reviews; required conversation resolution and admin enforcement enabled; force
-pushes and protected-branch deletion disabled. Conditional security and
-trading-safety checks, and boundary-tier human approval, are evaluated by the
-human reviewers before merge. Separately, repository
-Environments split human-gated deploy scope from the one environment
-(`development`) the factory may mutate autonomously — see
-[`specs/deployment.md`](../specs/deployment.md) §2.
-
-Repository administrators must remove the retired `Agentic merge policy`
-required context from `main` branch protection and disable GitHub Code Quality
-under **Settings → Security → Code quality** when its dynamic
-`Analyze (javascript-typescript)` job is not wanted.
+Required repository configuration: native auto-merge enabled; strict required checks for both CI jobs, `Agentic code review`, and `Agentic merge policy`; zero unconditional approving reviews; required conversation resolution and admin enforcement enabled; force pushes and protected-branch deletion disabled. Conditional security and trading-safety checks, and boundary-tier human approval, are enforced through `Agentic merge policy`. Separately, repository Environments split human-gated deploy scope from the one environment (`development`) the factory may mutate autonomously — see [`specs/deployment.md`](../specs/deployment.md) §2.
 
 GitHub Actions must be allowed to create pull requests while default workflow permissions remain read-only. For trusted enrolled same-repository agent PRs, held CI runs are approved and held agentic-review runs are replaced by a PR-head manual review dispatch; neither condition is treated as a code failure or sent to self-heal.
 
@@ -382,8 +393,8 @@ GitHub Actions must be allowed to create pull requests while default workflow pe
 6. `implement-ticket` validates the claim and uses `assign-to-agent` to hand the issue to the Copilot coding agent (`project-krypto-dev`), which opens exactly one `[ai-dev] ` PR.
 7. `code-review` reviews the PR automatically.
 8. Deterministic path rules trigger security/trading-safety checks; labels trigger QA/docs review as needed. `risk:routine` needs only CI + code review; `risk:sensitive` also needs `QA verification` plus any selected specialist check (agent-check consensus, no human review required); `risk:boundary` needs the same checks plus current-head human approval.
-9. A human verifies all applicable current-head checks and merges or requests
-   changes. Forks still require human approval regardless of tier.
+9. The reconciler dispatches missing checks and risk-tiered bounded self-heal (2/1/0 repair commits) when needed.
+10. Same-repository changes merge when all required checks pass (plus human approval at the boundary tier); forks still require human approval regardless of tier.
 
 ### Proactive opportunity
 
@@ -401,9 +412,7 @@ GitHub Actions must be allowed to create pull requests while default workflow pe
    `supabase/migrations/**`, or `specs/rfcs/**`.
 2. `trading-safety-review` runs automatically and emits the `Trading safety review` check; path selection or the retained requirement label causes a fresh review on every new head.
 3. It classifies the change as safe, safe-with-required-fixes, or unsafe.
-4. A human verifies the current-head trading-safety result before merge; if the
-   issue/PR also carries `risk:boundary`, current-head human approval is
-   required in addition.
+4. The required merge-policy status stays pending until the current-head trading-safety check is `safe`; if the issue/PR also carries `risk:boundary`, a current-head human approval is required in addition.
 
 ### CI failure
 
@@ -413,10 +422,34 @@ GitHub Actions must be allowed to create pull requests while default workflow pe
 
 ### Agent PR check failure
 
-1. A human explicitly dispatches `pr-self-heal` for an eligible failed agent PR.
+1. The reconciler observes failed CI or an `Agentic code review` failure on an enrolled agent PR.
 2. `pr-self-heal` inspects the evidence and may push one focused repair commit, bounded by the PR's risk tier (2 for `risk:routine`, 1 for `risk:sensitive`, 0 for `risk:boundary`), never touching `.github/**`, `infra/**`, `specs/**`, package manifests, or environment files.
 3. CI and review rerun on the new head.
-4. After the tier's repair cap is exhausted, a human handles the PR.
+4. After the tier's repair cap is exhausted, or one no-change repair run, the PR is labeled `self-heal-exhausted` and `blocked`.
+
+### Manual merge/review canary
+
+1. An operator dispatches `agentic-sdlc-e2e.yml` from `main` in
+   `happy-path` or `self-heal` mode. The workflow is portable — it has no
+   hardcoded repository owner, so it runs unmodified in a fork or renamed
+   repository.
+2. The workflow creates an enrolled `github-actions[bot]` PR that changes only
+   `docs/e2e/factory-heartbeat.md` and invokes the reconciler.
+3. It requires successful `Quality and evidence gates`,
+   `PostgreSQL migrations and execution`, `Agentic code review`, and
+   `Agentic merge policy` contexts on the current head.
+4. After observing a fully settled head, it holds merge policy pending, enables
+   native auto-merge, and lets the reconciler restore success. Self-heal mode
+   additionally requires an initial review failure, a
+   `[self-heal]` commit, and removal of the deterministic marker.
+5. Only after those assertions and the full check suite settle does the E2E
+   workflow place a temporary pending merge-policy hold and enable native
+   auto-merge; the reconciler must restore the passing policy status.
+6. Success leaves one updated heartbeat on `main`; cleanup deletes the branch,
+   and failure also closes any open canary PR.
+
+This canary exercises the merge/review path only. It is not the full
+issue-to-coding-agent cycle canary described next.
 
 ### Full issue-to-coding-agent cycle canary
 
@@ -542,8 +575,8 @@ from model-authored markers:
 - **PM triage** — requested `add-labels`/`noop` and the target issue;
 - **Specialist routing** — requested `add-labels` limited to
   `security-review`/`trading-safety` as *semantic* routes, kept separate from the
-  *immutable* routes derived from the PR's changed paths via
-  `.github/scripts/agentic-factory-policy.cjs`.
+  *immutable* routes derived from the PR's changed paths via the canonical
+  reconciler (`.github/scripts/agentic-pr-reconciler.cjs`).
 
 Trusted truth comes only from later GitHub label events authored by a
 `User` collaborator with `admin`/`maintain`/`write` permission after the

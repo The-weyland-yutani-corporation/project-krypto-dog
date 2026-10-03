@@ -7,7 +7,7 @@
  * This module is pure and side-effect free: it never calls GitHub, never
  * reads the filesystem, and never uses randomness or wall-clock time
  * implicitly (all "now" values are explicit inputs where relevant). It is
- * intended to be `require()`d directly by deterministic workflows, the queue
+ * intended to be `require()`d directly by the reconciler, the queue
  * controller, and tests.
  *
  * Fail-closed rule: whenever inputs are missing, malformed, or unknown, the

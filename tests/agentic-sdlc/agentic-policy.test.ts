@@ -18,9 +18,10 @@ interface PolicyModule {
   loadAgenticPolicy(policyPath?: string): AgenticPolicy;
 }
 
-interface FactoryPolicyModule {
-  requiresSecurityCheck(filename: string): boolean;
-  requiresTradingSafetyCheck(filename: string): boolean;
+interface ReconcilerModule {
+  requiresSecurityReview(filename: string): boolean;
+  requiresTradingSafetyReview(filename: string): boolean;
+  isLowRiskPath(filename: string): boolean;
 }
 
 const root = path.resolve(__dirname, "../..");
@@ -28,8 +29,8 @@ const policyPath = path.join(root, ".github/agentic-policy.json");
 const policyModule = jest.requireActual<PolicyModule>(
   "../../.github/scripts/agentic-policy.cjs",
 );
-const factoryPolicy = jest.requireActual<FactoryPolicyModule>(
-  "../../.github/scripts/agentic-factory-policy.cjs",
+const reconciler = jest.requireActual<ReconcilerModule>(
+  "../../.github/scripts/agentic-pr-reconciler.cjs",
 );
 
 describe("canonical agentic policy", () => {
@@ -59,6 +60,36 @@ describe("canonical agentic policy", () => {
     );
   });
 
+  it.each(["neutral", "skipped"])(
+    "does not treat a %s named review check as approval",
+    (conclusion) => {
+      const reconcilerModule = jest.requireActual<{
+        getCheckState(
+          checks: Array<{
+            id: number;
+            name: string;
+            status: string;
+            conclusion: string;
+          }>,
+          name: string,
+        ): string;
+      }>("../../.github/scripts/agentic-pr-reconciler.cjs");
+      expect(
+        reconcilerModule.getCheckState(
+          [
+            {
+              id: 1,
+              name: "Security review",
+              status: "completed",
+              conclusion,
+            },
+          ],
+          "Security review",
+        ),
+      ).toBe("failure");
+    },
+  );
+
   it.each([
     ".github/workflows/ci.yml",
     "src/app/api/admin/pause/route.ts",
@@ -75,7 +106,7 @@ describe("canonical agentic policy", () => {
     "package-lock.json",
     "specs/deployment.md",
   ])("preserves security routing for %s", (filename) => {
-    expect(factoryPolicy.requiresSecurityCheck(filename)).toBe(true);
+    expect(reconciler.requiresSecurityReview(filename)).toBe(true);
   });
 
   it.each([
@@ -90,7 +121,7 @@ describe("canonical agentic policy", () => {
     "supabase/migrations/0001.sql",
     "specs/rfcs/0001-v3-live-trading.md",
   ])("preserves trading-safety routing for %s", (filename) => {
-    expect(factoryPolicy.requiresTradingSafetyCheck(filename)).toBe(true);
+    expect(reconciler.requiresTradingSafetyReview(filename)).toBe(true);
   });
 
   it.each([
@@ -99,8 +130,19 @@ describe("canonical agentic policy", () => {
     "docs/guides/contributing.md",
     "README.md",
   ])("does not invent specialist routing for %s", (filename) => {
-    expect(factoryPolicy.requiresSecurityCheck(filename)).toBe(false);
-    expect(factoryPolicy.requiresTradingSafetyCheck(filename)).toBe(false);
+    expect(reconciler.requiresSecurityReview(filename)).toBe(false);
+    expect(reconciler.requiresTradingSafetyReview(filename)).toBe(false);
+  });
+
+  it.each([
+    ["docs/guides/contributing.md", true],
+    ["docs/e2e/factory-heartbeat.md", true],
+    ["docs/agentic-guide.md", false],
+    ["docs/trading/guide.md", false],
+    ["README.md", false],
+    ["docs/diagram.svg", false],
+  ])("preserves low-risk classification for %s", (filename, expected) => {
+    expect(reconciler.isLowRiskPath(filename)).toBe(expected);
   });
 
   it("rejects an unanchored specialist path pattern", () => {

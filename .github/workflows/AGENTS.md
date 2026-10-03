@@ -19,7 +19,8 @@ the thin entry point is [`../agents/agentic-workflows.md`](../agents/agentic-wor
 - Use **safe outputs** for any GitHub write; do not grant broad write scopes.
 - Reconciler and merge-policy implementation changes may be agent-authored, but
   they are `risk:boundary`: never auto-repaired or auto-merged, and gated by a
-  current-head authorized repository administrator's explicit merge.
+  terminal **Agentic merge policy** result plus an authorized repository
+  administrator's explicit merge.
 - Do not change merge/authority semantics in
   [`../agentic-policy.json`](../agentic-policy.json), handle secrets/external
   accounts, or perform another human-only action from the root map.

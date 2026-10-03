@@ -33,7 +33,8 @@ identifiers. Anything not yet implemented is written as a requirement
 | `queue-controller` | The deterministic module (`agentic-queue-controller.cjs`) that selects at most one eligible issue. |
 | `assignment-worker` | The workflow step that turns a queue-controller selection into a claimed, dispatched implementation session. |
 | `implementation-agent` | Copilot coding-agent session that opens a PR for a claimed issue. |
-| `lifecycle-reconciler` | The workflow that reconciles issue/PR/deployment evidence into lifecycle-label transitions. |
+| `lifecycle-reconciler` | The workflow that reconciles PR/check state into lifecycle-label transitions (opens/closes duplicate PRs, applies repair/blocked/human-review labels). |
+| `merge-policy` | The deterministic `Agentic merge policy` check that approves same-repository PRs after current-head required checks pass. |
 | `deployment-reconciler` | The workflow that validates dev evidence and applies `factory:deployed-dev`. |
 
 ## 2. Factory modes
@@ -45,8 +46,8 @@ queue adapter maps the suffix to `config.factoryMode`:
 
 | Mode | Queue controller behavior | Merge/deploy behavior |
 |---|---|---|
-| `shadow` | Runs `selectNextIssue`; result is `advisory: true`. Nothing is claimed or dispatched. | Deployment reconciliation computes results but does not act. |
-| `active` | Dispatches the selected candidate (if any) for real. | Deployment reconciliation acts within the bounds of this contract. |
+| `shadow` | Runs `selectNextIssue`; result is `advisory: true`. Nothing is claimed or dispatched. | Merge policy and deployment reconciler compute results but do not act. |
+| `active` | Dispatches the selected candidate (if any) for real. | Merge policy and deployment reconciler act within the bounds of this contract. |
 | `paused` | No selection is attempted. | No merge or deploy action is attempted. Existing in-flight work is left exactly as-is (no forced cancellation). |
 
 Any other value, or a missing value, MUST be treated as `paused` (fail
@@ -240,9 +241,9 @@ required-check set:
 
 | Tier | Baseline | + | + path-selected | Merge authority |
 |---|---|---|---|---|
-| `risk:routine` | `Quality and evidence gates`, `PostgreSQL migrations and execution`, `Agentic code review` | -- | `Security review` / `Trading safety review` if changed paths match (§8) | human merge after current-head evidence passes |
-| `risk:sensitive` | same baseline | `QA verification` | same path-selected rule | human merge after current-head evidence passes |
-| `risk:boundary` | same baseline | `QA verification` | same path-selected rule | only an authorized repository administrator's explicit merge |
+| `risk:routine` | `Quality and evidence gates`, `PostgreSQL migrations and execution`, `Agentic code review` | -- | `Security review` / `Trading safety review` if changed paths match (§8) | `Agentic merge policy` may pass and auto-merge |
+| `risk:sensitive` | same baseline | `QA verification` | same path-selected rule | `Agentic merge policy` may pass and auto-merge |
+| `risk:boundary` | same baseline | `QA verification` | same path-selected rule | `Agentic merge policy` remains `action_required`; only an authorized repository administrator's explicit merge may merge |
 
 Path-selected specialist checks (`requiresSecurityCheck`,
 `requiresTradingSafetyCheck`) are independent of tier: they trigger on the
@@ -258,24 +259,39 @@ computed** and MUST be evaluated against the exact current head SHA. A check
 that ran on a previous commit does not satisfy a required check after a new
 commit lands, including a `[self-heal]` repair commit.
 
-The repository publishes no synthetic merge-policy or boundary-approval check.
-Humans inspect the exact-current-head baseline, QA, and path-selected specialist
-checks directly. A draft, human change request, blocking label, invalid
-provenance or scope, risk violation, paused/shadow factory, failed required
-review, or unresolved required check remains a fail-closed reason not to merge.
+Synthetic policy checks distinguish durable holds from transient automation:
 
-For a same-repository boundary PR, an authorized repository administrator's
-explicit merge is the human boundary decision and GitHub records that
-administrator as the merge actor. Automation MUST NOT perform or emulate that
-merge. Historical `Agentic merge policy` and `Human boundary approval` check
-runs may remain visible on older commits, but repository automation no longer
-creates or manages them.
+- a passing current-head verdict is completed with `success`;
+- a draft, human change request, blocking label, invalid provenance or scope,
+  risk violation, paused/shadow factory, failed required review, or
+  `risk:boundary` classification is completed with `action_required`;
+- only an actively pending required workflow or reconciliation write remains
+  `in_progress`.
+
+Both `action_required` and `in_progress` remain non-passing and fail closed.
+For a same-repository boundary PR, successful current-head automated checks do
+not turn `Agentic merge policy` green: its terminal summary is
+`Explicit admin merge required for boundary PR`. A GitHub review approval does
+not change that result or arm auto-merge. An authorized repository
+administrator's explicit merge is the human boundary decision and GitHub
+records that administrator as the merge actor. Automation MUST NOT perform or
+emulate that merge.
+
+When a PR head is superseded or the PR is closed or merged, active
+`Agentic merge policy` and `Human boundary approval` checks on that stale head
+are completed with `cancelled`. The reconciler's explicit manual backfill mode
+applies the same cleanup once to recorded closed and merged PR heads while open
+PRs are reconciled normally; scheduled runs do not repeatedly scan historical
+heads for check cleanup. `Human boundary approval` is a deprecated historical
+check name retained only so the reconciler can cancel old active instances; no
+new check with that name is published.
 
 ## 8. Review-requirement labels are not lifecycle state
 
 `needs-qa`, `security-review`, and `trading-safety` are **review requirements,
 not lifecycle states**. They MUST NOT appear in the lifecycle table (§5) or be
-treated as a phase a PR "is in." Each is:
+treated as a phase a PR "is in." They persist across PR head changes so the
+reconciler can dispatch a fresh exact-current-head check. Each is:
 
 | Label | Machine-readable check it gates | Deterministic clearer |
 |---|---|---|
@@ -284,9 +300,9 @@ treated as a phase a PR "is in." Each is:
 | `trading-safety` | `Trading safety review` (`TRADING_SAFETY_CHECK`) | A successful check on the exact current head clears the merge gate; a new head makes it pending again. |
 
 A label is applied when its corresponding check becomes required and remains
-until the lifecycle ends or a human explicitly changes scope. The matching
-workflow must run against the current head before a human merges the PR. If
-the current-head conclusion cannot be resolved, merge MUST NOT proceed.
+until the lifecycle ends or a human explicitly changes scope. It causes the
+reconciler to dispatch that check again whenever the PR head changes. If the
+current-head conclusion cannot be resolved, merge MUST NOT proceed.
 
 ## 9. Claim / provenance nonce contract
 
@@ -390,11 +406,11 @@ directly to `ready-for-human-review`.
   it):
   1. At least 10 consecutive eligible factory-dispatched issues reached
      `factory:done` after exact-SHA dev evidence, with **zero** cases of a
-     human needing to remediate a merge-safety decision after the fact.
+     human needing to override an autonomous merge decision after the fact.
   2. **Zero** stale-claim recoveries (§9) were required in that window.
   3. **Zero** `risk:boundary` misclassifications were discovered after the
-     fact (i.e., no case where a change later found to be boundary-tier was
-     merged without the required current-head human approval).
+     fact (i.e., no case where a change later found to be boundary-tier had
+     been auto-merged as routine/sensitive).
   4. Dev evidence (§13) validated cleanly for every `factory:merged` change
      in that window -- no rollback was triggered by missing/mismatched
      evidence.

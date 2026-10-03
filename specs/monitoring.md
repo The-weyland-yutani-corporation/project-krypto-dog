@@ -336,7 +336,7 @@ emits a versioned JSON report:
   issue; **specialist routing** predictions parse `add-labels` limited to
   `security-review`/`trading-safety` as *semantic* routes, kept separate from the
   *immutable* routes derived deterministically from the PR's changed filenames via
-  the canonical factory policy (`.github/scripts/agentic-factory-policy.cjs`);
+  the canonical reconciler (`.github/scripts/agentic-pr-reconciler.cjs`);
 - trusted truth comes only from later GitHub label events authored by a
   `User` collaborator with `admin`/`maintain`/`write` permission, after the
   prediction was applied — bots and untrusted users are retained as provenance
