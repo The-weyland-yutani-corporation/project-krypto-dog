@@ -1,7 +1,7 @@
 name: Agentic Lifecycle Reconciler
 
 # Deterministic issue/session/PR/dev lifecycle reconciler for the
-# safety-bounded autonomous SDLC factory (specs/agentic-factory-contract.md).
+# safety-bounded autonomous SDLC factory (specs/factory.md).
 # This workflow never executes issue/PR-authored code: it only checks out
 # the trusted reconciler implementation from the exact default branch and
 # reads/writes issue, PR, check, and deployment state through the GitHub

@@ -4,21 +4,6 @@ Project Krypto is an autonomous ETH/USDC **paper-trading** app. This file is a
 map for coding agents, not an encyclopedia. Read the authoritative document a
 route points to; do not re-derive policy from memory.
 
-<!-- safety-kernel:start -->
-## Safety kernel (never weaken)
-
-- **Paper only.** v2 executes paper trades exclusively. Live execution is a
-  separate RFC + explicit rollout; do not enable it here.
-- **Model is read-only.** The LLM returns exactly one structured `HOLD`, `BUY`,
-  or `SELL` proposal and must never receive a mutating trade tool.
-- **Deterministic guardrails hold.** Do not silently weaken
-  `evaluateTradePolicy`, `authorizeTradeIntent`, the transactional paper
-  executor, accounting reconciliation, drawdown lock, cooldown, operator pause,
-  idempotent invocation, or the owned/expiring run lease.
-- **Fail loud.** No broad catches or silent fallbacks; journal and alert on
-  failure using existing patterns.
-- **Design system is binding.** Any frontend, admin UI, chart, or user-facing
-  copy/layout change follows root [`DESIGN.md`](./DESIGN.md).
 
 Canonical machine-readable policy data lives in
 [`.github/agentic-policy.json`](./.github/agentic-policy.json). Do not duplicate
@@ -29,19 +14,18 @@ its lists in prose; reference it.
 
 | Concern | Source of truth |
 | --- | --- |
-| Product behavior / requirements | [`specs/prd.md`](./specs/prd.md) |
+| Product behavior / requirements | [`specs/product.md`](./specs/product.md) |
 | Design system | [`DESIGN.md`](./DESIGN.md) |
-| Deployment procedure | [`specs/deployment.md`](./specs/deployment.md) |
-| Local testing | [`specs/local-testing.md`](./specs/local-testing.md) |
-| Monitoring | [`specs/monitoring.md`](./specs/monitoring.md) |
-| Readiness gates | [`specs/readiness.md`](./specs/readiness.md) |
-| Agentic SDLC evaluation | [`specs/agentic-sdlc-evaluation.md`](./specs/agentic-sdlc-evaluation.md) |
-| Factory autonomy contract | [`specs/agentic-factory-contract.md`](./specs/agentic-factory-contract.md) |
-| Architecture decisions | [`specs/decisions/`](./specs/decisions/) |
-| Future proposals | [`specs/rfcs/`](./specs/rfcs/) |
+| Deployment procedure | [`specs/operations.md`](./specs/operations.md) |
+| Local testing | [`specs/operations.md`](./specs/operations.md) |
+| Monitoring | [`specs/operations.md`](./specs/operations.md) |
+| Readiness gates | [`specs/operations.md`](./specs/operations.md) |
+| Agentic SDLC evaluation | [`specs/evaluation.md`](./specs/evaluation.md) |
+| Factory autonomy contract | [`specs/factory.md`](./specs/factory.md) |
+| Architecture decisions / future boundaries | [`specs/governance.md`](./specs/governance.md) |
 | Merge / self-heal / routing policy data | [`.github/agentic-policy.json`](./.github/agentic-policy.json) |
 | Factory risk / lifecycle policy core | [`.github/scripts/agentic-factory-policy.cjs`](./.github/scripts/agentic-factory-policy.cjs) |
-| Merge-authorization rationale | [`specs/decisions/0008-agentic-merge-authorization.md`](./specs/decisions/0008-agentic-merge-authorization.md) |
+| Merge-authorization rationale | [`specs/governance.md`](./specs/governance.md) |
 
 ## Instruction discovery
 
@@ -99,14 +83,14 @@ Path classification is data in
 - **Security review** — `.github/**`, admin/auth API routes, deployment, auth/
   CSRF/secure-compare libs, `src/proxy.ts`, `.env.example`, build/manifest files.
 - **Trading safety review** — `src/agent|backtest|db|guardrails|tools|trading/`,
-  `src/app/api/agent/`, `drizzle/`, `specs/rfcs/`.
+  `src/app/api/agent/`, `drizzle/`, and the product/governance specs.
 
 ## Merge & authority policy
 
 The factory light switch is explicit and fail-closed: `active` permits bounded
 dispatch and merge actions, `shadow` evaluates without dispatching or merging,
 and `paused` performs neither. A missing or ambiguous mode resolves to `paused`.
-See [`specs/agentic-factory-contract.md`](./specs/agentic-factory-contract.md).
+See [`specs/factory.md`](./specs/factory.md).
 
 For **same-repository** pull requests, current-head checks authorize routine and
 sensitive merges without blanket per-change human approval:
@@ -114,7 +98,8 @@ sensitive merges without blanket per-change human approval:
 - every PR requires a passing **Agentic code review**;
 - sensitive and boundary work also requires passing **QA verification**;
 - security-sensitive paths also require a passing **Security review**;
-- trading/guardrail/agent/backtest/db/migration/RFC paths also require a passing
+- trading/guardrail/agent/backtest/db/migration and canonical product/governance
+  spec paths also require a passing
   **Trading safety review**;
 - agents may author `risk:boundary` changes, but those changes are never
   auto-repaired or auto-merged; after all current-head automated checks pass,
@@ -140,7 +125,8 @@ operational authority.
 Stop and escalate to a human instead of proceeding when a change would:
 
 - touch any human-only decision above;
-- enable or approach live trading without an accepted RFC + release plan;
+- enable or approach live trading without an accepted governance proposal and
+  release plan;
 - weaken any safety-kernel invariant or a `DESIGN.md` safety-state rule;
 - require editing `.github/agentic-policy.json` merge/authority semantics;
 - come from a fork (needs human approval before merge).

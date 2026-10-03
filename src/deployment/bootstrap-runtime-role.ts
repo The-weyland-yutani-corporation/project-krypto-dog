@@ -3,7 +3,7 @@ import postgres from "postgres";
 /**
  * Narrowly-scoped, idempotent bootstrap for the Azure PostgreSQL safety
  * transition (see drizzle/0007_azure_retire_supabase_http_functions.sql
- * and specs/decisions/0008-azure-native-deployment-architecture.md).
+ * and specs/governance.md).
  *
  * Migration 0007 creates the least-privilege `krypto_runtime` NOLOGIN group
  * role with explicit schema/table/sequence privileges. It intentionally

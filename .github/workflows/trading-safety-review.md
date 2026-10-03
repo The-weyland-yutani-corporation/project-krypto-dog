@@ -29,7 +29,8 @@ on:
       - "src/db/**"
       - "drizzle/**"
       - "supabase/migrations/**"
-      - "specs/rfcs/**"
+      - "specs/product.md"
+      - "specs/governance.md"
   issues:
     types: [labeled]
     names: [trading-safety]

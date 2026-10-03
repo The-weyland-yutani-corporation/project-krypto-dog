@@ -2,7 +2,7 @@
 --
 -- The Supabase pg_cron/pg_net HTTP-invocation functions are obsolete on
 -- Azure Database for PostgreSQL Flexible Server: scheduling moves to Azure
--- Container Apps Jobs (see specs/decisions/0008-azure-native-deployment-architecture.md),
+-- Container Apps Jobs (see specs/operations.md and specs/governance.md),
 -- which call the application's HTTP routes directly instead of a
 -- database-side pg_net call. This migration drops the two now-unused
 -- functions and establishes a least-privilege NOLOGIN runtime group role

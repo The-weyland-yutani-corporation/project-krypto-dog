@@ -536,7 +536,7 @@ function ruleWorkflowTelemetryCoverage(ctx) {
 function ruleArchitectureBoundaryHotspots(ctx) {
   const ruleId = "architecture_boundary_hotspots";
   const remediation =
-    "remove the cross-boundary import (see specs/decisions/0009-agent-legible-architecture-boundaries.md); the authoritative gate is ESLint + tests";
+    "remove the cross-boundary import (see specs/governance.md); the authoritative gate is ESLint + tests";
   const violations = [];
   for (const rel of ["src/agent/decision.ts", "src/agent/llm.ts"]) {
     const text = readFileIfExists(path.join(ctx.repoRoot, rel));

@@ -34,17 +34,13 @@
 | **Current blockers** | A separate PostHog project and a new evidence-bound promotion design remain mandatory before production may leave `disabled`. The 90-day production evidence policy remains `Unlocked` pending separate irreversible approval. |
 | **Stack** | Next.js 16 (App Router) · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
 | **Scheduling state** | Dev hourly/daily jobs are monitored `Schedule` jobs in `shadow`; production jobs are all `Manual` and production has no promotion workflow. |
-| **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see ADR `0008` and `infra/README.md` |
-| **Architecture and live links** | [`specs/architecture.md`](./specs/architecture.md) — hosted baseline, target diagrams, planned resources, live endpoint register, rollout safety, and operator consoles |
-| **Spec** | [`specs/prd.md`](./specs/prd.md) (current) · [`specs/archive/`](./specs/archive/) (v1, v2 history) |
-| **Deploy** | [`specs/deployment.md`](./specs/deployment.md) (Azure runbook) · [`infra/README.md`](./infra/README.md) (Bicep infrastructure design) |
-| **Local test** | [`specs/local-testing.md`](./specs/local-testing.md) |
-| **Monitoring** | [`specs/monitoring.md`](./specs/monitoring.md) |
-| **Readiness** | [`specs/readiness.md`](./specs/readiness.md) |
+| **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see `specs/operations.md` and `infra/README.md` |
+| **Product** | [`specs/product.md`](./specs/product.md) |
+| **Operations** | [`specs/operations.md`](./specs/operations.md) |
 | **Evaluation** | [`specs/evaluation.md`](./specs/evaluation.md) |
+| **Factory** | [`specs/factory.md`](./specs/factory.md) |
+| **Decisions / future boundaries** | [`specs/governance.md`](./specs/governance.md) |
 | **Design** | [`DESIGN.md`](./DESIGN.md) |
-| **Decisions** | [`specs/decisions/`](./specs/decisions/) (ADRs) |
-| **Future work** | [`specs/rfcs/`](./specs/rfcs/) (RFC 0001: v3 live trading · RFC 0002: Evidence-Grade Paper Trading) |
 
 ## What it does
 
@@ -169,7 +165,7 @@ drizzle/                  # Generated migrations
 infra/                     # Bicep platform account/model/access, dev/prod foundation,
                            # release, rollout, and schedule monitoring
 .github/workflows/azure-* # OIDC platform/access, validation, deploy, and rotation flows
-specs/                    # Product spec, ADRs, RFCs, deployment runbook
+specs/                    # Five canonical product/operations/evaluation/factory/governance specs
 scripts/                  # One-shot scripts (seed, etc.)
 tests/                    # Jest unit + integration tests
 ```
@@ -180,19 +176,19 @@ tests/                    # Jest unit + integration tests
 > approved.
 > Azure foundations and operational Luna deployments are provisioned, but every
 > full release/evidence/rollout gate remains for future promotions. See
-> [`specs/readiness.md`](./specs/readiness.md) for the full release gates.
+> [`specs/operations.md`](./specs/operations.md) for the full release gates.
 
 > **Target platform: Azure-native; dev and production releases deployed.**
-> The approved deployment plan supersedes the retired hosted baseline with a fully
-> Azure-native target (ADR
-> [`0008`](./specs/decisions/0008-azure-native-deployment-architecture.md)).
+> The approved deployment plan supersedes the retired hosted baseline with a
+> fully Azure-native target; rationale is summarized in
+> [`specs/governance.md`](./specs/governance.md).
 > The Bicep templates, GitHub Actions workflows, and application-side
 > deployment code for that target all exist in this repo — see
 > [`infra/README.md`](./infra/README.md) and
-> [`specs/deployment.md`](./specs/deployment.md). Required providers,
+> [`specs/operations.md`](./specs/operations.md). Required providers,
 > bootstrap/OIDC, operational Luna, workload access, both foundations, and both
 > releases are live. Dev is shadow/scheduled; production is disabled/manual.
-> See [`specs/architecture.md`](./specs/architecture.md) for diagrams,
+> See [`specs/operations.md`](./specs/operations.md) for diagrams,
 > live/planned resource names, the exact current-vs-target state, and safe
 > operator links. The selected runtime subscription is **Visual Studio
 > Enterprise Subscription**; do not publish its subscription ID.
@@ -219,7 +215,7 @@ fail-closed evidence checks. Branch protection was restored after each reviewed
 merge. Dev now also deploys automatically after every successful push-triggered
 `CI` run on `main`, publishing `Dev deployment evidence` and a GitHub
 Deployment for the exact SHA CI validated (see
-[`specs/deployment.md`](./specs/deployment.md) §2-3). Shared-key PostHog
+[`specs/operations.md`](./specs/operations.md)). Shared-key PostHog
 telemetry is environment-tagged but cannot qualify as final project isolation
 for production promotion.
 
@@ -234,24 +230,26 @@ restore-verified before target smoke. The
 `production-promotion` identity/environment exists only for forced-disable
 steps in prod deploy and rotation. Any future production promotion requires a
 new evidence-bound design and trading-safety review. Follow
-[`specs/deployment.md`](./specs/deployment.md) (the implemented Azure
-runbook). The prior hosted-baseline runbook is preserved, unmodified
-except for its archive banner, at
-[`specs/archive/deployment.vercel-supabase.md`](./specs/archive/deployment.vercel-supabase.md)
-for historical/safety reference only -- do not follow it to start a new
-hosted-baseline production deployment.
+[`specs/operations.md`](./specs/operations.md) (the implemented Azure
+runbook). The retired hosted-baseline runbook remains available through Git history only;
+do not use it for a new deployment.
 
 ## Local testing
 
-Use [`specs/local-testing.md`](./specs/local-testing.md) for local Postgres setup, no-LLM smoke tests, optional live local paper runs, admin dashboard checks, and the current limits of profitability testing.
+Use [`specs/operations.md`](./specs/operations.md) for local Postgres setup, no-LLM smoke tests, optional live local paper runs, admin dashboard checks, and the current limits of profitability testing.
 
 ## Contributing / spec changes
 
-Project Krypto uses a hybrid spec strategy (see ADR [`0004-hybrid-spec-strategy.md`](./specs/decisions/0004-hybrid-spec-strategy.md)):
+Project Krypto keeps exactly five canonical specification files:
 
-- **Behaviour change** → update `specs/prd.md` in the same PR.
-- **Architectural decision** → add an ADR under `specs/decisions/`.
-- **Future proposal** → open an RFC under `specs/rfcs/`.
+- product behavior → `specs/product.md`;
+- deployment, testing, monitoring, readiness → `specs/operations.md`;
+- evidence and metrics → `specs/evaluation.md`;
+- agentic factory authority → `specs/factory.md`;
+- decisions and future boundaries → `specs/governance.md`.
+
+Do not add another file under `specs/`; Git history and release tags preserve
+historical versions.
 
 ## Repository
 

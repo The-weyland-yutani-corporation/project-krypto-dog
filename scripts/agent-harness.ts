@@ -9,7 +9,7 @@
  * executes a trade. `status` and `down` operate only on resources this
  * invocation created, verified through a versioned, secret-free manifest.
  *
- * See specs/decisions/0011-mock-first-worktree-harness.md.
+ * See specs/governance.md.
  *
  * This module exports pure, side-effect-free helpers (ids, ports, option/env
  * construction, refusal checks, exact command construction, pid ownership, and

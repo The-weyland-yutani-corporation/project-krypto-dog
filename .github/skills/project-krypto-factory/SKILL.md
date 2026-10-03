@@ -112,7 +112,8 @@ The automatic `trading-safety-review` PR path filter covers:
 - `src/db/**`
 - `drizzle/**`
 - `supabase/migrations/**`
-- `specs/rfcs/**`
+- `specs/product.md`
+- `specs/governance.md`
 
 That filter is not the risk classifier. Use
 `.github/scripts/agentic-factory-policy.cjs` as the only path-risk source:

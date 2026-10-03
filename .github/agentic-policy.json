@@ -62,7 +62,7 @@
       "exactPaths": [
         "src/proxy.ts",
         ".env.example",
-        "specs/deployment.md"
+        "specs/operations.md"
       ],
       "patterns": [
         "^\\.github/",
@@ -73,12 +73,14 @@
       ]
     },
     "tradingSafety": {
-      "exactPaths": [],
+      "exactPaths": [
+        "specs/product.md",
+        "specs/governance.md"
+      ],
       "patterns": [
         "^src/(?:agent|backtest|db|guardrails|tools|trading)/",
         "^src/app/api/agent/",
-        "^(?:drizzle|supabase/migrations)/",
-        "^specs/rfcs/"
+        "^(?:drizzle|supabase/migrations)/"
       ]
     }
   },

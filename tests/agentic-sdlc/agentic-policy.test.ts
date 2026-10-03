@@ -105,7 +105,7 @@ describe("canonical agentic policy", () => {
     "next.config.ts",
     "package.json",
     "package-lock.json",
-    "specs/deployment.md",
+    "specs/operations.md",
   ])("preserves security routing for %s", (filename) => {
     expect(reconciler.requiresSecurityReview(filename)).toBe(true);
   });
@@ -120,7 +120,8 @@ describe("canonical agentic policy", () => {
     "src/app/api/agent/run/route.ts",
     "drizzle/0001.sql",
     "supabase/migrations/0001.sql",
-    "specs/rfcs/0001-v3-live-trading.md",
+    "specs/product.md",
+    "specs/governance.md",
   ])("preserves trading-safety routing for %s", (filename) => {
     expect(reconciler.requiresTradingSafetyReview(filename)).toBe(true);
   });

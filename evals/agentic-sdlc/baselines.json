@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "corpusVersion": "1.0.0",
-  "description": "Golden baseline observations for PM-triage fixtures, keyed by fixture id. These are recorded known-good structured outputs used to exercise the scorer and the data contract. They are NOT live-model output; adopting a prompt change additionally requires TrialOps live evidence (see specs/agentic-sdlc-evaluation.md).",
+  "description": "Golden baseline observations for PM-triage fixtures, keyed by fixture id. These are recorded known-good structured outputs used to exercise the scorer and the data contract. They are NOT live-model output; adopting a prompt change additionally requires TrialOps live evidence (see specs/evaluation.md).",
   "observations": {
     "pm-triage-normal-feature": {
       "labels": ["ready-for-planning"],

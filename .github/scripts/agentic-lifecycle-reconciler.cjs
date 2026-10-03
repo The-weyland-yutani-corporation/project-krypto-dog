@@ -2,7 +2,7 @@
 
 /**
  * Deterministic issue/session/PR/dev lifecycle reconciler for the
- * safety-bounded autonomous SDLC factory (specs/agentic-factory-contract.md
+ * safety-bounded autonomous SDLC factory (specs/factory.md
  * sections 5, 9, 10, 13, 15).
  *
  * This reconciler NEVER executes issue/PR-authored code. It only reads

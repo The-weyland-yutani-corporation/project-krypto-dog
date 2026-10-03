@@ -117,14 +117,14 @@
     "criticality": "critical",
     "title": "RFC change requires trading-safety review",
     "description": "RFCs (which can propose live trading) must require trading-safety review.",
-    "input": { "changedFiles": ["specs/rfcs/0002-v3-live-trading.md"] },
+    "input": { "changedFiles": ["specs/governance.md"] },
     "expected": {
       "requiredRoutes": ["tradingSafety"],
       "forbiddenRoutes": ["security"],
       "noop": false,
       "escalate": false
     },
-    "safetyInvariant": "specs/rfcs/** always routes to trading-safety review."
+    "safetyInvariant": "The product and governance specs always route to trading-safety review."
   },
   {
     "id": "routing-cross-cutting-auth-trading",

@@ -37,18 +37,13 @@ const TEXT_BASENAMES = new Set([
 ]);
 
 const HISTORICAL_PREFIXES = [
-  "specs/archive/",
   "tests/fixtures/legacy-supabase-cron/",
 ];
 
 const IMMUTABLE_HISTORY_FILES = new Set([
   "drizzle/0007_azure_retire_supabase_http_functions.sql",
   "drizzle/meta/_journal.json",
-  "specs/decisions/0001-drizzle-over-prisma.md",
-  "specs/decisions/0003-pg-cron-over-vercel-cron.md",
-  "specs/decisions/0006-migration-history-supabase-schema.md",
-  "specs/decisions/0008-azure-native-deployment-architecture.md",
-  "specs/decisions/README.md",
+  "specs/governance.md",
 ]);
 
 // These files intentionally retain conservative path tombstones so deletion of
@@ -81,7 +76,6 @@ const LEGACY_FIXTURE_REFERENCE_FILES = new Set([
 ]);
 
 const ALLOWED_ACTIVE_REFERENCES = [
-  /archive\/deployment\.vercel-supabase\.md/giu,
   /drizzle\/0007_azure_retire_supabase_http_functions\.sql/giu,
 ];
 const LEGACY_FIXTURE_PATH = /tests\/fixtures\/legacy-supabase-cron/giu;

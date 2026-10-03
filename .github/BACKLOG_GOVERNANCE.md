@@ -1,6 +1,6 @@
 # Backlog Governance
 
-This document defines WIP thresholds, milestone rules, and unblock criteria for Project Krypto's issue backlog. It governs the agentic workflow factory to prevent scope explosion. Production-paper issue scope and ordering are mapped in [`specs/production-readiness-prd.v1.md`](../specs/production-readiness-prd.v1.md); this document remains authoritative for workflow governance. See [`specs/agentic-factory-contract.md`](../specs/agentic-factory-contract.md) and [ADR 0013](../specs/decisions/0013-autonomous-agentic-sdlc-factory.md) for the normative queue/lifecycle contract this document's thresholds feed.
+This document defines WIP thresholds, milestone rules, and unblock criteria for Project Krypto's issue backlog. It governs the agentic workflow factory to prevent scope explosion. Production-paper issue scope and ordering are mapped in [`specs/product.md`](../specs/product.md); this document remains authoritative for workflow governance. See [`specs/factory.md`](../specs/factory.md) and [ADR 0013](../specs/governance.md) for the normative queue/lifecycle contract this document's thresholds feed.
 
 ## Milestones
 

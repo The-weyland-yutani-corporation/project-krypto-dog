@@ -258,7 +258,10 @@ describe("minimum-risk path classification", () => {
     expect(policy.classifyPathTier("docs/agentic-software-factory.md")).toBe(
       RISK_TIERS.BOUNDARY,
     );
-    expect(policy.classifyPathTier("specs/agentic-factory-contract.md")).toBe(
+    expect(policy.classifyPathTier("specs/factory.md")).toBe(
+      RISK_TIERS.BOUNDARY,
+    );
+    expect(policy.classifyPathTier("specs/governance.md")).toBe(
       RISK_TIERS.BOUNDARY,
     );
   });
@@ -302,7 +305,7 @@ describe("minimum-risk path classification", () => {
       RISK_TIERS.BOUNDARY,
     );
     expect(policy.classifyPathTier("docs/branch-protection.md")).toBe(RISK_TIERS.BOUNDARY);
-    expect(policy.classifyPathTier("specs/rfcs/0001-v3-live-trading.md")).toBe(
+    expect(policy.classifyPathTier("specs/governance.md")).toBe(
       RISK_TIERS.BOUNDARY,
     );
     expect(policy.classifyPathTier("infra/iam/role-assignment.bicep")).toBe(RISK_TIERS.BOUNDARY);
