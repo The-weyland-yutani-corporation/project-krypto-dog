@@ -122,6 +122,7 @@ describe("canonical agentic policy", () => {
     "specs/product.md",
     "specs/operations.md",
     "specs/evaluation.md",
+    "specs/factory.md",
     "specs/governance.md",
   ])("preserves trading-safety routing for %s", (filename) => {
     expect(reconciler.requiresTradingSafetyReview(filename)).toBe(true);

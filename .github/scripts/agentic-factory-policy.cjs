@@ -158,7 +158,7 @@ const BOUNDARY_PATTERNS = [
   /^\.github\/BACKLOG_GOVERNANCE\.md$/i,
   /^\.github\/copilot-instructions\.md$/i,
   /^docs\/agentic-(?:software-factory|workflows-map)\.md$/i,
-  /^specs\/(?:factory|governance|operations|product)\.md$/i,
+  /^specs\/(?:factory|governance)\.md$/i,
   // Branch/repo-policy docs, wherever they live.
   /(^|\/)(branch-protection|repo-policy)(\.|\/|$)/i,
   // Secrets/permissions/identity policy.
@@ -491,7 +491,7 @@ function requiresTradingSafetyCheck(filename) {
     (/^src\/(?:agent|backtest|db|guardrails|tools|trading)\//.test(filename) ||
       /^src\/app\/api\/agent\//.test(filename) ||
       /^(?:drizzle|supabase\/migrations)\//.test(filename) ||
-      /^(?:specs\/product|specs\/operations|specs\/evaluation|specs\/governance)\.md$/.test(
+      /^(?:specs\/product|specs\/operations|specs\/evaluation|specs\/factory|specs\/governance)\.md$/.test(
         filename,
       ))
   );

@@ -215,6 +215,7 @@ describe("agentic SDLC workflow contracts", () => {
     "specs/product.md",
     "specs/operations.md",
     "specs/evaluation.md",
+    "specs/factory.md",
     "specs/governance.md",
   ])("runs trading-safety review for canonical safety spec %s", (specPath) => {
     expect(tradingSafetyReview).toContain(`- "${specPath}"`);

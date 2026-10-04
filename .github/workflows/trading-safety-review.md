@@ -32,6 +32,7 @@ on:
       - "specs/product.md"
       - "specs/operations.md"
       - "specs/evaluation.md"
+      - "specs/factory.md"
       - "specs/governance.md"
   issues:
     types: [labeled]

@@ -264,10 +264,10 @@ describe("minimum-risk path classification", () => {
       RISK_TIERS.BOUNDARY,
     );
     expect(policy.classifyPathTier("specs/product.md")).toBe(
-      RISK_TIERS.BOUNDARY,
+      RISK_TIERS.SENSITIVE,
     );
     expect(policy.classifyPathTier("specs/operations.md")).toBe(
-      RISK_TIERS.BOUNDARY,
+      RISK_TIERS.SENSITIVE,
     );
     expect(policy.classifyPathTier("specs/evaluation.md")).toBe(
       RISK_TIERS.SENSITIVE,
@@ -534,6 +534,7 @@ describe("required checks", () => {
     "specs/product.md",
     "specs/operations.md",
     "specs/evaluation.md",
+    "specs/factory.md",
     "specs/governance.md",
   ])("requires trading-safety review for canonical safety spec %s", (filename) => {
     expect(policy.requiresTradingSafetyCheck(filename)).toBe(true);

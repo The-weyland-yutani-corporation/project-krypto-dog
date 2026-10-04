@@ -4,4 +4,4 @@
 - Any failed identity, migration, smoke, reconciliation, backup/restore, evidence, schedule, or alert check stops the release; rollback first forces `Manual` plus `disabled`.
 - Automation may pause or disable but never unpause production, clear a drawdown lock, promote paper, expose identifiers/secrets, or enable live trading.
 - Validate with the narrowest applicable lint/build/test/migration/agentic checks and the isolated mock-first harness; real-provider smoke is opt-in and read-only.
-- Production deployment or promotion is human-only and requires exact-release approval, restore proof, response ownership, telemetry isolation, and a separately reviewed design.
+- These procedures cannot authorize production deployment or promotion; authority remains in `specs/governance.md`, with exact-release approval, restore proof, response ownership, telemetry isolation, and a separately reviewed design required.
