@@ -1,5 +1,5 @@
 name: Docs or spec update
-description: Request a README, PRD, ADR, RFC, deployment, or factory-doc update.
+description: Request a README, canonical spec, deployment, or factory-doc update.
 title: "[docs] "
 labels:
   - agentic-factory
@@ -20,9 +20,11 @@ body:
       label: Documentation type
       options:
         - README
-        - PRD
-        - ADR
-        - RFC
+        - product spec
+        - operations spec
+        - evaluation spec
+        - factory spec
+        - governance spec
         - deployment runbook
         - agentic software factory
         - other

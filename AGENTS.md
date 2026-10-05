@@ -7,8 +7,9 @@ route points to; do not re-derive policy from memory.
 <!-- safety-kernel:start -->
 ## Safety kernel (never weaken)
 
-- **Paper only.** v2 executes paper trades exclusively. Live execution is a
-  separate RFC + explicit rollout; do not enable it here.
+- **Paper only.** v2 executes paper trades exclusively. Live execution requires
+  an accepted governance proposal and explicit release plan; do not enable it
+  here.
 - **Model is read-only.** The LLM returns exactly one structured `HOLD`, `BUY`,
   or `SELL` proposal and must never receive a mutating trade tool.
 - **Deterministic guardrails hold.** Do not silently weaken
@@ -70,7 +71,7 @@ under `.github/agents/` name the scoped file for their area.
 | Schema / migration change | [`src/db/AGENTS.md`](./src/db/AGENTS.md) | [`db-dev`](./.github/agents/db-dev.md) |
 | Frontend / chart change | [`DESIGN.md`](./DESIGN.md) | [`nextjs-dev`](./.github/agents/nextjs-dev.md) |
 | Workflow authoring/debug | [`.github/workflows/AGENTS.md`](./.github/workflows/AGENTS.md) | [`agentic-workflows`](./.github/agents/agentic-workflows.md) |
-| Docs / spec / ADR / RFC | repo convention in [`docs-spec-writer`](./.github/agents/docs-spec-writer.md) | [`docs-spec-writer`](./.github/agents/docs-spec-writer.md) |
+| Docs / canonical spec | repo convention in [`docs-spec-writer`](./.github/agents/docs-spec-writer.md) | [`docs-spec-writer`](./.github/agents/docs-spec-writer.md) |
 | Security review | risk routing below | [`security-reviewer`](./.github/agents/security-reviewer.md) |
 
 ## Validation matrix
@@ -96,9 +97,10 @@ Path classification is data in
 (`specialistRouting`). In summary:
 
 - **Security review** — `.github/**`, admin/auth API routes, deployment, auth/
-  CSRF/secure-compare libs, `src/proxy.ts`, `.env.example`, build/manifest files.
+  CSRF/secure-compare libs, `src/proxy.ts`, `.env.example`, build/manifest
+  files, and the product/operations/factory/governance specs.
 - **Trading safety review** — `src/agent|backtest|db|guardrails|tools|trading/`,
-  `src/app/api/agent/`, `drizzle/`, and the product/governance specs.
+  `src/app/api/agent/`, `drizzle/`, and all five canonical specs.
 
 ## Merge & authority policy
 

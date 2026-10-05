@@ -12,8 +12,8 @@ Own deterministic trade policy and transactional paper execution:
 
 ## Non-negotiables (delta)
 
-- **Paper only.** No live-execution code path here without an accepted RFC and
-  release plan.
+- **Paper only.** No live-execution code path here without an accepted
+  governance proposal and release plan.
 - `evaluateTradePolicy`, `authorizeTradeIntent`, and the transactional executor
   must keep enforcing eligibility, sizing, balance, exposure, DCA, stop-loss,
   freshness, reconciliation, and paper-mode invariants.

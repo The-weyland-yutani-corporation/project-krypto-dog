@@ -115,16 +115,16 @@
     "kind": "specialist-routing",
     "category": "high-risk",
     "criticality": "critical",
-    "title": "RFC change requires trading-safety review",
-    "description": "RFCs (which can propose live trading) must require trading-safety review.",
+    "title": "Governance change requires both specialist reviews",
+    "description": "The canonical governance spec controls live-trading and authority boundaries, so it requires both trading-safety and security review.",
     "input": { "changedFiles": ["specs/governance.md"] },
     "expected": {
-      "requiredRoutes": ["tradingSafety"],
-      "forbiddenRoutes": ["security"],
+      "requiredRoutes": ["security", "tradingSafety"],
+      "forbiddenRoutes": [],
       "noop": false,
       "escalate": false
     },
-    "safetyInvariant": "The product and governance specs always route to trading-safety review."
+    "safetyInvariant": "The governance spec always routes to both security and trading-safety review."
   },
   {
     "id": "routing-cross-cutting-auth-trading",

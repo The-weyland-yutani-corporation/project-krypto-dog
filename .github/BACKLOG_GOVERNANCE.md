@@ -1,14 +1,14 @@
 # Backlog Governance
 
-This document defines WIP thresholds, milestone rules, and unblock criteria for Project Krypto's issue backlog. It governs the agentic workflow factory to prevent scope explosion. Production-paper issue scope and ordering are mapped in [`specs/product.md`](../specs/product.md); this document remains authoritative for workflow governance. See [`specs/factory.md`](../specs/factory.md) and [ADR 0013](../specs/governance.md) for the normative queue/lifecycle contract this document's thresholds feed.
+This document defines WIP thresholds, milestone rules, and unblock criteria for Project Krypto's issue backlog. It governs the agentic workflow factory to prevent scope explosion. Production-paper issue scope and ordering are mapped in [`specs/product.md`](../specs/product.md); this document remains authoritative for workflow governance. See [`specs/factory.md`](../specs/factory.md) and [`specs/governance.md`](../specs/governance.md) for the normative queue/lifecycle and authority contracts these thresholds feed.
 
 ## Milestones
 
 | Milestone | Purpose | Unblock criteria |
 |-----------|---------|-----------------|
 | **v2.1 Safety and Correctness** | Deterministic guardrails, accounting correctness, run reliability, market-data integrity, database migrations, private schema/cron security, decimal ledger, transactional idempotency, structured LLM intent, typed errors/timeouts, real-Postgres CI. | All v2.1 issues closed or explicitly deferred by human review. |
-| **v2.2 Evidence-Grade Paper Trading** | Production-paper security, reliability, recovery, rollout, evaluation, performance visibility, and immutable evidence. | Production readiness PRD gates and all v2.2 issues complete. Requires v2.1 complete. |
-| **v3 Live Trading RFC** | Live trading enablement. Requires explicit human approval and RFC merge. | v2.1 + v2.2 complete; RFC approved. |
+| **v2.2 Evidence-Grade Paper Trading** | Production-paper security, reliability, recovery, rollout, evaluation, performance visibility, and immutable evidence. | Production readiness gates and all v2.2 issues complete. Requires v2.1 complete. |
+| **v3 Live Trading Proposal** | Live trading enablement. Requires accepted governance direction, a release plan, and explicit human approval. | v2.1 + v2.2 complete; governance proposal accepted. |
 | **Deferred: Strategy Research** | Speculative strategy improvements (ATR, MACD, volume signals, market regime classifiers, EMA trend filters, dynamic sizing). | v2.1 + v2.2 complete. |
 
 ## Goal authorization gates all discovery and queue selection
@@ -25,7 +25,7 @@ act:
   "Use 1 until concurrency graduation evidence passes") — at most one issue
   may be `factory:claimed`/`factory:implementing`/`factory:pr-open`/
   `factory:repairing` under the goal at a time until the evidence-gated
-  graduation to concurrency 2 described in ADR 0013 §8/contract §11.
+  graduation to concurrency 2 described by the factory contract.
 - **`assignment_budget`** is the maximum number of `implement-ticket`
   assignments the goal authorizes before it requires human renewal. When
   exhausted, `factory-queue-controller` must stop selecting issues under

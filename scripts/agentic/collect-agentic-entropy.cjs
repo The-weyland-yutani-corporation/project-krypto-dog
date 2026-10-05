@@ -528,7 +528,7 @@ function ruleWorkflowTelemetryCoverage(ctx) {
 
 /**
  * Rule (advisory): architecture boundary hotspots. Read-only structural scan of
- * the accepted boundaries (ADR 0009): the read-only decision/model modules must
+ * the accepted governance boundary: the read-only decision/model modules must
  * not import paper execution, and deterministic trading code must not import
  * agent/model packages. Reported as advisory hotspots; the authoritative gate is
  * ESLint + the architecture-boundaries test.
@@ -638,14 +638,14 @@ function ruleTodoMarkers(ctx) {
 }
 
 /**
- * Rule: no prohibited live executor exists in v2. Mirrors the accepted
- * architecture invariant: no `live`-executor source file and no
+ * Rule: no prohibited live executor exists in v2. Mirrors the canonical
+ * governance invariant: no `live`-executor source file and no
  * `src/tools/safe-trade.ts` mutating tool.
  */
 function ruleNoProhibitedLiveExecutor(ctx) {
   const ruleId = "no_prohibited_live_executor";
   const remediation =
-    "remove the live-execution path; a live executor requires a separate accepted RFC, release plan, and human enablement";
+    "remove the live-execution path; a live executor requires an accepted governance proposal, release plan, and human enablement";
   const violations = [];
   const liveRe =
     /(?:^|[/.-])live[/.-].*execut|execut.*[/.-]live(?:[/.-]|$)/i;

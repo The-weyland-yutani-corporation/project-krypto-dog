@@ -85,7 +85,7 @@ const DEFAULT_LEASE_MINUTES = 120;
 
 // Per the factory contract (specs/factory.md), a goal's
 // max_wip may only ever start at 1 and may never be raised above 2 without a
-// new ADR. A parsed value outside {0, 1, 2} is malformed-for-purpose and
+// new governance artifact. A parsed value outside {0, 1, 2} is malformed-for-purpose and
 // fails closed to 0 (blocks all dispatch), same as an unparsable value.
 const MAX_ALLOWED_CONCURRENCY_LIMIT = 2;
 

@@ -115,7 +115,12 @@ The automatic `trading-safety-review` PR path filter covers:
 - `specs/product.md`
 - `specs/operations.md`
 - `specs/evaluation.md`
+- `specs/factory.md`
 - `specs/governance.md`
+
+The automatic `security-review` route covers `.github/**`, admin/auth and
+deployment surfaces, `.env.example`, and
+`specs/{product,operations,factory,governance}.md`.
 
 That filter is not the risk classifier. Use
 `.github/scripts/agentic-factory-policy.cjs` as the only path-risk source:

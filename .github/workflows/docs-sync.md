@@ -1,5 +1,5 @@
 ---
-description: Keeps docs, PRD, ADRs, RFCs, and deployment runbooks aligned.
+description: Keeps canonical specs, operator docs, and agent guidance aligned.
 on:
   workflow_dispatch:
     inputs:
@@ -66,7 +66,8 @@ Check whether docs and specs need updates.
 ## Task
 
 - Inspect the target issue or PR.
-- Determine whether README, PRD, ADRs, RFCs, deployment docs, workflow docs, or agent prompts need updates.
+- Determine whether README, one of the five canonical specs, deployment docs,
+  workflow docs, or agent prompts need updates.
 - For small documentation-only fixes, open one PR.
 - Native auto-merge may complete only for allowlisted low-risk docs/assets. Specs, deployment, security, trading, database, workflow, and agentic-policy documentation still require human approval.
 - For protected files such as README or `.github/**`, create a follow-up issue instead of trying to modify them.
