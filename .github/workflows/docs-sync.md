@@ -31,12 +31,13 @@ safe-outputs:
     hide-older-comments: true
   create-pull-request:
     title-prefix: "[docs-sync] "
-    labels: [agentic-factory, docs-sync, agentic-automerge]
+    labels: [agentic-factory, docs-sync]
     draft: false
-    auto-merge: true
+    auto-merge: false
     max: 1
     allowed-files:
       - "docs/**"
+      - "specs/**"
     protected-files: fallback-to-issue
   create-issue:
     title-prefix: "[docs-gap] "
@@ -68,7 +69,9 @@ Check whether docs and specs need updates.
 - Determine whether README, one of the five canonical specs, deployment docs,
   workflow docs, or agent prompts need updates.
 - For small documentation-only fixes, open one PR.
-- Native auto-merge may complete only for allowlisted low-risk docs/assets. Specs, deployment, security, trading, database, workflow, and agentic-policy documentation still require human approval.
+- Docs-sync PRs remain reviewable and do not opt into native auto-merge.
+  Canonical specs, deployment, security, trading, database, workflow, and
+  agentic-policy documentation still require human approval.
 - For protected files such as README or `.github/**`, create a follow-up issue instead of trying to modify them.
 - For larger or ambiguous gaps, create a follow-up issue or comment with required changes.
 
