@@ -37,7 +37,6 @@ safe-outputs:
     max: 1
     allowed-files:
       - "docs/**"
-      - "specs/**"
     protected-files: fallback-to-issue
   create-issue:
     title-prefix: "[docs-gap] "

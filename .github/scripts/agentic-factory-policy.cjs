@@ -136,7 +136,8 @@ const SENSITIVE_PATTERNS = [
   /^\.env(?:\..*)?$/,
   /^DESIGN\.md$/,
   // Canonical specifications are operational and architectural context.
-  // Factory and governance authority are elevated to boundary separately.
+  // Factory, governance, and any non-canonical proposal are elevated to
+  // boundary separately.
   /^specs\//,
 ];
 
@@ -159,6 +160,7 @@ const BOUNDARY_PATTERNS = [
   /^\.github\/copilot-instructions\.md$/i,
   /^docs\/agentic-(?:software-factory|workflows-map)\.md$/i,
   /^specs\/(?:factory|governance)\.md$/i,
+  /^specs\/(?!product\.md$|operations\.md$|evaluation\.md$|factory\.md$|governance\.md$).+/i,
   // Branch/repo-policy docs, wherever they live.
   /(^|\/)(branch-protection|repo-policy)(\.|\/|$)/i,
   // Secrets/permissions/identity policy.
@@ -490,12 +492,10 @@ function requiresSecurityCheck(filename) {
 function requiresTradingSafetyCheck(filename) {
   return (
     typeof filename === "string" &&
-    (/^src\/(?:agent|backtest|db|guardrails|tools|trading)\//.test(filename) ||
-      /^src\/app\/api\/agent\//.test(filename) ||
-      /^(?:drizzle|supabase\/migrations)\//.test(filename) ||
-      /^(?:specs\/product|specs\/operations|specs\/evaluation|specs\/factory|specs\/governance)\.md$/.test(
-        filename,
-      ))
+    (    /^src\/(?:agent|backtest|db|guardrails|tools|trading)\//.test(filename) ||
+    /^src\/app\/api\/agent\//.test(filename) ||
+    /^(?:drizzle|supabase\/migrations)\//.test(filename) ||
+    /^specs\//.test(filename))
   );
 }
 

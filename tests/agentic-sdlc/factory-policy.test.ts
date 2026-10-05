@@ -272,6 +272,9 @@ describe("minimum-risk path classification", () => {
     expect(policy.classifyPathTier("specs/evaluation.md")).toBe(
       RISK_TIERS.SENSITIVE,
     );
+    expect(policy.classifyPathTier("specs/rfcs/live-trading.md")).toBe(
+      RISK_TIERS.BOUNDARY,
+    );
   });
 
   it("classifies reversible trading, guardrail, auth, db/migration, agent, deployment, dependency, and infra code as sensitive", () => {
@@ -529,6 +532,7 @@ describe("required checks", () => {
   it("selects the trading-safety specialist check from changed paths", () => {
     expect(policy.requiresTradingSafetyCheck("src/trading/policy.ts")).toBe(true);
     expect(policy.requiresTradingSafetyCheck("supabase/migrations/0001.sql")).toBe(true);
+    expect(policy.requiresTradingSafetyCheck("specs/rfcs/live-trading.md")).toBe(true);
     expect(policy.requiresTradingSafetyCheck("src/components/ui/button.tsx")).toBe(false);
     const checks = policy.getRequiredChecks(RISK_TIERS.SENSITIVE, [file("src/trading/policy.ts")]);
     expect(checks).toContain(policy.TRADING_SAFETY_CHECK);

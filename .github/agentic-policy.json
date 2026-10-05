@@ -84,7 +84,8 @@
       "patterns": [
         "^src/(?:agent|backtest|db|guardrails|tools|trading)/",
         "^src/app/api/agent/",
-        "^(?:drizzle|supabase/migrations)/"
+        "^(?:drizzle|supabase/migrations)/",
+        "^specs/"
       ]
     }
   },

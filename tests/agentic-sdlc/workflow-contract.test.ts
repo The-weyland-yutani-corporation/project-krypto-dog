@@ -211,14 +211,8 @@ describe("agentic SDLC workflow contracts", () => {
     expect(reconciler).toContain("QA Test Plan");
   });
 
-  it.each([
-    "specs/product.md",
-    "specs/operations.md",
-    "specs/evaluation.md",
-    "specs/factory.md",
-    "specs/governance.md",
-  ])("runs trading-safety review for canonical safety spec %s", (specPath) => {
-    expect(tradingSafetyReview).toContain(`- "${specPath}"`);
+  it("runs trading-safety review for every canonical or attempted proposal spec", () => {
+    expect(tradingSafetyReview).toContain('- "specs/**"');
   });
 
   it("correlates trusted workflow dispatches to an exact pull-request head", () => {
