@@ -481,7 +481,9 @@ function requiresSecurityCheck(filename) {
       /^(?:docker-compose\.yml|next\.config\.[^/]+|package(?:-lock)?\.json)$/.test(
         filename,
       ) ||
-      filename === "specs/operations.md")
+      /^(?:specs\/product|specs\/operations|specs\/factory|specs\/governance)\.md$/.test(
+        filename,
+      ))
   );
 }
 

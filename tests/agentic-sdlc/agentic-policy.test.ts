@@ -104,7 +104,10 @@ describe("canonical agentic policy", () => {
     "next.config.ts",
     "package.json",
     "package-lock.json",
+    "specs/product.md",
     "specs/operations.md",
+    "specs/factory.md",
+    "specs/governance.md",
   ])("preserves security routing for %s", (filename) => {
     expect(reconciler.requiresSecurityReview(filename)).toBe(true);
   });

@@ -176,7 +176,8 @@ tests/                    # Jest unit + integration tests
 > approved.
 > Azure foundations and operational Luna deployments are provisioned, but every
 > full release/evidence/rollout gate remains for future promotions. See
-> [`specs/operations.md`](./specs/operations.md) for the full release gates.
+> [`infra/README.md`](./infra/README.md) for the implemented runbook and
+> [`specs/governance.md`](./specs/governance.md) for promotion authority.
 
 > **Target platform: Azure-native; dev and production releases deployed.**
 > The approved deployment plan supersedes the retired hosted baseline with a
@@ -188,7 +189,7 @@ tests/                    # Jest unit + integration tests
 > [`specs/operations.md`](./specs/operations.md). Required providers,
 > bootstrap/OIDC, operational Luna, workload access, both foundations, and both
 > releases are live. Dev is shadow/scheduled; production is disabled/manual.
-> See [`specs/operations.md`](./specs/operations.md) for diagrams,
+> See [`infra/README.md`](./infra/README.md) for diagrams,
 > live/planned resource names, the exact current-vs-target state, and safe
 > operator links. The selected runtime subscription is **Visual Studio
 > Enterprise Subscription**; do not publish its subscription ID.
@@ -214,8 +215,8 @@ with the same reviewed templates, exact source trees, immutable digests, and
 fail-closed evidence checks. Branch protection was restored after each reviewed
 merge. Dev now also deploys automatically after every successful push-triggered
 `CI` run on `main`, publishing `Dev deployment evidence` and a GitHub
-Deployment for the exact SHA CI validated (see
-[`specs/operations.md`](./specs/operations.md)). Shared-key PostHog
+Deployment for the exact SHA CI validated (see `azure-deploy-dev.yml` and
+[`infra/README.md`](./infra/README.md)). Shared-key PostHog
 telemetry is environment-tagged but cannot qualify as final project isolation
 for production promotion.
 
@@ -230,13 +231,15 @@ restore-verified before target smoke. The
 `production-promotion` identity/environment exists only for forced-disable
 steps in prod deploy and rotation. Any future production promotion requires a
 new evidence-bound design and trading-safety review. Follow
-[`specs/operations.md`](./specs/operations.md) (the implemented Azure
-runbook). The retired hosted-baseline runbook remains available through Git history only;
+[`infra/README.md`](./infra/README.md) for the implemented Azure runbook and
+[`specs/governance.md`](./specs/governance.md) for authority. The retired hosted-baseline runbook remains available through Git history only;
 do not use it for a new deployment.
 
 ## Local testing
 
-Use [`specs/operations.md`](./specs/operations.md) for local Postgres setup, no-LLM smoke tests, optional live local paper runs, admin dashboard checks, and the current limits of profitability testing.
+Use the local quick-start and command table above, then apply the validation
+matrix in [`AGENTS.md`](./AGENTS.md). Real-provider smoke remains opt-in and
+read-only.
 
 ## Contributing / spec changes
 

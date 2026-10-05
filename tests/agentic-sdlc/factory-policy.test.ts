@@ -515,6 +515,10 @@ describe("required checks", () => {
   it("selects the security specialist check from changed paths", () => {
     expect(policy.requiresSecurityCheck("src/app/api/admin/route.ts")).toBe(true);
     expect(policy.requiresSecurityCheck("src/proxy.ts")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/product.md")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/operations.md")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/factory.md")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/governance.md")).toBe(true);
     expect(policy.requiresSecurityCheck("src/components/ui/button.tsx")).toBe(false);
     const checks = policy.getRequiredChecks(RISK_TIERS.SENSITIVE, [
       file("src/app/api/admin/route.ts"),
