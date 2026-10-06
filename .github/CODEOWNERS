@@ -8,7 +8,7 @@
 /src/backtest/ @VeVarunSharma
 /src/deployment/ @VeVarunSharma
 /src/app/api/ @VeVarunSharma
-/src/middleware.ts @VeVarunSharma
+/src/proxy.ts @VeVarunSharma
 /src/db/ @VeVarunSharma
 /src/lib/config.ts @VeVarunSharma
 /src/lib/email.ts @VeVarunSharma

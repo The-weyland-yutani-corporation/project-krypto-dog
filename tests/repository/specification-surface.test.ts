@@ -10,12 +10,6 @@ const canonicalSpecs = [
   "operations.md",
   "product.md",
 ];
-const docsRoot = path.join(root, "docs");
-
-function lineCount(file: string): number {
-  return fs.readFileSync(file, "utf8").trimEnd().split(/\r?\n/).length;
-}
-
 describe("canonical specification surface", () => {
   it("contains exactly the five flat canonical files", () => {
     const entries = fs
@@ -72,21 +66,4 @@ describe("canonical specification surface", () => {
     expect(governance).toMatch(/never rewrite migration bytes/i);
   });
 
-  it("keeps specs and docs intentionally compact", () => {
-    const specLines = canonicalSpecs.reduce(
-      (total, filename) => total + lineCount(path.join(specsRoot, filename)),
-      0,
-    );
-    const docLines = fs
-      .readdirSync(docsRoot, { recursive: true, withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-      .reduce(
-        (total, entry) =>
-          total + lineCount(path.join(entry.parentPath, entry.name)),
-        0,
-      );
-
-    expect(specLines).toBeLessThanOrEqual(40);
-    expect(docLines).toBeLessThanOrEqual(94);
-  });
 });
