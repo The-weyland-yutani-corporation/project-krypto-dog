@@ -50,6 +50,28 @@ describe("canonical specification surface", () => {
     }
   });
 
+  it("preserves immutable migration provenance through Git history", () => {
+    const governance = fs.readFileSync(
+      path.join(specsRoot, "governance.md"),
+      "utf8",
+    );
+    const migration = fs.readFileSync(
+      path.join(
+        root,
+        "drizzle/0007_azure_retire_supabase_http_functions.sql",
+      ),
+      "utf8",
+    );
+
+    expect(migration).toContain(
+      "specs/decisions/0008-azure-native-deployment-architecture.md",
+    );
+    expect(governance).toMatch(
+      /retired spec paths embedded in applied migration comments.*Git history/i,
+    );
+    expect(governance).toMatch(/never rewrite migration bytes/i);
+  });
+
   it("keeps specs and docs intentionally compact", () => {
     const specLines = canonicalSpecs.reduce(
       (total, filename) => total + lineCount(path.join(specsRoot, filename)),
