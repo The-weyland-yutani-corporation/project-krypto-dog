@@ -100,7 +100,8 @@ Path classification is data in
   CSRF/secure-compare libs, `src/proxy.ts`, `.env.example`, build/manifest
   files, and all canonical or attempted non-canonical specs.
 - **Trading safety review** — `src/agent|backtest|db|guardrails|tools|trading/`,
-  `src/app/api/agent/`, `drizzle/`, and all five canonical specs.
+  `src/app/api/agent/`, `drizzle/`, and all canonical or attempted
+  non-canonical specs.
 
 ## Merge & authority policy
 
