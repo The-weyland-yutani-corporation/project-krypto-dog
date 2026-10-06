@@ -108,6 +108,7 @@ describe("canonical agentic policy", () => {
     "specs/operations.md",
     "specs/factory.md",
     "specs/governance.md",
+    "specs/deployment.md",
   ])("preserves security routing for %s", (filename) => {
     expect(reconciler.requiresSecurityReview(filename)).toBe(true);
   });

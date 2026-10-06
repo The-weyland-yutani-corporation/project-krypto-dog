@@ -522,6 +522,7 @@ describe("required checks", () => {
     expect(policy.requiresSecurityCheck("specs/operations.md")).toBe(true);
     expect(policy.requiresSecurityCheck("specs/factory.md")).toBe(true);
     expect(policy.requiresSecurityCheck("specs/governance.md")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/deployment.md")).toBe(true);
     expect(policy.requiresSecurityCheck("src/components/ui/button.tsx")).toBe(false);
     const checks = policy.getRequiredChecks(RISK_TIERS.SENSITIVE, [
       file("src/app/api/admin/route.ts"),

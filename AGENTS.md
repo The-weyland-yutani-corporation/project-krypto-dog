@@ -98,7 +98,7 @@ Path classification is data in
 
 - **Security review** — `.github/**`, admin/auth API routes, deployment, auth/
   CSRF/secure-compare libs, `src/proxy.ts`, `.env.example`, build/manifest
-  files, and the product/operations/factory/governance specs.
+  files, and all canonical or attempted non-canonical specs.
 - **Trading safety review** — `src/agent|backtest|db|guardrails|tools|trading/`,
   `src/app/api/agent/`, `drizzle/`, and all five canonical specs.
 

@@ -70,7 +70,8 @@
         "^src/app/api/(admin|auth)/",
         "^src/deployment/",
         "^src/lib/.*(?:auth|csrf|secure-compare).*\\.ts$",
-        "^(?:docker-compose\\.yml|next\\.config\\.[^/]+|package(?:-lock)?\\.json)$"
+        "^(?:docker-compose\\.yml|next\\.config\\.[^/]+|package(?:-lock)?\\.json)$",
+        "^specs/"
       ]
     },
     "tradingSafety": {
