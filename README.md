@@ -39,6 +39,7 @@
 | **Operations** | [`specs/operations.md`](./specs/operations.md) |
 | **Evaluation** | [`specs/evaluation.md`](./specs/evaluation.md) |
 | **Factory** | [`specs/factory.md`](./specs/factory.md) |
+| **Factory architecture** | [`docs/agentic-software-factory.md`](./docs/agentic-software-factory.md) |
 | **Decisions / future boundaries** | [`specs/governance.md`](./specs/governance.md) |
 | **Design** | [`DESIGN.md`](./DESIGN.md) |
 
