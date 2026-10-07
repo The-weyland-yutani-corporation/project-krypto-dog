@@ -38,6 +38,7 @@ safe-outputs:
     allowed-files:
       - "docs/**"
       - "specs/**"
+      - "infra/README.md"
     protected-files: fallback-to-issue
   create-issue:
     title-prefix: "[docs-gap] "
