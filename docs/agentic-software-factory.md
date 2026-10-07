@@ -102,6 +102,11 @@ merged SHA and immutable image digest.
 The factory is not one unbounded agent loop. It is four nested, durable loops
 with different triggers, state owners, budgets, and stop conditions.
 
+![Project Krypto dark factory loops: outer governance, mission, inner delivery, and evidence feedback](./assets/dark-factory-loops.png)
+
+_PNG architecture view. Editable source:
+[`dark-factory-loops.svg`](./assets/dark-factory-loops.svg)._
+
 ```mermaid
 flowchart LR
   Human["Authorized administrator"]
