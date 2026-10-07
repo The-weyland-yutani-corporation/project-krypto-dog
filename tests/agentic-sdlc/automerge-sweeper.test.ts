@@ -187,70 +187,24 @@ describe("auto-merge arming policy", () => {
     });
   });
 
-  it.each([
-    ["missing", [] as CheckRun[]],
-    [
-      "pending",
-      [{ id: 9, name: "Agentic merge policy", status: "in_progress", conclusion: null }],
-    ],
-    [
-      "failure",
-      [{ id: 9, name: "Agentic merge policy", status: "completed", conclusion: "failure" }],
-    ],
-  ])("declines when the merge policy verdict is %s", (state, checks) => {
-    const checkRuns = [
-      ...greenChecks().filter((check) => check.name !== "Agentic merge policy"),
-      ...checks,
-    ];
-
-    expect(decide({ checkRuns })).toEqual({
+  it("never arms a PR awaiting explicit human boundary merge", () => {
+    expect(
+      decide({
+        pullRequest: pullRequest({
+          labels: [
+            { name: "agentic-factory" },
+            { name: "agentic-automerge" },
+            { name: "ready-for-human-review" },
+          ],
+        }),
+      }),
+    ).toEqual({
       arm: false,
-      reason: `merge-policy:${state}`,
+      reason: "blocking-label:ready-for-human-review",
     });
   });
 
-  it("requires a green boundary approval whenever that check exists", () => {
-    expect(
-      decide({
-        checkRuns: greenChecks([
-          {
-            id: 99,
-            name: "Human boundary approval",
-            status: "in_progress",
-            conclusion: null,
-          },
-        ]),
-      }),
-    ).toEqual({ arm: false, reason: "boundary-approval:pending" });
-
-    expect(
-      decide({
-        checkRuns: greenChecks([
-          {
-            id: 99,
-            name: "Human boundary approval",
-            status: "completed",
-            conclusion: "action_required",
-          },
-        ]),
-      }),
-    ).toEqual({ arm: false, reason: "boundary-approval:failure" });
-
-    expect(
-      decide({
-        checkRuns: greenChecks([
-          {
-            id: 99,
-            name: "Human boundary approval",
-            status: "completed",
-            conclusion: "success",
-          },
-        ]),
-      }),
-    ).toEqual({ arm: true, reason: "merge-evidence-complete" });
-  });
-
-  it.each(REQUIRED_CONTEXTS.filter((name) => name !== "Agentic merge policy"))(
+  it.each(REQUIRED_CONTEXTS)(
     "declines while the required %s context is missing",
     (contextName) => {
       const checkRuns = greenChecks().filter(

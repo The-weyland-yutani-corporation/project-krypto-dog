@@ -29,7 +29,8 @@ The rules below are role deltas.
 - Do not weaken deterministic trade policy/authorization, transactional paper
   execution, drawdown, cooldown, operator pause, portfolio state, journaling,
   or alerting behavior without explicit acceptance criteria and review.
-- Do not make live-trading changes unless the issue explicitly references an accepted RFC and release plan.
+- Do not make live-trading changes unless the issue explicitly references an
+  accepted proposal in `specs/governance.md` and a release plan.
 - Do not add broad catches or silent fallbacks.
 
 ## Validation baseline

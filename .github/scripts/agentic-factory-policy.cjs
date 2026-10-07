@@ -135,9 +135,9 @@ const SENSITIVE_PATTERNS = [
   /^docker-compose\.ya?ml$/,
   /^\.env(?:\..*)?$/,
   /^DESIGN\.md$/,
-  // General specs/decisions/rfcs: operational and architectural context.
-  // Boundary-scoped RFCs (live-trading/production-promotion) are elevated
-  // to boundary separately, before this check ever runs.
+  // Canonical specifications are operational and architectural context.
+  // Factory, governance, and any non-canonical proposal are elevated to
+  // boundary separately.
   /^specs\//,
 ];
 
@@ -159,12 +159,10 @@ const BOUNDARY_PATTERNS = [
   /^\.github\/BACKLOG_GOVERNANCE\.md$/i,
   /^\.github\/copilot-instructions\.md$/i,
   /^docs\/agentic-(?:software-factory|workflows-map)\.md$/i,
-  /^specs\/agentic-factory-contract\.md$/i,
-  /^specs\/decisions\/.*autonomous-agentic-sdlc-factory\.md$/i,
+  /^specs\/(?:factory|governance)\.md$/i,
+  /^specs\/(?!product\.md$|operations\.md$|evaluation\.md$|factory\.md$|governance\.md$).+/i,
   // Branch/repo-policy docs, wherever they live.
   /(^|\/)(branch-protection|repo-policy)(\.|\/|$)/i,
-  // Production promotion / live-trading RFC scope.
-  /^specs\/rfcs\/.*(live-trading|production-promotion)/i,
   // Secrets/permissions/identity policy.
   /(^|\/)(secrets?|permissions?|identity)-policy(\.|\/|$)/i,
   /(^|\/)(iam|rbac)(\/|[-_.]|$)/i,
@@ -464,7 +462,6 @@ const CODE_REVIEW_CHECK = "Agentic code review";
 const QA_CHECK = "QA verification";
 const SECURITY_CHECK = "Security review";
 const TRADING_SAFETY_CHECK = "Trading safety review";
-const HUMAN_BOUNDARY_APPROVAL_CHECK = "Human boundary approval";
 
 const BASELINE_REQUIRED_CHECKS = Object.freeze([
   QUALITY_GATES_CHECK,
@@ -486,17 +483,17 @@ function requiresSecurityCheck(filename) {
       /^(?:docker-compose\.yml|next\.config\.[^/]+|package(?:-lock)?\.json)$/.test(
         filename,
       ) ||
-      filename === "specs/deployment.md")
+      /^specs\//.test(filename))
   );
 }
 
 function requiresTradingSafetyCheck(filename) {
   return (
     typeof filename === "string" &&
-    (/^src\/(?:agent|backtest|db|guardrails|tools|trading)\//.test(filename) ||
-      /^src\/app\/api\/agent\//.test(filename) ||
-      /^(?:drizzle|supabase\/migrations)\//.test(filename) ||
-      /^specs\/rfcs\//.test(filename))
+    (    /^src\/(?:agent|backtest|db|guardrails|tools|trading)\//.test(filename) ||
+    /^src\/app\/api\/agent\//.test(filename) ||
+    /^(?:drizzle|supabase\/migrations)\//.test(filename) ||
+    /^specs\//.test(filename))
   );
 }
 
@@ -542,10 +539,6 @@ function getRequiredChecks(tier, files) {
   }
 
   checks.push(...getSpecialistChecks(files));
-
-  if (requiresHumanBoundaryApproval(resolvedTier)) {
-    checks.push(HUMAN_BOUNDARY_APPROVAL_CHECK);
-  }
 
   return [...new Set(checks)];
 }
@@ -709,7 +702,6 @@ module.exports = {
   QA_CHECK,
   SECURITY_CHECK,
   TRADING_SAFETY_CHECK,
-  HUMAN_BOUNDARY_APPROVAL_CHECK,
   BASELINE_REQUIRED_CHECKS,
   requiresSecurityCheck,
   requiresTradingSafetyCheck,

@@ -113,7 +113,6 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
   exactKeys(
     merge,
     [
-      "context",
       "requiredContexts",
       "reviewCheck",
       "securityCheck",
@@ -225,7 +224,6 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
   return Object.freeze({
     schemaVersion: 1,
     policyPath,
-    mergeContext: string(merge.context, "merge.context"),
     requiredContexts: strings(
       merge.requiredContexts,
       "merge.requiredContexts",

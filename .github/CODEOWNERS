@@ -8,7 +8,7 @@
 /src/backtest/ @VeVarunSharma
 /src/deployment/ @VeVarunSharma
 /src/app/api/ @VeVarunSharma
-/src/middleware.ts @VeVarunSharma
+/src/proxy.ts @VeVarunSharma
 /src/db/ @VeVarunSharma
 /src/lib/config.ts @VeVarunSharma
 /src/lib/email.ts @VeVarunSharma
@@ -23,7 +23,4 @@
 /.github/skills/ @VeVarunSharma
 /package.json @VeVarunSharma
 /package-lock.json @VeVarunSharma
-/specs/deployment.md @VeVarunSharma
-/specs/monitoring.md @VeVarunSharma
-/specs/readiness.md @VeVarunSharma
-/specs/rfcs/ @VeVarunSharma
+/specs/ @VeVarunSharma

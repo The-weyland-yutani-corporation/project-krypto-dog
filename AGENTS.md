@@ -7,8 +7,9 @@ route points to; do not re-derive policy from memory.
 <!-- safety-kernel:start -->
 ## Safety kernel (never weaken)
 
-- **Paper only.** v2 executes paper trades exclusively. Live execution is a
-  separate RFC + explicit rollout; do not enable it here.
+- **Paper only.** v2 executes paper trades exclusively. Live execution requires
+  an accepted governance proposal and explicit release plan; do not enable it
+  here.
 - **Model is read-only.** The LLM returns exactly one structured `HOLD`, `BUY`,
   or `SELL` proposal and must never receive a mutating trade tool.
 - **Deterministic guardrails hold.** Do not silently weaken
@@ -19,29 +20,28 @@ route points to; do not re-derive policy from memory.
   failure using existing patterns.
 - **Design system is binding.** Any frontend, admin UI, chart, or user-facing
   copy/layout change follows root [`DESIGN.md`](./DESIGN.md).
+<!-- safety-kernel:end -->
 
 Canonical machine-readable policy data lives in
 [`.github/agentic-policy.json`](./.github/agentic-policy.json). Do not duplicate
 its lists in prose; reference it.
-<!-- safety-kernel:end -->
 
 ## Authoritative links
 
 | Concern | Source of truth |
 | --- | --- |
-| Product behavior / requirements | [`specs/prd.md`](./specs/prd.md) |
+| Product behavior / requirements | [`specs/product.md`](./specs/product.md) |
 | Design system | [`DESIGN.md`](./DESIGN.md) |
-| Deployment procedure | [`specs/deployment.md`](./specs/deployment.md) |
-| Local testing | [`specs/local-testing.md`](./specs/local-testing.md) |
-| Monitoring | [`specs/monitoring.md`](./specs/monitoring.md) |
-| Readiness gates | [`specs/readiness.md`](./specs/readiness.md) |
-| Agentic SDLC evaluation | [`specs/agentic-sdlc-evaluation.md`](./specs/agentic-sdlc-evaluation.md) |
-| Factory autonomy contract | [`specs/agentic-factory-contract.md`](./specs/agentic-factory-contract.md) |
-| Architecture decisions | [`specs/decisions/`](./specs/decisions/) |
-| Future proposals | [`specs/rfcs/`](./specs/rfcs/) |
+| Deployment procedure | [`specs/operations.md`](./specs/operations.md) |
+| Local testing | [`specs/operations.md`](./specs/operations.md) |
+| Monitoring | [`specs/operations.md`](./specs/operations.md) |
+| Readiness gates | [`specs/operations.md`](./specs/operations.md) |
+| Agentic SDLC evaluation | [`specs/evaluation.md`](./specs/evaluation.md) |
+| Factory autonomy contract | [`specs/factory.md`](./specs/factory.md) |
+| Architecture decisions / future boundaries | [`specs/governance.md`](./specs/governance.md) |
 | Merge / self-heal / routing policy data | [`.github/agentic-policy.json`](./.github/agentic-policy.json) |
 | Factory risk / lifecycle policy core | [`.github/scripts/agentic-factory-policy.cjs`](./.github/scripts/agentic-factory-policy.cjs) |
-| Merge-authorization rationale | [`specs/decisions/0008-agentic-merge-authorization.md`](./specs/decisions/0008-agentic-merge-authorization.md) |
+| Merge-authorization rationale | [`specs/governance.md`](./specs/governance.md) |
 
 ## Instruction discovery
 
@@ -71,7 +71,7 @@ under `.github/agents/` name the scoped file for their area.
 | Schema / migration change | [`src/db/AGENTS.md`](./src/db/AGENTS.md) | [`db-dev`](./.github/agents/db-dev.md) |
 | Frontend / chart change | [`DESIGN.md`](./DESIGN.md) | [`nextjs-dev`](./.github/agents/nextjs-dev.md) |
 | Workflow authoring/debug | [`.github/workflows/AGENTS.md`](./.github/workflows/AGENTS.md) | [`agentic-workflows`](./.github/agents/agentic-workflows.md) |
-| Docs / spec / ADR / RFC | repo convention in [`docs-spec-writer`](./.github/agents/docs-spec-writer.md) | [`docs-spec-writer`](./.github/agents/docs-spec-writer.md) |
+| Docs / canonical spec | repo convention in [`docs-spec-writer`](./.github/agents/docs-spec-writer.md) | [`docs-spec-writer`](./.github/agents/docs-spec-writer.md) |
 | Security review | risk routing below | [`security-reviewer`](./.github/agents/security-reviewer.md) |
 
 ## Validation matrix
@@ -97,16 +97,18 @@ Path classification is data in
 (`specialistRouting`). In summary:
 
 - **Security review** — `.github/**`, admin/auth API routes, deployment, auth/
-  CSRF/secure-compare libs, `src/proxy.ts`, `.env.example`, build/manifest files.
+  CSRF/secure-compare libs, `src/proxy.ts`, `.env.example`, build/manifest
+  files, and all canonical or attempted non-canonical specs.
 - **Trading safety review** — `src/agent|backtest|db|guardrails|tools|trading/`,
-  `src/app/api/agent/`, `drizzle/`, `specs/rfcs/`.
+  `src/app/api/agent/`, `drizzle/`, and all canonical or attempted
+  non-canonical specs.
 
 ## Merge & authority policy
 
 The factory light switch is explicit and fail-closed: `active` permits bounded
 dispatch and merge actions, `shadow` evaluates without dispatching or merging,
 and `paused` performs neither. A missing or ambiguous mode resolves to `paused`.
-See [`specs/agentic-factory-contract.md`](./specs/agentic-factory-contract.md).
+See [`specs/factory.md`](./specs/factory.md).
 
 For **same-repository** pull requests, current-head checks authorize routine and
 sensitive merges without blanket per-change human approval:
@@ -114,11 +116,13 @@ sensitive merges without blanket per-change human approval:
 - every PR requires a passing **Agentic code review**;
 - sensitive and boundary work also requires passing **QA verification**;
 - security-sensitive paths also require a passing **Security review**;
-- trading/guardrail/agent/backtest/db/migration/RFC paths also require a passing
+- trading/guardrail/agent/backtest/db/migration and canonical product/governance
+  spec paths also require a passing
   **Trading safety review**;
 - agents may author `risk:boundary` changes, but those changes are never
-  auto-repaired or auto-merged; **Human boundary approval** is required on the
-  current head;
+  auto-repaired or auto-merged; after all current-head automated checks pass,
+  **Agentic merge policy** remains `action_required` until an authorized
+  repository administrator performs an explicit merge;
 - a current trusted human change request or blocking review label keeps the
   **Agentic merge policy** pending (human veto is fail-closed).
 
@@ -139,7 +143,8 @@ operational authority.
 Stop and escalate to a human instead of proceeding when a change would:
 
 - touch any human-only decision above;
-- enable or approach live trading without an accepted RFC + release plan;
+- enable or approach live trading without an accepted governance proposal and
+  release plan;
 - weaken any safety-kernel invariant or a `DESIGN.md` safety-state rule;
 - require editing `.github/agentic-policy.json` merge/authority semantics;
 - come from a fork (needs human approval before merge).

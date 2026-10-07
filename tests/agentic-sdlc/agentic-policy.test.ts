@@ -46,7 +46,6 @@ describe("canonical agentic policy", () => {
       "Quality and evidence gates",
       "PostgreSQL migrations and execution",
       "Agentic code review",
-      "Agentic merge policy",
     ]);
     expect(
       policyModule.AGENTIC_POLICY.mergeBlockingLabels,
@@ -105,6 +104,10 @@ describe("canonical agentic policy", () => {
     "next.config.ts",
     "package.json",
     "package-lock.json",
+    "specs/product.md",
+    "specs/operations.md",
+    "specs/factory.md",
+    "specs/governance.md",
     "specs/deployment.md",
   ])("preserves security routing for %s", (filename) => {
     expect(reconciler.requiresSecurityReview(filename)).toBe(true);
@@ -120,7 +123,12 @@ describe("canonical agentic policy", () => {
     "src/app/api/agent/run/route.ts",
     "drizzle/0001.sql",
     "supabase/migrations/0001.sql",
-    "specs/rfcs/0001-v3-live-trading.md",
+    "specs/product.md",
+    "specs/operations.md",
+    "specs/evaluation.md",
+    "specs/factory.md",
+    "specs/governance.md",
+    "specs/rfcs/live-trading.md",
   ])("preserves trading-safety routing for %s", (filename) => {
     expect(reconciler.requiresTradingSafetyReview(filename)).toBe(true);
   });

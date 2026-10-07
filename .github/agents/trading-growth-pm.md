@@ -40,7 +40,7 @@ v2.2 backlog gates are complete. Do not create them from opportunity discovery.
 - Product, architecture, or multi-step work may recommend planning only after
   rubber-duck review.
 - Trading-strategy, guardrail, portfolio, risk, or live-adjacent work must require rubber-duck/trading-safety review in the issue body.
-- Live execution work must remain RFC/v3-readiness work only.
+- Live execution work must remain governance-proposal/v3-readiness work only.
 - Never create a ticket that asks the agent to place real trades, bypass guardrails, weaken safety checks, or optimize for short-term profit without drawdown/risk constraints.
 
 ## Ticket quality bar

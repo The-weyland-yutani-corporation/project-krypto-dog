@@ -17,6 +17,7 @@ describe("agentic SDLC workflow contracts", () => {
   const ci = read(".github/workflows/ci.yml");
   const e2e = read(".github/workflows/agentic-sdlc-e2e.yml");
   const codeReview = read(".github/workflows/code-review.md");
+  const docsSync = read(".github/workflows/docs-sync.md");
   const implementTicket = read(".github/workflows/implement-ticket.md");
   const qaReview = read(".github/workflows/qa-test-plan.md");
   const securityReview = read(".github/workflows/security-review.md");
@@ -61,7 +62,11 @@ describe("agentic SDLC workflow contracts", () => {
     );
     expect(reconciler).toContain("checks: write");
     expect(reconciler).toContain("pull-requests: write");
+    expect(reconciler).toContain("backfill_deprecated_checks");
+    expect(reconciler).toContain("default: false");
     expect(reconcilerScript).toContain("run.display_title === correlationId");
+    expect(reconcilerScript).not.toContain("checks.create");
+    expect(reconcilerScript).toContain("DEPRECATED_POLICY_CHECKS");
     expect(reconcilerScript).toContain(
       "dispatch(workflowId, defaultBranch",
     );
@@ -107,8 +112,8 @@ describe("agentic SDLC workflow contracts", () => {
 
   it("keeps the auto-merge sweeper unable to merge or forge evidence", () => {
     // The sweeper only queues a merge that branch protection still gates. It
-    // must never hold a scope that lets it push, publish the verdict it reads,
-    // or bypass a required context.
+    // must never hold a scope that lets it push, publish evidence, or bypass a
+    // required context.
     expect(autoMergeSweeper).toContain("pull-requests: write");
     expect(autoMergeSweeper).toContain("contents: read");
     expect(autoMergeSweeper).not.toContain("contents: write");
@@ -205,6 +210,17 @@ describe("agentic SDLC workflow contracts", () => {
     expect(securityReview).toContain("reruns");
     expect(tradingSafetyReview).toContain("reruns");
     expect(reconciler).toContain("QA Test Plan");
+  });
+
+  it("keeps docs-sync spec repairs reviewable and outside auto-merge", () => {
+    expect(docsSync).toContain('      - "specs/**"');
+    expect(docsSync).toContain("auto-merge: false");
+    expect(docsSync).toContain("protected-files: fallback-to-issue");
+    expect(docsSync).not.toContain("agentic-automerge");
+  });
+
+  it("runs trading-safety review for every canonical or attempted proposal spec", () => {
+    expect(tradingSafetyReview).toContain('- "specs/**"');
   });
 
   it("correlates trusted workflow dispatches to an exact pull-request head", () => {
@@ -362,7 +378,6 @@ describe("agentic SDLC workflow contracts", () => {
     "Quality and evidence gates",
     "PostgreSQL migrations and execution",
     "Agentic code review",
-    "Agentic merge policy",
   ])("asserts the required %s context", (contextName) => {
     expect(e2e).toContain(`"${contextName}"`);
   });
@@ -381,9 +396,9 @@ describe("agentic SDLC workflow contracts", () => {
     expect(e2e.indexOf('status: "in_progress"')).toBeLessThan(
       e2e.indexOf("enablePullRequestAutoMerge"),
     );
-    expect(e2e).toContain("github.rest.checks.create");
+    expect(e2e).not.toContain("github.rest.checks.create");
     expect(e2e).not.toContain("createCommitStatus");
-    expect(e2e).toContain("checks: write");
+    expect(e2e).toContain("checks: read");
     expect(e2e).toContain("if: always()");
     expect(e2e).toContain(
       "CANARY_BRANCH: agentic-e2e/${{ github.run_id }}-${{ github.run_attempt }}",

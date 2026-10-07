@@ -581,7 +581,26 @@ describe("deterministic merge policy", () => {
     });
   });
 
-  it("requires current-head agent checks plus trusted human approval for boundary work", () => {
+  it("completes fork policy after a current-head human approval", () => {
+    expect(
+      policy({
+        pullRequest: pullRequest({
+          head: {
+            sha: "head-sha",
+            ref: "docs/fork",
+            repo: { full_name: "attacker/project-krypto-dog" },
+          },
+        }),
+        reviews: [review()],
+      }),
+    ).toMatchObject({
+      state: "success",
+      description: "Current human approval satisfies fork policy",
+      sameRepository: false,
+    });
+  });
+
+  it("keeps boundary work non-autonomous after all reviews pass", () => {
     const boundaryFiles = [
       { filename: ".github/workflows/ci.yml", status: "modified" },
     ];
@@ -598,9 +617,8 @@ describe("deterministic merge policy", () => {
         checkRuns: boundaryChecks,
       }),
     ).toMatchObject({
-      state: "success",
-      description: "Current-head human and agent reviews approve boundary PR",
-      waitingForHumanBoundaryApproval: false,
+      state: "pending",
+      description: "Explicit admin merge required for boundary PR",
       hasCurrentHumanApproval: true,
       riskTier: "risk:boundary",
       requiresHumanBoundaryApproval: true,
@@ -624,9 +642,8 @@ describe("deterministic merge policy", () => {
         }),
       ).toMatchObject({
         state: "pending",
-        description: "Boundary change requires current human approval",
+        description: "Explicit admin merge required for boundary PR",
         hasCurrentHumanApproval: false,
-        waitingForHumanBoundaryApproval: true,
       });
     }
   });
@@ -757,9 +774,8 @@ describe("deterministic merge policy", () => {
     ];
     expect(policy({ pullRequest: escalated, checkRuns: checks })).toMatchObject({
       state: "pending",
-      description: "Boundary change requires current human approval",
+      description: "Explicit admin merge required for boundary PR",
       riskTier: "risk:boundary",
-      waitingForHumanBoundaryApproval: true,
     });
     expect(
       policy({
@@ -768,8 +784,8 @@ describe("deterministic merge policy", () => {
         reviews: [review()],
       }),
     ).toMatchObject({
-      state: "success",
-      description: "Current-head human and agent reviews approve boundary PR",
+      state: "pending",
+      description: "Explicit admin merge required for boundary PR",
     });
   });
 
@@ -844,6 +860,24 @@ describe("deterministic merge policy", () => {
     });
   });
 
+  it("allows a review-routing docs-sync label on a manual pull request", () => {
+    expect(
+      policy({
+        pullRequest: pullRequest({
+          title: "docs: update operator guidance",
+          labels: [{ name: "docs-sync" }],
+          user: {
+            login: "maintainer",
+            type: "User",
+          },
+        }),
+      }),
+    ).toMatchObject({
+      state: "success",
+      hasBlockingLabel: false,
+    });
+  });
+
   it("keeps draft pull requests pending", () => {
     expect(
       policy({ pullRequest: pullRequest({ draft: true }) }),
@@ -900,7 +934,7 @@ describe("deterministic merge policy", () => {
       }),
     ).toMatchObject({
       state: "pending",
-      description: "Boundary change requires current human approval",
+      description: "Explicit admin merge required for boundary PR",
       riskTier: "risk:boundary",
     });
 

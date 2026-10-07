@@ -92,7 +92,9 @@ describe("progressive agent instructions", () => {
     expect(rootDoc).toContain("QA verification");
     expect(rootDoc).toContain("Security review");
     expect(rootDoc).toContain("Trading safety review");
-    expect(rootDoc).toContain("Human boundary approval");
+    expect(rootDoc).toContain("authorized");
+    expect(rootDoc).toContain("repository administrator");
+    expect(rootDoc).toContain("explicit merge");
     expect(rootDoc).toContain("Agentic merge policy");
     expect(rootDoc.toLowerCase()).toContain("fork");
     expect(rootDoc.toLowerCase()).toContain("human approval");
@@ -119,6 +121,24 @@ describe("progressive agent instructions", () => {
     expect(dbDoc).toContain(
       "Agents may implement and test database, backup, and inventory automation",
     );
+  });
+
+  it("keeps root and database instructions on the canonical spec surface", () => {
+    const rootDoc = read(ROOT_AGENTS);
+    const dbDoc = read("src/db/AGENTS.md");
+    const canonicalSpecs = [
+      "specs/product.md",
+      "specs/operations.md",
+      "specs/evaluation.md",
+      "specs/factory.md",
+      "specs/governance.md",
+    ];
+
+    for (const spec of canonicalSpecs) {
+      expect(exists(spec)).toBe(true);
+      expect(rootDoc).toContain(spec);
+    }
+    expect(dbDoc).toContain("../../specs/operations.md");
   });
 
   it("directs agents from the Copilot shim to the root and scoped instructions", () => {

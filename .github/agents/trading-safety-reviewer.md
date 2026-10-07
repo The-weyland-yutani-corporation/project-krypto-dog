@@ -14,7 +14,8 @@ the review delta for this area.
 ## Non-negotiable invariants
 
 - v2 is paper trading only.
-- Live execution belongs to a separate RFC and explicit rollout plan.
+- Live execution belongs to a separate proposal in `specs/governance.md` and an
+  explicit rollout plan.
 - The model is read-only and may return only one structured `HOLD`, `BUY`, or
   `SELL` proposal; it must not receive a mutating trade tool.
 - `evaluateTradePolicy`, `authorizeTradeIntent`, and the transactional paper

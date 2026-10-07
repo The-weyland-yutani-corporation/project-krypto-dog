@@ -1,7 +1,7 @@
 # Project Krypto Azure infrastructure (Bicep)
 
 This tree implements the Azure-native target accepted by
-[`specs/decisions/0008-azure-native-deployment-architecture.md`](../specs/decisions/0008-azure-native-deployment-architecture.md).
+[`specs/governance.md`](../specs/governance.md).
 
 > **Deployment state (2026-08-15): FOUNDATIONS + FALLBACK LUNA + RELEASES
 > DEPLOYED.** Bootstrap, both environment foundations, operational Luna
