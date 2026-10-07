@@ -10,7 +10,7 @@ on:
         type: string
       head_sha:
         description: Exact pull request head to repair
-        required: false
+        required: true
         type: string
       correlation_id:
         description: Reconciler run correlation
@@ -126,16 +126,71 @@ max-ai-credits: 2200
 max-daily-ai-credits: 5000
 timeout-minutes: 30
 pre-agent-steps:
-  - name: Restore trusted agent instructions
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+  - name: Check out dispatched PR head
     env:
-      TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
-    run: node .github/scripts/restore-trusted-agent-instructions.cjs
-  - name: Verify dispatched PR head
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
-    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_AW_REPOSITORY: ${{ github.repository }}
+      EXPECTED_PR_NUMBER: ${{ inputs.pr }}
       EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
-    run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
+    run: |
+      set -euo pipefail
+      case "${EXPECTED_PR_NUMBER}" in
+        ''|*[!0-9]*)
+          echo "Dispatched target '${EXPECTED_PR_NUMBER}' is not a pull-request number." >&2
+          exit 1
+          ;;
+      esac
+      case "${EXPECTED_HEAD_SHA}" in
+        ''|*[!0-9a-f]*)
+          echo "Dispatched head must be a lowercase 40-character SHA." >&2
+          exit 1
+          ;;
+      esac
+      if [ "${#EXPECTED_HEAD_SHA}" -ne 40 ]; then
+        echo "Dispatched head must be a lowercase 40-character SHA." >&2
+        exit 1
+      fi
+
+      mapfile -t pull < <(
+        gh api "repos/${GH_AW_REPOSITORY}/pulls/${EXPECTED_PR_NUMBER}" \
+          --jq '.head.sha, .head.repo.full_name, .state'
+      )
+      if [ "${pull[1]:-}" != "${GH_AW_REPOSITORY}" ]; then
+        echo "PR #${EXPECTED_PR_NUMBER} is not a same-repository pull request." >&2
+        exit 1
+      fi
+      if [ "${pull[2]:-}" != "open" ]; then
+        echo "PR #${EXPECTED_PR_NUMBER} is not open." >&2
+        exit 1
+      fi
+      if [ "${pull[0]:-}" != "${EXPECTED_HEAD_SHA}" ]; then
+        echo "PR #${EXPECTED_PR_NUMBER} head is now ${pull[0]:-missing}, not the dispatched ${EXPECTED_HEAD_SHA}." >&2
+        exit 1
+      fi
+
+      git fetch --no-tags --depth=1 origin "refs/pull/${EXPECTED_PR_NUMBER}/head"
+      fetched_head="$(git rev-parse FETCH_HEAD)"
+      if [ "${fetched_head}" != "${EXPECTED_HEAD_SHA}" ]; then
+        echo "Fetched PR head ${fetched_head} does not match ${EXPECTED_HEAD_SHA}." >&2
+        exit 1
+      fi
+      git switch --detach "${EXPECTED_HEAD_SHA}"
+      test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
+      echo "Checked out exact PR #${EXPECTED_PR_NUMBER} head ${EXPECTED_HEAD_SHA}."
+  - name: Restore trusted agent instructions
+    env:
+      GH_AW_AGENT_FOLDERS: ".agents .antigravity .claude .codex .crush .gemini .github .opencode .pi"
+      GH_AW_AGENT_FILES: ".crush.json AGENTS.md ANTIGRAVITY.md CLAUDE.md DESIGN.md GEMINI.md PI.md opencode.jsonc"
+      GH_AW_SUB_AGENT_DIR: ".github/agents"
+      GH_AW_SUB_AGENT_EXT: ".agent.md"
+      GH_AW_SKILL_DIR: ".github/skills"
+      TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+    run: |
+      set -euo pipefail
+      GH_AW_AGENT_FILES="" bash "${RUNNER_TEMP}/gh-aw/actions/restore_base_github_folders.sh"
+      bash "${RUNNER_TEMP}/gh-aw/actions/restore_inline_sub_agents.sh"
+      bash "${RUNNER_TEMP}/gh-aw/actions/restore_inline_skills.sh"
+      node .github/scripts/restore-trusted-agent-instructions.cjs
 ---
 
 # PR Self Heal
@@ -148,8 +203,8 @@ Repair failed checks on an eligible routine or sensitive agent pull request
 - Confirm the PR is open, comes from this repository, has both `agentic-factory` and `agentic-automerge`, and has an `[ai-dev] ` or `[docs-sync] ` title.
 - For reconciler dispatch, require the checked-out PR head to match the
   `head_sha` input; use `noop` if the PR advanced.
-- Agent instruction files in the workspace are restored from the trusted
-  workflow SHA; never modify an `AGENTS.md` file.
+- Agent instruction files and the binding `DESIGN.md` are restored from the
+  trusted workflow SHA; never modify an `AGENTS.md` or `DESIGN.md` file.
 - Resolve the shared factory risk tier from the changed paths and PR risk label.
   Do not repair `risk:boundary`, unknown, malformed, renamed, or destructive
   migration scope.

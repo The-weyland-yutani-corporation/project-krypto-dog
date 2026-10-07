@@ -123,6 +123,21 @@ function sha256(text) {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
 
+function detectLineEnding(text) {
+  if (typeof text !== "string") return "\n";
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function serializeJson(value, lineEnding = "\n") {
+  return `${JSON.stringify(value, null, 2).replace(/\r?\n/g, lineEnding)}${lineEnding}`;
+}
+
+function selectLineEnding(filePath, fallback = "\n") {
+  if (!filePath) return fallback;
+  if (!fs.existsSync(filePath)) return fallback;
+  return detectLineEnding(fs.readFileSync(filePath, "utf8"));
+}
+
 function uniqueSorted(values) {
   return [...new Set(values)].sort((a, b) => String(a).localeCompare(String(b), "en"));
 }
@@ -1391,8 +1406,10 @@ function runFixtureContract(fixtureDir) {
   const expectedPath = path.join(fixtureDir, "expected-report.json");
   let drift = null;
   if (fs.existsSync(expectedPath)) {
-    const expected = fs.readFileSync(expectedPath, "utf8").trim();
-    const actual = JSON.stringify(report, null, 2).trim();
+    const expectedText = fs.readFileSync(expectedPath, "utf8");
+    const expected = expectedText.trim();
+    const lineEnding = detectLineEnding(expectedText);
+    const actual = serializeJson(report, lineEnding).trim();
     if (expected !== actual) drift = { expectedPath };
   }
   return { report, drift, expectedExists: fs.existsSync(expectedPath) };
@@ -1536,7 +1553,7 @@ function main(argv, deps) {
     return 1;
   }
 
-  const json = `${JSON.stringify(report, null, 2)}\n`;
+  const json = serializeJson(report, selectLineEnding(outPath, "\n"));
   if (outPath) {
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, json);
@@ -1548,7 +1565,7 @@ function main(argv, deps) {
   }
   if (cachePath) {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-    fs.writeFileSync(cachePath, `${JSON.stringify(cacheRecord, null, 2)}\n`);
+    fs.writeFileSync(cachePath, serializeJson(cacheRecord, selectLineEnding(cachePath, "\n")));
   }
   return 0;
 }

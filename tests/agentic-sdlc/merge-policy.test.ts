@@ -62,6 +62,7 @@ interface PolicyResult {
   hasSelfHealBlockingLabel: boolean;
   hasCurrentHumanApproval: boolean;
   hasCurrentHumanChangesRequested: boolean;
+  waitingForHumanBoundaryApproval: boolean;
   riskTier: string;
   requiresHumanBoundaryApproval: boolean;
   factoryMode: string;

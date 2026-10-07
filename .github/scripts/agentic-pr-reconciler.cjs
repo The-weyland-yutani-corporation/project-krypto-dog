@@ -623,6 +623,7 @@ function evaluateMergePolicy({
 
   let state = "pending";
   let description = "A current human approval is required";
+  let waitingForHumanBoundaryApproval = false;
 
   if (pullRequest.draft) {
     description = "Draft pull requests cannot merge";
@@ -678,6 +679,7 @@ function evaluateMergePolicy({
     hasSelfHealBlockingLabel: selfHealBlockingLabel,
     hasCurrentHumanApproval,
     hasCurrentHumanChangesRequested,
+    waitingForHumanBoundaryApproval,
     agentApproved: agentApproval.approved,
     agentCheckStates: agentApproval.checkStates,
     requiredSpecialistChecks: agentApproval.requiredSpecialistChecks,

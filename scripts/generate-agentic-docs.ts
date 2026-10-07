@@ -25,6 +25,10 @@ const START_MARKER = "<!-- generated:workflow-inventory:start -->";
 const END_MARKER = "<!-- generated:workflow-inventory:end -->";
 const REMEDIATION = "npm run agentic:docs";
 
+function detectLineEnding(text: string): string {
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
 function escapeCell(value: string): string {
   return value.replace(/[\\|]/g, "\\$&");
 }
@@ -54,6 +58,7 @@ function capsCell(inv: WorkflowInventory): string {
 /** Render the generated section body (between, not including, the markers). */
 export function renderInventorySection(
   inventory: WorkflowInventory[] = buildWorkflowInventory(),
+  lineEnding: string = "\n",
 ): string {
   const lines: string[] = [];
   lines.push(
@@ -72,7 +77,7 @@ export function renderInventorySection(
         `${safeOutputsCell(inv)} | ${capsCell(inv)} |`,
     );
   }
-  return lines.join("\n");
+  return lines.join(lineEnding);
 }
 
 /** Replace the marked section within the document text; returns the new text. */
@@ -92,8 +97,9 @@ export function applyInventorySection(document: string): string {
   }
   const before = document.slice(0, startIndex + START_MARKER.length);
   const after = document.slice(endIndex);
-  const body = renderInventorySection();
-  return `${before}\n\n${body}\n\n${after}`;
+  const lineEnding = detectLineEnding(document);
+  const body = renderInventorySection(buildWorkflowInventory(), lineEnding);
+  return `${before}${lineEnding}${lineEnding}${body}${lineEnding}${lineEnding}${after}`;
 }
 
 function main(): void {
