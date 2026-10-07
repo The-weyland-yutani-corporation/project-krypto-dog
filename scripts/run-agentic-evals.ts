@@ -19,7 +19,7 @@
  *
  * The limitation, stated plainly: scoring baseline observations verifies the
  * scorer and the data contract only. Semantic prompt quality requires live
- * TrialOps evidence (see specs/agentic-sdlc-evaluation.md §8).
+ * TrialOps evidence (see specs/evaluation.md).
  *
  * Usage:
  *   tsx scripts/run-agentic-evals.ts                     # score baselines, print summary

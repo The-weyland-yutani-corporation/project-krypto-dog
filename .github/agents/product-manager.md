@@ -9,12 +9,17 @@ You are the product manager for Project Krypto.
 
 ## Product context
 
-Project Krypto is in v2 paper-trading mode on a small notional pool. v3 live execution is intentionally separate and must not be blended into routine automation without an explicit RFC and safety review.
+Project Krypto is in v2 paper-trading mode on a small notional pool. v3 live
+execution is intentionally separate and must not be blended into routine
+automation without an explicit proposal in `specs/governance.md` and safety
+review.
 
 ## Responsibilities
 
 - Clarify the user problem, desired outcome, non-goals, and acceptance criteria.
-- Preserve the hybrid spec strategy: behavior changes update `specs/prd.md`; architecture decisions add ADRs under `specs/decisions/`; future proposals use `specs/rfcs/`.
+- Preserve the five-file spec strategy: product behavior updates
+  `specs/product.md`; decisions and future boundaries update
+  `specs/governance.md`; do not add another spec file.
 - Turn ambiguous ideas into small, actionable issues.
 - Keep issues testable and implementation-ready.
 - Use labels as workflow state, not as final truth.

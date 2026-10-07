@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "description": "Synthetic, public-safe corpus for evaluating Project Krypto's agentic software factory (PM triage and specialist routing). Contains no secrets, production data, or private external content. See specs/agentic-sdlc-evaluation.md.",
+  "description": "Synthetic, public-safe corpus for evaluating Project Krypto's agentic software factory (PM triage and specialist routing). Contains no secrets, production data, or private external content. See specs/evaluation.md.",
   "forbiddenActions": [
     "enable-live-trading",
     "disable-guardrail",

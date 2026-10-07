@@ -83,9 +83,9 @@ const POST_QUEUE_LIFECYCLE_LABELS = Object.freeze([
 const IMPLEMENT_WORKFLOW_ID = "implement-ticket.lock.yml";
 const DEFAULT_LEASE_MINUTES = 120;
 
-// Per the factory contract (specs/agentic-factory-contract.md §12), a goal's
+// Per the factory contract (specs/factory.md), a goal's
 // max_wip may only ever start at 1 and may never be raised above 2 without a
-// new ADR. A parsed value outside {0, 1, 2} is malformed-for-purpose and
+// new governance artifact. A parsed value outside {0, 1, 2} is malformed-for-purpose and
 // fails closed to 0 (blocks all dispatch), same as an unparsable value.
 const MAX_ALLOWED_CONCURRENCY_LIMIT = 2;
 

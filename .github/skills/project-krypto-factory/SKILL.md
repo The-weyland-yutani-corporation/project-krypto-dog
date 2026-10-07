@@ -112,7 +112,17 @@ The automatic `trading-safety-review` PR path filter covers:
 - `src/db/**`
 - `drizzle/**`
 - `supabase/migrations/**`
-- `specs/rfcs/**`
+- `specs/product.md`
+- `specs/operations.md`
+- `specs/evaluation.md`
+- `specs/factory.md`
+- `specs/governance.md`
+
+The automatic `security-review` route covers `.github/**`, admin/auth and
+deployment surfaces, `.env.example`, and all `specs/**` paths so legacy or
+attempted non-canonical proposals fail closed.
+Trading-safety routing likewise covers every `specs/**` path, while only the
+five canonical files may remain in the specification surface.
 
 That filter is not the risk classifier. Use
 `.github/scripts/agentic-factory-policy.cjs` as the only path-risk source:

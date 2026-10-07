@@ -123,6 +123,24 @@ describe("progressive agent instructions", () => {
     );
   });
 
+  it("keeps root and database instructions on the canonical spec surface", () => {
+    const rootDoc = read(ROOT_AGENTS);
+    const dbDoc = read("src/db/AGENTS.md");
+    const canonicalSpecs = [
+      "specs/product.md",
+      "specs/operations.md",
+      "specs/evaluation.md",
+      "specs/factory.md",
+      "specs/governance.md",
+    ];
+
+    for (const spec of canonicalSpecs) {
+      expect(exists(spec)).toBe(true);
+      expect(rootDoc).toContain(spec);
+    }
+    expect(dbDoc).toContain("../../specs/operations.md");
+  });
+
   it("directs agents from the Copilot shim to the root and scoped instructions", () => {
     const shim = read(COPILOT_SHIM);
     expect(shim).toContain("../AGENTS.md");

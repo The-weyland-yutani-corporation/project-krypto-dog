@@ -60,23 +60,33 @@
       "exactPaths": [
         "src/proxy.ts",
         ".env.example",
-        "specs/deployment.md"
+        "specs/product.md",
+        "specs/operations.md",
+        "specs/factory.md",
+        "specs/governance.md"
       ],
       "patterns": [
         "^\\.github/",
         "^src/app/api/(admin|auth)/",
         "^src/deployment/",
         "^src/lib/.*(?:auth|csrf|secure-compare).*\\.ts$",
-        "^(?:docker-compose\\.yml|next\\.config\\.[^/]+|package(?:-lock)?\\.json)$"
+        "^(?:docker-compose\\.yml|next\\.config\\.[^/]+|package(?:-lock)?\\.json)$",
+        "^specs/"
       ]
     },
     "tradingSafety": {
-      "exactPaths": [],
+      "exactPaths": [
+        "specs/product.md",
+        "specs/operations.md",
+        "specs/evaluation.md",
+        "specs/factory.md",
+        "specs/governance.md"
+      ],
       "patterns": [
         "^src/(?:agent|backtest|db|guardrails|tools|trading)/",
         "^src/app/api/agent/",
         "^(?:drizzle|supabase/migrations)/",
-        "^specs/rfcs/"
+        "^specs/"
       ]
     }
   },

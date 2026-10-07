@@ -4,7 +4,7 @@ name: Agentic SDLC evals
 # and specialist routing). This runs the fixture-based scorer only — it performs
 # NO live-model call and requires NO secrets. Semantic prompt quality is measured
 # separately by manual TrialOps (`gh aw trial --repeat 3`), never here. See
-# specs/agentic-sdlc-evaluation.md.
+# specs/evaluation.md.
 
 on:
   workflow_dispatch:

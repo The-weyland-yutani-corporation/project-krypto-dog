@@ -1,0 +1,197 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1100" viewBox="0 0 1800 1100" role="img" aria-labelledby="title desc">
+  <title id="title">Project Krypto dark factory loops</title>
+  <desc id="desc">A large approved factory goal orbit containing four smaller loops for governance, mission planning, pull request delivery, and Azure evidence feedback, with human authority and production boundaries outside the autonomous system.</desc>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="44%" r="72%">
+      <stop offset="0%" stop-color="#101827"/>
+      <stop offset="58%" stop-color="#080d16"/>
+      <stop offset="100%" stop-color="#030508"/>
+    </radialGradient>
+    <linearGradient id="mainOrbit" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.18"/>
+      <stop offset="48%" stop-color="#3b82f6" stop-opacity="0.78"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.24"/>
+    </linearGradient>
+    <linearGradient id="cyanOrbit" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.15"/>
+      <stop offset="60%" stop-color="#38bdf8" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.15"/>
+    </linearGradient>
+    <linearGradient id="greenOrbit" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22c55e" stop-opacity="0.12"/>
+      <stop offset="60%" stop-color="#22c55e" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#2dd4bf" stop-opacity="0.14"/>
+    </linearGradient>
+    <linearGradient id="violetOrbit" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.12"/>
+      <stop offset="60%" stop-color="#a78bfa" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#ec4899" stop-opacity="0.12"/>
+    </linearGradient>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrowMuted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <style>
+      .sans { font-family: Inter, "Segoe UI", Arial, sans-serif; }
+      .mono { font-family: "JetBrains Mono", Consolas, monospace; }
+      .title { font-size: 42px; font-weight: 700; fill: #f8fafc; letter-spacing: -1px; }
+      .subtitle { font-size: 18px; font-weight: 500; fill: #94a3b8; }
+      .mission { font-size: 34px; font-weight: 700; fill: #f8fafc; letter-spacing: -0.6px; }
+      .missionSub { font-size: 17px; font-weight: 600; fill: #cbd5e1; }
+      .loopTitle { font-size: 22px; font-weight: 700; fill: #f8fafc; }
+      .loopType { font-size: 12px; font-weight: 700; fill: #94a3b8; letter-spacing: 1.5px; }
+      .label { font-size: 14px; font-weight: 600; fill: #cbd5e1; }
+      .small { font-size: 12px; font-weight: 500; fill: #94a3b8; }
+      .tiny { font-size: 11px; font-weight: 600; fill: #94a3b8; }
+      .pill { fill: #111827; stroke: #334155; stroke-width: 1.2; }
+      .stage { fill: #f8fafc; stroke: #93c5fd; stroke-width: 2; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1100" fill="url(#bg)"/>
+  <circle cx="900" cy="575" r="470" fill="#0b1320" opacity="0.58"/>
+  <circle cx="900" cy="575" r="420" fill="none" stroke="#1e293b" stroke-width="48" opacity="0.25"/>
+  <circle cx="900" cy="575" r="420" fill="none" stroke="url(#mainOrbit)" stroke-width="3"/>
+  <circle cx="900" cy="575" r="410" fill="none" stroke="#243044" stroke-width="1" stroke-dasharray="3 12" opacity="0.72"/>
+  <circle cx="900" cy="575" r="455" fill="none" stroke="#38bdf8" stroke-width="18" opacity="0.04" filter="url(#softGlow)"/>
+
+  <text x="70" y="72" class="sans title">Project Krypto dark factory: loops within the mission</text>
+  <text x="72" y="108" class="sans subtitle">Durable GitHub state, bounded agent loops, exact-head evidence, and Azure shadow feedback</text>
+
+  <g transform="translate(900 155)">
+    <rect x="-210" y="-42" width="420" height="84" rx="16" fill="#231f0c" stroke="#f59e0b" stroke-width="2"/>
+    <circle cx="-166" cy="0" r="15" fill="#f59e0b" opacity="0.16"/>
+    <circle cx="-166" cy="0" r="6" fill="#fbbf24" filter="url(#glow)"/>
+    <text x="-138" y="-6" class="sans label" fill="#fde68a">AUTHORIZED ADMINISTRATOR</text>
+    <text x="-138" y="18" class="sans small">sets mode, approves goal, merges boundary work</text>
+  </g>
+  <path d="M900 198 C900 225 900 236 900 254" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrowMuted)"/>
+
+  <g transform="translate(900 575)">
+    <circle r="150" fill="#0d1117" stroke="#334155" stroke-width="2"/>
+    <circle r="132" fill="none" stroke="#172033" stroke-width="1"/>
+    <circle r="112" fill="#080b10" stroke="#243044" stroke-width="1"/>
+    <circle cx="0" cy="-150" r="10" fill="#f8fafc" filter="url(#glow)"/>
+    <text x="0" y="-35" text-anchor="middle" class="sans loopType">FACTORY MISSION</text>
+    <text x="0" y="5" text-anchor="middle" class="sans mission">APPROVED GOAL</text>
+    <text x="0" y="38" text-anchor="middle" class="sans missionSub">scope + WIP + budget + risk ceiling</text>
+    <g transform="translate(0 72)">
+      <rect x="-104" y="-17" width="208" height="34" rx="17" class="pill"/>
+      <text x="0" y="5" text-anchor="middle" class="mono small">active | shadow | paused</text>
+    </g>
+  </g>
+
+  <path d="M611 265 C740 132 1050 135 1191 275" fill="none" stroke="#38bdf8" stroke-width="2.4" opacity="0.75" marker-end="url(#arrowBlue)"/>
+  <path d="M1280 370 C1438 485 1430 690 1272 788" fill="none" stroke="#38bdf8" stroke-width="2.4" opacity="0.75" marker-end="url(#arrowBlue)"/>
+  <path d="M1185 875 C1030 1020 745 1018 603 874" fill="none" stroke="#38bdf8" stroke-width="2.4" opacity="0.75" marker-end="url(#arrowBlue)"/>
+  <path d="M514 782 C356 678 357 472 520 366" fill="none" stroke="#38bdf8" stroke-width="2.4" opacity="0.75" marker-end="url(#arrowBlue)"/>
+
+  <g transform="translate(555 330)">
+    <circle r="168" fill="#0d1117" stroke="#a78bfa" stroke-opacity="0.32" stroke-width="2"/>
+    <circle r="148" fill="none" stroke="url(#violetOrbit)" stroke-width="3" stroke-dasharray="4 6"/>
+    <circle cx="-106" cy="-102" r="9" class="stage" filter="url(#glow)"/>
+    <circle cx="121" cy="-77" r="8" class="stage"/>
+    <circle cx="126" cy="79" r="8" class="stage"/>
+    <circle cx="-103" cy="108" r="8" class="stage"/>
+    <text x="0" y="-50" text-anchor="middle" class="sans loopType">OUTER LOOP</text>
+    <text x="0" y="-18" text-anchor="middle" class="sans loopTitle">Observe and improve</text>
+    <text x="0" y="16" text-anchor="middle" class="mono small">daily-repo-status</text>
+    <text x="0" y="40" text-anchor="middle" class="mono small">agentic-governance</text>
+    <text x="0" y="64" text-anchor="middle" class="mono small">agentic-corrections</text>
+    <text x="0" y="88" text-anchor="middle" class="mono small">harness-entropy</text>
+    <g transform="translate(0 128)">
+      <rect x="-116" y="-15" width="232" height="30" rx="15" fill="#241936" stroke="#a78bfa" stroke-opacity="0.45"/>
+      <text x="0" y="4" text-anchor="middle" class="sans tiny">evidence -&gt; opportunity-discovery -&gt; pm-triage</text>
+    </g>
+  </g>
+
+  <g transform="translate(1240 345)">
+    <circle r="168" fill="#0d1117" stroke="#38bdf8" stroke-opacity="0.34" stroke-width="2"/>
+    <circle r="148" fill="none" stroke="url(#cyanOrbit)" stroke-width="3" stroke-dasharray="4 6"/>
+    <circle cx="-104" cy="-104" r="9" class="stage" filter="url(#glow)"/>
+    <circle cx="116" cy="-83" r="8" class="stage"/>
+    <circle cx="129" cy="73" r="8" class="stage"/>
+    <circle cx="-99" cy="111" r="8" class="stage"/>
+    <text x="0" y="-50" text-anchor="middle" class="sans loopType">MISSION LOOP</text>
+    <text x="0" y="-18" text-anchor="middle" class="sans loopTitle">Plan and claim work</text>
+    <text x="0" y="16" text-anchor="middle" class="mono small">em-planning</text>
+    <text x="0" y="40" text-anchor="middle" class="mono small">ready-for-ai-dev</text>
+    <text x="0" y="64" text-anchor="middle" class="mono small">factory-queue-controller</text>
+    <text x="0" y="88" text-anchor="middle" class="mono small">implement-ticket</text>
+    <g transform="translate(0 128)">
+      <rect x="-111" y="-15" width="222" height="30" rx="15" fill="#082f49" stroke="#38bdf8" stroke-opacity="0.45"/>
+      <text x="0" y="4" text-anchor="middle" class="sans tiny">eligible leaf -&gt; owned expiring claim</text>
+    </g>
+  </g>
+
+  <g transform="translate(1245 800)">
+    <circle r="168" fill="#0d1117" stroke="#22c55e" stroke-opacity="0.34" stroke-width="2"/>
+    <circle r="148" fill="none" stroke="url(#greenOrbit)" stroke-width="3" stroke-dasharray="4 6"/>
+    <circle cx="-106" cy="-101" r="9" class="stage" filter="url(#glow)"/>
+    <circle cx="118" cy="-81" r="8" class="stage"/>
+    <circle cx="126" cy="77" r="8" class="stage"/>
+    <circle cx="-98" cy="111" r="8" class="stage"/>
+    <text x="0" y="-50" text-anchor="middle" class="sans loopType">INNER DELIVERY LOOP</text>
+    <text x="0" y="-18" text-anchor="middle" class="sans loopTitle">Prove or repair a PR</text>
+    <text x="0" y="16" text-anchor="middle" class="mono small">opened / synchronize / labels</text>
+    <text x="0" y="40" text-anchor="middle" class="mono small">exact-head checks + reviews</text>
+    <text x="0" y="64" text-anchor="middle" class="mono small">pr-self-heal (capped)</text>
+    <text x="0" y="88" text-anchor="middle" class="mono small">lifecycle merge policy</text>
+    <g transform="translate(0 128)">
+      <rect x="-120" y="-15" width="240" height="30" rx="15" fill="#052e16" stroke="#22c55e" stroke-opacity="0.48"/>
+      <text x="0" y="4" text-anchor="middle" class="sans tiny">auto-merge or administrator boundary merge</text>
+    </g>
+  </g>
+
+  <g transform="translate(550 800)">
+    <circle r="168" fill="#0d1117" stroke="#22d3ee" stroke-opacity="0.34" stroke-width="2"/>
+    <circle r="148" fill="none" stroke="url(#cyanOrbit)" stroke-width="3" stroke-dasharray="4 6"/>
+    <circle cx="-105" cy="-103" r="9" class="stage" filter="url(#glow)"/>
+    <circle cx="119" cy="-80" r="8" class="stage"/>
+    <circle cx="128" cy="75" r="8" class="stage"/>
+    <circle cx="-100" cy="110" r="8" class="stage"/>
+    <text x="0" y="-50" text-anchor="middle" class="sans loopType">EVIDENCE LOOP</text>
+    <text x="0" y="-18" text-anchor="middle" class="sans loopTitle">Deploy and observe</text>
+    <text x="0" y="16" text-anchor="middle" class="mono small">exact merged SHA + OIDC</text>
+    <text x="0" y="40" text-anchor="middle" class="mono small">Azure dev / shadow</text>
+    <text x="0" y="64" text-anchor="middle" class="mono small">journals + Log Analytics</text>
+    <text x="0" y="88" text-anchor="middle" class="mono small">factory:deployed-dev -&gt; done</text>
+    <g transform="translate(0 128)">
+      <rect x="-113" y="-15" width="226" height="30" rx="15" fill="#082f49" stroke="#22d3ee" stroke-opacity="0.48"/>
+      <text x="0" y="4" text-anchor="middle" class="sans tiny">telemetry feeds the outer loop</text>
+    </g>
+  </g>
+
+  <g transform="translate(1580 570)">
+    <rect x="-135" y="-92" width="270" height="184" rx="20" fill="#24090c" stroke="#ef4444" stroke-width="2"/>
+    <circle cx="0" cy="-40" r="22" fill="#450a0a" stroke="#ef4444" stroke-width="2"/>
+    <path d="M-8 -40 L-2 -34 L10 -48" fill="none" stroke="#fca5a5" stroke-width="3"/>
+    <text x="0" y="3" text-anchor="middle" class="sans loopType" fill="#fca5a5">OUTSIDE AUTONOMY</text>
+    <text x="0" y="34" text-anchor="middle" class="sans label" fill="#fecaca">Production remains disabled</text>
+    <text x="0" y="58" text-anchor="middle" class="sans small">manual approval; no live execution</text>
+  </g>
+  <path d="M1398 654 C1460 640 1490 620 1518 603" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="8 8" marker-end="url(#arrowMuted)"/>
+  <text x="1460" y="675" text-anchor="middle" class="sans tiny" fill="#fca5a5">no autonomous promotion</text>
+
+  <g transform="translate(900 1042)">
+    <circle cx="-400" cy="0" r="5" fill="#38bdf8"/>
+    <text x="-386" y="5" class="sans small">automated loop transition</text>
+    <line x1="-190" y1="0" x2="-145" y2="0" stroke="#f59e0b" stroke-width="2" stroke-dasharray="7 6"/>
+    <text x="-132" y="5" class="sans small">human authority</text>
+    <rect x="52" y="-11" width="22" height="22" rx="6" fill="#450a0a" stroke="#ef4444"/>
+    <text x="88" y="5" class="sans small">fail-closed boundary</text>
+    <text x="322" y="5" class="mono small">current-head evidence only</text>
+  </g>
+</svg>

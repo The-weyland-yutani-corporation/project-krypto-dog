@@ -443,7 +443,9 @@ function hasAnyBlockingLabel(pullRequest, blockingLabels) {
 
   return (
     [...blockingLabels].some((label) => labels.has(label)) ||
-    (labels.has("docs-sync") && !title.startsWith("[docs-sync] "))
+    (labels.has(AUTO_MERGE_LABEL) &&
+      labels.has("docs-sync") &&
+      !title.startsWith("[docs-sync] "))
   );
 }
 

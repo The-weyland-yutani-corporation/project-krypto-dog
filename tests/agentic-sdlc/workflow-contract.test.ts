@@ -17,6 +17,7 @@ describe("agentic SDLC workflow contracts", () => {
   const ci = read(".github/workflows/ci.yml");
   const e2e = read(".github/workflows/agentic-sdlc-e2e.yml");
   const codeReview = read(".github/workflows/code-review.md");
+  const docsSync = read(".github/workflows/docs-sync.md");
   const implementTicket = read(".github/workflows/implement-ticket.md");
   const qaReview = read(".github/workflows/qa-test-plan.md");
   const securityReview = read(".github/workflows/security-review.md");
@@ -209,6 +210,17 @@ describe("agentic SDLC workflow contracts", () => {
     expect(securityReview).toContain("reruns");
     expect(tradingSafetyReview).toContain("reruns");
     expect(reconciler).toContain("QA Test Plan");
+  });
+
+  it("keeps docs-sync spec repairs reviewable and outside auto-merge", () => {
+    expect(docsSync).toContain('      - "specs/**"');
+    expect(docsSync).toContain("auto-merge: false");
+    expect(docsSync).toContain("protected-files: fallback-to-issue");
+    expect(docsSync).not.toContain("agentic-automerge");
+  });
+
+  it("runs trading-safety review for every canonical or attempted proposal spec", () => {
+    expect(tradingSafetyReview).toContain('- "specs/**"');
   });
 
   it("correlates trusted workflow dispatches to an exact pull-request head", () => {

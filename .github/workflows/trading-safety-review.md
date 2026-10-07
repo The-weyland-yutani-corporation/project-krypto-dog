@@ -29,7 +29,7 @@ on:
       - "src/db/**"
       - "drizzle/**"
       - "supabase/migrations/**"
-      - "specs/rfcs/**"
+      - "specs/**"
   issues:
     types: [labeled]
     names: [trading-safety]

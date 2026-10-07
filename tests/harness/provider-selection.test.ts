@@ -7,7 +7,7 @@ import { resolveDecisionProvider } from "@/agent/decision-provider";
 import { DEFAULT_STRATEGY_CONFIG } from "@/trading/strategy-config";
 
 // Additive branch coverage for the harness provider-selection and
-// production-rejection seams introduced for the mock-first harness (ADR 0011).
+// production-rejection seams required by the mock-first governance contract.
 
 describe("harness market-data provider selection branches", () => {
   it("returns the deterministic crash fixture in mock mode", async () => {

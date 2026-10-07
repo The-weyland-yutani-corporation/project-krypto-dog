@@ -1,7 +1,7 @@
 name: Factory Queue Controller
 
 # Deterministic queue-controller runtime for the safety-bounded autonomous
-# SDLC factory (specs/agentic-factory-contract.md). This workflow never
+# SDLC factory (specs/factory.md). This workflow never
 # executes issue/PR-authored code: it only reads issue/label/milestone state
 # through the GitHub API and, in `factory-mode:active`, claims and dispatches
 # at most one `implement-ticket.lock.yml` run per pass.

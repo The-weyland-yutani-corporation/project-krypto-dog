@@ -6,7 +6,7 @@ name: Azure deploy prod
 # before forced disable, then the separate `production-deploy` approval for
 # current-release safety and infrastructure/release work.
 #
-# Safety ordering (ADR 0008 items 11-12, infra/README.md):
+# Safety ordering (specs/governance.md and infra/README.md):
 #   1. Detect the complete current release from deterministic resource
 #      names. If it exists, resolve the rollout/evidence inputs from live
 #      Azure state and force rollout.bicep to disabled/Manual under the

@@ -2,8 +2,8 @@
 
 # Project Krypto — Azure Container Apps runtime image.
 #
-# Produces two independent final targets (see ADR
-# specs/decisions/0008-azure-native-deployment-architecture.md):
+# Produces two independent final targets (see specs/operations.md and
+# specs/governance.md):
 #
 #   * `web` — minimal, non-root image for the always-on Container App and
 #     for the scheduled-trigger Container Apps Job (see
@@ -14,7 +14,7 @@
 #   * `ops` — full source + full dependency graph + PostgreSQL 17
 #     client/server binaries for one-off/manually-triggered Container Apps
 #     Jobs: Drizzle migrations, `pg_dump` backups, and scratch-loopback
-#     restore verification (specs/deployment.md Step 5 /
+#     restore verification (specs/operations.md /
 #     src/deployment/backup.ts). Not used for recurring HTTP scheduling —
 #     see `web`'s scheduler runner for that, which avoids needing this much
 #     heavier image just to fire two HTTP calls on a timer.
@@ -123,7 +123,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # pg_dump/pg_restore (client) plus a full server (postgres/initdb/pg_ctl) so
 # an ops job can stand up a throwaway, loopback-only PostgreSQL instance and
 # restore a logical dump into it for backup verification
-# (src/deployment/backup.ts, specs/deployment.md Step 5). Installed from the
+# (src/deployment/backup.ts, specs/operations.md). Installed from the
 # official, GPG-verified PGDG apt repository rather than Debian's own
 # (older) postgresql package.
 RUN apt-get update \
@@ -178,7 +178,7 @@ RUN set -eu; \
 
 # Full source + full dependency graph (including devDependencies: drizzle-kit,
 # tsx, typescript) so operator-invoked jobs can run migrations, backups, and
-# restore verification exactly as documented in specs/deployment.md.
+# restore verification exactly as documented in specs/operations.md.
 #
 # Reuse `deps`'s node_modules (installed with devDependencies intact, no
 # NODE_ENV set at that point) instead of running `npm ci` again here: doing

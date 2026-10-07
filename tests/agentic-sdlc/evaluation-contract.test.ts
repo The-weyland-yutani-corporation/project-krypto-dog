@@ -365,7 +365,7 @@ describe("wiring and safety exclusions", () => {
 
   it("documents the safety exclusions in the evaluation spec", () => {
     const spec = fs.readFileSync(
-      path.join(root, "specs/agentic-sdlc-evaluation.md"),
+      path.join(root, "specs/evaluation.md"),
       "utf8",
     );
     for (const term of [

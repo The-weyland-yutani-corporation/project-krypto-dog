@@ -37,4 +37,4 @@ agent-state invariants.
 - Agents may implement and test database, backup, and inventory automation
   against disposable/local targets. Executing any production database
   operation remains human-only — see
-  [`specs/deployment.md`](../../specs/deployment.md).
+  [`specs/operations.md`](../../specs/operations.md).

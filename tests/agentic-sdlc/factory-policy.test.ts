@@ -257,7 +257,22 @@ describe("minimum-risk path classification", () => {
     expect(policy.classifyPathTier("docs/agentic-software-factory.md")).toBe(
       RISK_TIERS.BOUNDARY,
     );
-    expect(policy.classifyPathTier("specs/agentic-factory-contract.md")).toBe(
+    expect(policy.classifyPathTier("specs/factory.md")).toBe(
+      RISK_TIERS.BOUNDARY,
+    );
+    expect(policy.classifyPathTier("specs/governance.md")).toBe(
+      RISK_TIERS.BOUNDARY,
+    );
+    expect(policy.classifyPathTier("specs/product.md")).toBe(
+      RISK_TIERS.SENSITIVE,
+    );
+    expect(policy.classifyPathTier("specs/operations.md")).toBe(
+      RISK_TIERS.SENSITIVE,
+    );
+    expect(policy.classifyPathTier("specs/evaluation.md")).toBe(
+      RISK_TIERS.SENSITIVE,
+    );
+    expect(policy.classifyPathTier("specs/rfcs/live-trading.md")).toBe(
       RISK_TIERS.BOUNDARY,
     );
   });
@@ -301,7 +316,7 @@ describe("minimum-risk path classification", () => {
       RISK_TIERS.BOUNDARY,
     );
     expect(policy.classifyPathTier("docs/branch-protection.md")).toBe(RISK_TIERS.BOUNDARY);
-    expect(policy.classifyPathTier("specs/rfcs/0001-v3-live-trading.md")).toBe(
+    expect(policy.classifyPathTier("specs/governance.md")).toBe(
       RISK_TIERS.BOUNDARY,
     );
     expect(policy.classifyPathTier("infra/iam/role-assignment.bicep")).toBe(RISK_TIERS.BOUNDARY);
@@ -503,6 +518,11 @@ describe("required checks", () => {
   it("selects the security specialist check from changed paths", () => {
     expect(policy.requiresSecurityCheck("src/app/api/admin/route.ts")).toBe(true);
     expect(policy.requiresSecurityCheck("src/proxy.ts")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/product.md")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/operations.md")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/factory.md")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/governance.md")).toBe(true);
+    expect(policy.requiresSecurityCheck("specs/deployment.md")).toBe(true);
     expect(policy.requiresSecurityCheck("src/components/ui/button.tsx")).toBe(false);
     const checks = policy.getRequiredChecks(RISK_TIERS.SENSITIVE, [
       file("src/app/api/admin/route.ts"),
@@ -513,9 +533,26 @@ describe("required checks", () => {
   it("selects the trading-safety specialist check from changed paths", () => {
     expect(policy.requiresTradingSafetyCheck("src/trading/policy.ts")).toBe(true);
     expect(policy.requiresTradingSafetyCheck("supabase/migrations/0001.sql")).toBe(true);
+    expect(policy.requiresTradingSafetyCheck("specs/rfcs/live-trading.md")).toBe(true);
     expect(policy.requiresTradingSafetyCheck("src/components/ui/button.tsx")).toBe(false);
     const checks = policy.getRequiredChecks(RISK_TIERS.SENSITIVE, [file("src/trading/policy.ts")]);
     expect(checks).toContain(policy.TRADING_SAFETY_CHECK);
+  });
+
+  it.each([
+    "specs/product.md",
+    "specs/operations.md",
+    "specs/evaluation.md",
+    "specs/factory.md",
+    "specs/governance.md",
+  ])("requires trading-safety review for canonical safety spec %s", (filename) => {
+    expect(policy.requiresTradingSafetyCheck(filename)).toBe(true);
+    expect(
+      policy.getRequiredChecks(
+        policy.classifyPathTier(filename),
+        [file(filename)],
+      ),
+    ).toContain(policy.TRADING_SAFETY_CHECK);
   });
 
   it("requires human boundary approval only at the boundary tier", () => {
