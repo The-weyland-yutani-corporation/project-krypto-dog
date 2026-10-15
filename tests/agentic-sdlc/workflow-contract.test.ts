@@ -307,6 +307,14 @@ describe("agentic SDLC workflow contracts", () => {
   });
 
   it("keeps the full-cycle canary goal-authorized and dev-only", () => {
+    expect(fullE2e).toContain("Require a configured full-cycle canary");
+    expect(fullE2e).toContain(
+      "Configure FACTORY_CANARY_GOAL for scheduled runs.",
+    );
+    expect(fullE2e).toContain("needs: readiness");
+    expect(fullE2e).not.toContain(
+      "github.event_name == 'workflow_dispatch' ||",
+    );
     expect(fullE2e).toContain("factory:goal-approved");
     expect(fullE2e).toContain("factory-mode:active");
     expect(fullE2e).toContain("latestHumanLabelEvent");
