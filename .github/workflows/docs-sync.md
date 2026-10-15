@@ -73,7 +73,9 @@ Check whether docs and specs need updates.
 - Docs-sync PRs remain reviewable and do not opt into native auto-merge.
   Canonical specs, deployment, security, trading, database, workflow, and
   agentic-policy documentation still require human approval.
-- For protected files such as README or `.github/**`, create a follow-up issue instead of trying to modify them.
+- `infra/README.md` is an allowed deployment-documentation target.
+- For protected files such as the root `README.md` or `.github/**`, create a
+  follow-up issue instead of trying to modify them.
 - For larger or ambiguous gaps, create a follow-up issue or comment with required changes.
 
 ## Safe outputs
