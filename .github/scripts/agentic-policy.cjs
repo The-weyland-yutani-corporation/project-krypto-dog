@@ -113,8 +113,20 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
   const autonomy = object(root.autonomy, "autonomy");
   exactKeys(autonomy, [
     "enabled", "goalTitle", "milestone", "objective", "allowedPaths",
-    "maxRiskTier", "maxActiveAssignments", "maxAssignmentsPerDay",
+    "maxRiskTier", "maxActiveAssignments", "maxAssignmentsPerDay", "tradingResearch",
   ], "autonomy");
+  const research = object(autonomy.tradingResearch, "autonomy.tradingResearch");
+  exactKeys(research, ["market", "startingCapitalUSD", "targetDailyNetProfitUSD", "paperOnly", "allowLeverage"], "autonomy.tradingResearch");
+  if (research.market !== "ETH/USDC" || research.paperOnly !== true || research.allowLeverage !== false) {
+    invalid("autonomy.tradingResearch must remain unleveraged ETH/USDC paper evaluation");
+  }
+  const tradingResearch = Object.freeze({
+    market: research.market,
+    startingCapitalUSD: positiveInteger(research.startingCapitalUSD, "autonomy.tradingResearch.startingCapitalUSD"),
+    targetDailyNetProfitUSD: positiveInteger(research.targetDailyNetProfitUSD, "autonomy.tradingResearch.targetDailyNetProfitUSD"),
+    paperOnly: true,
+    allowLeverage: false,
+  });
   const allowedPaths = strings(autonomy.allowedPaths, "autonomy.allowedPaths");
   for (const scope of allowedPaths) {
     const segments = scope.split("/");
@@ -137,6 +149,7 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
     goalTitle: string(autonomy.goalTitle, "autonomy.goalTitle"),
     milestone: string(autonomy.milestone, "autonomy.milestone"),
     objective: string(autonomy.objective, "autonomy.objective"),
+    tradingResearch,
     allowedPaths,
     maxRiskTier: autonomy.maxRiskTier,
     maxActiveAssignments,

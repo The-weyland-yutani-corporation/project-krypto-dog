@@ -4,6 +4,21 @@ The canonical contract is [`specs/factory.md`](../specs/factory.md).
 The standing mission, scope, and limits live in
 [`.github/agentic-policy.json`](../.github/agentic-policy.json).
 
+## Single primary mission
+
+Evaluate ETH/USDC swing trading using the owner's starting paper capital and
+aspirational daily net-profit hypothesis in `autonomy.tradingResearch`.
+The requested target is not a guaranteed or credible sustainable income
+expectation. Research must report infeasibility and losses honestly, with
+fees/slippage, drawdown, out-of-sample results, and cash/ETH benchmarks.
+No leverage, capital top-ups, balance resets, or weakened safeguards may
+be used to manufacture success.
+
+The queue materializes exactly one matching `factory:autonomous-goal`.
+That standing goal drives discovery and engineering priorities; unrelated
+legacy goals do not become additional active missions. Source configuration
+does not clear the separate hosted emergency pause or prove activation.
+
 ## Idea to main
 
 ```mermaid
@@ -55,6 +70,11 @@ must be established by actual hosted execution, not inferred from presence.
 - A check name, URL, or shared `github-actions` identity alone is not an
   authenticated verdict. The controller verifies the trusted workflow origin
   and its immutable receipt, including head, run attempt, check ID and conclusion.
+  The matching controller dispatch receipt binds a random nonce and target;
+  copied correlation strings from manual runs or reruns are rejected.
+- Autonomous publication requires verified factory ownership and repeats
+  live provenance and scope checks. The docs-sync exception is restricted to
+  documentation paths. Arbitrary same-repository labeled PRs are not eligible.
 - Autonomous mode does not leave native auto-merge armed for future heads.
   A branch refresh requires fresh verification before merge.
 - Discovery and stage retries are bounded. Outstanding work is checked

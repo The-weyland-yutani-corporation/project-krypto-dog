@@ -138,10 +138,12 @@ through manual workflow dispatch. It creates work inside the standing repository
 - Every created issue receives `agentic-factory`, `opportunity`, and
   `needs-rubber-duck`; discovery must not apply `ready-for-planning` or
   `ready-for-ai-dev`.
-- Allowed scope is the intersection of the active goal, its milestone, v2.1/
-  v2.2 governance, and its maximum risk tier.
-- Strategy experiments such as ATR, MACD, volume signals, regime classifiers,
-  EMA filters, and dynamic sizing are deferred and must produce `noop`.
+- Allowed scope is the standing goal's repository-policy scope and risk ceiling.
+  Read `autonomy.tradingResearch` for the owner's starting paper capital and
+  aspirational net daily-profit hypothesis.
+- Unleveraged ETH/USDC paper-strategy experiments may be proposed with explicit
+  safety/evidence dependencies and out-of-sample validation. Report losing days,
+  costs and infeasibility; never raise risk or reset capital to force the target.
 - Trading-strategy, guardrail, portfolio, risk, or live-adjacent opportunities must include safety notes and require rubber-duck/trading-safety review before implementation.
 - It creates software tickets and experiments only; it never gives trading advice or authorizes live trading.
 

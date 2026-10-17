@@ -205,11 +205,34 @@ max-ai-credits: 1600
 max-daily-ai-credits: 3500
 timeout-minutes: 25
 pre-agent-steps:
+  - name: Materialize the exact dispatched QA head
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_PR_NUMBER: ${{ inputs.target }}
+      EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+      GH_AW_REPOSITORY: ${{ github.repository }}
+      TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+    run: |
+      set -euo pipefail
+      case "${EXPECTED_PR_NUMBER}" in ''|*[!0-9]*) exit 1 ;; esac
+      if ! printf '%s' "${EXPECTED_HEAD_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then exit 1; fi
+      actual="$(gh api "repos/${GH_AW_REPOSITORY}/pulls/${EXPECTED_PR_NUMBER}" --jq '.head.sha')"
+      test "${actual}" = "${EXPECTED_HEAD_SHA}"
+      git show "${TRUSTED_WORKFLOW_SHA}:.github/scripts/restore-trusted-agent-instructions.cjs" > "${RUNNER_TEMP}/restore-qa-instructions.cjs"
+      git -c credential.helper= -c 'credential.helper=!gh auth git-credential' fetch --no-tags --depth=1 origin "refs/pull/${EXPECTED_PR_NUMBER}/head"
+      test "$(git rev-parse FETCH_HEAD)" = "${EXPECTED_HEAD_SHA}"
+      git checkout --detach "${EXPECTED_HEAD_SHA}"
   - name: Restore trusted agent instructions
     if: ${{ github.event.pull_request || (github.event_name == 'workflow_dispatch' && inputs.head_sha != '') }}
     env:
       TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
-    run: node .github/scripts/restore-trusted-agent-instructions.cjs
+    run: |
+      if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -f "${RUNNER_TEMP}/restore-qa-instructions.cjs" ]; then
+        node "${RUNNER_TEMP}/restore-qa-instructions.cjs"
+      else
+        node .github/scripts/restore-trusted-agent-instructions.cjs
+      fi
   - name: Verify dispatched PR head
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
     env:
@@ -255,6 +278,9 @@ pull request.
   executable tests/evidence and no material regression gap remains.
 - Set the check to `failure` when required coverage is missing, CI evidence is
   incomplete, or verification cannot be completed safely.
+- Do not wait for other AI reviews or treat pending specialist reviews as a QA
+  defect. The merge controller independently requires those checks. Evaluate
+  the acceptance criteria using completed exact-head CI and test evidence.
 - Keep the non-lifecycle `needs-qa` requirement label so the reconciler reruns
   QA on every new head. The exact-current-head check, not label removal, clears
   the merge gate.

@@ -2,6 +2,7 @@
 
 const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const { loadRunReceipt } = require("./agentic-receipt.cjs");
+const { verifyControllerDispatch } = require("./agentic-dispatch.cjs");
 const REVIEW_WORKFLOWS = Object.freeze({
   "Quality and evidence gates": "ci.yml",
   "PostgreSQL migrations and execution": "ci.yml",
@@ -36,7 +37,7 @@ async function verifyTrustedReviewEvidence({
         run.repository?.full_name?.toLowerCase() !== `${owner}/${repo}`.toLowerCase() ||
         run.path !== `.github/workflows/${workflow}` ||
         run.status !== "completed" || run.conclusion !== "success" ||
-        run.display_title !== `agentic-pr:${pullNumber}:${headSha}:${workflow}`) {
+        !await verifyControllerDispatch({ github, owner, repo, run, defaultBranch, pullNumber, headSha, workflow })) {
       return { valid: false, reason: `untrusted-review-origin:${name}` };
     }
     if (!receipts.has(run.id)) {

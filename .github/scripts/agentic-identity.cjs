@@ -127,10 +127,10 @@ async function resolveRepositoryCopilotIdentity({
 }) {
   if (verifyPinnedIdentity) {
     // Assignment capability discovery and actor identity are different checks.
-    // The official bot's REST display login is now "Copilot"; bind its stable
-    // server IDs instead of depending on suggestedActors visibility for GITHUB_TOKEN.
-    const { data: actor } = await github.rest.users.getByUsername({
-      username: `${AGENTIC_POLICY.copilotSuggestedActorLogin}[bot]`,
+    // Resolve by stable numeric ID: both legacy and display usernames can
+    // disappear independently of the bot's immutable server identity.
+    const { data: actor } = await github.request("GET /user/{account_id}", {
+      account_id: AGENTIC_POLICY.copilotBotDatabaseId,
     });
     if (actorType(actor) !== "Bot" ||
         actorNodeId(actor) !== AGENTIC_POLICY.copilotBotNodeId ||

@@ -10,6 +10,15 @@ proposal), `run-flow.ts` (invocation lease + journaling), `llm.ts`, `index.ts`.
 
 ## Non-negotiables (delta)
 
+- The model is read-only: `decision.ts` returns one structured
+  `HOLD`/`BUY`/`SELL` proposal validated by `tradeDecisionSchema`, never an
+  executable command or mutating trade tool.
+- Preserve idempotent invocation acquisition and the owned, expiring run lease.
+- Keep authorization and accounting in `src/trading`; do not inline or bypass
+  them in the orchestration loop.
+- Preserve typed error classification, journaling, and alerts. No broad
+  catches or silent fallbacks.
+
 ## Inputs / outputs
 
 - Inputs: account + market snapshots, `StrategyConfig`.

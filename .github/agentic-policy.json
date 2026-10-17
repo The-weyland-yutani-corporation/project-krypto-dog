@@ -2,9 +2,16 @@
   "schemaVersion": 1,
   "autonomy": {
     "enabled": true,
-    "goalTitle": "[factory-goal] Continuous Project Krypto delivery",
+    "goalTitle": "[factory-goal] Evaluate profitable ETH/USDC swing trading",
     "milestone": "Continuous autonomous delivery",
-    "objective": "Continuously improve Project Krypto from evidence-backed ideas through tested pull requests and merge to main. Prioritize broken behavior, reliability, useful product features, and delivery health.",
+    "objective": "Build and evaluate ETH/USDC swing-trading software against the owner's capital and daily-profit hypothesis. Continuously turn evidence into scoped issues, tested PRs, and verified merges. Protect capital and report infeasibility honestly instead of forcing a profit target.",
+    "tradingResearch": {
+      "market": "ETH/USDC",
+      "startingCapitalUSD": 200,
+      "targetDailyNetProfitUSD": 50,
+      "paperOnly": true,
+      "allowLeverage": false
+    },
     "allowedPaths": [
       ".github/**",
       "src/**",

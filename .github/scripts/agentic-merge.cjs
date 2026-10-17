@@ -3,13 +3,13 @@
 const { resolveFactoryModeFromLabels } = require("./agentic-factory-policy.cjs");
 const { getReviewState } = require("./agentic-pr-reconciler.cjs");
 
-async function mergeVerifiedHead({ github, owner, repo, pullRequest, core }) {
+async function readActiveMergeTarget({ github, owner, repo, pullRequest, core }) {
   const controls = (await github.paginate(github.rest.issues.listForRepo, {
     owner, repo, state: "open", labels: "factory-control", per_page: 100,
   })).filter((issue) => !issue.pull_request);
   if (controls.length !== 1 || resolveFactoryModeFromLabels(controls[0].labels) !== "active") {
     core.info("Exact-head merge stopped: factory is no longer active.");
-    return;
+    return null;
   }
   const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: pullRequest.number });
   const labels = new Set((current.labels || []).map((label) => typeof label === "string" ? label : label.name));
@@ -18,8 +18,25 @@ async function mergeVerifiedHead({ github, owner, repo, pullRequest, core }) {
       current.base?.ref !== "main" || !labels.has("agentic-automerge") ||
       labels.has("blocked") || labels.has("self-heal-exhausted")) {
     core.info("Exact-head merge stopped: pull request changed after verification.");
+    return null;
+  }
+  return current;
+}
+
+async function mergeVerifiedHead({ github, owner, repo, pullRequest, core, assignmentActorNodeId, serverUrl }) {
+  let current = await readActiveMergeTarget({ github, owner, repo, pullRequest, core });
+  if (!current) return;
+  const authorization = await require("./agentic-pr-reconciler.cjs").verifyAutonomousMergeCandidate({
+    github, owner, repo, pullRequest: current, core, assignmentActorNodeId, serverUrl,
+  });
+  if (!authorization.valid) {
+    core.warning(`Exact-head merge stopped: ${authorization.reason}.`);
     return;
   }
+  // Receipt/provenance reads can take time. Re-read the emergency switch and
+  // live enrollment after verification, immediately before the mutation.
+  current = await readActiveMergeTarget({ github, owner, repo, pullRequest, core });
+  if (!current) return;
   const reviews = await github.paginate(github.rest.pulls.listReviews, {
     owner, repo, pull_number: current.number, per_page: 100,
   });

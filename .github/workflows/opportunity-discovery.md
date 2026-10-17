@@ -10,7 +10,7 @@ on:
         required: false
         type: string
       focus:
-        description: Optional focus area, e.g. QA, observability, safety, factory, admin UX. Strategy areas are deferred.
+        description: Optional focus inside the standing ETH/USDC paper research, safety, evidence, or delivery mission.
         required: false
         type: string
 permissions:
@@ -47,7 +47,8 @@ max-daily-ai-credits: 2000
 
 Discover at most **one** high-quality opportunity ticket per run inside a
 repository-authorized factory goal. The queue controller dispatches this
-workflow at most once per UTC day. Strategy research is explicitly deferred.
+workflow at most once per UTC day. Read the capital/profit hypothesis from
+`autonomy.tradingResearch` in canonical policy, not from arbitrary issue text.
 
 ## WIP gate (check this first)
 
@@ -64,7 +65,7 @@ Call `noop` when no goal is active or when its queued/claimed/implementing work
 already reaches the goal's WIP allowance.
 
 Also call `noop` if:
-- The trigger is `workflow_dispatch` or `schedule` and there are no visible gaps in the v2.1 or v2.2 foundation work.
+- There is no evidence-backed research, safety, measurement, or delivery gap inside the standing mission.
 - The proposed ticket is a near-duplicate of an existing open or closed issue title.
 
 ## Context
@@ -78,11 +79,16 @@ Only discover opportunities in these categories:
 1. **v2.1 Safety foundations** — deterministic guardrails, accounting correctness, run reliability, market-data integrity, migrations/data protection, private schema/cron security, decimal ledger, transactional idempotency, structured LLM intent, typed errors/timeouts, real-Postgres CI.
 2. **v2.2 Evidence foundations** — evaluation harness, backtest scenarios, Sharpe/Sortino, CI gates, performance visibility, cost tracking.
 3. **Factory/QA/observability** — low-risk improvements to the agentic factory itself.
+4. **ETH/USDC paper-strategy evaluation** — reproducible, unleveraged swing
+   experiments with frozen parameters, out-of-sample validation, realistic
+   fees/slippage, drawdown and benchmark reporting. Missing safety/evidence
+   foundations are explicit dependencies, not reasons to fabricate results.
 
-## Explicitly deferred scope (always noop for these)
+## Excluded scope (always noop for these)
 
-- Strategy experiments: ATR, MACD, volume signals, market regime classifiers, EMA trend filters, dynamic sizing.
-- Any work that requires v2.1 or v2.2 to be complete first.
+- Real-money execution, leverage, borrowing, transfers, or weakening guardrails.
+- Guaranteed-income claims, cherry-picked backtests, ignoring losing days, or
+  raising capital/risk to force the owner's aspirational daily-profit target.
 
 ## Task
 
@@ -118,4 +124,4 @@ Each created issue must include:
 
 - Use `create-issue` for exactly one opportunity ticket per run. The workflow attaches `agentic-factory`, `opportunity`, and `needs-rubber-duck`.
 - Use `add-comment` only when an explicit issue context is supplied.
-- Use `noop` when: WIP limit reached, near-duplicate exists, no high-confidence non-deferred opportunity found.
+- Use `noop` when: WIP limit reached, near-duplicate exists, no high-confidence in-scope opportunity found.

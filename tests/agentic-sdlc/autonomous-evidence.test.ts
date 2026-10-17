@@ -7,6 +7,14 @@ const { verifyTrustedReviewEvidence } = jest.requireActual<{
 const { mergeVerifiedHead } = jest.requireActual<{
   mergeVerifiedHead(input: Record<string, unknown>): Promise<void>;
 }>("../../.github/scripts/agentic-merge.cjs");
+const reconciler = jest.requireActual<{
+  verifyAutonomousMergeCandidate(input: Record<string, unknown>): Promise<{ valid: boolean; reason?: string }>;
+}>("../../.github/scripts/agentic-pr-reconciler.cjs");
+const { createDispatchRecord } = jest.requireActual<{
+  createDispatchRecord(input: { pullNumber: number; headSha: string; workflow: string; runId: number; runAttempt: number }): {
+    correlation: string; nonce: string; workflow: string;
+  };
+}>("../../.github/scripts/agentic-dispatch.cjs");
 
 function archive(value: unknown, filename = "receipt.json") {
   const content = Buffer.from(JSON.stringify(value));
@@ -36,10 +44,22 @@ function evidenceFixture() {
     id: 10, name: "Security review", head_sha: sha, status: "completed", conclusion: "success",
     app: { slug: "github-actions" }, details_url: "https://github.com/o/r/actions/runs/2",
   };
+  const dispatchRecord = createDispatchRecord({
+    pullNumber: 8, headSha: sha, workflow: "security-review.lock.yml", runId: 1, runAttempt: 1,
+  });
   const run = {
     id: 2, run_attempt: 1, event: "workflow_dispatch", head_branch: "main", status: "completed",
     conclusion: "success", repository: { full_name: "o/r" }, path: ".github/workflows/security-review.lock.yml",
-    display_title: `agentic-pr:8:${sha}:security-review.lock.yml`,
+    display_title: dispatchRecord.correlation,
+    actor: { login: "github-actions[bot]", type: "Bot" },
+    triggering_actor: { login: "github-actions[bot]", type: "Bot" },
+  };
+  const controller = {
+    id: 1, run_attempt: 1, event: "schedule", head_branch: "main", status: "completed",
+    conclusion: "success", repository: { full_name: "o/r" }, path: ".github/workflows/agentic-pr-reconciler.yml",
+  };
+  const dispatchReceipt = {
+    schemaVersion: 1, runId: 1, runAttempt: 1, dispatches: [dispatchRecord],
   };
   const receipt = {
     schemaVersion: 1, runId: 2, runAttempt: 1, pullNumber: 8, headSha: sha,
@@ -47,16 +67,18 @@ function evidenceFixture() {
   };
   const github = {
     rest: { actions: {
-      getWorkflowRun: jest.fn(async () => ({ data: run })),
+      getWorkflowRun: jest.fn(async (input: { run_id: number }) => ({ data: input.run_id === 1 ? controller : run })),
       listWorkflowRunArtifacts: "artifacts",
-      downloadArtifact: jest.fn(async () => ({ data: archive(receipt) })),
+      downloadArtifact: jest.fn(async (input: { artifact_id: number }) => ({ data: archive(input.artifact_id === 21 ? dispatchReceipt : receipt) })),
     } },
-    paginate: jest.fn(async () => [{ id: 20, name: `factory-receipt-${sha}-1`, expired: false }]),
+    paginate: jest.fn(async (_endpoint: string, input: { run_id: number }) =>
+      input.run_id === 1 ? [{ id: 21, name: "factory-dispatches-1", expired: false }] :
+        [{ id: 20, name: `factory-receipt-${sha}-1`, expired: false }]),
   };
   return {
     github, owner: "o", repo: "r", defaultBranch: "main", serverUrl: "https://github.com",
     pullNumber: 8, headSha: sha, checkRuns: [check], requiredChecks: ["Security review"],
-    receipt, run, check,
+    receipt, run, check, controller, dispatchReceipt,
   };
 }
 
@@ -102,9 +124,36 @@ describe("immutable trusted-run verdicts", () => {
     fixture.check.name = "Quality and evidence gates";
     fixture.receipt.checks[0].name = fixture.check.name;
     fixture.run.path = ".github/workflows/ci.yml";
-    fixture.run.display_title = `agentic-pr:8:${fixture.headSha}:ci.yml`;
+    const record = createDispatchRecord({ pullNumber: 8, headSha: fixture.headSha, workflow: "ci.yml", runId: 1, runAttempt: 1 });
+    fixture.run.display_title = record.correlation;
+    fixture.dispatchReceipt.dispatches = [record];
     expect(await verifyTrustedReviewEvidence(fixture)).toEqual({ valid: true });
     fixture.receipt.checks[0].id = 999;
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+  });
+
+  it("rejects manual runs even if they copy a valid correlation and nonce", async () => {
+    const fixture = evidenceFixture();
+    fixture.run.actor = { login: "collaborator", type: "User" };
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+    expect(fixture.github.rest.actions.downloadArtifact).not.toHaveBeenCalled();
+  });
+
+  it("rejects a human rerun of a trusted bot dispatch", async () => {
+    const fixture = evidenceFixture();
+    fixture.run.triggering_actor = { login: "collaborator", type: "User" };
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+  });
+
+  it("rejects a bot dispatch with a nonce absent from the controller's immutable receipt", async () => {
+    const fixture = evidenceFixture();
+    fixture.dispatchReceipt.dispatches = [];
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+  });
+
+  it("rejects a purported dispatcher that ran from PR-controlled YAML", async () => {
+    const fixture = evidenceFixture();
+    fixture.controller.event = "pull_request_review";
     expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
   });
 
@@ -155,6 +204,11 @@ function mergeFixture() {
 }
 
 describe("exact-head atomic merge", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  beforeEach(() => {
+    jest.spyOn(reconciler, "verifyAutonomousMergeCandidate").mockResolvedValue({ valid: true });
+  });
   it("merges the verified SHA without leaving future auto-merge armed", async () => {
     const fixture = mergeFixture();
     await mergeVerifiedHead(fixture);
@@ -192,6 +246,29 @@ describe("exact-head atomic merge", () => {
   it("does not bypass GitHub's blocked mergeability state", async () => {
     const fixture = mergeFixture();
     fixture.current.mergeable_state = "blocked";
+    await mergeVerifiedHead(fixture);
+    expect(fixture.github.rest.pulls.merge).not.toHaveBeenCalled();
+  });
+
+  it("revalidates full provenance, scope and evidence in the isolated publisher", async () => {
+    const fixture = mergeFixture();
+    jest.spyOn(reconciler, "verifyAutonomousMergeCandidate").mockResolvedValue({
+      valid: false, reason: "Factory claim provenance is invalid",
+    });
+    Object.assign(fixture.core, { warning: jest.fn() });
+    await mergeVerifiedHead(fixture);
+    expect(reconciler.verifyAutonomousMergeCandidate).toHaveBeenCalledWith(expect.objectContaining({
+      pullRequest: fixture.current,
+    }));
+    expect(fixture.github.rest.pulls.merge).not.toHaveBeenCalled();
+    expect(fixture.github.rest.pulls.updateBranch).not.toHaveBeenCalled();
+  });
+
+  it("honors a pause applied during the final evidence reads", async () => {
+    const fixture = mergeFixture();
+    fixture.github.paginate
+      .mockResolvedValueOnce([{ number: 1, labels: ["factory-mode:active"] }])
+      .mockResolvedValueOnce([{ number: 1, labels: ["factory-mode:paused"] }]);
     await mergeVerifiedHead(fixture);
     expect(fixture.github.rest.pulls.merge).not.toHaveBeenCalled();
   });

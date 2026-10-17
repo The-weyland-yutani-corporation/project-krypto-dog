@@ -3,7 +3,10 @@ import path from "node:path";
 
 const { AGENTIC_POLICY } = jest.requireActual<{
   AGENTIC_POLICY: {
-    autonomy: { goalTitle: string; milestone: string; maxAssignmentsPerDay: number };
+    autonomy: {
+      goalTitle: string; milestone: string; maxAssignmentsPerDay: number;
+      tradingResearch: { market: string; startingCapitalUSD: number; targetDailyNetProfitUSD: number; paperOnly: boolean; allowLeverage: boolean };
+    };
     copilotBotNodeId: string; copilotBotDatabaseId: number;
   };
 }>("../../.github/scripts/agentic-policy.cjs");
@@ -35,26 +38,26 @@ const identity = jest.requireActual<{
 
 describe("canonical Copilot identity", () => {
   it("verifies stable Bot IDs independently of suggested-actor visibility and display login", async () => {
-    const getByUsername = jest.fn(async () => ({ data: {
+    const request = jest.fn(async () => ({ data: {
       type: "Bot", login: "Copilot",
       node_id: AGENTIC_POLICY.copilotBotNodeId, id: AGENTIC_POLICY.copilotBotDatabaseId,
     } }));
     const graphql = jest.fn();
     expect(await identity.resolveRepositoryCopilotIdentity({
-      github: { rest: { users: { getByUsername } }, graphql },
+      github: { request, graphql },
       owner: "o", repo: "r", verifyPinnedIdentity: true,
     })).toMatchObject({
       nodeId: AGENTIC_POLICY.copilotBotNodeId, databaseId: AGENTIC_POLICY.copilotBotDatabaseId,
     });
     expect(graphql).not.toHaveBeenCalled();
-    expect(getByUsername).toHaveBeenCalledWith({ username: "copilot-swe-agent[bot]" });
+    expect(request).toHaveBeenCalledWith("GET /user/{account_id}", { account_id: AGENTIC_POLICY.copilotBotDatabaseId });
   });
 
   it("rejects another actor even if its display login looks correct", async () => {
     await expect(identity.resolveRepositoryCopilotIdentity({
-      github: { rest: { users: { getByUsername: async () => ({ data: {
+      github: { request: async () => ({ data: {
         type: "Bot", login: "Copilot", node_id: "BOT_different", id: 1,
-      } }) } } }, owner: "o", repo: "r", verifyPinnedIdentity: true,
+      } }) }, owner: "o", repo: "r", verifyPinnedIdentity: true,
     })).rejects.toThrow("canonical Copilot Bot");
   });
 });
@@ -69,6 +72,20 @@ function goal() {
 }
 
 describe("standing repository mission", () => {
+  it("has one $200 ETH/USDC paper hypothesis, not a promise to earn $50 daily", () => {
+    expect(AGENTIC_POLICY.autonomy.tradingResearch).toEqual({
+      market: "ETH/USDC", startingCapitalUSD: 200, targetDailyNetProfitUSD: 50,
+      paperOnly: true, allowLeverage: false,
+    });
+    const body = autonomy.renderAutonomousGoal();
+    expect(body).toContain("starting paper capital USD 200");
+    expect(body).toContain("daily net profit USD 50");
+    expect(body).toContain("25%");
+    expect(body).toContain("not a credible sustainable income expectation");
+    expect(body).toContain("losing/no-trade days");
+    expect(body).toContain("fees, slippage");
+    expect(body).toContain("Do not increase risk merely to force the profit target");
+  });
   it("authorizes the exact machine-created mission without a human approval event", () => {
     expect(autonomy.isAutonomousGoal(goal())).toBe(true);
     expect(queue.resolveActiveGoal([goal()], { autonomous: true })).toMatchObject({
@@ -194,9 +211,14 @@ function mergeInput() {
     autonomous: true,
     repository: "o/r",
     factoryMode: "active",
+    copilotIdentity: { nodeId: AGENTIC_POLICY.copilotBotNodeId, databaseId: AGENTIC_POLICY.copilotBotDatabaseId },
+    agentImplementationProvenance: true,
+    issueAllowedPaths: [".github/workflows/**"],
+    goalMaxRiskTier: "risk:boundary",
     pullRequest: {
-      number: 8, title: "Improve factory", state: "open", draft: false,
-      user: { type: "User", login: "maintainer" },
+      number: 8, title: "[ai-dev] Improve factory", state: "open", draft: false,
+      body: "<!-- factory-claim:run:1:8 -->\nRefs #8",
+      user: { type: "Bot", login: "Copilot", node_id: AGENTIC_POLICY.copilotBotNodeId, id: AGENTIC_POLICY.copilotBotDatabaseId },
       labels: [{ name: "agentic-automerge" }],
       head: { sha, repo: { full_name: "o/r" } },
     },
@@ -213,6 +235,37 @@ describe("machine-verified boundary merge", () => {
     expect(reconciler.evaluateMergePolicy(mergeInput())).toMatchObject({
       state: "success", requiresHumanBoundaryApproval: false,
     });
+  });
+
+  it("does not let a label authorize a human-authored PR", () => {
+    const input = mergeInput();
+    input.pullRequest.title = "Unowned factory change";
+    input.pullRequest.user.type = "User";
+    input.pullRequest.user.login = "collaborator";
+    input.pullRequest.body = "";
+    expect(reconciler.evaluateMergePolicy(input)).toMatchObject({
+      state: "pending", description: "Autonomous merge requires a trusted factory-owned pull request",
+    });
+  });
+
+  it("rejects Copilot implementations without valid claim provenance", () => {
+    const input = mergeInput();
+    input.agentImplementationProvenance = false;
+    expect(reconciler.evaluateMergePolicy(input).state).toBe("pending");
+  });
+
+  it("limits the trusted docs-sync exception to documentation paths", () => {
+    const input = mergeInput();
+    input.pullRequest.title = "[docs-sync] Document workflow";
+    input.pullRequest.body = "";
+    input.pullRequest.user.login = "github-actions[bot]";
+    input.pullRequest.user.id = 41898282;
+    input.pullRequest.user.node_id = "MDM6Qm90NDE4OTgyODI=";
+    expect(reconciler.evaluateMergePolicy(input)).toMatchObject({
+      state: "pending", description: "PR changes escape issue allowed paths",
+    });
+    input.files = [{ filename: "docs/workflow-guide.md", status: "modified" }];
+    expect(reconciler.evaluateMergePolicy(input).state).toBe("success");
   });
 
   it.each(["QA verification", "Security review", "Agentic code review"])("holds a boundary change missing %s", (missing) => {
@@ -255,6 +308,14 @@ describe("machine-verified boundary merge", () => {
     for (const workflow of ["opportunity-discovery", "pm-triage", "em-planning", "rubber-duck-architecture", "implement-ticket", "pr-self-heal"]) {
       expect(fs.readFileSync(path.join(__dirname, "../../.github/workflows", `${workflow}.md`), "utf8"))
         .toContain('bots: ["github-actions[bot]"]');
+    }
+  });
+
+  it("includes canonical policy in every dependent sparse checkout", () => {
+    for (const workflow of ["factory-queue-controller.yml", "factory-backlog-promoter.yml", "agentic-factory-full-e2e.yml"]) {
+      const source = fs.readFileSync(path.join(__dirname, "../../.github/workflows", workflow), "utf8");
+      expect(source).toContain("sparse-checkout: |");
+      expect(source).toContain("            .github/agentic-policy.json");
     }
   });
 });

@@ -45,21 +45,27 @@ function readReceiptArchive(data) {
   return JSON.parse(content.toString("utf8"));
 }
 
-async function loadRunReceipt({ github, owner, repo, run, headSha }) {
+async function loadRunArchive({ github, owner, repo, run, name }) {
   const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
     owner, repo, run_id: run.id, per_page: 100,
   });
   const matching = artifacts.filter((artifact) =>
-    artifact.name === `factory-receipt-${headSha}-${run.run_attempt}` && !artifact.expired);
+    artifact.name === name && !artifact.expired);
   if (matching.length !== 1) throw new Error("A unique trusted-run verdict receipt is required.");
   const download = await github.rest.actions.downloadArtifact({
     owner, repo, artifact_id: matching[0].id, archive_format: "zip",
   });
-  const receipt = readReceiptArchive(download.data);
+  return readReceiptArchive(download.data);
+}
+
+async function loadRunReceipt({ github, owner, repo, run, headSha }) {
+  const receipt = await loadRunArchive({
+    github, owner, repo, run, name: `factory-receipt-${headSha}-${run.run_attempt}`,
+  });
   if (receipt.schemaVersion !== 1 || receipt.runId !== run.id ||
       receipt.runAttempt !== run.run_attempt || receipt.headSha !== headSha ||
       !Array.isArray(receipt.checks)) throw new Error("Verdict receipt does not match its trusted run.");
   return receipt;
 }
 
-module.exports = { readReceiptArchive, loadRunReceipt };
+module.exports = { readReceiptArchive, loadRunArchive, loadRunReceipt };

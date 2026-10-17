@@ -6,12 +6,15 @@ const AUTONOMOUS_GOAL_LABEL = "factory:autonomous-goal";
 const GOAL_MARKER = "<!-- factory-autonomous-goal:v1 -->";
 
 function renderAutonomousGoal(config = AGENTIC_POLICY.autonomy) {
+  const research = config.tradingResearch;
+  const dailyReturnPct = research.targetDailyNetProfitUSD / research.startingCapitalUSD * 100;
   const fields = [
     ["Objective", config.objective],
-    ["Measurable success condition", "Deliver evidence-backed improvements through current-head automated checks and merge to main; record exact-SHA deployment evidence separately."],
-    ["Allowed scope", "Select, triage, plan, implement, review, and repair bounded repository changes without per-change human approval."],
+    ["Trading research hypothesis", `${research.market}; starting paper capital USD ${research.startingCapitalUSD}; aspirational average daily net profit USD ${research.targetDailyNetProfitUSD} after fees and slippage. This requires ${dailyReturnPct}% of starting capital per day and is not a credible sustainable income expectation or a guaranteed result.`],
+    ["Measurable success condition", "Produce reproducible out-of-sample and forward-paper evidence against the hypothesis, including losing/no-trade days, drawdown, turnover, fees, slippage, cash and ETH buy-and-hold benchmarks, and infrastructure/AI costs separately. Report target shortfall and infeasibility explicitly. A profitable backtest is not proof of future daily income. Deliver independently verified software improvements through current-head checks and merge to main."],
+    ["Allowed scope", "Select, triage, plan, implement, review, and repair bounded ETH/USDC paper-strategy research, evaluation, data-quality, safety, and delivery work without per-change human approval. Fix missing safety/evidence foundations before relying on strategy results."],
     ["Allowed paths", config.allowedPaths.join("\n")],
-    ["Explicit non-goals", "No real-money order execution, fund transfers, secret disclosure, permission bypass, weakened application safety, or unverified success claims."],
+    ["Explicit non-goals", "No real-money order execution, fund transfers, leverage, borrowing, capital top-ups or balance resets to hide losses, secret disclosure, permission bypass, weakened application safety, or unverified success claims. Do not increase risk merely to force the profit target."],
     ["Maximum autonomous risk tier", config.maxRiskTier],
     ["Maximum active coding-agent sessions", String(config.maxActiveAssignments)],
     ["Assignment budget", String(config.maxAssignmentsPerDay)],

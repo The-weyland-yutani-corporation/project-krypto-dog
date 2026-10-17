@@ -15,3 +15,10 @@
 - CorrectionOps cannot change authorization, guardrails, leases,
   reconciliation, or the paper/live boundary; those are application invariants,
   not per-change human approval gates.
+- Evaluate the canonical `autonomy.tradingResearch` hypothesis with its fixed
+  starting paper capital. Compute net daily PnL after fees/slippage across
+  all calendar days, including losses and no-trade days; report costs of AI
+  and infrastructure separately. Compare cash and ETH buy-and-hold and report
+  drawdown, sample size, daily-return distribution and target shortfall.
+  No leverage, borrowing, selective windows, or capital resets may manufacture
+  success. Failed hypotheses and infeasibility are valid research outcomes.

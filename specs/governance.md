@@ -14,3 +14,5 @@
   Environments and Azure. A source change is not proof of a live rollout.
 - Keep canonical requirements in the five existing specification files.
   Machine-readable lists remain in `.github/agentic-policy.json`.
+- Retired spec paths embedded in applied migration comments resolve through Git history;
+  never rewrite migration bytes merely to refresh a documentation link.

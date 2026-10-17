@@ -1,5 +1,13 @@
 # Copilot instructions for Project Krypto
 
+## Application safety
+
+The app remains paper-only. The model returns one structured, read-only
+`HOLD`/`BUY`/`SELL` proposal; it never receives a mutating trade tool.
+Preserve deterministic authorization, accounting reconciliation, drawdown and
+cooldown controls, operator pause, idempotency, owned leases, admin auth,
+journaling, and explicit failures. Unattended software delivery does not
+authorize real-money execution or fund transfers.
 
 ## Read the shared instructions first
 

@@ -26,6 +26,10 @@
 - The merge controller verifies immutable verdict receipts from trusted
   workflow runs, then performs a native GitHub merge bound to the exact
   checked SHA. It does not leave a future head armed for auto-merge.
+  Review runs also require the controller's immutable dispatch receipt and
+  random nonce, with the original and rerun actor verified as the trusted bot.
+  Labeling an arbitrary PR never grants factory ownership. Publication repeats
+  current claim, scope, review and receipt verification before the mutation.
   GitHub branch protection remains effective. Forks are outside unattended
   same-repository delivery. Explicit review vetoes and emergency stops remain.
 - Repairs are capped and restricted to the existing issue scope. Exhausted or

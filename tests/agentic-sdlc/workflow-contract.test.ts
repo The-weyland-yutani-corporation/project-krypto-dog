@@ -216,6 +216,9 @@ describe("agentic SDLC workflow contracts", () => {
   });
 
   it("emits machine-readable reviews and retains head-refresh requirements", () => {
+    expect(qaReview).toContain("Materialize the exact dispatched QA head");
+    expect(qaReview).toContain('git checkout --detach "${EXPECTED_HEAD_SHA}"');
+    expect(qaReview).toContain('node "${RUNNER_TEMP}/restore-qa-instructions.cjs"');
     expect(qaReview).toContain("CHECK_NAME: QA verification");
     expect(qaReview).toContain("create-pr-check:");
     expect(qaReview).not.toContain("remove-labels:");

@@ -3,6 +3,7 @@
 const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const { isAutonomousGoal } = require("./agentic-autonomy.cjs");
 const { verifyTrustedReviewEvidence } = require("./agentic-review-evidence.cjs");
+const { createDispatchRecord, isControllerDispatchedRun } = require("./agentic-dispatch.cjs");
 const {
   CODE_REVIEW_CHECK,
   FACTORY_MODE_LABELS,
@@ -291,9 +292,8 @@ async function verifyAgentImplementationProvenance({
           Date.parse(right.created_at || "") -
           Date.parse(left.created_at || ""),
       )[0];
-    if (!(autonomous && isAutonomousGoal(goal)) && (
-      !latestGoalApproval ||
-      !latestGoalApproval.actor ||
+    if (autonomous ? !isAutonomousGoal(goal) : (
+      !latestGoalApproval || !latestGoalApproval.actor ||
       latestGoalApproval.actor.type !== "User"
     )) {
       return { valid: false };
@@ -589,8 +589,9 @@ function evaluateMergePolicy({
   const requiresVerifiedAgentProvenance =
     getAgentImplementationReference(pullRequest, copilotIdentity).required;
   const implementationScopeValid =
-    !requiresVerifiedAgentProvenance ||
-    areChangedFilesWithinAllowedPaths(files, issueAllowedPaths);
+    requiresVerifiedAgentProvenance
+      ? areChangedFilesWithinAllowedPaths(files, issueAllowedPaths)
+      : !autonomous || areChangedFilesWithinAllowedPaths(getPolicyFiles(files), ["docs/**", "specs/**"]);
   const trustedAgent =
     isTrustedAgentPullRequest(
       pullRequest,
@@ -642,6 +643,8 @@ function evaluateMergePolicy({
     description = "A current human review requests changes";
   } else if (hardBlockingLabel) {
     description = "A blocking review label requires changes";
+  } else if (autonomous && !trustedAgent) {
+    description = "Autonomous merge requires a trusted factory-owned pull request";
   } else if (
     requiresVerifiedAgentProvenance &&
     !agentImplementationProvenance
@@ -700,6 +703,36 @@ function evaluateMergePolicy({
     requiresHumanBoundaryApproval:
       agentApproval.requiresHumanBoundaryApproval,
   };
+}
+
+async function verifyAutonomousMergeCandidate({
+  github, owner, repo, pullRequest, core, assignmentActorNodeId, serverUrl,
+}) {
+  const copilotIdentity = await resolveRepositoryCopilotIdentity({
+    github, owner, repo, verifyPinnedIdentity: true,
+  });
+  const [files, reviews, checkRuns, allPullRequests] = await Promise.all([
+    github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pullRequest.number, per_page: 100 }),
+    github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: pullRequest.number, per_page: 100 }),
+    github.paginate(github.rest.checks.listForRef, { owner, repo, ref: pullRequest.head.sha, filter: "all", per_page: 100 }),
+    github.paginate(github.rest.pulls.list, { owner, repo, state: "all", per_page: 100 }),
+  ]);
+  const provenance = await verifyAgentImplementationProvenance({
+    github, owner, repo, pullRequest, core, copilotIdentity, allPullRequests,
+    assignmentActorNodeId, autonomous: true,
+  });
+  const decision = evaluateMergePolicy({
+    pullRequest, files, reviews, checkRuns, copilotIdentity, repository: `${owner}/${repo}`,
+    factoryMode: FACTORY_MODES.ACTIVE, autonomous: true,
+    agentImplementationProvenance: provenance.valid, issueRiskLabel: provenance.riskLabel,
+    issueAllowedPaths: provenance.allowedPaths, goalMaxRiskTier: provenance.goalMaxRiskTier,
+  });
+  if (decision.state !== "success") return { valid: false, reason: decision.description };
+  return verifyTrustedReviewEvidence({
+    github, owner, repo, defaultBranch: "main", serverUrl,
+    pullNumber: pullRequest.number, headSha: pullRequest.head.sha, checkRuns,
+    requiredChecks: [...AGENTIC_POLICY.requiredContexts, ...decision.requiredSpecialistChecks],
+  });
 }
 
 function canAttemptSelfHeal({
@@ -822,6 +855,8 @@ async function reconcileAgenticPullRequests({
   assignmentActorNodeId,
   autonomous = false,
   onVerifiedMerge,
+  onDispatch,
+  dispatchIdentity,
 }) {
   autonomous = autonomous === true && AGENTIC_POLICY.autonomy.enabled;
   const { owner, repo } = context.repo;
@@ -919,8 +954,9 @@ async function reconcileAgenticPullRequests({
       );
       return response.data.workflow_runs
         .filter(
-          (run) =>
-            run.head_sha === headSha ||
+          (run) => autonomous
+            ? isControllerDispatchedRun(run, { pullNumber, headSha, workflow: workflowId, defaultBranch })
+            : run.head_sha === headSha ||
             (run.display_title === correlationId &&
               run.head_branch === defaultBranch &&
               run.event === "workflow_dispatch"),
@@ -1315,12 +1351,19 @@ async function reconcileAgenticPullRequests({
         );
       };
       const dispatchForPullRequest = async (workflowId, inputs = {}) => {
-        return runPolicyOperation(() =>
-          dispatch(workflowId, defaultBranch, {
+        return runPolicyOperation(async () => {
+          const metadata = dispatchMetadata(workflowId, number, sha);
+          if (autonomous) {
+            if (typeof onDispatch !== "function") throw new Error("Autonomous dispatch requires a trusted receipt publisher.");
+            const record = createDispatchRecord({ ...dispatchIdentity, pullNumber: number, headSha: sha, workflow: workflowId });
+            metadata.correlation_id = record.correlation;
+            await onDispatch(record);
+          }
+          return dispatch(workflowId, defaultBranch, {
             ...inputs,
-            ...dispatchMetadata(workflowId, number, sha),
-          }),
-        );
+            ...metadata,
+          });
+        });
       };
       if (policy.riskExceedsGoal) {
         await addHumanBoundaryLabel();
@@ -1353,8 +1396,13 @@ async function reconcileAgenticPullRequests({
         (autonomous || policy.agentCheckStates[SECURITY_CHECK_NAME] !== "success") &&
         (securityRuns.length === 0 ||
           securityRuns[0].conclusion === "action_required");
+      const ciEvidenceComplete = AGENTIC_POLICY.requiredContexts
+        .filter((name) => name !== REVIEW_CHECK_NAME)
+        .every((name) => getCheckState(checkRuns.filter((check) =>
+          !autonomous || check.head_sha === sha), name) === "success");
       const qaShouldDispatch =
         qaRequired &&
+        (!autonomous || ciEvidenceComplete) &&
         (autonomous || policy.agentCheckStates[QA_CHECK_NAME] !== "success") &&
         (qaRuns.length === 0 ||
           qaRuns[0].conclusion === "action_required");
@@ -1549,6 +1597,7 @@ module.exports = {
   isSameRepositoryPullRequest,
   isTrustedAgentPullRequest,
   verifyAgentImplementationProvenance,
+  verifyAutonomousMergeCandidate,
   pullRequestDispatchInputs,
   requiresSecurityReview,
   requiresTradingSafetyReview,

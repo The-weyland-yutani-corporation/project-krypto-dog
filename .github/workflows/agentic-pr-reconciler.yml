@@ -64,6 +64,9 @@ jobs:
             );
             const { reconcileAgenticPullRequests } = require(reconcilerPath);
             const approved = [];
+            const dispatches = [];
+            const dispatchIdentity = { runId: context.runId, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT) };
+            try {
             await reconcileAgenticPullRequests({
               autonomous: require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-policy.cjs")).AGENTIC_POLICY.autonomy.enabled,
               github,
@@ -72,8 +75,24 @@ jobs:
               assignmentActorNodeId:
                 process.env.FACTORY_ASSIGNMENT_ACTOR_NODE_ID,
               onVerifiedMerge: async (item) => approved.push(item),
+              onDispatch: async (item) => dispatches.push(item),
+              dispatchIdentity,
             });
             core.setOutput("approved_merges", JSON.stringify(approved));
+            } finally {
+              require("node:fs").writeFileSync(path.join(process.env.RUNNER_TEMP, "receipt.json"), JSON.stringify({
+                schemaVersion: 1, ...dispatchIdentity, dispatches,
+              }));
+            }
+
+      - name: Preserve controller dispatch receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: factory-dispatches-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/receipt.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Publish exact-head merges
         if: ${{ steps.reconcile.outputs.approved_merges != '' && steps.reconcile.outputs.approved_merges != '[]' }}
@@ -81,6 +100,7 @@ jobs:
         env:
           APPROVED_MERGES: ${{ steps.reconcile.outputs.approved_merges }}
           MERGE_TOKEN_CONFIGURED: ${{ secrets.GH_AW_AGENT_TOKEN != '' }}
+          FACTORY_ASSIGNMENT_ACTOR_NODE_ID: ${{ vars.FACTORY_ASSIGNMENT_ACTOR_NODE_ID }}
         with:
           # A non-GITHUB_TOKEN publisher preserves push-triggered CI/deployment
           # events. The existing credential is confined to this trusted step.
@@ -101,5 +121,7 @@ jobs:
               await mergeVerifiedHead({
                 github, ...context.repo, core,
                 pullRequest: { number: item.number, head: { sha: item.headSha } },
+                assignmentActorNodeId: process.env.FACTORY_ASSIGNMENT_ACTOR_NODE_ID,
+                serverUrl: context.serverUrl,
               });
             }
