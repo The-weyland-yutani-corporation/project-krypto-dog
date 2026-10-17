@@ -9,16 +9,6 @@ Own the Drizzle schema (`schema.ts`, `index.ts`), generated migrations under
 `drizzle/**`, and seed/reset flows. Preserve portfolio, trade, journal, and
 agent-state invariants.
 
-## Non-negotiables (delta)
-
-- Prefer additive, reversible schema changes. Call out destructive migrations or
-  data backfills explicitly.
-- Keep schema, migrations, seed scripts, and tests aligned; do not hand-edit
-  generated migration history to diverge from `schema.ts`.
-- Preserve private-schema, cron, and vault access restrictions established by
-  existing migrations (e.g. `0002`, `0004`, `0005`).
-- Run `npm run db:migrate` and `npm run db:init` only against disposable/local
-  databases — never a production or shared target.
 
 ## Validation
 

@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       goal_issue:
-        description: Human-approved factory goal issue number
-        required: true
+        description: Standing autonomous goal issue number (omit to discover it)
+        required: false
         type: string
   schedule:
     - cron: "17 6 * * 1"
@@ -25,29 +25,40 @@ permissions:
 jobs:
   full-cycle:
     name: Exercise issue through exact-SHA dev evidence
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      vars.FACTORY_CANARY_GOAL != ''
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
       INPUT_GOAL_ISSUE: ${{ inputs.goal_issue }}
-      SCHEDULED_GOAL_ISSUE: ${{ vars.FACTORY_CANARY_GOAL }}
     steps:
+      - name: Check out trusted factory policy
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - name: Create authorized canary issue
         id: create
         uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;
-            const rawGoal =
-              context.eventName === "workflow_dispatch"
-                ? process.env.INPUT_GOAL_ISSUE
-                : process.env.SCHEDULED_GOAL_ISSUE;
+            const { AUTONOMOUS_GOAL_LABEL, isAutonomousGoal } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-autonomy.cjs"),
+            );
+            const goals = (await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: "open", labels: AUTONOMOUS_GOAL_LABEL, per_page: 100,
+            })).filter((issue) => !issue.pull_request);
+            if (goals.length !== 1 || !isAutonomousGoal(goals[0])) {
+              throw new Error("A unique standing repository-authorized goal is required.");
+            }
+            const rawGoal = process.env.INPUT_GOAL_ISSUE || String(goals[0].number);
             if (!/^[1-9]\d*$/.test(rawGoal || "")) {
               throw new Error("A positive approved goal issue number is required.");
             }
             const goalNumber = Number(rawGoal);
+            if (goalNumber !== goals[0].number) {
+              throw new Error("Canary target does not match the standing mission.");
+            }
 
             const [{ data: goal }, controls] = await Promise.all([
               github.rest.issues.get({
@@ -88,54 +99,11 @@ jobs:
                 typeof label === "string" ? label : label.name,
               ),
             );
-            if (!controlLabels.has("factory-mode:active")) {
-              throw new Error("The factory must be human-activated before a full canary.");
-            }
-            const [goalTimeline, controlTimeline] = await Promise.all([
-              github.paginate(github.rest.issues.listEventsForTimeline, {
-                owner,
-                repo,
-                issue_number: goalNumber,
-                per_page: 100,
-              }),
-              github.paginate(github.rest.issues.listEventsForTimeline, {
-                owner,
-                repo,
-                issue_number: controls[0].number,
-                per_page: 100,
-              }),
-            ]);
-            const latestHumanLabelEvent = (events, labelName) =>
-              events
-                .filter(
-                  (event) =>
-                    event.event === "labeled" &&
-                    event.label?.name === labelName,
-                )
-                .sort(
-                  (left, right) =>
-                    Date.parse(right.created_at || "") -
-                    Date.parse(left.created_at || ""),
-                )[0]?.actor?.type === "User";
-            if (
-              !latestHumanLabelEvent(
-                goalTimeline,
-                "factory:goal-approved",
-              )
-            ) {
-              throw new Error(
-                `Goal #${goalNumber} approval is not backed by a human label event.`,
-              );
-            }
-            if (
-              !latestHumanLabelEvent(
-                controlTimeline,
-                "factory-mode:active",
-              )
-            ) {
-              throw new Error(
-                "Factory active mode is not backed by a human label event.",
-              );
+            const modes = ["factory-mode:active", "factory-mode:paused", "factory-mode:shadow"];
+            if (!controlLabels.has("factory-mode:active") ||
+                modes.filter((mode) => controlLabels.has(mode)).length !== 1 ||
+                !isAutonomousGoal(goal)) {
+              throw new Error("Canary requires unambiguous active mode and the unchanged standing mission.");
             }
 
             const runUrl =

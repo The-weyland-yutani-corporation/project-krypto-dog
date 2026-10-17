@@ -147,7 +147,7 @@ safe-outputs:
                 );
                 return;
               }
-              await github.rest.checks.create({
+              const { data: published } = await github.rest.checks.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 name: process.env.CHECK_NAME,
@@ -161,6 +161,19 @@ safe-outputs:
                   summary: item.summary,
                 },
               });
+              fs.writeFileSync(require("node:path").join(process.env.RUNNER_TEMP, "receipt.json"), JSON.stringify({
+                schemaVersion: 1, runId: Number(process.env.GITHUB_RUN_ID),
+                runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+                pullNumber, headSha: trustedHeadSha,
+                checks: [{ id: published.id, name: process.env.CHECK_NAME, conclusion: item.conclusion }],
+              }));
+        - name: Preserve trusted verdict receipt
+          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          with:
+            name: factory-receipt-${{ env.EXPECTED_HEAD_SHA }}-${{ github.run_attempt }}
+            path: ${{ runner.temp }}/receipt.json
+            if-no-files-found: error
+            retention-days: 7
   create-issue:
     title-prefix: "[review-followup] "
     labels: [agentic-factory, needs-ai-review]

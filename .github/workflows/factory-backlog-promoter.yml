@@ -76,6 +76,7 @@ jobs:
               context,
               core,
               config: {
+                autonomous: require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-policy.cjs")).AGENTIC_POLICY.autonomy.enabled,
                 dryRun: process.env.PROMOTER_DRY_RUN === "true",
                 maxPromotions: Number.isInteger(parsedMax) ? parsedMax : undefined,
               },

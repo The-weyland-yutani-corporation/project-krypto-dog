@@ -12,8 +12,6 @@ on:
     - cron: "*/5 * * * *"
   pull_request_target:
     types: [opened, synchronize, reopened, closed, ready_for_review, converted_to_draft, labeled, unlabeled]
-  pull_request_review:
-    types: [submitted, dismissed]
   issues:
     types: [labeled, unlabeled]
   workflow_run:
@@ -53,6 +51,7 @@ jobs:
             .github/agentic-policy.json
 
       - name: Reconcile checks, policy, and repair
+        id: reconcile
         uses: actions/github-script@v9
         env:
           FACTORY_ASSIGNMENT_ACTOR_NODE_ID: ${{ vars.FACTORY_ASSIGNMENT_ACTOR_NODE_ID }}
@@ -64,10 +63,43 @@ jobs:
               ".github/scripts/agentic-pr-reconciler.cjs",
             );
             const { reconcileAgenticPullRequests } = require(reconcilerPath);
+            const approved = [];
             await reconcileAgenticPullRequests({
+              autonomous: require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-policy.cjs")).AGENTIC_POLICY.autonomy.enabled,
               github,
               context,
               core,
               assignmentActorNodeId:
                 process.env.FACTORY_ASSIGNMENT_ACTOR_NODE_ID,
+              onVerifiedMerge: async (item) => approved.push(item),
             });
+            core.setOutput("approved_merges", JSON.stringify(approved));
+
+      - name: Publish exact-head merges
+        if: ${{ steps.reconcile.outputs.approved_merges != '' && steps.reconcile.outputs.approved_merges != '[]' }}
+        uses: actions/github-script@v9
+        env:
+          APPROVED_MERGES: ${{ steps.reconcile.outputs.approved_merges }}
+          MERGE_TOKEN_CONFIGURED: ${{ secrets.GH_AW_AGENT_TOKEN != '' }}
+        with:
+          # A non-GITHUB_TOKEN publisher preserves push-triggered CI/deployment
+          # events. The existing credential is confined to this trusted step.
+          github-token: ${{ secrets.GH_AW_AGENT_TOKEN }}
+          script: |
+            if (process.env.MERGE_TOKEN_CONFIGURED !== "true") {
+              throw new Error("GH_AW_AGENT_TOKEN is required for merges that trigger downstream CI; no token fallback is permitted.");
+            }
+            const { mergeVerifiedHead } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-merge.cjs"),
+            );
+            const approved = JSON.parse(process.env.APPROVED_MERGES);
+            if (!Array.isArray(approved)) throw new Error("Invalid merge publication batch.");
+            for (const item of approved) {
+              if (!Number.isSafeInteger(item.number) || item.number <= 0 || !/^[0-9a-f]{40}$/.test(item.headSha)) {
+                throw new Error("Invalid exact-head merge publication target.");
+              }
+              await mergeVerifiedHead({
+                github, ...context.repo, core,
+                pullRequest: { number: item.number, head: { sha: item.headSha } },
+              });
+            }

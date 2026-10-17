@@ -252,7 +252,11 @@ async function resolveHumanAttestedFactoryMode({ github, core, owner, repo }) {
  * whose merge evidence is already complete. Per-PR failures are isolated and
  * warned so one bad pull request cannot stall the sweep.
  */
-async function sweepAutoMergeReadyPullRequests({ github, context, core }) {
+async function sweepAutoMergeReadyPullRequests({ github, context, core, autonomous = false }) {
+  if (autonomous && AGENTIC_POLICY.autonomy.enabled) {
+    core.info("Autonomous arming is owned by the PR reconciler, which verifies scope, provenance, all specialist checks, and the exact head.");
+    return { factoryMode: "delegated", armed: [], declined: [] };
+  }
   const { owner, repo } = context.repo;
   const repository = `${owner}/${repo}`;
 

@@ -80,6 +80,7 @@ jobs:
           ALERT_EMAIL_TO: operator@example.com
           DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
           POSTHOG_API_KEY: phc_stub
+          DATABASE_POOL_MAX: "2"
           POSTHOG_ENVIRONMENT: dev
           CRON_SECRET: stub
           APP_ORIGIN: https://stub.example.com
@@ -152,6 +153,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+
+      - name: Verify dispatched migration head
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+        run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -187,6 +196,51 @@ jobs:
         run: |
           npm run db:generate
           test -z "$(git status --porcelain -- drizzle)"
+
+  publish-dispatched-evidence:
+    name: Publish dispatched head evidence
+    needs: [quality, postgres]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+    steps:
+      - name: Bind CI results to the validated PR head
+        uses: actions/github-script@v9
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          POSTGRES_RESULT: ${{ needs.postgres.result }}
+        with:
+          script: |
+            const sha = process.env.EXPECTED_HEAD_SHA;
+            if (!/^[0-9a-f]{40}$/.test(sha || "")) {
+              throw new Error("Expected an exact validated commit SHA.");
+            }
+            const checks = [];
+            for (const [name, result] of [
+              ["Quality and evidence gates", process.env.QUALITY_RESULT],
+              ["PostgreSQL migrations and execution", process.env.POSTGRES_RESULT],
+            ]) {
+              const { data: published } = await github.rest.checks.create({
+                ...context.repo, name, head_sha: sha, status: "completed",
+                conclusion: result === "success" ? "success" : "failure",
+                details_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                output: { title: `${name}: ${result}`, summary: `Trusted CI dispatch validated commit ${sha}. Job result: ${result}.` },
+              });
+              checks.push({ id: published.id, name, conclusion: published.conclusion });
+            }
+            require("node:fs").writeFileSync(require("node:path").join(process.env.RUNNER_TEMP, "receipt.json"), JSON.stringify({
+              schemaVersion: 1, runId: context.runId,
+              runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT), headSha: sha, checks,
+            }));
+      - name: Preserve trusted CI receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: factory-receipt-${{ inputs.head_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/receipt.json
+          if-no-files-found: error
+          retention-days: 7
 
   harness-integrity:
     name: Harness integrity

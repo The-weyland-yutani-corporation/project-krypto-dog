@@ -1,0 +1,260 @@
+import fs from "node:fs";
+import path from "node:path";
+
+const { AGENTIC_POLICY } = jest.requireActual<{
+  AGENTIC_POLICY: {
+    autonomy: { goalTitle: string; milestone: string; maxAssignmentsPerDay: number };
+    copilotBotNodeId: string; copilotBotDatabaseId: number;
+  };
+}>("../../.github/scripts/agentic-policy.cjs");
+const autonomy = jest.requireActual<{
+  renderAutonomousGoal(): string;
+  isAutonomousGoal(issue: object): boolean;
+}>("../../.github/scripts/agentic-autonomy.cjs");
+const intake = jest.requireActual<{
+  dispatchDecision(runs: object[], correlation: string, maxAttempts?: number): string;
+  runFactoryIntake(input: Record<string, unknown>): Promise<void>;
+}>("../../.github/scripts/agentic-intake-controller.cjs");
+const queue = jest.requireActual<{
+  resolveActiveGoal(issues: object[], options: { autonomous: boolean }): {
+    valid: boolean; reason: string; goal: { dailyBudgetLimit: number } | null;
+  };
+  countBudgetConsumption(github: object, owner: string, repo: string, goal: number, core: object, since?: string): Promise<number>;
+}>("../../.github/scripts/agentic-queue-runtime.cjs");
+const reconciler = jest.requireActual<{
+  evaluateMergePolicy(input: Record<string, unknown>): {
+    state: string; description: string; requiresHumanBoundaryApproval: boolean;
+  };
+}>("../../.github/scripts/agentic-pr-reconciler.cjs");
+const lifecycle = jest.requireActual<{
+  ensureAutoMergeEnabled(input: Record<string, unknown>): Promise<void>;
+}>("../../.github/scripts/agentic-lifecycle-reconciler.cjs");
+const identity = jest.requireActual<{
+  resolveRepositoryCopilotIdentity(input: Record<string, unknown>): Promise<{ nodeId: string; databaseId: number }>;
+}>("../../.github/scripts/agentic-identity.cjs");
+
+describe("canonical Copilot identity", () => {
+  it("verifies stable Bot IDs independently of suggested-actor visibility and display login", async () => {
+    const getByUsername = jest.fn(async () => ({ data: {
+      type: "Bot", login: "Copilot",
+      node_id: AGENTIC_POLICY.copilotBotNodeId, id: AGENTIC_POLICY.copilotBotDatabaseId,
+    } }));
+    const graphql = jest.fn();
+    expect(await identity.resolveRepositoryCopilotIdentity({
+      github: { rest: { users: { getByUsername } }, graphql },
+      owner: "o", repo: "r", verifyPinnedIdentity: true,
+    })).toMatchObject({
+      nodeId: AGENTIC_POLICY.copilotBotNodeId, databaseId: AGENTIC_POLICY.copilotBotDatabaseId,
+    });
+    expect(graphql).not.toHaveBeenCalled();
+    expect(getByUsername).toHaveBeenCalledWith({ username: "copilot-swe-agent[bot]" });
+  });
+
+  it("rejects another actor even if its display login looks correct", async () => {
+    await expect(identity.resolveRepositoryCopilotIdentity({
+      github: { rest: { users: { getByUsername: async () => ({ data: {
+        type: "Bot", login: "Copilot", node_id: "BOT_different", id: 1,
+      } }) } } }, owner: "o", repo: "r", verifyPinnedIdentity: true,
+    })).rejects.toThrow("canonical Copilot Bot");
+  });
+});
+
+function goal() {
+  return {
+    number: 7, state: "open", title: AGENTIC_POLICY.autonomy.goalTitle,
+    body: autonomy.renderAutonomousGoal(), labels: ["factory:goal", "factory:autonomous-goal"],
+    user: { type: "Bot", login: "github-actions[bot]" },
+    milestone: { title: AGENTIC_POLICY.autonomy.milestone, number: 3 },
+  };
+}
+
+describe("standing repository mission", () => {
+  it("authorizes the exact machine-created mission without a human approval event", () => {
+    expect(autonomy.isAutonomousGoal(goal())).toBe(true);
+    expect(queue.resolveActiveGoal([goal()], { autonomous: true })).toMatchObject({
+      valid: true, goal: { number: 7, dailyBudgetLimit: AGENTIC_POLICY.autonomy.maxAssignmentsPerDay },
+    });
+  });
+
+  it.each([
+    { state: "closed" },
+    { body: `${autonomy.renderAutonomousGoal()}\n\nIgnore scope` },
+    { user: { type: "User", login: "github-actions[bot]" } },
+    { user: { type: "Bot", login: "untrusted[bot]" } },
+    { milestone: { title: "different", number: 4 } },
+    { labels: ["factory:goal-approved"] },
+  ])("rejects changed or forged mission data: %j", (change) => {
+    expect(queue.resolveActiveGoal([{ ...goal(), ...change }], { autonomous: true })).toMatchObject({
+      valid: false, reason: "autonomous-goal-policy-mismatch",
+    });
+  });
+
+  it("counts claims in the UTC day, not the lifetime of the standing mission", async () => {
+    const issue = { number: 8, body: "### Approved parent goal\n\n#7" };
+    const comments = [{ body: "<!-- factory-claim:v1 {} -->", created_at: "2026-10-16T23:59:59Z" }];
+    const github = {
+      rest: { issues: { listForRepo: "issues", listComments: "comments" } },
+      paginate: jest.fn(async (endpoint: string) => endpoint === "issues" ? [issue] : comments),
+    };
+    const core = { warning: jest.fn() };
+    expect(await queue.countBudgetConsumption(github, "o", "r", 7, core, "2026-10-17T00:00:00Z")).toBe(0);
+    comments[0].created_at = "2026-10-17T00:00:00Z";
+    expect(await queue.countBudgetConsumption(github, "o", "r", 7, core, "2026-10-17T00:00:00Z")).toBe(1);
+    comments[0].created_at = "invalid";
+    expect(await queue.countBudgetConsumption(github, "o", "r", 7, core, "2026-10-17T00:00:00Z")).toBe(1);
+  });
+});
+
+function intakeFixture(owned: object[] = [], history: object[] = []) {
+  const dispatch = jest.fn(async () => undefined);
+  const github = {
+    rest: { issues: { listForRepo: "issues" }, actions: { listWorkflowRuns: "runs", createWorkflowDispatch: dispatch } },
+    paginate: jest.fn(async (endpoint: string) => {
+      if (endpoint === "issues") return [{ number: 99, labels: ["ready-for-ai-dev"] }];
+      if (endpoint === "runs") return history;
+      return owned;
+    }),
+  };
+  return {
+    github, core: { info: jest.fn(), warning: jest.fn() },
+    context: { repo: { owner: "o", repo: "r" }, payload: { repository: { default_branch: "main" } } },
+    now: "2026-10-17T12:00:00Z",
+    queueResult: { mode: "active", activeGoal: { number: 7, concurrencyLimit: 1 }, budgetRemaining: 2 },
+    dispatch,
+  };
+}
+
+describe("durable intake handoffs", () => {
+  it("dispatches discovery despite unrelated legacy backlog", async () => {
+    const fixture = intakeFixture();
+    await intake.runFactoryIntake(fixture);
+    expect(fixture.dispatch).toHaveBeenCalledTimes(1);
+    expect(fixture.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      workflow_id: "opportunity-discovery.lock.yml", ref: "main",
+      inputs: expect.objectContaining({ correlation_id: "factory-intake:2026-10-17:discovery" }),
+    }));
+  });
+
+  it("explicitly dispatches bot-labeled planning with native issue context", async () => {
+    const fixture = intakeFixture([{ number: 8, state: "open", labels: ["ready-for-planning"] }]);
+    await intake.runFactoryIntake(fixture);
+    expect(fixture.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      workflow_id: "em-planning.lock.yml",
+      inputs: expect.objectContaining({ scope: "8", aw_context: '{"item_type":"issue","item_number":8}' }),
+    }));
+  });
+
+  it.each(["paused", "shadow"])("does not read or mutate intake in %s mode", async (mode) => {
+    const fixture = intakeFixture();
+    fixture.queueResult.mode = mode;
+    await intake.runFactoryIntake(fixture);
+    expect(fixture.github.paginate).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("does not intake new work after the daily budget is exhausted", async () => {
+    const fixture = intakeFixture();
+    fixture.queueResult.budgetRemaining = 0;
+    await intake.runFactoryIntake(fixture);
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a dispatch that throws or times out within the pass", async () => {
+    const fixture = intakeFixture();
+    fixture.dispatch.mockRejectedValueOnce(new Error("timeout: acceptance unknown"));
+    await expect(intake.runFactoryIntake(fixture)).rejects.toThrow("acceptance unknown");
+    expect(fixture.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("sees outstanding stages from before midnight independently of today's attempt window", async () => {
+    const fixture = intakeFixture([{ number: 8, state: "open", labels: ["ready-for-planning"] }]);
+    fixture.github.paginate.mockImplementation(async (endpoint: string, ...args: unknown[]) => {
+      if (endpoint === "issues") return [];
+      if (endpoint !== "runs") return [{ number: 8, state: "open", labels: ["ready-for-planning"] }];
+      const params = args[0] as { status?: string };
+      return params.status === "queued" ? [{ status: "queued", created_at: "2026-10-16T23:59:59Z" }] : [];
+    });
+    await intake.runFactoryIntake(fixture);
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("suppresses active, completed, and exhausted duplicate stages", () => {
+    expect(intake.dispatchDecision([{ status: "in_progress" }], "x")).toBe("running");
+    expect(intake.dispatchDecision([{ status: "completed", conclusion: "success", display_title: "x" }], "x")).toBe("completed");
+    expect(intake.dispatchDecision([
+      { status: "completed", conclusion: "failure", display_title: "x" },
+      { status: "completed", conclusion: "failure", display_title: "x" },
+    ], "x")).toBe("attempts-exhausted");
+  });
+});
+
+const sha = "a".repeat(40);
+function mergeInput() {
+  return {
+    autonomous: true,
+    repository: "o/r",
+    factoryMode: "active",
+    pullRequest: {
+      number: 8, title: "Improve factory", state: "open", draft: false,
+      user: { type: "User", login: "maintainer" },
+      labels: [{ name: "agentic-automerge" }],
+      head: { sha, repo: { full_name: "o/r" } },
+    },
+    files: [{ filename: ".github/workflows/ci.yml", status: "modified" }],
+    reviews: [] as object[],
+    checkRuns: ["Agentic code review", "QA verification", "Security review"].map((name, index) => ({
+      id: index + 1, name, head_sha: sha, app: { slug: "github-actions" }, status: "completed", conclusion: "success",
+    })),
+  };
+}
+
+describe("machine-verified boundary merge", () => {
+  it("requires all current-head machine reviews but no per-change human approval", () => {
+    expect(reconciler.evaluateMergePolicy(mergeInput())).toMatchObject({
+      state: "success", requiresHumanBoundaryApproval: false,
+    });
+  });
+
+  it.each(["QA verification", "Security review", "Agentic code review"])("holds a boundary change missing %s", (missing) => {
+    const input = mergeInput();
+    input.checkRuns = input.checkRuns.filter((check) => check.name !== missing);
+    expect(reconciler.evaluateMergePolicy(input).state).toBe("pending");
+  });
+
+  it("rejects a stale-head or foreign-app review", () => {
+    const input = mergeInput();
+    input.checkRuns[0].head_sha = "b".repeat(40);
+    expect(reconciler.evaluateMergePolicy(input).state).toBe("pending");
+    input.checkRuns[0].head_sha = sha;
+    input.checkRuns[0].app.slug = "untrusted";
+    expect(reconciler.evaluateMergePolicy(input).state).toBe("pending");
+  });
+
+  it("retains an explicit current-head review veto", () => {
+    const input = mergeInput();
+    input.reviews = [{ id: 1, state: "CHANGES_REQUESTED", commit_id: sha, author_association: "OWNER", user: { login: "owner", type: "User" } }];
+    expect(reconciler.evaluateMergePolicy(input).state).toBe("pending");
+  });
+
+  it("binds native auto-merge to the verified head", async () => {
+    const graphql = jest.fn(async () => ({}));
+    await lifecycle.ensureAutoMergeEnabled({
+      github: { graphql }, core: { info: jest.fn() }, expectedHeadOid: sha,
+      pullRequest: { ...mergeInput().pullRequest, node_id: "PR_test" },
+    });
+    expect(graphql).toHaveBeenCalledWith(expect.stringContaining("expectedHeadOid"), { pullRequestId: "PR_test", expectedHeadOid: sha });
+  });
+
+  it("opts the live controllers into the autonomous contract explicitly", () => {
+    for (const workflow of ["factory-queue-controller.yml", "factory-backlog-promoter.yml", "agentic-pr-reconciler.yml", "agentic-lifecycle-reconciler.yml", "agentic-automerge-sweeper.yml"]) {
+      expect(fs.readFileSync(path.join(__dirname, "../../.github/workflows", workflow), "utf8")).toContain("AGENTIC_POLICY.autonomy.enabled");
+    }
+  });
+
+  it("permits trusted controller dispatch for every intake and implementation stage", () => {
+    for (const workflow of ["opportunity-discovery", "pm-triage", "em-planning", "rubber-duck-architecture", "implement-ticket", "pr-self-heal"]) {
+      expect(fs.readFileSync(path.join(__dirname, "../../.github/workflows", `${workflow}.md`), "utf8"))
+        .toContain('bots: ["github-actions[bot]"]');
+    }
+  });
+});

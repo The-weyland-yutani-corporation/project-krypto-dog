@@ -50,4 +50,10 @@ jobs:
               ".github/scripts/agentic-queue-runtime.cjs",
             );
             const { runFactoryQueueController } = require(runtimePath);
-            await runFactoryQueueController({ github, context, core });
+            const { AGENTIC_POLICY } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-policy.cjs"));
+            const queueResult = await runFactoryQueueController({
+              github, context, core,
+              config: { autonomous: AGENTIC_POLICY.autonomy.enabled },
+            });
+            const { runFactoryIntake } = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-intake-controller.cjs"));
+            await runFactoryIntake({ github, context, core, queueResult });

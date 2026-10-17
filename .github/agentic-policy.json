@@ -1,5 +1,43 @@
 {
   "schemaVersion": 1,
+  "autonomy": {
+    "enabled": true,
+    "goalTitle": "[factory-goal] Continuous Project Krypto delivery",
+    "milestone": "Continuous autonomous delivery",
+    "objective": "Continuously improve Project Krypto from evidence-backed ideas through tested pull requests and merge to main. Prioritize broken behavior, reliability, useful product features, and delivery health.",
+    "allowedPaths": [
+      ".github/**",
+      "src/**",
+      "tests/**",
+      "e2e/**",
+      "scripts/**",
+      "docs/**",
+      "specs/**",
+      "infra/**",
+      "drizzle/**",
+      "scenarios/**",
+      "evals/**",
+      "public/**",
+      "AGENTS.md",
+      "README.md",
+      "DESIGN.md",
+      "package.json",
+      "package-lock.json",
+      "Dockerfile",
+      "docker-compose.yml",
+      ".gitignore",
+      ".dockerignore",
+      ".nvmrc",
+      "next.config.ts",
+      "jest.config.ts",
+      "playwright.config.ts",
+      "tsconfig.json",
+      "tsconfig.scripts.json"
+    ],
+    "maxRiskTier": "risk:boundary",
+    "maxActiveAssignments": 1,
+    "maxAssignmentsPerDay": 2
+  },
   "merge": {
     "requiredContexts": [
       "Quality and evidence gates",
@@ -12,6 +50,8 @@
   },
   "identities": {
     "copilotSuggestedActorLogin": "copilot-swe-agent",
+    "copilotBotNodeId": "BOT_kgDOC9w8XQ",
+    "copilotBotDatabaseId": 198982749,
     "trustedAgentAuthors": [
       "github-actions[bot]",
       "copilot-swe-agent[bot]"
@@ -105,10 +145,8 @@
   "authority": {
     "forksRequireHumanApproval": true,
     "humanOnly": [
-      "production_deployment",
-      "live_trading_enablement",
-      "secrets_and_external_accounts",
-      "architecture_acceptance"
+      "real_money_trading_and_fund_transfers",
+      "secrets_and_external_accounts"
     ],
     "paperOnly": true
   }

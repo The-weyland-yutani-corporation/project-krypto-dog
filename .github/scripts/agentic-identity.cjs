@@ -123,7 +123,25 @@ async function resolveRepositoryCopilotIdentity({
   owner,
   repo,
   suggestedActorLogin = AGENTIC_POLICY.copilotSuggestedActorLogin,
+  verifyPinnedIdentity = false,
 }) {
+  if (verifyPinnedIdentity) {
+    // Assignment capability discovery and actor identity are different checks.
+    // The official bot's REST display login is now "Copilot"; bind its stable
+    // server IDs instead of depending on suggestedActors visibility for GITHUB_TOKEN.
+    const { data: actor } = await github.rest.users.getByUsername({
+      username: `${AGENTIC_POLICY.copilotSuggestedActorLogin}[bot]`,
+    });
+    if (actorType(actor) !== "Bot" ||
+        actorNodeId(actor) !== AGENTIC_POLICY.copilotBotNodeId ||
+        actorDatabaseId(actor) !== AGENTIC_POLICY.copilotBotDatabaseId) {
+      throw new AgenticIdentityError("copilot-pinned-identity-mismatch", "GitHub did not return the configured canonical Copilot Bot identity");
+    }
+    return Object.freeze({
+      nodeId: actorNodeId(actor), databaseId: actorDatabaseId(actor),
+      suggestedLogin: AGENTIC_POLICY.copilotSuggestedActorLogin,
+    });
+  }
   if (!github || typeof github.graphql !== "function") {
     throw new AgenticIdentityError(
       "copilot-identity-api-unavailable",

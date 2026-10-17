@@ -1,17 +1,18 @@
 ---
 description: Proactively discovers and creates high-quality PM/research opportunity tickets for the agentic SDLC factory. WIP-gated — produces at most one issue per run and calls noop when actionable backlog reaches 20 open issues.
+run-name: "${{ inputs.correlation_id || 'Opportunity Discovery' }}"
 on:
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
+      correlation_id:
+        description: Deterministic intake dispatch identity
+        required: false
+        type: string
       focus:
         description: Optional focus area, e.g. QA, observability, safety, factory, admin UX. Strategy areas are deferred.
         required: false
         type: string
-  schedule: weekly
-  slash_command:
-    name: discover
-    events: [issues, issue_comment]
-    strategy: centralized
 permissions:
   contents: read
   issues: read
@@ -45,13 +46,19 @@ max-daily-ai-credits: 2000
 # Opportunity Discovery
 
 Discover at most **one** high-quality opportunity ticket per run inside a
-human-approved factory goal. Strategy research is explicitly deferred.
+repository-authorized factory goal. The queue controller dispatches this
+workflow at most once per UTC day. Strategy research is explicitly deferred.
 
 ## WIP gate (check this first)
 
-Count the number of open issues with label `opportunity` that do **not** have label `blocked`. If that count is **≥ 20**, call `noop` immediately with the reason "backlog WIP limit reached — {count} open opportunity issues". Do not proceed further.
+Count open `opportunity` issues belonging to the standing mission that do
+**not** have label `blocked`. If that count is **≥ 20**, call `noop` with
+"mission backlog WIP limit reached". Unowned legacy backlog is not new mission WIP.
 
-Also require exactly one open parent goal carrying `factory:goal-approved`.
+Also require exactly one open parent goal carrying `factory:autonomous-goal`.
+Verify its body and allowed scope against the `autonomy` section of
+`.github/agentic-policy.json`; the standing repository policy is authorization,
+not a per-idea human approval.
 Read its allowed scope, non-goals, maximum risk, WIP, and assignment budget.
 Call `noop` when no goal is active or when its queued/claimed/implementing work
 already reaches the goal's WIP allowance.
@@ -63,7 +70,6 @@ Also call `noop` if:
 ## Context
 
 - If triggered manually, use this focus if provided: `${{ github.event.inputs.focus }}`.
-- If triggered by `/discover`, use the sanitized triggering text as steering context: `${{ steps.sanitized.outputs.text }}`.
 - If no focus is provided, inspect only gaps authorized by the active goal.
 
 ## Allowed scope
@@ -111,5 +117,5 @@ Each created issue must include:
 ## Safe outputs
 
 - Use `create-issue` for exactly one opportunity ticket per run. The workflow attaches `agentic-factory`, `opportunity`, and `needs-rubber-duck`.
-- Use `add-comment` when triggered by `/discover` to summarize what was created or why no ticket was created.
+- Use `add-comment` only when an explicit issue context is supplied.
 - Use `noop` when: WIP limit reached, near-duplicate exists, no high-confidence non-deferred opportunity found.

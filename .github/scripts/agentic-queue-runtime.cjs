@@ -32,6 +32,8 @@ const {
   parseClaimPayload,
   selectNextIssue,
 } = require("./agentic-queue-controller.cjs");
+const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
+const { AUTONOMOUS_GOAL_LABEL, isAutonomousGoal, ensureAutonomousGoal } = require("./agentic-autonomy.cjs");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -433,7 +435,7 @@ function determineFactoryMode(controlIssues) {
  * @param {Array<{number: number, milestone: unknown, body: unknown}>} goalIssues
  * @returns {{valid: boolean, reason: string, goal: object|null}}
  */
-function resolveActiveGoal(goalIssues) {
+function resolveActiveGoal(goalIssues, { autonomous = false } = {}) {
   const issues = Array.isArray(goalIssues) ? goalIssues : [];
 
   if (issues.length === 0) {
@@ -444,6 +446,9 @@ function resolveActiveGoal(goalIssues) {
   }
 
   const issue = issues[0];
+  if (autonomous && !isAutonomousGoal(issue)) {
+    return { valid: false, reason: "autonomous-goal-policy-mismatch", goal: null };
+  }
   const milestoneTitle =
     issue.milestone && typeof issue.milestone.title === "string" ? issue.milestone.title.trim() : "";
   if (milestoneTitle === "") {
@@ -466,7 +471,7 @@ function resolveActiveGoal(goalIssues) {
   }
 
   const boundariesChecked = areAllCheckboxesChecked(
-    getIssueFormSection(sections, GOAL_FORM_HEADINGS.boundaries),
+    getIssueFormSection(sections, autonomous ? "Execution boundaries" : GOAL_FORM_HEADINGS.boundaries),
   );
   if (!boundariesChecked) {
     return { valid: false, reason: "goal-boundaries-not-fully-checked", goal: null };
@@ -653,7 +658,7 @@ async function countInFlight(github, owner, repo) {
  * comment-listing failure fails closed by conservatively counting the
  * issue (never under-counting budget consumption).
  */
-async function hasFactoryClaimMarker({ github, owner, repo, issueNumber, core }) {
+async function hasFactoryClaimMarker({ github, owner, repo, issueNumber, core, since }) {
   let comments;
   try {
     comments = await github.paginate(github.rest.issues.listComments, {
@@ -671,9 +676,12 @@ async function hasFactoryClaimMarker({ github, owner, repo, issueNumber, core })
     return true;
   }
 
-  return comments.some((comment) =>
-    CLAIM_MARKER_PATTERN.test(typeof comment.body === "string" ? comment.body : ""),
-  );
+  return comments.some((comment) => {
+    if (!CLAIM_MARKER_PATTERN.test(typeof comment.body === "string" ? comment.body : "")) return false;
+    if (!since) return true;
+    // Missing server timestamps consume budget rather than silently undercounting.
+    return !isValidTimestamp(comment.created_at) || Date.parse(comment.created_at) >= Date.parse(since);
+  });
 }
 
 /**
@@ -684,7 +692,7 @@ async function hasFactoryClaimMarker({ github, owner, repo, issueNumber, core })
  * factory-claim marker (valid or malformed). A pre-queue `blocked` issue
  * that was never claimed by the queue controller must not consume budget.
  */
-async function countBudgetConsumption(github, owner, repo, goalNumber, core) {
+async function countBudgetConsumption(github, owner, repo, goalNumber, core, since) {
   const seen = new Set();
   for (const label of POST_QUEUE_LIFECYCLE_LABELS) {
     const issues = await listIssuesWithLabels(github, owner, repo, [label], "all");
@@ -705,6 +713,7 @@ async function countBudgetConsumption(github, owner, repo, goalNumber, core) {
         repo,
         issueNumber: issue.number,
         core,
+        since,
       });
       if (claimed) {
         seen.add(issue.number);
@@ -1302,6 +1311,7 @@ async function haltActiveModeOnFailure({
  */
 async function runFactoryQueueController({ github, context, core, config = {} }) {
   const { owner, repo } = context.repo;
+  const autonomous = config.autonomous === true && AGENTIC_POLICY.autonomy.enabled;
 
   const now = typeof config.now === "string" ? config.now : new Date().toISOString();
   const nowIsValid = isValidTimestamp(now);
@@ -1318,7 +1328,7 @@ async function runFactoryQueueController({ github, context, core, config = {} })
   // one label a workflow with issues:write could apply to itself to grant
   // its own activation, so it must be traced back to a human timeline
   // event, never merely to "the label is currently present."
-  if (controlResult.mode === "active") {
+  if (controlResult.mode === "active" && !autonomous) {
     const activeModeActorType = await resolveLatestLabelApplicationActorType({
       github,
       owner,
@@ -1353,6 +1363,7 @@ async function runFactoryQueueController({ github, context, core, config = {} })
     controlReason: controlResult.reason,
     activeGoal: null,
     activeGoalReason: null,
+    budgetRemaining: null,
     selected: null,
     rejections: [],
     claimed: false,
@@ -1381,14 +1392,17 @@ async function runFactoryQueueController({ github, context, core, config = {} })
     return result;
   }
 
+  if (autonomous && controlResult.mode === "active") {
+    await ensureAutonomousGoal({ github, owner, repo });
+  }
   const goalIssues = await listIssuesWithLabels(
     github,
     owner,
     repo,
-    [GOAL_LABEL, GOAL_APPROVED_LABEL],
+    [GOAL_LABEL, autonomous ? AUTONOMOUS_GOAL_LABEL : GOAL_APPROVED_LABEL],
     "open",
   );
-  const goalResult = resolveActiveGoal(goalIssues);
+  const goalResult = resolveActiveGoal(goalIssues, { autonomous });
   result.activeGoalReason = goalResult.reason;
 
   if (!goalResult.valid) {
@@ -1402,7 +1416,7 @@ async function runFactoryQueueController({ github, context, core, config = {} })
   // authorization; it must have been most-recently applied by a human
   // operator, never merely "currently present," since a workflow with
   // issues:write could otherwise grant its own scope.
-  const approvalActorType = await resolveLatestLabelApplicationActorType({
+  const approvalActorType = autonomous ? null : await resolveLatestLabelApplicationActorType({
     github,
     owner,
     repo,
@@ -1410,7 +1424,7 @@ async function runFactoryQueueController({ github, context, core, config = {} })
     labelName: GOAL_APPROVED_LABEL,
     core,
   });
-  if (!isHumanActorType(approvalActorType)) {
+  if (!autonomous && !isHumanActorType(approvalActorType)) {
     core.warning(
       `"${GOAL_APPROVED_LABEL}" on goal #${goalResult.goal.number} was not most-recently applied by a human user (actor type: ${
         approvalActorType ?? "unknown"
@@ -1434,7 +1448,11 @@ async function runFactoryQueueController({ github, context, core, config = {} })
   );
 
   const currentInFlightCount = await countInFlight(github, owner, repo);
-  const currentBudgetUsed = await countBudgetConsumption(github, owner, repo, goalResult.goal.number, core);
+  const currentBudgetUsed = await countBudgetConsumption(
+    github, owner, repo, goalResult.goal.number, core,
+    autonomous ? `${now.slice(0, 10)}T00:00:00.000Z` : undefined,
+  );
+  result.budgetRemaining = Math.max(0, goalResult.goal.dailyBudgetLimit - currentBudgetUsed);
 
   const queueConfig = {
     factoryMode: controlResult.mode,
@@ -1654,6 +1672,7 @@ module.exports = {
   findLatestLabelApplicationEvent,
   isHumanActorType,
   determineFactoryMode,
+  countBudgetConsumption,
   resolveActiveGoal,
   parseCandidateSections,
   buildClaimCommentBody,

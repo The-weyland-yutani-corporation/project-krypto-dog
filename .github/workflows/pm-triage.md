@@ -1,8 +1,14 @@
 ---
 description: Product manager triage for new or labeled issues.
+run-name: "${{ inputs.correlation_id || 'PM Triage' }}"
 on:
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
+      correlation_id:
+        description: Deterministic intake dispatch identity
+        required: false
+        type: string
       issue:
         description: Issue number to triage
         required: false
@@ -50,9 +56,13 @@ Refine the issue into an implementation-ready work item.
 
 - Read the issue title, body, comments, labels, and relevant repository context.
 - Identify the user/system problem, scope, non-goals, acceptance criteria, and validation plan.
-- Require a linked parent issue carrying `factory:goal-approved`. If the issue
-  is outside that goal or has no approved goal, keep `needs-triage` and explain
-  the missing authorization.
+- Require a linked parent issue carrying `factory:autonomous-goal`, whose
+  scope matches `.github/agentic-policy.json`'s standing autonomy mission.
+  No per-issue human approval is required. For a new, unowned idea, assess it
+  against that mission and create at most one deduplicated, scoped proposal
+  with its native `parent` set to the standing goal. Reference the source idea.
+  Do not adopt, rewrite, or reparent legacy work automatically. If the idea
+  is outside the mission, explain the scope mismatch without advancing it.
 - Require dependencies, exactly one risk tier, rollback/safe reversal, and a
   bounded validation plan before advancing.
 - Require machine-readable allowed paths: one exact repo-relative file or
