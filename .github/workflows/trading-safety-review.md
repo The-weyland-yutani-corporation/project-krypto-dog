@@ -1,6 +1,9 @@
 ---
 description: Trading and guardrail safety review for risky changes.
 run-name: "${{ inputs.correlation_id || 'Trading Safety Review' }}"
+concurrency:
+  group: trading-safety-review-${{ inputs.head_sha || github.event.pull_request.number || github.event.issue.number || inputs.target || github.ref }}
+  cancel-in-progress: true
 on:
   bots: ["github-actions[bot]"]
   workflow_dispatch:
@@ -200,11 +203,34 @@ safe-outputs:
 max-ai-credits: 1600
 max-daily-ai-credits: 4000
 pre-agent-steps:
+  - name: Materialize the exact dispatched review head
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_PR_NUMBER: ${{ inputs.target }}
+      EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+      GH_AW_REPOSITORY: ${{ github.repository }}
+      TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+    run: |
+      set -euo pipefail
+      case "${EXPECTED_PR_NUMBER}" in ''|*[!0-9]*) exit 1 ;; esac
+      if ! printf '%s' "${EXPECTED_HEAD_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then exit 1; fi
+      actual="$(gh api "repos/${GH_AW_REPOSITORY}/pulls/${EXPECTED_PR_NUMBER}" --jq '.head.sha')"
+      test "${actual}" = "${EXPECTED_HEAD_SHA}"
+      git show "${TRUSTED_WORKFLOW_SHA}:.github/scripts/restore-trusted-agent-instructions.cjs" > "${RUNNER_TEMP}/restore-review-instructions.cjs"
+      git -c credential.helper= -c 'credential.helper=!gh auth git-credential' fetch --no-tags --depth=1 origin "refs/pull/${EXPECTED_PR_NUMBER}/head"
+      test "$(git rev-parse FETCH_HEAD)" = "${EXPECTED_HEAD_SHA}"
+      git checkout --detach "${EXPECTED_HEAD_SHA}"
   - name: Restore trusted agent instructions
     if: ${{ github.event.pull_request || (github.event_name == 'workflow_dispatch' && inputs.head_sha != '') }}
     env:
       TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
-    run: node .github/scripts/restore-trusted-agent-instructions.cjs
+    run: |
+      if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -f "${RUNNER_TEMP}/restore-review-instructions.cjs" ]; then
+        node "${RUNNER_TEMP}/restore-review-instructions.cjs"
+      else
+        node .github/scripts/restore-trusted-agent-instructions.cjs
+      fi
   - name: Verify dispatched PR head
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
     env:

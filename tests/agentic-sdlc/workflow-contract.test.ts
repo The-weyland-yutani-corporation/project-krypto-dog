@@ -216,6 +216,15 @@ describe("agentic SDLC workflow contracts", () => {
   });
 
   it("emits machine-readable reviews and retains head-refresh requirements", () => {
+    for (const workflow of [codeReview, securityReview, tradingSafetyReview, qaReview]) {
+      expect(workflow).toContain("inputs.head_sha || github.event.pull_request.number");
+      expect(workflow).toContain('git checkout --detach "${EXPECTED_HEAD_SHA}"');
+      expect(workflow.indexOf("git checkout --detach")).toBeLessThan(workflow.indexOf("- name: Restore trusted agent instructions"));
+    }
+    for (const workflow of [securityReview, tradingSafetyReview, qaReview]) {
+      expect(workflow).toContain("github.event.issue.number || inputs.target || github.ref");
+    }
+    expect(ci).toContain("group: ci-${{ github.workflow }}-${{ inputs.head_sha || github.event.pull_request.number || github.ref }}");
     expect(qaReview).toContain("Materialize the exact dispatched QA head");
     expect(qaReview).toContain('git checkout --detach "${EXPECTED_HEAD_SHA}"');
     expect(qaReview).toContain('node "${RUNNER_TEMP}/restore-qa-instructions.cjs"');

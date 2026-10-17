@@ -72,6 +72,15 @@ must be established by actual hosted execution, not inferred from presence.
   and its immutable receipt, including head, run attempt, check ID and conclusion.
   The matching controller dispatch receipt binds a random nonce and target;
   copied correlation strings from manual runs or reruns are rejected.
+  Automatic controller origins use their first attempt and unchanged initiating
+  identity; a scheduled run's configured actor may be a repository user.
+  Manual controller dispatches and reruns do not mint autonomous review authority.
+- Reviewers materialize the exact dispatched head before inspecting code.
+  Per-target concurrency prevents unrelated PR validations cancelling one another.
+  QA starts only after authenticated CI receipts come from a completed successful
+  CI run, not merely when a same-name PR check turns green.
+- Evidence selection ignores later unauthenticated same-name checks, but a
+  newer authenticated failing verdict always blocks; older success is not revived.
 - Autonomous publication requires verified factory ownership and repeats
   live provenance and scope checks. The docs-sync exception is restricted to
   documentation paths. Arbitrary same-repository labeled PRs are not eligible.

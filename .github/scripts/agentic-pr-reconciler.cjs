@@ -2,7 +2,7 @@
 
 const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const { isAutonomousGoal } = require("./agentic-autonomy.cjs");
-const { verifyTrustedReviewEvidence } = require("./agentic-review-evidence.cjs");
+const { selectTrustedCheckRuns, verifyTrustedReviewEvidence } = require("./agentic-review-evidence.cjs");
 const { createDispatchRecord, isControllerDispatchedRun } = require("./agentic-dispatch.cjs");
 const {
   CODE_REVIEW_CHECK,
@@ -468,6 +468,9 @@ function getCheckState(checkRuns, name) {
   if (check.status !== "completed") {
     return "pending";
   }
+  if (check.factoryRunConclusion !== undefined && check.factoryRunConclusion !== "success") {
+    return "failure";
+  }
   return PASSING_CHECK_CONCLUSIONS.has(check.conclusion)
     ? "success"
     : "failure";
@@ -711,12 +714,16 @@ async function verifyAutonomousMergeCandidate({
   const copilotIdentity = await resolveRepositoryCopilotIdentity({
     github, owner, repo, verifyPinnedIdentity: true,
   });
-  const [files, reviews, checkRuns, allPullRequests] = await Promise.all([
+  const [files, reviews, rawCheckRuns, allPullRequests] = await Promise.all([
     github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pullRequest.number, per_page: 100 }),
     github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: pullRequest.number, per_page: 100 }),
     github.paginate(github.rest.checks.listForRef, { owner, repo, ref: pullRequest.head.sha, filter: "all", per_page: 100 }),
     github.paginate(github.rest.pulls.list, { owner, repo, state: "all", per_page: 100 }),
   ]);
+  const checkRuns = await selectTrustedCheckRuns({
+    github, owner, repo, defaultBranch: "main", serverUrl,
+    pullNumber: pullRequest.number, headSha: pullRequest.head.sha, checkRuns: rawCheckRuns,
+  });
   const provenance = await verifyAgentImplementationProvenance({
     github, owner, repo, pullRequest, core, copilotIdentity, allPullRequests,
     assignmentActorNodeId, autonomous: true,
@@ -732,6 +739,15 @@ async function verifyAutonomousMergeCandidate({
     github, owner, repo, defaultBranch: "main", serverUrl,
     pullNumber: pullRequest.number, headSha: pullRequest.head.sha, checkRuns,
     requiredChecks: [...AGENTIC_POLICY.requiredContexts, ...decision.requiredSpecialistChecks],
+  });
+}
+
+function hasPendingSpecialistReview({ requiredChecks, checkStates, ciFailed, autonomous }) {
+  return requiredChecks.some((name) => {
+    // QA consumes completed CI evidence. A demonstrated CI failure must be
+    // repairable before QA runs; other specialist reviews still have to settle.
+    if (autonomous && ciFailed && name === QA_CHECK_NAME) return false;
+    return checkStates[name] === "missing" || checkStates[name] === "pending";
   });
 }
 
@@ -1231,7 +1247,7 @@ async function reconcileAgenticPullRequests({
         files,
         reviews,
         commits,
-        checkRuns,
+        rawCheckRuns,
         rawCiRuns,
         rawReviewRuns,
         rawQaRuns,
@@ -1264,6 +1280,11 @@ async function reconcileAgenticPullRequests({
           listRuns("security-review.lock.yml", sha, number),
           listRuns("trading-safety-review.lock.yml", sha, number),
         ]);
+      const checkRuns = autonomous ? await selectTrustedCheckRuns({
+        github, owner, repo, defaultBranch,
+        serverUrl: context.serverUrl || process.env.GITHUB_SERVER_URL || "https://github.com",
+        pullNumber: number, headSha: sha, checkRuns: rawCheckRuns,
+      }) : rawCheckRuns;
       const dispatchedRuns = (runs) =>
         runs.filter((run) => run.event === "workflow_dispatch");
       const ciRuns = autonomous ? dispatchedRuns(rawCiRuns) : rawCiRuns;
@@ -1411,11 +1432,12 @@ async function reconcileAgenticPullRequests({
         (autonomous || policy.agentCheckStates[TRADING_SAFETY_CHECK_NAME] !== "success") &&
         (tradingSafetyRuns.length === 0 ||
           tradingSafetyRuns[0].conclusion === "action_required");
-      const specialistReviewPending = policy.requiredSpecialistChecks.some(
-        (name) =>
-          policy.agentCheckStates[name] === "missing" ||
-          policy.agentCheckStates[name] === "pending",
-      );
+      const specialistReviewPending = hasPendingSpecialistReview({
+        requiredChecks: policy.requiredSpecialistChecks,
+        checkStates: policy.agentCheckStates,
+        ciFailed: hasFailedCiRun(ciRuns),
+        autonomous,
+      });
       const hasPendingPolicyOperations =
         ciShouldDispatch ||
         reviewShouldDispatch ||
@@ -1592,6 +1614,7 @@ module.exports = {
   hasSelfHealBlockingLabel,
   hasFailedCiRun,
   hasFailedReviewCheck,
+  hasPendingSpecialistReview,
   isLowRiskChange,
   isLowRiskPath,
   isSameRepositoryPullRequest,

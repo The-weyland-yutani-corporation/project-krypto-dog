@@ -1,7 +1,8 @@
 const { readReceiptArchive } = jest.requireActual<{
   readReceiptArchive(data: Buffer): unknown;
 }>("../../.github/scripts/agentic-receipt.cjs");
-const { verifyTrustedReviewEvidence } = jest.requireActual<{
+const { selectTrustedCheckRuns, verifyTrustedReviewEvidence } = jest.requireActual<{
+  selectTrustedCheckRuns(input: Record<string, unknown>): Promise<Array<{ id: number; name: string; conclusion: string }>>;
   verifyTrustedReviewEvidence(input: Record<string, unknown>): Promise<{ valid: boolean; reason?: string }>;
 }>("../../.github/scripts/agentic-review-evidence.cjs");
 const { mergeVerifiedHead } = jest.requireActual<{
@@ -57,6 +58,8 @@ function evidenceFixture() {
   const controller = {
     id: 1, run_attempt: 1, event: "schedule", head_branch: "main", status: "completed",
     conclusion: "success", repository: { full_name: "o/r" }, path: ".github/workflows/agentic-pr-reconciler.yml",
+    actor: { type: "User", login: "schedule-owner", node_id: "U_schedule" },
+    triggering_actor: { type: "User", login: "schedule-owner", node_id: "U_schedule" },
   };
   const dispatchReceipt = {
     schemaVersion: 1, runId: 1, runAttempt: 1, dispatches: [dispatchRecord],
@@ -90,6 +93,53 @@ describe("immutable trusted-run verdicts", () => {
   it("rejects a forged success linking to a genuine run", async () => {
     const fixture = evidenceFixture();
     fixture.check.id = 11;
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+  });
+
+  it("ignores a later forged check instead of discarding a valid trusted verdict", async () => {
+    const fixture = evidenceFixture();
+    fixture.checkRuns.push({ ...fixture.check, id: 999 });
+    expect(await verifyTrustedReviewEvidence(fixture)).toEqual({ valid: true });
+    expect(await selectTrustedCheckRuns(fixture)).toMatchObject([fixture.check]);
+  });
+
+  it("never skips a newer authenticated failure to revive an older success", async () => {
+    const fixture = evidenceFixture();
+    fixture.checkRuns.push({ ...fixture.check, id: 11, conclusion: "failure" });
+    fixture.receipt.checks[0] = { id: 11, name: "Security review", conclusion: "failure" };
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+    expect(await selectTrustedCheckRuns(fixture)).toEqual([
+      expect.objectContaining({ id: 11, conclusion: "failure" }),
+    ]);
+  });
+
+  it("retains a newer failed workflow's receipt instead of an older successful run", async () => {
+    const fixture = evidenceFixture();
+    const newerRecord = createDispatchRecord({
+      pullNumber: 8, headSha: fixture.headSha, workflow: "security-review.lock.yml", runId: 1, runAttempt: 1,
+    });
+    fixture.dispatchReceipt.dispatches.push(newerRecord);
+    const newerRun = { ...fixture.run, id: 3, conclusion: "failure", display_title: newerRecord.correlation };
+    const newerCheck = { ...fixture.check, id: 11, conclusion: "failure", details_url: "https://github.com/o/r/actions/runs/3" };
+    const newerReceipt = { ...fixture.receipt, runId: 3, checks: [{ id: 11, name: "Security review", conclusion: "failure" }] };
+    fixture.checkRuns.push(newerCheck);
+    fixture.github.rest.actions.getWorkflowRun.mockImplementation(async ({ run_id }) => ({
+      data: run_id === 1 ? fixture.controller : run_id === 3 ? newerRun : fixture.run,
+    }));
+    fixture.github.paginate.mockImplementation(async (_endpoint, { run_id }) => [{
+      id: run_id === 1 ? 21 : run_id === 3 ? 30 : 20,
+      name: run_id === 1 ? "factory-dispatches-1" : `factory-receipt-${fixture.headSha}-1`,
+      expired: false,
+    }]);
+    fixture.github.rest.actions.downloadArtifact.mockImplementation(async ({ artifact_id }) => ({
+      data: archive(artifact_id === 21 ? fixture.dispatchReceipt : artifact_id === 30 ? newerReceipt : fixture.receipt),
+    }));
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+    expect(await selectTrustedCheckRuns(fixture)).toEqual([
+      expect.objectContaining({ id: 11, conclusion: "failure", factoryRunConclusion: "failure" }),
+    ]);
+    newerCheck.conclusion = "success";
+    newerReceipt.checks[0].conclusion = "success";
     expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
   });
 
@@ -155,6 +205,28 @@ describe("immutable trusted-run verdicts", () => {
     const fixture = evidenceFixture();
     fixture.controller.event = "pull_request_review";
     expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+  });
+
+  it("rejects a manually dispatched controller even when its downstream actor is the bot", async () => {
+    const fixture = evidenceFixture();
+    fixture.controller.event = "workflow_dispatch";
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+  });
+
+  it("rejects controller reruns and changed triggering identities", async () => {
+    const fixture = evidenceFixture();
+    fixture.controller.run_attempt = 2;
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+    fixture.controller.run_attempt = 1;
+    fixture.controller.triggering_actor.node_id = "U_rerunner";
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+  });
+
+  it("does not treat ordinary successful PR CI checks as trusted QA prerequisites", async () => {
+    const fixture = evidenceFixture();
+    fixture.check.name = "Quality and evidence gates";
+    fixture.run.event = "pull_request";
+    expect(await selectTrustedCheckRuns(fixture)).toEqual([]);
   });
 
   it("fails when the receipt is missing or expired", async () => {

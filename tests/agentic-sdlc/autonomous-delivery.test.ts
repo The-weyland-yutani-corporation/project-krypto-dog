@@ -25,6 +25,7 @@ const queue = jest.requireActual<{
   countBudgetConsumption(github: object, owner: string, repo: string, goal: number, core: object, since?: string): Promise<number>;
 }>("../../.github/scripts/agentic-queue-runtime.cjs");
 const reconciler = jest.requireActual<{
+  hasPendingSpecialistReview(input: { requiredChecks: string[]; checkStates: Record<string, string>; ciFailed: boolean; autonomous: boolean }): boolean;
   evaluateMergePolicy(input: Record<string, unknown>): {
     state: string; description: string; requiresHumanBoundaryApproval: boolean;
   };
@@ -203,6 +204,18 @@ describe("durable intake handoffs", () => {
       { status: "completed", conclusion: "failure", display_title: "x" },
     ], "x")).toBe("attempts-exhausted");
   });
+
+  it("does not let a known outstanding intake run block a different issue", () => {
+    expect(intake.dispatchDecision([{
+      status: "in_progress", display_title: "factory-intake:2026-10-17:8:em-planning.lock.yml",
+    }], "factory-intake:2026-10-17:9:em-planning.lock.yml")).toBe("dispatch");
+  });
+
+  it("matches the same outstanding issue across UTC day boundaries", () => {
+    expect(intake.dispatchDecision([{
+      status: "queued", display_title: "factory-intake:2026-10-16:8:em-planning.lock.yml",
+    }], "factory-intake:2026-10-17:8:em-planning.lock.yml")).toBe("running");
+  });
 });
 
 const sha = "a".repeat(40);
@@ -231,6 +244,19 @@ function mergeInput() {
 }
 
 describe("machine-verified boundary merge", () => {
+  it("lets a failed CI be repaired before dependent QA without skipping other specialist reviews", () => {
+    const state = {
+      requiredChecks: ["QA verification", "Security review"],
+      checkStates: { "QA verification": "missing", "Security review": "success" },
+      ciFailed: true, autonomous: true,
+    };
+    expect(reconciler.hasPendingSpecialistReview(state)).toBe(false);
+    state.checkStates["Security review"] = "pending";
+    expect(reconciler.hasPendingSpecialistReview(state)).toBe(true);
+    state.checkStates["Security review"] = "success";
+    state.ciFailed = false;
+    expect(reconciler.hasPendingSpecialistReview(state)).toBe(true);
+  });
   it("requires all current-head machine reviews but no per-change human approval", () => {
     expect(reconciler.evaluateMergePolicy(mergeInput())).toMatchObject({
       state: "success", requiresHumanBoundaryApproval: false,

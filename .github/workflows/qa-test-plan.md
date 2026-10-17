@@ -1,6 +1,9 @@
 ---
 description: QA workflow for test plans, regression gaps, and acceptance validation.
 run-name: "${{ inputs.correlation_id || 'QA Test Plan' }}"
+concurrency:
+  group: qa-verification-${{ inputs.head_sha || github.event.pull_request.number || github.event.issue.number || inputs.target || github.ref }}
+  cancel-in-progress: true
 on:
   bots: ["github-actions[bot]"]
   workflow_dispatch:

@@ -2,7 +2,7 @@
 
 const { randomBytes } = require("node:crypto");
 const { loadRunArchive } = require("./agentic-receipt.cjs");
-const { isGitHubActionsBot } = require("./agentic-identity.cjs");
+const { actorNodeId, isGitHubActionsBot } = require("./agentic-identity.cjs");
 
 function createDispatchRecord({ pullNumber, headSha, workflow, runId, runAttempt }) {
   if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0 ||
@@ -37,10 +37,12 @@ async function verifyControllerDispatch({ github, owner, repo, run, defaultBranc
     owner, repo, run_id: record.runId,
   });
   if (controller.id !== record.runId || controller.run_attempt !== record.runAttempt ||
+      controller.run_attempt !== 1 ||
+      !actorNodeId(controller.actor) || actorNodeId(controller.actor) !== actorNodeId(controller.triggering_actor) ||
       controller.repository?.full_name?.toLowerCase() !== `${owner}/${repo}`.toLowerCase() ||
       controller.head_branch !== defaultBranch ||
       controller.path !== ".github/workflows/agentic-pr-reconciler.yml" ||
-      !["schedule", "pull_request_target", "workflow_run", "workflow_dispatch", "issues"].includes(controller.event) ||
+      !["schedule", "pull_request_target", "workflow_run", "issues"].includes(controller.event) ||
       controller.status !== "completed" || controller.conclusion !== "success") return false;
   const receipt = await loadRunArchive({
     github, owner, repo, run: controller, name: `factory-dispatches-${record.runAttempt}`,

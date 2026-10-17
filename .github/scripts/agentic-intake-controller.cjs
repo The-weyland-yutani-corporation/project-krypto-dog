@@ -15,7 +15,10 @@ function names(issue) {
 
 function dispatchDecision(runs, correlation, maxAttempts = 2) {
   if (!Array.isArray(runs)) throw new Error("Workflow run history is unavailable.");
-  if (runs.some((run) => run.status !== "completed")) return "running";
+  const identity = (value) => /^factory-intake:\d{4}-\d{2}-\d{2}:(.+)$/.exec(value || "")?.[1];
+  const target = identity(correlation);
+  if (runs.some((run) => run.status !== "completed" &&
+      (!identity(run.display_title) || identity(run.display_title) === target))) return "running";
   const matching = runs.filter((run) => run.display_title === correlation);
   if (matching.some((run) => run.conclusion === "success")) return "completed";
   return matching.length >= maxAttempts ? "attempts-exhausted" : "dispatch";
