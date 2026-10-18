@@ -229,6 +229,7 @@ describe("mock/shadow environment construction", () => {
     expect(env.AGENT_HARNESS_MODE).toBe("mock");
     expect(env.ROLLOUT_MODE).toBe("disabled");
     expect(env.PORT).toBe("3210");
+    expect(env.APP_ORIGIN).toBe("http://127.0.0.1:3210");
     expect(env.DATABASE_URL).toContain(":54329/krypto_feature_a");
     expect(env.DIRECT_URL).toBe(env.DATABASE_URL);
     expect(env.KRYPTO_DB_HOST_PORT).toBe("54329");
@@ -259,6 +260,7 @@ describe("mock/shadow environment construction", () => {
       databaseName,
     });
     expect(env.ROLLOUT_MODE).toBe("shadow");
+    expect(env.APP_ORIGIN).toBe("http://127.0.0.1:3210");
     expect(env.AGENT_HARNESS_MODE).toBe("mock");
     expect(env.AGENT_HARNESS_SCENARIO).toBe("crash");
     expect(env.AGENT_HARNESS_DECISION).toBe("SELL");
@@ -275,6 +277,7 @@ describe("mock/shadow environment construction", () => {
       DATABASE_URL: "postgresql://prod/db",
       ROLLOUT_MODE: "paper",
       CRON_SECRET: "real-cron",
+      APP_ORIGIN: "https://production.example.test",
     });
     expect(sanitized.PATH).toBe("/usr/bin");
     expect(sanitized.HOME).toBe("/home/dev");
@@ -285,6 +288,7 @@ describe("mock/shadow environment construction", () => {
     expect(sanitized.DATABASE_URL).toBeUndefined();
     expect(sanitized.ROLLOUT_MODE).toBeUndefined();
     expect(sanitized.CRON_SECRET).toBeUndefined();
+    expect(sanitized.APP_ORIGIN).toBeUndefined();
   });
 
   it("merges the harness env over a sanitized base for spawning", () => {
@@ -298,10 +302,12 @@ describe("mock/shadow environment construction", () => {
     const spawnEnv = buildSpawnEnv(harnessEnv, {
       PATH: "/usr/bin",
       ANTHROPIC_FOUNDRY_API_KEY: "real-key",
+      APP_ORIGIN: "https://production.example.test",
     });
     expect(spawnEnv.PATH).toBe("/usr/bin");
     expect(spawnEnv.ANTHROPIC_FOUNDRY_API_KEY).toBeUndefined();
     expect(spawnEnv.AGENT_HARNESS_MODE).toBe("mock");
+    expect(spawnEnv.APP_ORIGIN).toBe("http://127.0.0.1:3210");
   });
 
   it("builds database URLs with a validated port", () => {
