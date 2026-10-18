@@ -51,6 +51,16 @@ safe-outputs:
 max-ai-credits: 500
 max-daily-ai-credits: 1500
 timeout-minutes: 10
+pre-agent-steps:
+  - name: Require attested factory activation before assignment
+    uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+    with:
+      script: |
+        const { resolveHumanAttestedFactoryMode } = require(
+          require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-automerge-sweeper.cjs"),
+        );
+        const mode = await resolveHumanAttestedFactoryMode({ github, core, ...context.repo });
+        if (mode !== "active") throw new Error("Factory assignment requires current human-attested activation.");
 ---
 
 # Assign Claimed Ticket
@@ -76,6 +86,7 @@ when every claim invariant passes.
    closed dependencies, and valid `Allowed paths` containing only exact
    repo-relative files or terminal `path/**` globs.
    Require exactly one `factory-control` issue in `factory-mode:active`.
+   Verify that its latest activation-label event was applied by a human.
    Do not assign while paused or shadow, even if the earlier claim is valid.
 5. Require no current assignee, coding-agent session, or open pull request for
    this issue.

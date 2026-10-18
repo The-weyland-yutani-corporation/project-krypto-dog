@@ -72,9 +72,10 @@ must be established by actual hosted execution, not inferred from presence.
   and its immutable receipt, including head, run attempt, check ID and conclusion.
   The matching controller dispatch receipt binds a random nonce and target;
   copied correlation strings from manual runs or reruns are rejected.
-  Automatic controller origins use their first attempt and unchanged initiating
-  identity; a scheduled run's configured actor may be a repository user.
-  Manual controller dispatches and reruns do not mint autonomous review authority.
+  Automatic controller origins use the exact recorded attempt and unchanged
+  initiating identity; a scheduled run's configured actor may be a repository user.
+  Manual controller dispatches and another actor's reruns do not mint
+  autonomous review authority.
 - Reviewers materialize the exact dispatched head before inspecting code.
   Per-target concurrency prevents unrelated PR validations cancelling one another.
   QA starts only after authenticated CI receipts come from a completed successful
@@ -89,6 +90,8 @@ must be established by actual hosted execution, not inferred from presence.
 - Discovery and stage retries are bounded. Outstanding work is checked
   independently of UTC-day accounting so midnight cannot duplicate a live stage.
 - The emergency control remains fail-closed. Scheduled jobs never clear a pause.
+  Activation is human-attested once, or again after an emergency stop; ordinary
+  issue/PR delivery does not require repeated human approval.
 - The full-cycle canary discovers the standing goal instead of using a stale
   manually configured goal number. It still requires real development evidence;
   successful local tests are not an end-to-end canary pass.

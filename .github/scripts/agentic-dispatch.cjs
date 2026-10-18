@@ -37,7 +37,6 @@ async function verifyControllerDispatch({ github, owner, repo, run, defaultBranc
     owner, repo, run_id: record.runId,
   });
   if (controller.id !== record.runId || controller.run_attempt !== record.runAttempt ||
-      controller.run_attempt !== 1 ||
       !actorNodeId(controller.actor) || actorNodeId(controller.actor) !== actorNodeId(controller.triggering_actor) ||
       controller.repository?.full_name?.toLowerCase() !== `${owner}/${repo}`.toLowerCase() ||
       controller.head_branch !== defaultBranch ||

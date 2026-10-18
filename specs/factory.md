@@ -8,8 +8,9 @@
   WIP does not reset. Missing or malformed claim timestamps consume budget.
 - Exactly one `factory-control` issue remains the emergency switch:
   `active`, `shadow`, or `paused`. Missing/ambiguous means paused. The scheduled
-  loops never clear a pause. Activation does not require a human label event
-  in autonomous mode.
+  loops never clear a pause. The current activation label requires a human
+  timeline event even in autonomous mode; this one-time/resume authorization
+  is separate from per-change software approval.
 - The intake controller shares the queue's concurrency group. It explicitly
   dispatches discovery, triage, architecture review, and planning so bot-written
   labels do not depend on GitHub event recursion. Discovery is capped at one
@@ -28,6 +29,8 @@
   checked SHA. It does not leave a future head armed for auto-merge.
   Review runs also require the controller's immutable dispatch receipt and
   random nonce, with the original and rerun actor verified as the trusted bot.
+  Controller reruns require the exact recorded attempt and unchanged stable
+  initiating identity; another actor's rerun cannot inherit that authorization.
   Labeling an arbitrary PR never grants factory ownership. Publication repeats
   current claim, scope, review and receipt verification before the mutation.
   GitHub branch protection remains effective. Forks are outside unattended

@@ -381,7 +381,7 @@ async function runBacklogPromoter({ github, context, core, config = {} }) {
   const controlIssues = await listIssuesWithLabels(github, owner, repo, [CONTROL_LABEL], "open");
   let controlResult = determineFactoryMode(controlIssues);
 
-  if (controlResult.mode === "active" && !autonomous) {
+  if (controlResult.mode === "active") {
     const actorType = await resolveLatestLabelApplicationActorType({
       github,
       owner,

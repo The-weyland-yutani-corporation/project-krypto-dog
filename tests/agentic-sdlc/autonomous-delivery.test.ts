@@ -19,6 +19,7 @@ const intake = jest.requireActual<{
   runFactoryIntake(input: Record<string, unknown>): Promise<void>;
 }>("../../.github/scripts/agentic-intake-controller.cjs");
 const queue = jest.requireActual<{
+  runFactoryQueueController(input: Record<string, unknown>): Promise<{ mode: string; dispatched: boolean }>;
   resolveActiveGoal(issues: object[], options: { autonomous: boolean }): {
     valid: boolean; reason: string; goal: { dailyBudgetLimit: number } | null;
   };
@@ -31,11 +32,32 @@ const reconciler = jest.requireActual<{
   };
 }>("../../.github/scripts/agentic-pr-reconciler.cjs");
 const lifecycle = jest.requireActual<{
+  resolveFactoryMode(input: Record<string, unknown>): Promise<string>;
   ensureAutoMergeEnabled(input: Record<string, unknown>): Promise<void>;
 }>("../../.github/scripts/agentic-lifecycle-reconciler.cjs");
 const identity = jest.requireActual<{
   resolveRepositoryCopilotIdentity(input: Record<string, unknown>): Promise<{ nodeId: string; databaseId: number }>;
 }>("../../.github/scripts/agentic-identity.cjs");
+const promoter = jest.requireActual<{
+  runBacklogPromoter(input: Record<string, unknown>): Promise<{ mode: string }>;
+}>("../../.github/scripts/agentic-backlog-promoter-runtime.cjs");
+
+describe("operator-owned emergency pause", () => {
+  it.each(["Bot", "Organization"])("does not accept a %s-written activation in autonomous mode", async (type) => {
+    const github = {
+      rest: { issues: { listForRepo: "issues", listEventsForTimeline: "timeline" } },
+      paginate: jest.fn(async (endpoint: string) => endpoint === "issues"
+        ? [{ number: 1, labels: ["factory-mode:active"] }]
+        : [{ id: 1, event: "labeled", label: { name: "factory-mode:active" }, actor: { type }, created_at: "2026-10-18T12:00:00Z" }]),
+    };
+    const summary = { addRaw: jest.fn().mockReturnThis(), write: jest.fn() };
+    const core = { info: jest.fn(), warning: jest.fn(), summary };
+    const input = { github, core, context: { repo: { owner: "o", repo: "r" } }, config: { autonomous: true } };
+    expect(await queue.runFactoryQueueController(input)).toMatchObject({ mode: "paused", dispatched: false });
+    expect(await promoter.runBacklogPromoter(input)).toMatchObject({ mode: "paused" });
+    expect(await lifecycle.resolveFactoryMode({ github, core, owner: "o", repo: "r", autonomous: true })).toBe("paused");
+  });
+});
 
 describe("canonical Copilot identity", () => {
   it("verifies stable Bot IDs independently of suggested-actor visibility and display login", async () => {

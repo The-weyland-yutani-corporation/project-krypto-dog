@@ -203,6 +203,8 @@ describe("agentic SDLC workflow contracts", () => {
     expect(triggerBlock).not.toContain("issues:");
     expect(implementTicket).toContain("assign-to-agent:");
     expect(implementTicket).toContain("custom-agent: project-krypto-dev");
+    expect(implementTicket).toContain("Require attested factory activation before assignment");
+    expect(implementTicket).toContain("resolveHumanAttestedFactoryMode");
     expect(implementTicket).toContain(
       "target: ${{ github.event.inputs.issue }}",
     );

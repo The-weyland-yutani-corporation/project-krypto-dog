@@ -911,7 +911,7 @@ async function reconcileAgenticPullRequests({
     if (controlIssues.length === 1) {
       factoryControlIssue = controlIssues[0];
       factoryMode = resolveFactoryModeFromLabels(controlIssues[0].labels);
-      if (factoryMode === FACTORY_MODES.ACTIVE && !autonomous) {
+      if (factoryMode === FACTORY_MODES.ACTIVE) {
         const timeline = await github.paginate(
           github.rest.issues.listEventsForTimeline,
           {
@@ -950,6 +950,7 @@ async function reconcileAgenticPullRequests({
       );
     }
   } catch (error) {
+    factoryMode = FACTORY_MODES.PAUSED;
     core.warning(
       `Could not resolve factory mode; keeping enrolled PRs paused: ${getErrorMessage(error)}`,
     );

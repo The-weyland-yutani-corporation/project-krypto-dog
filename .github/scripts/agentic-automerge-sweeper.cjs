@@ -183,7 +183,7 @@ function evaluateAutoMergeArming({
  */
 async function resolveHumanAttestedFactoryMode({ github, core, owner, repo }) {
   try {
-    const controlIssues = await github.paginate(
+    const controlIssues = (await github.paginate(
       github.rest.issues.listForRepo,
       {
         owner,
@@ -192,7 +192,7 @@ async function resolveHumanAttestedFactoryMode({ github, core, owner, repo }) {
         labels: FACTORY_CONTROL_LABEL,
         per_page: 100,
       },
-    );
+    )).filter((issue) => !issue.pull_request);
     if (controlIssues.length !== 1) {
       core.warning(
         `Expected exactly one open factory-control issue; found ${controlIssues.length}. Not arming auto-merge.`,

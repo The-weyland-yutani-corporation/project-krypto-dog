@@ -2178,7 +2178,7 @@ function findLatestLabelApplicationEvent(events, labelName) {
  * authorization to run. `shadow`/`paused` never require this check, since
  * neither authorizes any mutation in the first place.
  */
-async function resolveFactoryMode({ github, core, owner, repo, autonomous = false }) {
+async function resolveFactoryMode({ github, core, owner, repo }) {
   try {
     const controlIssues = await github.paginate(github.rest.issues.listForRepo, {
       owner,
@@ -2196,7 +2196,7 @@ async function resolveFactoryMode({ github, core, owner, repo, autonomous = fals
 
     const controlIssue = controlIssues[0];
     const mode = policy.resolveFactoryModeFromLabels(controlIssue.labels);
-    if (mode !== policy.FACTORY_MODES.ACTIVE || autonomous) {
+    if (mode !== policy.FACTORY_MODES.ACTIVE) {
       return mode;
     }
 

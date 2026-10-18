@@ -213,12 +213,29 @@ describe("immutable trusted-run verdicts", () => {
     expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
   });
 
-  it("rejects controller reruns and changed triggering identities", async () => {
+  it("rejects mismatched controller attempts and changed triggering identities", async () => {
     const fixture = evidenceFixture();
     fixture.controller.run_attempt = 2;
     expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
     fixture.controller.run_attempt = 1;
     fixture.controller.triggering_actor.node_id = "U_rerunner";
+    expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
+  });
+
+  it("accepts a same-identity controller rerun only with its own matching immutable attempt receipt", async () => {
+    const fixture = evidenceFixture();
+    const record = createDispatchRecord({
+      pullNumber: 8, headSha: fixture.headSha, workflow: "security-review.lock.yml", runId: 1, runAttempt: 2,
+    });
+    fixture.run.display_title = record.correlation;
+    fixture.controller.run_attempt = 2;
+    fixture.dispatchReceipt.runAttempt = 2;
+    fixture.dispatchReceipt.dispatches = [record];
+    fixture.github.paginate.mockImplementation(async (_endpoint, { run_id }) => run_id === 1
+      ? [{ id: 21, name: "factory-dispatches-2", expired: false }]
+      : [{ id: 20, name: `factory-receipt-${fixture.headSha}-1`, expired: false }]);
+    expect(await verifyTrustedReviewEvidence(fixture)).toEqual({ valid: true });
+    fixture.dispatchReceipt.runAttempt = 1;
     expect(await verifyTrustedReviewEvidence(fixture)).toMatchObject({ valid: false });
   });
 
@@ -262,7 +279,7 @@ function mergeFixture() {
   const current = { ...pullRequest, head: { ...pullRequest.head } };
   const github = {
     rest: {
-      issues: { listForRepo: "controls" },
+      issues: { listForRepo: "controls", listEventsForTimeline: "timeline" },
       pulls: {
         listReviews: "reviews",
         get: jest.fn(async () => ({ data: current })),
@@ -270,9 +287,16 @@ function mergeFixture() {
         updateBranch: jest.fn(async () => ({})),
       },
     },
-    paginate: jest.fn(async (endpoint: string): Promise<object[]> => endpoint === "controls" ? [{ number: 1, labels: ["factory-mode:active"] }] : []),
+    paginate: jest.fn(async (endpoint: string): Promise<object[]> => {
+      if (endpoint === "controls") return [{ number: 1, labels: ["factory-mode:active"] }];
+      if (endpoint === "timeline") return [{
+        event: "labeled", label: { name: "factory-mode:active" },
+        actor: { type: "User" }, created_at: "2026-10-18T12:00:00Z",
+      }];
+      return [];
+    }),
   };
-  return { github, owner: "o", repo: "r", pullRequest, current, core: { info: jest.fn() } };
+  return { github, owner: "o", repo: "r", pullRequest, current, core: { info: jest.fn(), warning: jest.fn() } };
 }
 
 describe("exact-head atomic merge", () => {
@@ -340,8 +364,19 @@ describe("exact-head atomic merge", () => {
     const fixture = mergeFixture();
     fixture.github.paginate
       .mockResolvedValueOnce([{ number: 1, labels: ["factory-mode:active"] }])
+      .mockResolvedValueOnce([{ event: "labeled", label: { name: "factory-mode:active" }, actor: { type: "User" } }])
       .mockResolvedValueOnce([{ number: 1, labels: ["factory-mode:paused"] }]);
     await mergeVerifiedHead(fixture);
     expect(fixture.github.rest.pulls.merge).not.toHaveBeenCalled();
+  });
+
+  it("rejects bot relabeling of the emergency control at final publication", async () => {
+    const fixture = mergeFixture();
+    fixture.github.paginate
+      .mockResolvedValueOnce([{ number: 1, labels: ["factory-mode:active"] }])
+      .mockResolvedValueOnce([{ event: "labeled", label: { name: "factory-mode:active" }, actor: { type: "Bot" } }]);
+    await mergeVerifiedHead(fixture);
+    expect(fixture.github.rest.pulls.merge).not.toHaveBeenCalled();
+    expect(reconciler.verifyAutonomousMergeCandidate).not.toHaveBeenCalled();
   });
 });

@@ -1328,7 +1328,7 @@ async function runFactoryQueueController({ github, context, core, config = {} })
   // one label a workflow with issues:write could apply to itself to grant
   // its own activation, so it must be traced back to a human timeline
   // event, never merely to "the label is currently present."
-  if (controlResult.mode === "active" && !autonomous) {
+  if (controlResult.mode === "active") {
     const activeModeActorType = await resolveLatestLabelApplicationActorType({
       github,
       owner,

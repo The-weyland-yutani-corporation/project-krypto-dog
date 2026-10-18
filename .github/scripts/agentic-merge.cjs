@@ -1,13 +1,10 @@
 "use strict";
 
-const { resolveFactoryModeFromLabels } = require("./agentic-factory-policy.cjs");
+const { resolveHumanAttestedFactoryMode } = require("./agentic-automerge-sweeper.cjs");
 const { getReviewState } = require("./agentic-pr-reconciler.cjs");
 
 async function readActiveMergeTarget({ github, owner, repo, pullRequest, core }) {
-  const controls = (await github.paginate(github.rest.issues.listForRepo, {
-    owner, repo, state: "open", labels: "factory-control", per_page: 100,
-  })).filter((issue) => !issue.pull_request);
-  if (controls.length !== 1 || resolveFactoryModeFromLabels(controls[0].labels) !== "active") {
+  if (await resolveHumanAttestedFactoryMode({ github, core, owner, repo }) !== "active") {
     core.info("Exact-head merge stopped: factory is no longer active.");
     return null;
   }
