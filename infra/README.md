@@ -11,6 +11,15 @@ This tree implements the Azure-native target accepted by
 > **Paper only.** Templates support `disabled`, `shadow`, and `paper`.
 > Nothing provisions or authorizes live-money execution.
 
+**Historical checkpoint, not a current environment attestation.** The dates and
+live-state tables below record earlier provisioning work. Previous README and
+infrastructure notes conflicted on required-reviewer enforcement. Its current
+state is unverified for the accelerator package: an authorized owner must inspect
+GitHub environment protections and record dated evidence before any deployment.
+Do not infer approval from workflow YAML, a configured reviewer name, or a past
+successful run. Unknown enforcement blocks deployment; it never relaxes the
+human-only authority in `specs/governance.md`.
+
 ## Fixed target contract
 
 - Runtime-selected subscription: **Visual Studio Enterprise Subscription**.
@@ -38,7 +47,7 @@ provision PostgreSQL there. It is not a current target.
 | Surface | Live state | Evidence |
 |---|---|---|
 | Subscription/bootstrap | Required providers registered; three resource groups and four GitHub OIDC identities exist | Bootstrap complete |
-| GitHub controls | Environments, branch restrictions, and variables/secrets are configured except for a separate dev PostHog key; required-reviewer rules are unsupported by the private-repo billing plan, so mutation workflows are manual/paused behind branch, exact-SHA, and CI gates | Configuration staged; reviewer enforcement unavailable |
+| GitHub controls | Historical notes disagree on required-reviewer enforcement; current GitHub environment protections and protected values require authorized owner verification | Unverified; deployment blocker until dated evidence is recorded |
 | Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
 | Foundry workload access | Dev/prod runtime and ops identities each have Cognitive Services OpenAI User on the operational account | Applied |
 | Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |

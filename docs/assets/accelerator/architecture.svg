@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">Project Krypto recommendation and authorization boundaries</title>
+  <desc id="desc">An authenticated request enters leased run orchestration. Synthetic market data and account context inform deterministic policy. When allowed, a read-only model or fixture proposes an action. Deterministic authorization records shadow outcomes without fills. Only a separate paper-only executor can simulate fills. Run and journal evidence reach the operator console. External telemetry and email are no-op sinks in the mock demo.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#94a3b8"/></marker>
+    <style>
+      text{font-family:ui-sans-serif,system-ui,sans-serif;fill:#f8fafc}
+      .title{font-size:28px;font-weight:650}.label{font-size:18px;font-weight:600}.note{font-size:15px;fill:#cbd5e1}
+      .box{fill:#0d1117;stroke:#243044;stroke-width:2}.line{fill:none;stroke:#94a3b8;stroke-width:2;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1200" height="680" rx="16" fill="#05070a"/>
+  <text x="40" y="52" class="title">PROJECT KRYPTO / Governed AI decisioning</text>
+  <text x="40" y="82" class="note">Existing architecture · synthetic demo · shadow records, never fills · no live execution</text>
+  <rect x="40" y="124" width="255" height="100" rx="12" class="box"/>
+  <text x="60" y="159" class="label">Authenticated request</text>
+  <text x="60" y="189" class="note">Admin session + same-origin</text>
+  <rect x="360" y="124" width="340" height="100" rx="12" class="box"/>
+  <text x="380" y="159" class="label">Leased run orchestration</text>
+  <text x="380" y="189" class="note">Idempotency · owned expiring lease</text>
+  <rect x="775" y="124" width="385" height="100" rx="12" class="box"/>
+  <text x="795" y="159" class="label">Market + account context</text>
+  <text x="795" y="189" class="note">Mock observations + PostgreSQL state</text>
+  <path d="M295 174H360" class="line"/><path d="M775 174H700" class="line"/>
+  <rect x="360" y="280" width="340" height="110" rx="12" class="box"/>
+  <text x="380" y="316" class="label">Deterministic policy</text>
+  <text x="380" y="345" class="note">Cold start / mandatory safety paths</text>
+  <text x="380" y="370" class="note">Optional inference only when allowed</text>
+  <path d="M530 224V280" class="line"/>
+  <rect x="40" y="280" width="255" height="110" rx="12" class="box"/>
+  <text x="60" y="316" class="label">Read-only proposal</text>
+  <text x="60" y="345" class="note">Model or deterministic fixture</text>
+  <text x="60" y="370" class="note">HOLD / BUY / SELL · no tools</text>
+  <path d="M360 312H295" class="line"/><path d="M295 365H360" class="line"/>
+  <rect x="775" y="280" width="385" height="110" rx="12" fill="#111827" stroke="#f59e0b" stroke-width="2"/>
+  <text x="795" y="316" class="label">Authorization boundary</text>
+  <text x="795" y="345" class="note">Rules authorize, not the model</text>
+  <text x="795" y="370" class="note">Shadow: record only, no trade mutation</text>
+  <path d="M700 335H775" class="line"/>
+  <rect x="775" y="446" width="385" height="90" rx="12" class="box"/>
+  <text x="795" y="480" class="label">Paper-only transactional executor</text>
+  <text x="795" y="510" class="note">Separate paper mode · not enabled by harness</text>
+  <path d="M970 390V446" class="line" stroke-dasharray="6 5"/>
+  <rect x="360" y="446" width="340" height="90" rx="12" class="box"/>
+  <text x="380" y="480" class="label">Run + journal evidence</text>
+  <text x="380" y="510" class="note">PostgreSQL · reconciliation · outcomes</text>
+  <path d="M820 390L640 446" class="line"/><path d="M775 490H700" class="line"/>
+  <rect x="40" y="446" width="255" height="90" rx="12" class="box"/>
+  <text x="60" y="480" class="label">Operator console</text>
+  <text x="60" y="510" class="note">Inspect · pause · explicit locks</text>
+  <path d="M360 490H295" class="line"/>
+  <text x="40" y="588" class="note">Telemetry / email: no-op sinks in mock demo; configured providers are separate from the recommendation boundary.</text>
+  <text x="40" y="620" class="note">Azure option: Foundry + Entra · Container Apps/Jobs · PostgreSQL · Key Vault · Communication Services</text>
+  <text x="40" y="652" class="note">Architecture illustration, not a new acceptance decision. Human-only production and live boundaries remain unchanged.</text>
+</svg>
