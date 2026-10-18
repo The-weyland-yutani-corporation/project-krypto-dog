@@ -1,0 +1,97 @@
+# Working inventory only, NOT the official catalog schema.
+# Catalog API returned 404 and web access required enterprise SSO on 2026-10-18.
+id: project-krypto-governed-ai
+name: "Project Krypto — Governed AI Decisioning Sandbox"
+summary: >-
+  Explore structured AI recommendations, deterministic authorization, operator
+  controls, and auditable outcomes using synthetic ETH/USDC scenarios.
+repository: https://github.com/The-weyland-yutani-corporation/project-krypto-dog
+readme: https://github.com/The-weyland-yutani-corporation/project-krypto-dog#readme
+status: draft
+readiness:
+  current: locally-demonstrated
+  target: catalog-ready
+  field_ready: false
+  catalog_ready: false
+  assumptions_require_confirmation: true
+customer:
+  scope: reusable-cross-industry
+  example_industry: financial-services
+  primary_persona: AI platform engineer
+  secondary_personas:
+    - solution architect
+    - SE/CSA
+    - product owner
+    - security lead
+use_cases:
+  - governed-ai-decisioning
+  - auditable-agent-workflows
+  - operator-controlled-automation
+technologies:
+  - Azure AI Foundry
+  - Microsoft Entra ID
+  - Azure Container Apps
+  - Azure Database for PostgreSQL
+  - Azure Key Vault
+  - Azure Communication Services
+  - Bicep
+  - Next.js
+  - TypeScript
+  - GitHub Actions
+demo:
+  preferred_mode: local-mock-shadow
+  synthetic_data: true
+  external_provider_calls_required: false
+  initial_downloads_require_network: true
+  prerequisites:
+    - Node.js 22 matching .nvmrc
+    - npm
+    - Docker with Compose and running daemon
+    - Lockfile-matched Playwright Chromium for browser validation
+  install_command: npm ci
+  start_command: npm run harness:up -- --shadow --scenario dip --decision BUY
+  status_command: npm run harness:status
+  browser_validation_command: npm run harness:browser
+  cleanup_command: npm run harness:down
+  narrated_video_url: null
+  raw_silent_video_path: docs/assets/accelerator/walkthrough.webm
+  narration_draft_path: docs/assets/accelerator/narration.vtt
+  screenshot_paths:
+    - docs/assets/accelerator/hero.png
+    - docs/assets/accelerator/decision.png
+    - docs/assets/accelerator/journal.png
+    - docs/assets/accelerator/safety.png
+    - docs/assets/accelerator/trades.png
+  architecture_path: docs/assets/accelerator/architecture.svg
+safety:
+  live_trading_supported: false
+  model_has_mutating_trade_tools: false
+  harness_trade_execution_enabled: false
+  production_changes_required_for_demo: false
+  disclaimer: >-
+    Engineering demonstration only. Not investment advice, a return forecast,
+    compliance certification, Microsoft endorsement, or authorization for
+    production deployment or live-money execution.
+engagement:
+  motion: discovery-workshop
+  proposed_outcome: >-
+    Select one customer workflow and agree on a synthetic-data, non-production
+    pilot with explicit controls and measurable acceptance criteria.
+licensing:
+  package_declared_license: ISC
+  redistribution_approval: pending
+  license_url: null
+support:
+  issues_url: https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues
+  accountable_owner: null
+  private_security_contact: null
+  support_model: owner-approval-required-no-SLA
+catalog_submission:
+  target: https://github.com/mcaps-microsoft/accelerators-catalog
+  schema_validation: blocked-catalog-access-requires-authorized-contributor
+  taxonomy_verification: pending
+  owner_approval: pending
+evidence:
+  index_path: docs/assets/accelerator/evidence.json
+  independent_handoff: pending
+  production_environment_attestation: not-performed
