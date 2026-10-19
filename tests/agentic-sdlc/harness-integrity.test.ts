@@ -43,8 +43,9 @@ describe("workflow frontmatter inventory", () => {
     const opportunity = inventoryForWorkflow("opportunity-discovery");
     expect(opportunity.imports).toEqual(["trading-growth-pm.md"]);
     expect(opportunity.triggers).toContain("manual");
-    expect(opportunity.triggers).toContain("schedule: weekly");
-    expect(opportunity.triggers).toContain("/discover");
+    expect(opportunity.triggers).not.toContain("schedule: weekly");
+    expect(read(".github/scripts/agentic-intake-controller.cjs")).toContain("opportunity-discovery.lock.yml");
+    expect(opportunity.triggers).not.toContain("/discover");
     expect(opportunity.safeOutputs).toEqual([
       "add-comment",
       "create-issue",

@@ -93,6 +93,7 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
     root,
     [
       "schemaVersion",
+      "autonomy",
       "merge",
       "identities",
       "labels",
@@ -108,6 +109,52 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
   if (root.schemaVersion !== 1) {
     invalid("schemaVersion must be 1");
   }
+
+  const autonomy = object(root.autonomy, "autonomy");
+  exactKeys(autonomy, [
+    "enabled", "goalTitle", "milestone", "objective", "allowedPaths",
+    "maxRiskTier", "maxActiveAssignments", "maxAssignmentsPerDay", "tradingResearch",
+  ], "autonomy");
+  const research = object(autonomy.tradingResearch, "autonomy.tradingResearch");
+  exactKeys(research, ["market", "startingCapitalUSD", "targetDailyNetProfitUSD", "paperOnly", "allowLeverage"], "autonomy.tradingResearch");
+  if (research.market !== "ETH/USDC" || research.paperOnly !== true || research.allowLeverage !== false) {
+    invalid("autonomy.tradingResearch must remain unleveraged ETH/USDC paper evaluation");
+  }
+  const tradingResearch = Object.freeze({
+    market: research.market,
+    startingCapitalUSD: positiveInteger(research.startingCapitalUSD, "autonomy.tradingResearch.startingCapitalUSD"),
+    targetDailyNetProfitUSD: positiveInteger(research.targetDailyNetProfitUSD, "autonomy.tradingResearch.targetDailyNetProfitUSD"),
+    paperOnly: true,
+    allowLeverage: false,
+  });
+  const allowedPaths = strings(autonomy.allowedPaths, "autonomy.allowedPaths");
+  for (const scope of allowedPaths) {
+    const segments = scope.split("/");
+    if (scope.startsWith("/") || scope.includes("\\") || scope.includes(":") ||
+        segments.some((segment) => segment === "" || segment === "." || segment === "..") ||
+        /[?[\]{}]/.test(scope) ||
+        (scope.includes("*") && (!scope.endsWith("/**") || scope.slice(0, -3).includes("*")))) {
+      invalid("autonomy.allowedPaths must contain exact relative files or terminal directory/** patterns");
+    }
+  }
+  if (!["risk:routine", "risk:sensitive", "risk:boundary"].includes(autonomy.maxRiskTier)) {
+    invalid("autonomy.maxRiskTier must be a known risk tier");
+  }
+  const maxActiveAssignments = positiveInteger(autonomy.maxActiveAssignments, "autonomy.maxActiveAssignments");
+  if (maxActiveAssignments > 2) {
+    invalid("autonomy.maxActiveAssignments must not exceed 2");
+  }
+  const autonomousDelivery = Object.freeze({
+    enabled: boolean(autonomy.enabled, "autonomy.enabled"),
+    goalTitle: string(autonomy.goalTitle, "autonomy.goalTitle"),
+    milestone: string(autonomy.milestone, "autonomy.milestone"),
+    objective: string(autonomy.objective, "autonomy.objective"),
+    tradingResearch,
+    allowedPaths,
+    maxRiskTier: autonomy.maxRiskTier,
+    maxActiveAssignments,
+    maxAssignmentsPerDay: positiveInteger(autonomy.maxAssignmentsPerDay, "autonomy.maxAssignmentsPerDay"),
+  });
 
   const merge = object(root.merge, "merge");
   exactKeys(
@@ -125,6 +172,8 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
     identities,
     [
       "copilotSuggestedActorLogin",
+      "copilotBotNodeId",
+      "copilotBotDatabaseId",
       "trustedAgentAuthors",
       "trustedReviewAssociations",
     ],
@@ -223,6 +272,7 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
 
   return Object.freeze({
     schemaVersion: 1,
+    autonomy: autonomousDelivery,
     policyPath,
     requiredContexts: strings(
       merge.requiredContexts,
@@ -241,6 +291,8 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
       identities.copilotSuggestedActorLogin,
       "identities.copilotSuggestedActorLogin",
     ),
+    copilotBotNodeId: string(identities.copilotBotNodeId, "identities.copilotBotNodeId"),
+    copilotBotDatabaseId: positiveInteger(identities.copilotBotDatabaseId, "identities.copilotBotDatabaseId"),
     trustedAgentAuthors: new Set(
       strings(
         identities.trustedAgentAuthors,

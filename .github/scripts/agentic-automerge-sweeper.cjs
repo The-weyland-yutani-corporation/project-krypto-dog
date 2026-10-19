@@ -183,7 +183,7 @@ function evaluateAutoMergeArming({
  */
 async function resolveHumanAttestedFactoryMode({ github, core, owner, repo }) {
   try {
-    const controlIssues = await github.paginate(
+    const controlIssues = (await github.paginate(
       github.rest.issues.listForRepo,
       {
         owner,
@@ -192,7 +192,7 @@ async function resolveHumanAttestedFactoryMode({ github, core, owner, repo }) {
         labels: FACTORY_CONTROL_LABEL,
         per_page: 100,
       },
-    );
+    )).filter((issue) => !issue.pull_request);
     if (controlIssues.length !== 1) {
       core.warning(
         `Expected exactly one open factory-control issue; found ${controlIssues.length}. Not arming auto-merge.`,
@@ -252,7 +252,11 @@ async function resolveHumanAttestedFactoryMode({ github, core, owner, repo }) {
  * whose merge evidence is already complete. Per-PR failures are isolated and
  * warned so one bad pull request cannot stall the sweep.
  */
-async function sweepAutoMergeReadyPullRequests({ github, context, core }) {
+async function sweepAutoMergeReadyPullRequests({ github, context, core, autonomous = false }) {
+  if (autonomous && AGENTIC_POLICY.autonomy.enabled) {
+    core.info("Autonomous arming is owned by the PR reconciler, which verifies scope, provenance, all specialist checks, and the exact head.");
+    return { factoryMode: "delegated", armed: [], declined: [] };
+  }
   const { owner, repo } = context.repo;
   const repository = `${owner}/${repo}`;
 

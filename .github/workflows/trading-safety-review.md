@@ -1,6 +1,9 @@
 ---
 description: Trading and guardrail safety review for risky changes.
 run-name: "${{ inputs.correlation_id || 'Trading Safety Review' }}"
+concurrency:
+  group: trading-safety-review-${{ inputs.head_sha || github.event.pull_request.number || github.event.issue.number || inputs.target || github.ref }}
+  cancel-in-progress: true
 on:
   bots: ["github-actions[bot]"]
   workflow_dispatch:
@@ -163,7 +166,7 @@ safe-outputs:
                 );
                 return;
               }
-              await github.rest.checks.create({
+              const { data: published } = await github.rest.checks.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 name: process.env.CHECK_NAME,
@@ -177,6 +180,19 @@ safe-outputs:
                   summary: item.summary,
                 },
               });
+              fs.writeFileSync(require("node:path").join(process.env.RUNNER_TEMP, "receipt.json"), JSON.stringify({
+                schemaVersion: 1, runId: Number(process.env.GITHUB_RUN_ID),
+                runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+                pullNumber, headSha: trustedHeadSha,
+                checks: [{ id: published.id, name: process.env.CHECK_NAME, conclusion: item.conclusion }],
+              }));
+        - name: Preserve trusted verdict receipt
+          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          with:
+            name: factory-receipt-${{ env.EXPECTED_HEAD_SHA }}-${{ github.run_attempt }}
+            path: ${{ runner.temp }}/receipt.json
+            if-no-files-found: error
+            retention-days: 7
   create-issue:
     title-prefix: "[trading-safety] "
     labels: [agentic-factory, trading-safety]
@@ -187,11 +203,34 @@ safe-outputs:
 max-ai-credits: 1600
 max-daily-ai-credits: 4000
 pre-agent-steps:
+  - name: Materialize the exact dispatched review head
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_PR_NUMBER: ${{ inputs.target }}
+      EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+      GH_AW_REPOSITORY: ${{ github.repository }}
+      TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+    run: |
+      set -euo pipefail
+      case "${EXPECTED_PR_NUMBER}" in ''|*[!0-9]*) exit 1 ;; esac
+      if ! printf '%s' "${EXPECTED_HEAD_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then exit 1; fi
+      actual="$(gh api "repos/${GH_AW_REPOSITORY}/pulls/${EXPECTED_PR_NUMBER}" --jq '.head.sha')"
+      test "${actual}" = "${EXPECTED_HEAD_SHA}"
+      git show "${TRUSTED_WORKFLOW_SHA}:.github/scripts/restore-trusted-agent-instructions.cjs" > "${RUNNER_TEMP}/restore-review-instructions.cjs"
+      git -c credential.helper= -c 'credential.helper=!gh auth git-credential' fetch --no-tags --depth=1 origin "refs/pull/${EXPECTED_PR_NUMBER}/head"
+      test "$(git rev-parse FETCH_HEAD)" = "${EXPECTED_HEAD_SHA}"
+      git checkout --detach "${EXPECTED_HEAD_SHA}"
   - name: Restore trusted agent instructions
     if: ${{ github.event.pull_request || (github.event_name == 'workflow_dispatch' && inputs.head_sha != '') }}
     env:
       TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
-    run: node .github/scripts/restore-trusted-agent-instructions.cjs
+    run: |
+      if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -f "${RUNNER_TEMP}/restore-review-instructions.cjs" ]; then
+        node "${RUNNER_TEMP}/restore-review-instructions.cjs"
+      else
+        node .github/scripts/restore-trusted-agent-instructions.cjs
+      fi
   - name: Verify dispatched PR head
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
     env:

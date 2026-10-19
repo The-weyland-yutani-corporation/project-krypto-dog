@@ -1,7 +1,24 @@
 # Evaluation
-- Freeze commit/image, strategy/model/config, balances, data, costs, benchmarks, dates, exclusions, sample size, and stop rules before an evidence window; retain immutable favorable and unfavorable results.
-- Report net PnL, equity, drawdown, risk-adjusted metrics when valid, turnover/fees, cash and buy-and-hold comparisons, run/trade outcomes, failures, freshness, attribution, and operational incidents; unavailable values are `null`.
-- Retuning, selective omission, balance resets, benchmark replacement, or rule changes end the window and require a new version.
-- Acceptance requires intact deterministic guardrails, lease, idempotency, reconciliation, alerts, rollback, backup/restore, and paper/live isolation; evidence never authorizes production or live trading.
-- Factory evaluation uses versioned public-safe fixtures for routing, authorization, lifecycle, repair, regressions, latency, tokens, and cost.
-- Live-model trials and CorrectionOps are report-only and cannot mutate policy, authorization, guardrails, leases, reconciliation, accounting, or the paper/live boundary.
+
+- Record the exact code/image, configuration, inputs, costs, dates, outcomes,
+  failures, and stop rules for every evidence window. Unavailable data is not
+  success and must not be replaced with invented measurements.
+- Validate trading/accounting behavior with deterministic fixtures and
+  isolated tests. Preserve unfavorable results, regression coverage,
+  reconciliation, leases, idempotency, and rollback evidence.
+- Factory evaluation distinguishes local fixture tests, compiled workflows,
+  hosted check results, actual merges, and exact-SHA deployments.
+- Measure idea-to-issue, issue-to-PR, current-head review, repair, merge, and
+  deployment separately. Green no-op scheduler runs are not delivery throughput.
+- Live-model trials and correction reports are evidence, not instructions
+  to mutate credentials, permissions, financial balances, or trading execution.
+- CorrectionOps cannot change authorization, guardrails, leases,
+  reconciliation, or the paper/live boundary; those are application invariants,
+  not per-change human approval gates.
+- Evaluate the canonical `autonomy.tradingResearch` hypothesis with its fixed
+  starting paper capital. Compute net daily PnL after fees/slippage across
+  all calendar days, including losses and no-trade days; report costs of AI
+  and infrastructure separately. Compare cash and ETH buy-and-hold and report
+  drawdown, sample size, daily-return distribution and target shortfall.
+  No leverage, borrowing, selective windows, or capital resets may manufacture
+  success. Failed hypotheses and infeasibility are valid research outcomes.
