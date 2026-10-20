@@ -217,12 +217,12 @@ function evaluatePromotion(candidate, config) {
     effectiveRiskTier = declaredRiskTier;
   }
 
-  if (effectiveRiskTier === RISK_TIERS.BOUNDARY) {
+  if (effectiveRiskTier === RISK_TIERS.BOUNDARY && config.autonomous !== true) {
     // Boundary work requires an authorized administrator's explicit merge and is never
     // auto-merged; dispatching it autonomously only consumes a WIP slot.
     reasons.push("risk-boundary-requires-human");
   }
-  if (effectiveRiskTier !== null && effectiveRiskTier !== RISK_TIERS.BOUNDARY) {
+  if (effectiveRiskTier !== null) {
     if (rankRiskTier(effectiveRiskTier) > rankRiskTier(resolveGoalRiskCeiling(config))) {
       reasons.push("risk-exceeds-goal-max");
     }

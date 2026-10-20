@@ -27,6 +27,7 @@
  */
 
 const policy = require("./agentic-factory-policy.cjs");
+const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const queueController = require("./agentic-queue-controller.cjs");
 const queueRuntime = require("./agentic-queue-runtime.cjs");
 const {
@@ -101,9 +102,9 @@ class FactoryTrustSourceError extends Error {
 }
 
 const ENABLE_AUTO_MERGE_MUTATION = `
-  mutation EnableAgenticAutoMerge($pullRequestId: ID!) {
+  mutation EnableAgenticAutoMerge($pullRequestId: ID!, $expectedHeadOid: GitObjectID) {
     enablePullRequestAutoMerge(
-      input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH }
+      input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH, expectedHeadOid: $expectedHeadOid }
     ) {
       pullRequest { number }
     }
@@ -1158,7 +1159,7 @@ function isRetryableAutoMergeStateError(error) {
  * fail-closing the issue to `blocked` over a transient condition. Any other,
  * unexpected error is rethrown so the caller's per-issue isolation applies.
  */
-async function ensureAutoMergeEnabled({ github, core, pullRequest }) {
+async function ensureAutoMergeEnabled({ github, core, pullRequest, expectedHeadOid }) {
   if (!pullRequest || pullRequest.draft || pullRequest.merged_at || pullRequest.state === "closed") {
     return;
   }
@@ -1175,6 +1176,7 @@ async function ensureAutoMergeEnabled({ github, core, pullRequest }) {
   try {
     await github.graphql(ENABLE_AUTO_MERGE_MUTATION, {
       pullRequestId: pullRequest.node_id,
+      ...(expectedHeadOid ? { expectedHeadOid } : {}),
     });
   } catch (error) {
     if (isRetryableAutoMergeStateError(error)) {
@@ -2244,12 +2246,14 @@ async function reconcileFactoryLifecycle({
   core,
   now,
   assignmentActorNodeId,
+  autonomous = false,
 }) {
+  autonomous = autonomous === true && AGENTIC_POLICY.autonomy.enabled;
   const resolvedNow = typeof now === "string" && now.trim() !== "" ? now : new Date().toISOString();
   const { owner, repo } = context.repo;
   const repository = `${owner}/${repo}`;
 
-  const factoryMode = await resolveFactoryMode({ github, core, owner, repo });
+  const factoryMode = await resolveFactoryMode({ github, core, owner, repo, autonomous });
   if (factoryMode !== policy.FACTORY_MODES.ACTIVE) {
     core.info(
       `Factory mode is '${factoryMode}'; the lifecycle reconciler is performing no mutations this pass (advisory/no-op).`,
@@ -2277,6 +2281,7 @@ async function reconcileFactoryLifecycle({
       github,
       owner,
       repo,
+      verifyPinnedIdentity: autonomous,
     });
   } catch (error) {
     const code =

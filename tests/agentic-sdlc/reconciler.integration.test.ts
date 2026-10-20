@@ -84,6 +84,8 @@ interface ApiParams {
 }
 
 interface HarnessOptions {
+  autonomous?: boolean;
+  controlTimelineError?: boolean;
   pullRequests?: PullRequest[];
   filesByPull?: Record<number, ChangedFile[]>;
   reviewsByPull?: Record<number, Review[]>;
@@ -132,6 +134,7 @@ interface ReconcilerModule {
     context: unknown;
     core: unknown;
     assignmentActorNodeId?: string;
+    autonomous?: boolean;
   }): Promise<void>;
 }
 
@@ -375,6 +378,9 @@ function createHarness(options: HarnessOptions = {}) {
         return comments;
       }
       if (method === listEventsForTimeline) {
+        if (params.issue_number === 233 && options.controlTimelineError) {
+          throw new Error("control timeline unavailable");
+        }
         if (params.issue_number === 10) {
           return [
             {
@@ -638,6 +644,7 @@ async function reconcile(
     context: reconcilerContext(options.context),
     core: harness.core,
     assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+    autonomous: options.autonomous,
   });
   return harness;
 }
@@ -658,6 +665,13 @@ function autoMergeCalls(mock: jest.Mock): unknown[][] {
 }
 
 describe("agentic PR reconciler integration", () => {
+  it.each([false, true])("fails closed after an activation timeline error (autonomous=%s)", async (autonomous) => {
+    const { mocks, core } = await reconcile({ autonomous, controlTimelineError: true });
+    expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mocks.addLabels).not.toHaveBeenCalled();
+    expect(autoMergeCalls(mocks.graphql)).toHaveLength(0);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("control timeline unavailable"));
+  });
   it("keeps enrolled PRs fail-closed when the factory control issue is missing", async () => {
     const { mocks } = await reconcile({ controlIssues: [] });
 

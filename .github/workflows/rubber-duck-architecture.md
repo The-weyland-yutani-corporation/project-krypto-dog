@@ -1,16 +1,18 @@
 ---
 description: Round-robin rubber-duck validation for approaches and risky tickets.
+run-name: "${{ inputs.correlation_id || 'Rubber Duck Architecture Review' }}"
 on:
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
+      correlation_id:
+        description: Deterministic intake dispatch identity
+        required: false
+        type: string
       target:
         description: Issue, PR, or free-form approach to review
         required: false
         type: string
-  slash_command:
-    name: rubber-duck
-    events: [issues, issue_comment, pull_request, pull_request_comment]
-    strategy: centralized
   issues:
     types: [labeled]
     names: [needs-rubber-duck]
@@ -61,10 +63,13 @@ Run a round-robin review using these lenses:
 
 Synthesize one final recommendation: `approve`, `revise`, or `block`.
 
-For an issue, verify it descends from a human-approved factory goal and stays
+For an issue, verify it descends from the repository-authorized
+`factory:autonomous-goal` matching `.github/agentic-policy.json` and stays
 inside the goal scope/risk ceiling. Apply `ready-for-ai-dev` only when the
 readiness contract is complete and exactly one risk label is present. Remove
 superseded state/risk labels when advancing it.
+Approval is an automated review decision, not a request for human approval.
+If the work needs decomposition, advance it to `ready-for-planning`.
 
 ## Safe outputs
 

@@ -1,4 +1,4 @@
-# 🐕 Project Krypto
+# Project Krypto — Governed AI Decisioning Sandbox
 
 ```text
 +--------------------------------------------------------------------------------------+
@@ -20,28 +20,120 @@
 +--------------------------------------------------------------------------------------+
 ```
 
-> **Autonomous LLM-driven swing-trading agent for ETH/USDC.**
-> The Azure dev and production releases are deployed.
-> Dev is `shadow` with monitored schedules; production is deliberately
-> `disabled` with every job `Manual`. **Paper promotion and live-money
-> execution are not authorized.**
+**AI advice. Deterministic rules. Operator control.**
 
-| | |
+Explore how structured AI recommendations become controlled, auditable workflow
+outcomes using synthetic ETH/USDC scenarios. Start with the isolated mock/shadow
+demo: **no Azure account or real-provider credentials required**.
+
+> **Paper only.** No live trading, wallets, custody, or exchange orders. The model
+> has no mutating trade tool. This engineering demonstration is not investment
+> advice, a return forecast, or authorization for production deployment.
+
+| Accelerator readiness | Assessment |
 |---|---|
-| **Status** | **Azure releases deployed.** Dev passed migration, target smoke, manual-shadow activation, alert delivery, and its first scheduled run. Production passed migration, restore-verified backup, and target smoke, and remains disabled/manual. |
-| **Hosted today** | [Azure dev](https://ca-dev-web.wonderfulmoss-0222e5e1.westus3.azurecontainerapps.io/) · [Azure production](https://ca-prod-web.ambitioussea-a305198e.westus3.azurecontainerapps.io/) |
-| **Azure state (2026-08-15)** | Application/data resources run in `westus3`. Operational dev/prod `gpt-5.6-luna` deployments run on `ghcp-foundry-eastus2` with Entra authentication. The dedicated `ai-krypto-westus3` account remains model-empty after `715-123420`. |
-| **Current blockers** | A separate PostHog project and a new evidence-bound promotion design remain mandatory before production may leave `disabled`. The 90-day production evidence policy remains `Unlocked` pending separate irreversible approval. |
-| **Stack** | Next.js 16 (App Router) · TypeScript · structured GPT-5.6 Luna output · deterministic policy/executor · Drizzle ORM · PostgreSQL |
-| **Scheduling state** | Dev hourly/daily jobs are monitored `Schedule` jobs in `shadow`; production jobs are all `Manual` and production has no promotion workflow. |
-| **Trigger (Azure runbook, implemented)** | Azure Container Apps Jobs (scheduled for recurring triggers, manual for operator actions); see `specs/operations.md` and `infra/README.md` |
-| **Product** | [`specs/product.md`](./specs/product.md) |
-| **Operations** | [`specs/operations.md`](./specs/operations.md) |
-| **Evaluation** | [`specs/evaluation.md`](./specs/evaluation.md) |
-| **Factory** | [`specs/factory.md`](./specs/factory.md) |
-| **Factory architecture** | [`docs/agentic-software-factory.md`](./docs/agentic-software-factory.md) |
-| **Decisions / future boundaries** | [`specs/governance.md`](./specs/governance.md) |
-| **Design** | [`DESIGN.md`](./DESIGN.md) |
+| Customer / industry | Reusable, cross-industry; financial-services example (assumption to confirm) |
+| Primary audience | AI platform engineers and solution architects; SEs/CSAs, product owners, and security leads |
+| Current / target | Locally demonstrated; **not field-ready or catalog-ready** / catalog-ready |
+| Top three sharing gates | Independent SE/CSA handoff; owner-approved license/support/publication; catalog schema verification and narrated recording |
+| Stack | Next.js 16 · TypeScript · structured model output · deterministic authorization · Drizzle/PostgreSQL |
+| Evidence | [Synthetic demo assets and provenance](./docs/assets/accelerator/evidence.json) |
+| Catalog metadata | [Draft accelerator.yaml](./accelerator.yaml), not a validated submission |
+
+![Synthetic mock-provider operator console in shadow mode; no trades executed](./docs/assets/accelerator/hero.png)
+
+*Captured from an isolated local harness, not a customer or production account.
+Charts are engineering fixtures, not the history of the displayed account.*
+
+## Customer story
+
+AI platform teams want to move from impressive model answers to dependable
+business workflows. Today, they struggle to prove that a recommendation respects
+operating rules, produces an auditable outcome, and remains under operator
+control. Project Krypto makes those challenges tangible: a model proposes an
+action while deterministic software decides what is permitted. Synthetic
+scenarios let customers explore that separation before selecting a workflow of
+their own.
+
+## Try the local demo
+
+**Prerequisites:** Node.js 22 matching [`.nvmrc`](./.nvmrc), npm, Docker with
+Compose, and a running Docker daemon. Dependency, container-image, and browser
+downloads initially require network access. Mock application providers make no
+Foundry or Coinbase calls; analytics/email use no-op sinks.
+
+Run from the checked-out repository root:
+
+```bash
+npm ci
+npm run harness:up -- --shadow --scenario dip --decision BUY
+npm run harness:status
+```
+
+Open the **Console URL printed by the harness**, including its dynamically
+allocated port. Use `127.0.0.1`, not a substituted hostname: the harness explicitly
+binds the allowed admin origin to that URL. Sign in with the fixture-only password
+`harness-admin-password`; never reuse it on a deployed environment.
+
+No `.env` copy or cloud secrets are needed. Use a clean checkout without real
+credentials or environment files for customer demos. The harness initializes an
+isolated PostgreSQL database and allows only disabled/shadow modes.
+
+1. Verify `harness:status` reports `harnessMode: mock` and `rolloutMode: shadow`.
+2. Wait for the dashboard to finish loading, then click **Run Agent Now**.
+   A fresh account first returns a cold-start **HOLD** and establishes its
+   reference price without inference.
+3. Click **Run Agent Now** again. The deterministic provider proposes **BUY**,
+   but policy rejects it because the constant scenario price has not dropped
+   below the newly established reference. The UI reports `Run shadow`;
+   the persisted authorization—not that label—explains the rejection.
+4. Open **Journal** to inspect the proposal/context and **Trades** to verify no
+   trades were executed. Shadow mode records runs and may update reference/
+   mark-to-market state; it is not a wholly read-only database session.
+
+**Repeatable browser evidence** (against the already-running local harness):
+
+```bash
+npx playwright install --with-deps chromium
+npm run harness:browser
+```
+
+The browser suite captures safety states, console, decision, journal, empty
+trade ledger, and raw silent video. It checks authenticated run success,
+cross-origin rejection, persisted proposals, and unchanged trade count.
+The safety test temporarily sets locked/paused fixtures in the isolated database
+and restores them; it does not prove that a crash caused a drawdown lock.
+Never target these tests at a customer or deployed database.
+
+**Cleanup:**
+
+```bash
+npm run harness:down
+```
+
+Cleanup deletes the harness database volume; logs/screenshots remain in the
+ignored `.harness/` directory. To start a different scenario, stop first and
+start again. Do not use `db:reset` against a shared or deployed database.
+
+## End-to-end journey and architecture
+
+![Existing recommendation, authorization, and evidence boundaries](./docs/assets/accelerator/architecture.svg)
+
+1. **Request:** “How can AI recommend actions without unrestricted authority?”
+2. **Inputs:** Select synthetic market observations and a deterministic proposal.
+3. **Context:** Load account state, limits, mode, pause/lock state, and run identity.
+4. **Workflow:** Claim an owned expiring lease and evaluate deterministic policy.
+   Cold starts and mandatory safety paths may bypass the model entirely.
+5. **Proposal:** When inference is allowed, validate one structured
+   `HOLD`, `BUY`, or `SELL`; the model receives no mutating trade tool.
+6. **Authorization:** Apply deterministic rules. Shadow records a decision/
+   authorization without a fill; only the separate paper path can execute a
+   simulated fill transactionally.
+7. **Outcome:** Inspect run evidence, journal, and operator state.
+8. **Next action:** Choose one synthetic-data customer workflow for discovery.
+
+The diagram describes existing boundaries; it is not acceptance of a new
+architecture. Product and authority remain defined by the canonical specs below.
 
 ## What it does
 
@@ -66,41 +158,123 @@ When scheduling is enabled, an hourly job hits `POST /api/agent/run`. The route:
 A separate daily-summary job emails the previous 24h of trades + PnL through
 the environment's Azure Communication Services Email resource.
 
-## Local quick-start
+## Present the demo
 
-```bash
-# 1. Install deps
-npm install
+### Five-minute flow
 
-# 2. Spin up local Postgres
-docker compose up -d
-# (Postgres on :5433, user/pass krypto/krypto_local, db krypto)
+| Time | Presenter action | Expected message/evidence |
+|---|---|---|
+| 0:00–0:45 | Introduce customer problem and architecture | “A recommendation is not permission to act.” |
+| 0:45–1:30 | Open mock/shadow console | Identify mode, fixture balances, no real account |
+| 1:30–3:00 | Run twice using the walkthrough above; open Journal | Cold-start HOLD, then BUY proposal rejected; no fill |
+| 3:00–4:15 | Show captured paused/locked safety fixture | Explicit operator controls; not a crash-induced lock |
+| 4:15–5:00 | Map boundaries to a customer process | Agree on a discovery next step |
 
-# 3. Configure env
-cp .env.example .env
-# For attended model calls, run `az login` and fill in AZURE_OPENAI_BASE_URL
-# (ending /openai/v1) plus AZURE_OPENAI_DEPLOYMENT_NAME. Azure runtime also
-# requires AZURE_CLIENT_ID. Fill in POSTHOG_API_KEY, CRON_SECRET,
-# ADMIN_PASSWORD, and ADMIN_SESSION_SECRET.
-# ACS Email vars may be omitted locally; non-production delivery then reports
-# an explicit console-only skipped result.
+### Fifteen-minute flow
 
-# 4. Apply reviewed schema migrations + initialize singleton
-npm run db:migrate
-npm run db:init
+| Time | Presenter action |
+|---|---|
+| 0–2 min | Agree on the business problem and demo success criteria |
+| 2–4 min | Walk the model/authorization/data trust boundaries |
+| 4–8 min | Show the complete shadow request, context, proposal, and outcome |
+| 8–11 min | Show synthetic safety-state evidence; discuss mandatory paths |
+| 11–13 min | Explain engineering scenarios, evaluation limits, reproducibility |
+| 13–15 min | Complete the customer adaptation worksheet and agree on a pilot |
 
-# 5. Run dev server
-npm run dev
-# → http://localhost:3000
+**Success:** another SE/CSA can reproduce the journey without the author;
+the audience distinguishes proposal from permission; trade count stays zero;
+no production change or real customer data is required.
 
-# 6. Trigger an agent run manually
-curl -X POST http://localhost:3000/api/agent/run \
-  -H "x-cron-secret: $(grep CRON_SECRET .env | cut -d= -f2-)" \
-  -H "x-required-rollout-mode: $(grep ROLLOUT_MODE .env | cut -d= -f2-)"
+### Screenshots and recording
 
-# 7. Open the admin dashboard
-open http://localhost:3000/admin/login
-```
+| Asset | Caption / interpretation |
+|---|---|
+| [Console](./docs/assets/accelerator/hero.png) | Mock providers, shadow mode, synthetic $200 account |
+| [Decision outcome](./docs/assets/accelerator/decision.png) | Recorded run; `Run shadow` does not mean authorization succeeded |
+| [Journal](./docs/assets/accelerator/journal.png) | Synthetic market context and deterministic BUY proposal |
+| [Safety states](./docs/assets/accelerator/safety.png) | Locked/paused browser-test fixture; no destructive action performed |
+| [Trade ledger](./docs/assets/accelerator/trades.png) | No trades after the shadow journey |
+| [Raw walkthrough](./docs/assets/accelerator/walkthrough.webm) | Short silent automated capture, **not** the final narrated five-minute video |
+| [Recording captions](./docs/assets/accelerator/narration.vtt) | Five-minute narration/caption draft for the presenter; not synchronized to the raw clip |
+| [Evidence index](./docs/assets/accelerator/evidence.json) | Capture provenance, source hashes, validation, and remaining gates |
+
+For the final recording, use the five-minute flow, add spoken narration and
+synchronized captions, and include synthetic-data/safety disclaimers and the CTA.
+Human recording and publication approval remain open. If a live demo fails,
+use these clearly labeled captures; never imply prerecorded evidence is live.
+
+## Sample scenarios and limitations
+
+| Harness scenario | Synthetic final spot | Fresh-account behavior |
+|---|---|---|
+| `steady` | $2,000 | First run initializes reference; later HOLD/BUY/SELL proposal depends on `--decision` |
+| `dip` | $1,900 | First run sets reference to $1,900, not $2,000; unchanged price cannot authorize BUY |
+| `crash` | $1,500 | A flat $200 account has no ETH drawdown; this alone does not demonstrate a stop-loss |
+
+Each scenario supplies 100 synthetic closes with a $2,000 baseline and the final
+price shown above. `--decision` configures a fixture proposal, not policy
+permission. These are static provider fixtures, not advancing market replays.
+For richer deterministic paper simulations use
+`npm run backtest -- --scenario scenarios/crash-rebound.json` or
+`npm run backtest:all`; those are separate engineering evaluations, not the
+displayed shadow account or investment-performance claims.
+
+## Reuse and customer adaptation
+
+| Reusable pattern | Customer-specific work |
+|---|---|
+| Structured recommendation contract | Define permitted outputs and context schema |
+| Deterministic authorization boundary | Define business rules, forbidden actions, approval owners |
+| Idempotency, leases, outcome evidence | Map transaction boundaries and retention requirements |
+| Operator modes, pause/lock visibility | Define identity, permissions, domain terminology |
+| Mock-first harness and scenarios | Supply synthetic, approved test cases |
+| Evaluation and infrastructure patterns | Choose acceptance measures, region/model availability, networking and cost |
+
+Do not treat trading policy as a generic financial recommendation engine.
+Adaptation is a separately reviewed implementation, not permission to remove
+guardrails or enable live execution.
+
+**Customer worksheet:** record the process owner, request, required context,
+permitted proposal, deterministic checks, human approval point, useful output,
+audit/retention needs, synthetic happy-path/failure cases, and next action.
+Agree measurable acceptance criteria before testing.
+
+**Publication scrub:** review environment URLs, resource names, historical
+account links, email addresses, telemetry IDs, logs, and images. Use approved
+synthetic equivalents. Do not export browser traces, cookies, `.env`, real
+datasets, or raw operational reports into the sharing package. Existing
+infrastructure/history also needs owner review before redistributing the full
+repository; sanitized demo assets are not a repository-wide security clearance.
+
+## Customer engagement
+
+**Account-team opener:** “AI may already produce useful recommendations. Can
+you prove what happens next—what the model can influence, which controls enforce
+the rules, and what an operator can inspect or stop?”
+
+**Discovery questions:**
+
+1. Which recommendations require people to gather context and act today?
+2. What makes an incorrect action unacceptable?
+3. Which rules must remain deterministic?
+4. What evidence must be retained for audit or incident response?
+5. Where must human approval remain mandatory?
+6. Can we evaluate the workflow using synthetic data?
+7. Who owns the process, platform, and risk decision?
+8. What measurable outcome would justify a pilot?
+
+**Workshop:** bring a process owner, platform engineer, and security/risk
+representative to map one recommendation-to-action workflow. Produce a workflow
+map, control matrix, synthetic scenarios, acceptance criteria, and a
+non-production pilot backlog.
+
+**Pilot scorecard:** one end-to-end workflow; every decision linked to context
+and outcome; all predefined forbidden-action tests blocked; independent setup
+and cleanup; no unauthorized access or production changes; customer-specific
+business measures agreed before evaluation.
+
+**CTA:** Choose one workflow and nominate a process owner plus platform engineer
+for a discovery session.
 
 ## Scripts
 
@@ -173,74 +347,130 @@ tests/                    # Jest unit + integration tests
 
 ## Deploying
 
-> **WARNING:** No executable production promotion workflow is shipped or
-> approved.
-> Azure foundations and operational Luna deployments are provisioned, but every
-> full release/evidence/rollout gate remains for future promotions. See
-> [`infra/README.md`](./infra/README.md) for the implemented runbook and
-> [`specs/governance.md`](./specs/governance.md) for promotion authority.
+The local demo does not deploy anything to Azure. For an optional read-only
+provider check, follow `npm run smoke:providers -- --allow-network-smoke` with
+authorized Foundry/Entra configuration; this requires network access and is not
+part of the credential-free demo.
 
-> **Target platform: Azure-native; dev and production releases deployed.**
-> The approved deployment plan supersedes the retired hosted baseline with a
-> fully Azure-native target; rationale is summarized in
-> [`specs/governance.md`](./specs/governance.md).
-> The Bicep templates, GitHub Actions workflows, and application-side
-> deployment code for that target all exist in this repo — see
-> [`infra/README.md`](./infra/README.md) and
-> [`specs/operations.md`](./specs/operations.md). Required providers,
-> bootstrap/OIDC, operational Luna, workload access, both foundations, and both
-> releases are live. Dev is shadow/scheduled; production is disabled/manual.
-> See [`infra/README.md`](./infra/README.md) for diagrams,
-> live/planned resource names, the exact current-vs-target state, and safe
-> operator links. The selected runtime subscription is **Visual Studio
-> Enterprise Subscription**; do not publish its subscription ID.
+For authorized Azure work, use the existing
+[infrastructure runbook](./infra/README.md) and
+[operations specification](./specs/operations.md), not a one-click catalog
+deployment. They cover Bicep, OIDC/managed identity, PostgreSQL, Key Vault,
+Container Apps/Jobs, email, evidence, monitoring, and fail-closed rollback.
+An owner must confirm subscription access, model/region availability, networking,
+cost/budget, resource ownership, and cleanup before provisioning. Azure resources
+incur charges; `harness:down` removes local resources only.
 
-Observed live runs:
-
-- [Dedicated account succeeded; model deployment failed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31839812884) (fallback Luna is now live on the established account)
-- [Dev foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841581875)
-- [Prod foundation passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/31841960745)
-
-GitHub Environments, branch restrictions, and protected values are configured.
-`production-deploy`, `production-promotion`, `platform`, and
-`development-promotion` each carry a human required reviewer (verified via
-the GitHub API); `development` carries only a branch policy and is the
-sole environment the factory mutates automatically. `development`,
-`platform`, `production-deploy`, and `production-promotion` allow both
-`develop/azure` and `main` as branch policy (`main` was added to
-`development` to match the automatic exact-SHA dev deploy below);
-`development-promotion` alone still allows only `develop/azure` and is not
-wired into any deployment workflow. The first releases
-predate this reviewer configuration and used the authenticated operator path
-with the same reviewed templates, exact source trees, immutable digests, and
-fail-closed evidence checks. Branch protection was restored after each reviewed
-merge. Dev now also deploys automatically after every successful push-triggered
-`CI` run on `main`, publishing `Dev deployment evidence` and a GitHub
-Deployment for the exact SHA CI validated (see `azure-deploy-dev.yml` and
-[`infra/README.md`](./infra/README.md)). Shared-key PostHog
-telemetry is environment-tagged but cannot qualify as final project isolation
-for production promotion.
-
-Dev completed the staged
-disabled/manual → shadow/manual → unique manual shadow run → post-run
-activation proof → monitored schedule sequence with automatic fail-closed
-rollback. Missing-success monitoring was
-enabled and validated before a Schedule rollout; disable, rollback, and
-rotation paths first verify both jobs are Manual and only then disable
-monitoring. Production landed disabled/manual and its fresh baseline backup was
-restore-verified before target smoke. The
-`production-promotion` identity/environment exists only for forced-disable
-steps in prod deploy and rotation. Any future production promotion requires a
-new evidence-bound design and trading-safety review. Follow
-[`infra/README.md`](./infra/README.md) for the implemented Azure runbook and
-[`specs/governance.md`](./specs/governance.md) for authority. The retired hosted-baseline runbook remains available through Git history only;
-do not use it for a new deployment.
+**Deployment history is not current readiness evidence.** Earlier documents
+disagreed about whether GitHub environment required reviewers were enforceable.
+Their current enforcement has not been independently verified for this package.
+An authorized owner must inspect environment protections and record dated
+evidence before deployment; unknown enforcement is a blocker, not permission to
+bypass approval. No production promotion workflow is authorized here.
+Production deployment, secrets/accounts, architecture acceptance, and live
+enablement remain human-only; production must remain disabled/manual under
+the existing [governance rules](./specs/governance.md).
 
 ## Local testing
 
-Use the local quick-start and command table above, then apply the validation
-matrix in [`AGENTS.md`](./AGENTS.md). Real-provider smoke remains opt-in and
-read-only.
+Run the narrowest checks from [AGENTS.md](./AGENTS.md):
+
+```bash
+npm run lint
+npm run typecheck:scripts
+npm run build
+npm test -- --runInBand tests/harness tests/lib/csrf.test.ts
+```
+
+`npm run test:coverage` runs the broader deterministic suite;
+`npm run test:integration` additionally requires disposable PostgreSQL and its
+documented client prerequisites. Builds and tests are engineering evidence,
+not production promotion or investment-performance approval.
+
+Existing [CI](./.github/workflows/ci.yml) performs quality, coverage,
+PostgreSQL, dependency-audit, and harness-integrity checks. This package adds no
+deployment automation or workflow permissions. The browser journey is currently
+an explicit local check, not a claimed mandatory CI gate. Before adding a
+demo-evidence CI job, review isolated database lifecycle, permissions,
+sanitization, and retention; do not upload traces or secrets.
+
+## Troubleshooting and support
+
+| Symptom | Safe next step |
+|---|---|
+| Docker unavailable | Start the daemon; verify `docker info` and `docker compose version` |
+| Console URL unavailable | Use `harness:status`, inspect its printed Next log, then stop/restart; do not guess ports |
+| Admin POST returns 403 | Use the exact printed `127.0.0.1` origin; restart after updating the harness; never disable CSRF |
+| First click appears inert | Allow initial compilation/hydration to finish; check the browser Network panel before retrying |
+| First run does not propose BUY | Expected cold-start HOLD; run again after completion |
+| BUY rejected / no trades | Expected in the static dip demo; shadow never executes a fill |
+| Browser missing | Install the lockfile-matched Chromium using the command above |
+| Locked/paused after interrupted browser test | In this disposable demo only, stop/restart to recreate the fixture database; never clear real locks for a demo |
+| Need artifacts | Use the manifest path printed by the harness; screenshots/video are beneath its `artifacts.screenshots` path |
+
+Report reproducible, sanitized issues via
+[GitHub Issues](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues).
+Do not post credentials, session cookies, customer data, or vulnerability details
+publicly. For a suspected vulnerability, contact a repository administrator
+privately through your approved organizational channel; a dedicated reporting
+contact remains an owner gate. There is **no committed SLA or Microsoft support
+commitment**. A named accountable support owner must be approved before field use.
+
+`package.json` declares ISC, but this package does not establish an owner-approved
+root license or permission to redistribute all content/assets. Confirm rights
+and add the approved license before catalog submission; this change intentionally
+does not choose a copyright holder or license on the owner's behalf.
+
+## Sharing and catalog checklist
+
+### Demo-ready package
+
+- [x] Customer story, personas, mock-first setup, expected journey, and cleanup
+- [x] Architecture diagram describing current trust boundaries
+- [x] Five- and fifteen-minute presenter scripts and synthetic scenario descriptions
+- [x] Synthetic console, outcome, journal, safety, and ledger screenshots
+- [x] Raw silent browser recording and five-minute narration draft
+- [x] Reproducible browser checks and evidence provenance
+- [ ] Final narrated five-minute recording with synchronized captions and CTA
+
+### Field-ready gates
+
+- [x] Setup/troubleshooting, deployment boundaries, reuse worksheet, workshop and pilot scorecard
+- [x] Conflicting enforcement claims replaced with explicit verification requirement
+- [x] Existing Copilot root/scoped instruction map retained; no safety-policy duplication
+- [ ] Independent SE/CSA handoff and customer business acceptance
+- [ ] Named support/security reporting owners and approved support terms
+- [ ] Owner review of the entire repository/history and media before redistribution
+- [ ] Current deployment-protection evidence if Azure deployment is proposed
+- [ ] Optional isolated demo-evidence CI artifact job, after review
+
+### Catalog-ready gates
+
+- [x] [Draft metadata](./accelerator.yaml) with explicit unresolved fields
+- [ ] Confirm intended account, industry, personas, and catalog-ready target
+- [ ] Verify current catalog schema, required taxonomy/assets and contribution process
+- [ ] Obtain owner-approved redistribution license, public assets, support, and submission approval
+- [ ] Review all claims; no performance/compliance/Microsoft-endorsement claims
+
+Catalog verification is blocked: on 2026-10-18 the GitHub API returned 404 for
+the supplied [catalog](https://github.com/mcaps-microsoft/accelerators-catalog),
+and browser retrieval redirected to Microsoft enterprise SSO. This does not prove
+the repository is absent. An authorized catalog contributor must supply the
+current schema and submission requirements; `accelerator.yaml` is a working
+inventory, not a claimed official schema.
+
+## Authoritative documentation
+
+| Concern | Source |
+|---|---|
+| Product boundaries | [Product](./specs/product.md) |
+| Deployment/testing/readiness | [Operations](./specs/operations.md) |
+| Evaluation evidence | [Evaluation](./specs/evaluation.md) |
+| Factory autonomy | [Factory](./specs/factory.md) |
+| Decisions and human authority | [Governance](./specs/governance.md) |
+| Visual system | [Design](./DESIGN.md) |
+| Factory architecture | [Software factory](./docs/agentic-software-factory.md) |
+| Contributor handoff | [Contributing](./docs/contributing-guide.md) |
 
 ## Contributing / spec changes
 

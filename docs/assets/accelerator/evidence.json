@@ -1,0 +1,121 @@
+{
+  "kind": "synthetic-local-demo-evidence",
+  "implementationCommit": "4c4913e21da2e36684e17be64ef54e1b65288281",
+  "implementationNote": "Runtime and browser-test sources match this commit. Documentation and asset packaging were added afterward. Provenance is operator-recorded, not a signed CI attestation.",
+  "captureDate": "2026-10-18",
+  "environment": {
+    "node": "22.13.0",
+    "docker": "28.0.4",
+    "compose": "2.38.2",
+    "providerMode": "mock",
+    "rolloutMode": "shadow",
+    "scenario": "dip",
+    "fixtureDecision": "BUY",
+    "freshDatabase": true,
+    "customerData": false,
+    "productionAccess": false
+  },
+  "reproduce": [
+    "npm ci",
+    "npm run harness:up -- --shadow --scenario dip --decision BUY",
+    "npm run harness:status",
+    "npx playwright install --with-deps chromium",
+    "npm run harness:browser",
+    "npm run harness:down"
+  ],
+  "expected": {
+    "initialAccount": "Synthetic $200 USDC, zero ETH",
+    "firstRun": {
+      "mode": "SHADOW",
+      "outcome": "HOLD",
+      "proposal": null,
+      "explanation": "Cold start initializes reference price at the fixture spot of $1900 without inference."
+    },
+    "secondRun": {
+      "mode": "SHADOW",
+      "outcome": "REJECTED",
+      "proposal": {
+        "action": "BUY",
+        "notionalUSD": 25,
+        "reasoning": "Deterministic BUY harness fixture"
+      },
+      "authorization": {
+        "authorized": false,
+        "reason": "BUY is not currently eligible"
+      }
+    },
+    "tradeCountBefore": 0,
+    "tradeCountAfter": 0,
+    "authenticatedAdminPost": 200,
+    "crossOriginAdminPost": 403,
+    "safetyCapture": "Direct locked/paused test fixture, restored afterward; not a crash-triggered lock."
+  },
+  "sourceSha256": {
+    "scripts/agent-harness.ts": "00efd3b7816a2128b99cc80178f6387ec6e377d0e87b11fb0d8d06028ec162f2",
+    "e2e/harness/operator-console.spec.ts": "41cb8aa3857446330c0c3856593128f869b0e33de535dbea092c4686e36061f8"
+  },
+  "assets": [
+    {
+      "path": "hero.png",
+      "caption": "Synthetic mock-provider console in shadow mode, before any run.",
+      "sha256": "cb1ac82b475003a04b05d3b9d774eec866782c5d341e44c41c1533715eebeede"
+    },
+    {
+      "path": "decision.png",
+      "caption": "Console after the rejected BUY proposal; Run shadow is a mode label, not proof of authorization.",
+      "sha256": "e8dcec2fa59f7e0a4988e1edfe1eabad9fb0f223d75d8329cd895f9fa57e6343"
+    },
+    {
+      "path": "journal.png",
+      "caption": "Synthetic market context and deterministic proposal recorded in the journal.",
+      "sha256": "c0e423afd46ec8511fc20c4edfe1052dd57ba16d775ab3ec09d72566d1219131"
+    },
+    {
+      "path": "safety.png",
+      "caption": "Locked and paused UI fixture; destructive controls are shown but not invoked.",
+      "sha256": "c544c8633c1d371b9e81649d081ac294ac90c761d5cbc7615c714a835c5bdde2"
+    },
+    {
+      "path": "trades.png",
+      "caption": "Empty trade ledger after two shadow runs.",
+      "sha256": "59a1b8808adbe91eb286d8a4cfd577d47de35d6e54cbafcb1bf8e4806d0cb6ef"
+    },
+    {
+      "path": "walkthrough.webm",
+      "caption": "Short raw silent automated recording; not the final five-minute narrated presentation.",
+      "sha256": "eb501acec816026ef417e5f378294c5d87a8cd5b7975788d9e624fba6659d00f"
+    }
+  ],
+  "validation": {
+    "harnessStartupMigrationsAndSeed": "passed against disposable PostgreSQL",
+    "browser": "2 passed against a fresh dip/BUY shadow harness",
+    "targetedJest": "73 tests passed across harness and CSRF suites",
+    "scriptTypecheck": "passed",
+    "lint": "passed with one pre-existing postcss.config.mjs anonymous-default-export warning",
+    "build": "passed",
+    "productionDependencyAudit": "npm audit --omit=dev --audit-level=moderate: zero known vulnerabilities",
+    "localCleanup": "harness:down removed the disposable database volume; harness:status confirmed stopped",
+    "packaging": "Draft YAML, referenced asset paths, SHA-256 checksums, README file links, and SVG XML verified; not official catalog schema validation",
+    "integrationSuite": "not run; harness migration startup is not a substitute for the full integration suite",
+    "hostedEnvironmentProtections": "not verified"
+  },
+  "limitations": [
+    "Charts are separate engineering fixtures, not this shadow account's historical returns.",
+    "Static market fixtures do not advance through a crash or recovery.",
+    "Shadow may update reference and mark-to-market state but cannot execute a trade.",
+    "A rejected proposal does not demonstrate a successful paper fill.",
+    "Narration VTT is a five-minute presenter draft, not synchronized captions for the short raw video.",
+    "Only selected synthetic media is packaged; no browser traces, cookies, environment files, or real datasets are included.",
+    "This index does not certify the whole repository/history free of sensitive information."
+  ],
+  "remainingHumanGates": [
+    "Independent SE/CSA handoff and acceptance",
+    "Final narrated recording with synchronized captions",
+    "Owner-approved license and redistribution rights",
+    "Named support and private security reporting contacts",
+    "Whole-repository and publication approval",
+    "Authorized catalog schema, taxonomy, and submission verification",
+    "Current environment-protection attestation before any proposed Azure deployment"
+  ],
+  "releaseGateEligible": false
+}

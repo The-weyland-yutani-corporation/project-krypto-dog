@@ -34,6 +34,27 @@ const reconciler = jest.requireActual<ReconcilerModule>(
 );
 
 describe("canonical agentic policy", () => {
+  it.each([
+    { startingCapitalUSD: 0 },
+    { startingCapitalUSD: -200 },
+    { targetDailyNetProfitUSD: 0 },
+    { market: "BTC/USDC" },
+    { paperOnly: false },
+    { allowLeverage: true },
+  ])("rejects an unsafe or undefined research hypothesis: %j", (change) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "research-policy-"));
+    const candidatePath = path.join(directory, "policy.json");
+    const candidate = JSON.parse(fs.readFileSync(policyPath, "utf8")) as {
+      autonomy: { tradingResearch: Record<string, unknown> };
+    };
+    Object.assign(candidate.autonomy.tradingResearch, change);
+    fs.writeFileSync(candidatePath, JSON.stringify(candidate));
+    try {
+      expect(() => policyModule.loadAgenticPolicy(candidatePath)).toThrow("autonomy.tradingResearch");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it("loads the required contexts and safety caps", () => {
     expect(policyModule.AGENTIC_POLICY).toMatchObject({
       copilotSuggestedActorLogin: "copilot-swe-agent",

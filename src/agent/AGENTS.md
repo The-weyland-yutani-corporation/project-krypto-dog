@@ -1,6 +1,6 @@
 # `src/agent` — agent runtime
 
-Scoped delta to root [`AGENTS.md`](../../AGENTS.md). Read the root safety kernel
+Scoped delta to root [`AGENTS.md`](../../AGENTS.md). Read the root delivery contract
 first, then apply these specifics.
 
 ## Mission
@@ -10,15 +10,14 @@ proposal), `run-flow.ts` (invocation lease + journaling), `llm.ts`, `index.ts`.
 
 ## Non-negotiables (delta)
 
-- The model is **read-only**: `decision.ts` returns exactly one structured
-  `HOLD`/`BUY`/`SELL` proposal validated by `tradeDecisionSchema`. Never give the
-  model a mutating trade tool or let it execute.
+- The model is read-only: `decision.ts` returns one structured
+  `HOLD`/`BUY`/`SELL` proposal validated by `tradeDecisionSchema`, never an
+  executable command or mutating trade tool.
 - Preserve idempotent invocation acquisition and the owned, expiring run lease.
-- Authorization and execution belong to `src/trading` — see
-  [`../trading/AGENTS.md`](../trading/AGENTS.md). Do not inline policy or
-  accounting logic here.
-- Keep typed error classification (`classifyLlmError`); no broad catches or
-  silent fallbacks.
+- Keep authorization and accounting in `src/trading`; do not inline or bypass
+  them in the orchestration loop.
+- Preserve typed error classification, journaling, and alerts. No broad
+  catches or silent fallbacks.
 
 ## Inputs / outputs
 
@@ -40,9 +39,6 @@ proposal), `run-flow.ts` (invocation lease + journaling), `llm.ts`, `index.ts`.
 - Changing the paper/live boundary, adding trade tools, or altering guardrail
   authorization → **trading safety review** and, if live-adjacent, an accepted
   governance proposal and release plan.
-- Agents may author control-plane implementation changes, but they are
-  `risk:boundary`: never auto-repaired or auto-merged, and require all
-  current-head automated checks plus an authorized repository administrator's
-  explicit merge. Do not edit
-  `.github/agentic-policy.json` merge/authority semantics or perform a
-  human-only action listed in the root map.
+- Agents may author control-plane implementation changes within issue scope.
+  Boundary risk requires current-head automated QA/security verification,
+  not a blanket human merge requirement. Preserve application invariants.

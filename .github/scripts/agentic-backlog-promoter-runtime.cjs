@@ -37,6 +37,8 @@ const {
 } = require("./agentic-queue-runtime.cjs");
 
 const { planPromotions } = require("./agentic-backlog-promoter.cjs");
+const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
+const { AUTONOMOUS_GOAL_LABEL } = require("./agentic-autonomy.cjs");
 
 const RISK_HEADING = "Risk tier";
 const ACTIVE_MODE_LABEL = "factory-mode:active";
@@ -121,12 +123,12 @@ async function resolveIsLeaf({ github, owner, repo, issueNumber, core }) {
  */
 async function resolveNativeParentGoalNumber({ github, owner, repo, issueNumber, core }) {
   try {
-    const response = await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}", {
+    const response = await github.request("GET /repos/{owner}/{repo}/issues/{issue_number}/parent", {
       owner,
       repo,
       issue_number: issueNumber,
     });
-    const parent = response.data && response.data.sub_issue_parent;
+    const parent = response.data;
     return parent && Number.isInteger(parent.number) ? parent.number : undefined;
   } catch (error) {
     core.warning(
@@ -361,6 +363,7 @@ function renderReport({ mode, controlReason, goalReason, goal, plan, candidatesB
  */
 async function runBacklogPromoter({ github, context, core, config = {} }) {
   const { owner, repo } = context.repo;
+  const autonomous = config.autonomous === true && AGENTIC_POLICY.autonomy.enabled;
   const dryRun = config.dryRun === true;
   const maxPromotions = Number.isInteger(config.maxPromotions)
     ? config.maxPromotions
@@ -418,10 +421,10 @@ async function runBacklogPromoter({ github, context, core, config = {} }) {
     github,
     owner,
     repo,
-    [GOAL_LABEL, GOAL_APPROVED_LABEL],
+    [GOAL_LABEL, autonomous ? AUTONOMOUS_GOAL_LABEL : GOAL_APPROVED_LABEL],
     "open",
   );
-  const goalResult = resolveActiveGoal(goalIssues);
+  const goalResult = resolveActiveGoal(goalIssues, { autonomous });
   result.goalReason = goalResult.reason;
 
   if (!goalResult.valid) {
@@ -442,7 +445,7 @@ async function runBacklogPromoter({ github, context, core, config = {} }) {
     return result;
   }
 
-  const approvalActorType = await resolveLatestLabelApplicationActorType({
+  const approvalActorType = autonomous ? null : await resolveLatestLabelApplicationActorType({
     github,
     owner,
     repo,
@@ -450,7 +453,7 @@ async function runBacklogPromoter({ github, context, core, config = {} }) {
     labelName: GOAL_APPROVED_LABEL,
     core,
   });
-  if (!isHumanActorType(approvalActorType)) {
+  if (!autonomous && !isHumanActorType(approvalActorType)) {
     core.warning(
       `"${GOAL_APPROVED_LABEL}" on goal #${goalResult.goal.number} was not most-recently applied by a human (actor type: ${
         approvalActorType ?? "unknown"
@@ -486,6 +489,7 @@ async function runBacklogPromoter({ github, context, core, config = {} }) {
   }
 
   const plan = planPromotions(candidates, {
+    autonomous,
     factoryMode: controlResult.mode,
     goalApproved: true,
     goalNumber: goalResult.goal.number,

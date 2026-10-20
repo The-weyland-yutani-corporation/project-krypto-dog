@@ -13,24 +13,6 @@ Use this skill when designing, debugging, or extending the Project Krypto GH-AW 
 1. Use GH-AW markdown workflows as the orchestration backbone.
 2. Keep each workflow small, event-driven, and permission-scoped.
 3. Keep agent jobs read-only; use GH-AW safe outputs for issues, comments, labels, and PRs.
-4. Keep baseline merge/routing/authority policy in
-   `.github/agentic-policy.json`; validate it with
-   `.github/scripts/agentic-policy.cjs`.
-5. Accept work only under a human-approved `factory:goal` and use issues,
-   sub-issues, milestones, and labels as the queue source of truth.
-6. Let the deterministic queue controller select and claim one issue; use
-   `implement-ticket` only to assign that exact claim to the Copilot coding
-   agent.
-7. Let the deterministic lifecycle reconciler independently verify claim
-   provenance, exactly one Copilot PR, merge SHA, and exact-SHA dev evidence
-   before closing the issue.
-8. Treat labels as explicit lifecycle state and keep exactly one lifecycle
-   label plus one risk label on each queued item.
-9. Permit agent-consensus merge for routine and sensitive/reversible changes
-   only after all exact-current-head checks pass. Boundary/irreversible changes
-   require a current-head trusted human approval.
-10. Auto-deploy only to exact-SHA dev/staging. Production deployment, secrets,
-   permission widening, schedule activation, and live trading remain human-only.
 
 ## Core labels
 
@@ -101,22 +83,7 @@ Use existing scripts only:
 - `npm run build`
 - `npm test -- --ci`
 
-## High-risk surfaces
 
-The automatic `trading-safety-review` PR path filter covers:
-
-- `src/tools/**`
-- `src/guardrails/**`
-- `src/agent/**`
-- `src/app/api/agent/**`
-- `src/db/**`
-- `drizzle/**`
-- `supabase/migrations/**`
-- `specs/product.md`
-- `specs/operations.md`
-- `specs/evaluation.md`
-- `specs/factory.md`
-- `specs/governance.md`
 
 The automatic `security-review` route covers `.github/**`, admin/auth and
 deployment surfaces, `.env.example`, and all `specs/**` paths so legacy or
@@ -127,7 +94,8 @@ five canonical files may remain in the specification surface.
 That filter is not the risk classifier. Use
 `.github/scripts/agentic-factory-policy.cjs` as the only path-risk source:
 routine changes need baseline checks; sensitive/reversible changes add QA and
-path-selected specialists; boundary changes add current-head human approval.
+path-selected specialists; boundary changes require the same trusted automated
+evidence rather than per-change human approval.
 Unknown paths, malformed risk data, factory-control files, live/production
 boundaries, permission policy, destructive migrations, and migrations whose
 patch content is unavailable fail closed to `risk:boundary`.
@@ -147,7 +115,7 @@ goal/risk/path ceiling without weakening those routes.
   the merge signals and rerun after every new head.
 - Routine PRs require baseline CI and code review. Sensitive PRs additionally
   require `QA verification` and every path-selected specialist check.
-  Boundary PRs require all of those plus current-head human approval.
+  Boundary PRs require all of those, bound to immutable trusted-run receipts.
 - A current human change request always vetoes merge.
 - Required contexts are `Quality and evidence gates`,
   `PostgreSQL migrations and execution`, `Agentic code review`, and
@@ -158,8 +126,9 @@ goal/risk/path ceiling without weakening those routes.
 
 ## Proactive opportunity discovery
 
-`opportunity-discovery.md` runs weekly or through `/discover`, but it may create
-work only inside one active human-approved goal.
+`opportunity-discovery.md` is dispatched daily by the queue controller or
+through manual workflow dispatch. It creates work inside the standing repository-authorized
+`factory:autonomous-goal`, not a per-batch human-approved goal.
 
 - It calls `noop` immediately when there are at least 20 open `opportunity`
   issues without `blocked`.
@@ -169,10 +138,12 @@ work only inside one active human-approved goal.
 - Every created issue receives `agentic-factory`, `opportunity`, and
   `needs-rubber-duck`; discovery must not apply `ready-for-planning` or
   `ready-for-ai-dev`.
-- Allowed scope is the intersection of the active goal, its milestone, v2.1/
-  v2.2 governance, and its maximum risk tier.
-- Strategy experiments such as ATR, MACD, volume signals, regime classifiers,
-  EMA filters, and dynamic sizing are deferred and must produce `noop`.
+- Allowed scope is the standing goal's repository-policy scope and risk ceiling.
+  Read `autonomy.tradingResearch` for the owner's starting paper capital and
+  aspirational net daily-profit hypothesis.
+- Unleveraged ETH/USDC paper-strategy experiments may be proposed with explicit
+  safety/evidence dependencies and out-of-sample validation. Report losing days,
+  costs and infeasibility; never raise risk or reset capital to force the target.
 - Trading-strategy, guardrail, portfolio, risk, or live-adjacent opportunities must include safety notes and require rubber-duck/trading-safety review before implementation.
 - It creates software tickets and experiments only; it never gives trading advice or authorizes live trading.
 
@@ -192,4 +163,5 @@ work only inside one active human-approved goal.
   deterministic path dispatch. Implementation is queue-only; `/implement` is
   not an authority bypass.
 - Configure `noop.report-as-issue: false` unless a no-op should become visible repository work.
-- Prefer CODEOWNERS and human branch protection for high-risk surfaces.
+- Preserve GitHub-enforced protections. Autonomous merges bind the checked
+  SHA and trusted verdict receipts; never bypass checks or arm a future head.

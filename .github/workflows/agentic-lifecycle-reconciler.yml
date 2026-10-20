@@ -78,6 +78,7 @@ jobs:
             );
             const { reconcileFactoryLifecycle } = require(reconcilerPath);
             await reconcileFactoryLifecycle({
+              autonomous: require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-policy.cjs")).AGENTIC_POLICY.autonomy.enabled,
               github,
               context,
               core,

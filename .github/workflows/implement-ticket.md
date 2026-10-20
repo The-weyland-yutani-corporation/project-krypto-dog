@@ -1,6 +1,7 @@
 ---
 description: Assigns one deterministically claimed factory issue to the Copilot coding agent.
 on:
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       issue:
@@ -50,6 +51,16 @@ safe-outputs:
 max-ai-credits: 500
 max-daily-ai-credits: 1500
 timeout-minutes: 10
+pre-agent-steps:
+  - name: Require attested factory activation before assignment
+    uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+    with:
+      script: |
+        const { resolveHumanAttestedFactoryMode } = require(
+          require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-automerge-sweeper.cjs"),
+        );
+        const mode = await resolveHumanAttestedFactoryMode({ github, core, ...context.repo });
+        if (mode !== "active") throw new Error("Factory assignment requires current human-attested activation.");
 ---
 
 # Assign Claimed Ticket
@@ -69,10 +80,14 @@ when every claim invariant passes.
 3. Find the machine-readable queue-controller claim comment. Require its nonce
    to equal `${{ github.event.inputs.claim_nonce }}`, its issue number to match,
    and its lease to be unexpired.
-4. Require an active human-approved parent goal, complete acceptance criteria,
+4. Require the active repository-authorized `factory:autonomous-goal` matching
+   `.github/agentic-policy.json`, complete acceptance criteria,
    validation plan, scope/non-goals, risk assessment, rollback statement,
    closed dependencies, and valid `Allowed paths` containing only exact
    repo-relative files or terminal `path/**` globs.
+   Require exactly one `factory-control` issue in `factory-mode:active`.
+   Verify that its latest activation-label event was applied by a human.
+   Do not assign while paused or shadow, even if the earlier claim is valid.
 5. Require no current assignee, coding-agent session, or open pull request for
    this issue.
 6. If any check fails, use `noop` with the exact failed invariant. Do not
