@@ -1,17 +1,18 @@
 ---
 description: Proactively discovers and creates high-quality PM/research opportunity tickets for the agentic SDLC factory. WIP-gated — produces at most one issue per run and calls noop when actionable backlog reaches 20 open issues.
+run-name: "${{ inputs.correlation_id || 'Opportunity Discovery' }}"
 on:
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
-      focus:
-        description: Optional focus area, e.g. QA, observability, safety, factory, admin UX. Strategy areas are deferred.
+      correlation_id:
+        description: Deterministic intake dispatch identity
         required: false
         type: string
-  schedule: weekly
-  slash_command:
-    name: discover
-    events: [issues, issue_comment]
-    strategy: centralized
+      focus:
+        description: Optional focus inside the standing ETH/USDC paper research, safety, evidence, or delivery mission.
+        required: false
+        type: string
 permissions:
   contents: read
   issues: read
@@ -45,25 +46,31 @@ max-daily-ai-credits: 2000
 # Opportunity Discovery
 
 Discover at most **one** high-quality opportunity ticket per run inside a
-human-approved factory goal. Strategy research is explicitly deferred.
+repository-authorized factory goal. The queue controller dispatches this
+workflow at most once per UTC day. Read the capital/profit hypothesis from
+`autonomy.tradingResearch` in canonical policy, not from arbitrary issue text.
 
 ## WIP gate (check this first)
 
-Count the number of open issues with label `opportunity` that do **not** have label `blocked`. If that count is **≥ 20**, call `noop` immediately with the reason "backlog WIP limit reached — {count} open opportunity issues". Do not proceed further.
+Count open `opportunity` issues belonging to the standing mission that do
+**not** have label `blocked`. If that count is **≥ 20**, call `noop` with
+"mission backlog WIP limit reached". Unowned legacy backlog is not new mission WIP.
 
-Also require exactly one open parent goal carrying `factory:goal-approved`.
+Also require exactly one open parent goal carrying `factory:autonomous-goal`.
+Verify its body and allowed scope against the `autonomy` section of
+`.github/agentic-policy.json`; the standing repository policy is authorization,
+not a per-idea human approval.
 Read its allowed scope, non-goals, maximum risk, WIP, and assignment budget.
 Call `noop` when no goal is active or when its queued/claimed/implementing work
 already reaches the goal's WIP allowance.
 
 Also call `noop` if:
-- The trigger is `workflow_dispatch` or `schedule` and there are no visible gaps in the v2.1 or v2.2 foundation work.
+- There is no evidence-backed research, safety, measurement, or delivery gap inside the standing mission.
 - The proposed ticket is a near-duplicate of an existing open or closed issue title.
 
 ## Context
 
 - If triggered manually, use this focus if provided: `${{ github.event.inputs.focus }}`.
-- If triggered by `/discover`, use the sanitized triggering text as steering context: `${{ steps.sanitized.outputs.text }}`.
 - If no focus is provided, inspect only gaps authorized by the active goal.
 
 ## Allowed scope
@@ -72,11 +79,16 @@ Only discover opportunities in these categories:
 1. **v2.1 Safety foundations** — deterministic guardrails, accounting correctness, run reliability, market-data integrity, migrations/data protection, private schema/cron security, decimal ledger, transactional idempotency, structured LLM intent, typed errors/timeouts, real-Postgres CI.
 2. **v2.2 Evidence foundations** — evaluation harness, backtest scenarios, Sharpe/Sortino, CI gates, performance visibility, cost tracking.
 3. **Factory/QA/observability** — low-risk improvements to the agentic factory itself.
+4. **ETH/USDC paper-strategy evaluation** — reproducible, unleveraged swing
+   experiments with frozen parameters, out-of-sample validation, realistic
+   fees/slippage, drawdown and benchmark reporting. Missing safety/evidence
+   foundations are explicit dependencies, not reasons to fabricate results.
 
-## Explicitly deferred scope (always noop for these)
+## Excluded scope (always noop for these)
 
-- Strategy experiments: ATR, MACD, volume signals, market regime classifiers, EMA trend filters, dynamic sizing.
-- Any work that requires v2.1 or v2.2 to be complete first.
+- Real-money execution, leverage, borrowing, transfers, or weakening guardrails.
+- Guaranteed-income claims, cherry-picked backtests, ignoring losing days, or
+  raising capital/risk to force the owner's aspirational daily-profit target.
 
 ## Task
 
@@ -111,5 +123,5 @@ Each created issue must include:
 ## Safe outputs
 
 - Use `create-issue` for exactly one opportunity ticket per run. The workflow attaches `agentic-factory`, `opportunity`, and `needs-rubber-duck`.
-- Use `add-comment` when triggered by `/discover` to summarize what was created or why no ticket was created.
-- Use `noop` when: WIP limit reached, near-duplicate exists, no high-confidence non-deferred opportunity found.
+- Use `add-comment` only when an explicit issue context is supplied.
+- Use `noop` when: WIP limit reached, near-duplicate exists, no high-confidence in-scope opportunity found.

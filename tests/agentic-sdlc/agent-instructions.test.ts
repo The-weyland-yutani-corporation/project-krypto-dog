@@ -22,8 +22,6 @@ const SCOPED_AGENTS = [
 const DISPATCHER = ".github/agents/agentic-workflows.md";
 const SKILL = ".github/skills/agentic-workflows/SKILL.md";
 
-const SAFETY_KERNEL_START = "<!-- safety-kernel:start -->";
-const SAFETY_KERNEL_END = "<!-- safety-kernel:end -->";
 const CODEX_BUDGET_BYTES = 32 * 1024;
 
 /** Extract relative markdown link/target paths from a doc, ignoring URLs and anchors. */
@@ -76,30 +74,24 @@ describe("progressive agent instructions", () => {
     }
   });
 
-  it("carries the safety kernel in the root map and the Copilot shim", () => {
-    for (const docPath of [ROOT_AGENTS, COPILOT_SHIM]) {
-      const doc = read(docPath);
-      expect(doc).toContain(SAFETY_KERNEL_START);
-      expect(doc).toContain(SAFETY_KERNEL_END);
-      expect(doc).toContain("paper");
-      expect(doc.toLowerCase()).toContain("read-only");
-    }
+  it("carries autonomous delivery and application correctness in the root map", () => {
+    const doc = read(ROOT_AGENTS);
+    expect(doc).toContain("without per-change human approval");
+    expect(doc).toContain("emergency pause");
+    expect(doc).toContain("accounting");
+    expect(doc).toContain("exact-head");
+    expect(read(COPILOT_SHIM)).toContain("../AGENTS.md");
   });
 
-  it("states the accepted merge and human-only authority policy in the root map", () => {
+  it("states automated verification instead of blanket human merge authority", () => {
     const rootDoc = read(ROOT_AGENTS);
-    expect(rootDoc).toContain("Agentic code review");
-    expect(rootDoc).toContain("QA verification");
-    expect(rootDoc).toContain("Security review");
-    expect(rootDoc).toContain("Trading safety review");
-    expect(rootDoc).toContain("authorized");
-    expect(rootDoc).toContain("repository administrator");
-    expect(rootDoc).toContain("explicit merge");
-    expect(rootDoc).toContain("Agentic merge policy");
-    expect(rootDoc.toLowerCase()).toContain("fork");
-    expect(rootDoc.toLowerCase()).toContain("human approval");
-    expect(rootDoc).toContain("live-trading enablement");
-    expect(rootDoc).toContain("production deployment");
+    expect(rootDoc).toContain("current-head CI");
+    expect(rootDoc).toContain("code review");
+    expect(rootDoc).toContain("QA/security/");
+    expect(rootDoc).toContain("trading-safety checks");
+    expect(rootDoc).toContain("not a");
+    expect(rootDoc).toContain("blanket requirement for a human merge");
+    expect(rootDoc).toContain("Do not bypass GitHub rulesets");
   });
 
   it("allows agent-authored boundary implementations without delegating authority", () => {
@@ -108,12 +100,12 @@ describe("progressive agent instructions", () => {
     const workflowDoc = read(".github/workflows/AGENTS.md");
     const dbDoc = read("src/db/AGENTS.md");
 
-    expect(rootDoc).toContain("agents may author `risk:boundary` changes");
+    expect(rootDoc).toContain("Boundary risk increases verification");
     expect(agentDoc).toContain(
       "Agents may author control-plane implementation changes",
     );
     expect(workflowDoc).toContain(
-      "Reconciler and merge-policy implementation changes may be agent-authored",
+      "Same-repository workflow/control-plane changes use automated code review",
     );
     expect(workflowDoc).not.toContain(
       "Reconciler/merge-policy logic and secrets are human-only",

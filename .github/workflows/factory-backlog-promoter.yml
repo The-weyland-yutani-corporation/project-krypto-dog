@@ -53,7 +53,9 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/agentic-policy.json
 
       - name: Run deterministic backlog promoter
         uses: actions/github-script@v9
@@ -76,6 +78,7 @@ jobs:
               context,
               core,
               config: {
+                autonomous: require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-policy.cjs")).AGENTIC_POLICY.autonomy.enabled,
                 dryRun: process.env.PROMOTER_DRY_RUN === "true",
                 maxPromotions: Number.isInteger(parsedMax) ? parsedMax : undefined,
               },

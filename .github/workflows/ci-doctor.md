@@ -25,7 +25,7 @@ network:
 safe-outputs:
   create-issue:
     title-prefix: "[ci-doctor] "
-    labels: [agentic-factory, ci-failure]
+    labels: [agentic-factory, ci-failure, needs-triage]
     max: 1
     deduplicate-by-title: 2
   add-comment:
@@ -46,6 +46,11 @@ Diagnose failed CI and produce an actionable incident report.
 - Identify whether the failure is deterministic, flaky, infrastructure-related, or caused by a recent code change.
 - Search for an existing open `[ci-doctor]` issue with the same failure key before creating a new issue.
 - If the failure self-recovered or duplicates an existing issue, use `noop` or `add-comment` instead of opening a duplicate.
+- Resolve the standing `factory:autonomous-goal` and verify its scope against
+  `.github/agentic-policy.json`. For an in-scope incident, set the created issue's
+  native `parent` to that goal and include its number in the body. The intake
+  controller will explicitly dispatch triage; do not rely on bot-created issue
+  events to start another workflow. Do not create or widen a goal.
 
 ## Safe outputs
 

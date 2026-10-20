@@ -54,7 +54,7 @@ When assignment instructions contain a factory claim nonce:
 - Include the exact factory-claim marker and `Refs #<issue>` in the PR body.
 - Do not use `Fixes`, `Closes`, or another closing keyword; the factory closes
   the issue only after dev deployment evidence passes.
-- Do not edit `.github/workflows/**`, `.github/scripts/**`,
-  `.github/agents/**`, `.github/skills/**`, branch protection, production
-  promotion, secrets/permissions, or live-trading boundaries. Report those as
-  blocked boundary work instead.
+- Repository control-plane files may be edited when explicitly included in
+  the issue's allowed paths. They require current-head automated QA/security
+  review, not per-change human approval. Do not mutate external permissions,
+  bypass platform protections, disclose secrets, or enable financial execution.

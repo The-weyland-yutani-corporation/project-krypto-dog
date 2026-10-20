@@ -1,39 +1,33 @@
-# `src/trading` — policy & paper executor
+# `src/trading` - policy and paper executor
 
-Scoped delta to root [`AGENTS.md`](../../AGENTS.md). Read the root safety kernel
-first. This is the highest-risk area in the repo.
+Read the root [`AGENTS.md`](../../AGENTS.md) delivery contract first.
 
 ## Mission
 
 Own deterministic trade policy and transactional paper execution:
 `policy.ts` (`evaluateTradePolicy`, `authorizeTradeIntent`),
-`paper-execution.ts` / `paper-executor.ts`, `accounting.ts`,
-`strategy-config.ts`, `errors.ts`, `types.ts`.
+`paper-execution.ts`, `paper-executor.ts`, `accounting.ts`,
+`strategy-config.ts`, `errors.ts`, and `types.ts`.
 
-## Non-negotiables (delta)
+## Application invariants
 
-- **Paper only.** No live-execution code path here without an accepted
-  governance proposal and release plan.
-- `evaluateTradePolicy`, `authorizeTradeIntent`, and the transactional executor
-  must keep enforcing eligibility, sizing, balance, exposure, DCA, stop-loss,
-  freshness, reconciliation, and paper-mode invariants.
-- Drawdown lock, cooldown, operator pause, idempotency, and owned-lease behavior
-  must not be weakened silently.
-- Accounting reconciliation must stay correct and transactional; failures
-  journal and alert.
+- Execution remains paper-only. Software-delivery autonomy does not enable
+  exchange orders, real-money execution, custody, or transfers.
+- The model proposes one structured decision and never receives a mutating
+  trade tool. Authorization and execution remain deterministic.
+- Preserve eligibility, sizing, balances, exposure, DCA, stop-loss, freshness,
+  reconciliation, and paper-mode checks inside the transactional executor.
+- Preserve drawdown lock, cooldown, operator pause, idempotency, and the
+  owned/expiring run lease. Do not silently weaken any of these checks.
+- Accounting remains correct and transactional. Failures journal and alert;
+  no silent fallback, automatic drift correction, or guardrail bypass.
 
 ## Validation
 
-- `npm test -- --ci` — policy, paper-execution, and accounting suites carry high
-  coverage thresholds; keep them green.
-- `npm run lint`, `npm run build`.
+Run the relevant policy, paper-execution, and accounting suites, plus
+`npm run lint` and `npm run build`; keep existing coverage thresholds.
+Every trading-path change requires the current-head trading-safety review
+selected by `.github/agentic-policy.json`. This is automated verification,
+not a blanket human approval gate for paper-only software changes.
 
-## Escalation / non-goals
-
-- **Every change here routes to trading safety review** (see
-  `specialistRouting.tradingSafety` in
-  [`.github/agentic-policy.json`](../../.github/agentic-policy.json)).
-- Paper-only changes may be agent-authored and merged after their deterministic
-  and specialist checks pass. Live-trading enablement remains human-only; stop
-  and escalate.
-- UI/formatting of trading data belongs to the frontend under `DESIGN.md`.
+UI and formatting of trading data follow root `DESIGN.md`.

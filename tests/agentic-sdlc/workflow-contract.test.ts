@@ -47,6 +47,10 @@ describe("agentic SDLC workflow contracts", () => {
   );
 
   it("loads the tested reconciler implementation only from the trusted base", () => {
+    const triggers = reconciler.slice(reconciler.indexOf("on:"), reconciler.indexOf("concurrency:"));
+    expect(triggers).not.toMatch(/^\s+pull_request_review:/m);
+    expect(triggers).not.toMatch(/^\s+pull_request:/m);
+    expect(triggers).toContain("pull_request_target:");
     expect(reconciler).toContain(
       "ref: ${{ github.event.repository.default_branch }}",
     );
@@ -72,6 +76,17 @@ describe("agentic SDLC workflow contracts", () => {
     );
     expect(reconcilerScript).not.toContain("approveWorkflowRun");
     expect(reconciler).not.toContain("statuses: write");
+  });
+
+  it("confines the event-producing merge credential to the isolated publisher", () => {
+    const verification = reconciler.slice(reconciler.indexOf("- name: Reconcile checks"), reconciler.indexOf("- name: Publish exact-head merges"));
+    const publisher = reconciler.slice(reconciler.indexOf("- name: Publish exact-head merges"));
+    expect(verification).not.toContain("secrets.GH_AW_AGENT_TOKEN");
+    expect(publisher).toContain("MERGE_TOKEN_CONFIGURED");
+    expect(publisher).toContain('process.env.MERGE_TOKEN_CONFIGURED !== "true"');
+    expect(publisher).toContain("Array.isArray(approved)");
+    expect(publisher).toContain("Number.isSafeInteger(item.number)");
+    expect(publisher).toContain("github-token: ${{ secrets.GH_AW_AGENT_TOKEN }}");
   });
 
   it.each([
@@ -103,7 +118,7 @@ describe("agentic SDLC workflow contracts", () => {
       '".github/scripts/agentic-automerge-sweeper.cjs"',
     );
     expect(autoMergeSweeper).toContain(
-      "await sweepAutoMergeReadyPullRequests({ github, context, core });",
+      "await sweepAutoMergeReadyPullRequests({",
     );
     expect(autoMergeSweeper).not.toContain(
       "ref: ${{ github.event.pull_request.head",
@@ -188,6 +203,8 @@ describe("agentic SDLC workflow contracts", () => {
     expect(triggerBlock).not.toContain("issues:");
     expect(implementTicket).toContain("assign-to-agent:");
     expect(implementTicket).toContain("custom-agent: project-krypto-dev");
+    expect(implementTicket).toContain("Require attested factory activation before assignment");
+    expect(implementTicket).toContain("resolveHumanAttestedFactoryMode");
     expect(implementTicket).toContain(
       "target: ${{ github.event.inputs.issue }}",
     );
@@ -201,6 +218,18 @@ describe("agentic SDLC workflow contracts", () => {
   });
 
   it("emits machine-readable reviews and retains head-refresh requirements", () => {
+    for (const workflow of [codeReview, securityReview, tradingSafetyReview, qaReview]) {
+      expect(workflow).toContain("inputs.head_sha || github.event.pull_request.number");
+      expect(workflow).toContain('git checkout --detach "${EXPECTED_HEAD_SHA}"');
+      expect(workflow.indexOf("git checkout --detach")).toBeLessThan(workflow.indexOf("- name: Restore trusted agent instructions"));
+    }
+    for (const workflow of [securityReview, tradingSafetyReview, qaReview]) {
+      expect(workflow).toContain("github.event.issue.number || inputs.target || github.ref");
+    }
+    expect(ci).toContain("group: ci-${{ github.workflow }}-${{ inputs.head_sha || github.event.pull_request.number || github.ref }}");
+    expect(qaReview).toContain("Materialize the exact dispatched QA head");
+    expect(qaReview).toContain('git checkout --detach "${EXPECTED_HEAD_SHA}"');
+    expect(qaReview).toContain('node "${RUNNER_TEMP}/restore-qa-instructions.cjs"');
     expect(qaReview).toContain("CHECK_NAME: QA verification");
     expect(qaReview).toContain("create-pr-check:");
     expect(qaReview).not.toContain("remove-labels:");
@@ -212,7 +241,7 @@ describe("agentic SDLC workflow contracts", () => {
     expect(reconciler).toContain("QA Test Plan");
   });
 
-  it("keeps docs-sync spec repairs reviewable and outside auto-merge", () => {
+  it("enrolls docs-sync repairs without arming unverified auto-merge", () => {
     expect(docsSync).toContain('      - "specs/**"');
     expect(docsSync).toContain('      - "infra/README.md"');
     expect(docsSync).toContain(
@@ -221,7 +250,7 @@ describe("agentic SDLC workflow contracts", () => {
     expect(docsSync).toContain("the root `README.md`");
     expect(docsSync).toContain("auto-merge: false");
     expect(docsSync).toContain("protected-files: fallback-to-issue");
-    expect(docsSync).not.toContain("agentic-automerge");
+    expect(docsSync).toContain("labels: [agentic-factory, docs-sync, agentic-automerge]");
   });
 
   it("runs trading-safety review for every canonical or attempted proposal spec", () => {
@@ -314,7 +343,9 @@ describe("agentic SDLC workflow contracts", () => {
   it("keeps the full-cycle canary goal-authorized and dev-only", () => {
     expect(fullE2e).toContain("factory:goal-approved");
     expect(fullE2e).toContain("factory-mode:active");
-    expect(fullE2e).toContain("latestHumanLabelEvent");
+    expect(fullE2e).toContain("isAutonomousGoal");
+    expect(fullE2e).not.toContain("latestHumanLabelEvent");
+    expect(fullE2e).not.toContain("FACTORY_CANARY_GOAL");
     expect(fullE2e).toContain("factory-queue-controller.yml");
     expect(fullE2e).toContain("factory:done");
     expect(fullE2e).toContain("Dev deployment evidence");

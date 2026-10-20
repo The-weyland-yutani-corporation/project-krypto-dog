@@ -1,16 +1,18 @@
 ---
 description: Engineering manager planning and ticket decomposition.
+run-name: "${{ inputs.correlation_id || 'EM Planning' }}"
 on:
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
+      correlation_id:
+        description: Deterministic intake dispatch identity
+        required: false
+        type: string
       scope:
         description: Issue number, epic, or planning scope
         required: false
         type: string
-  slash_command:
-    name: plan
-    events: [issues, issue_comment]
-    strategy: centralized
   issues:
     types: [labeled]
     names: [ready-for-planning]
@@ -55,8 +57,11 @@ Break approved work into small, sequenced implementation tickets.
 ## Task
 
 - Read the target issue or planning scope.
-- Require a human-approved `factory:goal-approved` ancestor and keep every
+- Require the repository-authorized `factory:autonomous-goal` ancestor,
+  matching the standing mission in `.github/agentic-policy.json`, and keep every
   child inside its allowed scope, maximum risk tier, WIP, and assignment budget.
+- Do not request per-ticket human approval. After child creation, remove
+  `ready-for-planning` from the source issue to acknowledge this handoff.
 - Identify dependencies, parallel work, blockers, risks, and owners by role.
 - Create leaf child issues with explicit parent goal, scope/non-goals,
   machine-readable allowed paths, blocked-by relationships, exactly one risk

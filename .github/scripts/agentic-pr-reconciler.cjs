@@ -1,6 +1,9 @@
 "use strict";
 
 const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
+const { isAutonomousGoal } = require("./agentic-autonomy.cjs");
+const { selectTrustedCheckRuns, verifyTrustedReviewEvidence } = require("./agentic-review-evidence.cjs");
+const { createDispatchRecord, isControllerDispatchedRun } = require("./agentic-dispatch.cjs");
 const {
   CODE_REVIEW_CHECK,
   FACTORY_MODE_LABELS,
@@ -161,6 +164,7 @@ async function verifyAgentImplementationProvenance({
   copilotIdentity,
   assignmentActorNodeId,
   allPullRequests,
+  autonomous = false,
 }) {
   const reference = getAgentImplementationReference(
     pullRequest,
@@ -288,11 +292,10 @@ async function verifyAgentImplementationProvenance({
           Date.parse(right.created_at || "") -
           Date.parse(left.created_at || ""),
       )[0];
-    if (
-      !latestGoalApproval ||
-      !latestGoalApproval.actor ||
+    if (autonomous ? !isAutonomousGoal(goal) : (
+      !latestGoalApproval || !latestGoalApproval.actor ||
       latestGoalApproval.actor.type !== "User"
-    ) {
+    )) {
       return { valid: false };
     }
     const goalMaxRiskTier = getIssueFormSection(
@@ -465,6 +468,9 @@ function getCheckState(checkRuns, name) {
   if (check.status !== "completed") {
     return "pending";
   }
+  if (check.factoryRunConclusion !== undefined && check.factoryRunConclusion !== "success") {
+    return "failure";
+  }
   return PASSING_CHECK_CONCLUSIONS.has(check.conclusion)
     ? "success"
     : "failure";
@@ -511,6 +517,7 @@ function getAgentApprovalState(
   checkRuns,
   declaredRiskLabel,
   requestedChecks = [],
+  autonomous = false,
 ) {
   const riskPolicy = determineRiskTier({
     files: getPolicyFiles(files),
@@ -553,7 +560,9 @@ function getAgentApprovalState(
     riskTier: riskPolicy.tier,
     riskReasons: riskPolicy.reasons,
     requiresHumanBoundaryApproval:
-      riskPolicy.requiresHumanBoundaryApproval,
+      riskPolicy.requiresHumanBoundaryApproval && !autonomous,
+    riskDataValid: riskPolicy.issueRiskValid &&
+      !riskPolicy.reasons.some((reason) => reason.startsWith("malformed") || reason.startsWith("migration-content-unavailable:")),
   };
 }
 
@@ -569,8 +578,13 @@ function evaluateMergePolicy({
   issueAllowedPaths,
   goalMaxRiskTier,
   copilotIdentity,
+  autonomous = false,
 }) {
   const sha = pullRequest.head.sha;
+  if (autonomous) {
+    checkRuns = checkRuns.filter((check) =>
+      check.head_sha === sha && check.app?.slug === "github-actions");
+  }
   const sameRepository = isSameRepositoryPullRequest(
     pullRequest,
     repository,
@@ -578,8 +592,9 @@ function evaluateMergePolicy({
   const requiresVerifiedAgentProvenance =
     getAgentImplementationReference(pullRequest, copilotIdentity).required;
   const implementationScopeValid =
-    !requiresVerifiedAgentProvenance ||
-    areChangedFilesWithinAllowedPaths(files, issueAllowedPaths);
+    requiresVerifiedAgentProvenance
+      ? areChangedFilesWithinAllowedPaths(files, issueAllowedPaths)
+      : !autonomous || areChangedFilesWithinAllowedPaths(getPolicyFiles(files), ["docs/**", "specs/**"]);
   const trustedAgent =
     isTrustedAgentPullRequest(
       pullRequest,
@@ -606,6 +621,7 @@ function evaluateMergePolicy({
     checkRuns,
     declaredRiskLabel,
     requestedChecks,
+    autonomous,
   );
   const unresolvedRequestedCheck = requestedChecks.some(
     (name) => agentApproval.checkStates[name] !== "success",
@@ -630,6 +646,8 @@ function evaluateMergePolicy({
     description = "A current human review requests changes";
   } else if (hardBlockingLabel) {
     description = "A blocking review label requires changes";
+  } else if (autonomous && !trustedAgent) {
+    description = "Autonomous merge requires a trusted factory-owned pull request";
   } else if (
     requiresVerifiedAgentProvenance &&
     !agentImplementationProvenance
@@ -651,6 +669,8 @@ function evaluateMergePolicy({
     } else {
       description = "A current human approval is required for forked changes";
     }
+  } else if (autonomous && !agentApproval.riskDataValid) {
+    description = "Risk evidence is missing or malformed";
   } else if (agentApproval.failedCheck) {
     description = `${agentApproval.failedCheck} requires changes`;
   } else if (agentApproval.waitingCheck) {
@@ -686,6 +706,49 @@ function evaluateMergePolicy({
     requiresHumanBoundaryApproval:
       agentApproval.requiresHumanBoundaryApproval,
   };
+}
+
+async function verifyAutonomousMergeCandidate({
+  github, owner, repo, pullRequest, core, assignmentActorNodeId, serverUrl,
+}) {
+  const copilotIdentity = await resolveRepositoryCopilotIdentity({
+    github, owner, repo, verifyPinnedIdentity: true,
+  });
+  const [files, reviews, rawCheckRuns, allPullRequests] = await Promise.all([
+    github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pullRequest.number, per_page: 100 }),
+    github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: pullRequest.number, per_page: 100 }),
+    github.paginate(github.rest.checks.listForRef, { owner, repo, ref: pullRequest.head.sha, filter: "all", per_page: 100 }),
+    github.paginate(github.rest.pulls.list, { owner, repo, state: "all", per_page: 100 }),
+  ]);
+  const checkRuns = await selectTrustedCheckRuns({
+    github, owner, repo, defaultBranch: "main", serverUrl,
+    pullNumber: pullRequest.number, headSha: pullRequest.head.sha, checkRuns: rawCheckRuns,
+  });
+  const provenance = await verifyAgentImplementationProvenance({
+    github, owner, repo, pullRequest, core, copilotIdentity, allPullRequests,
+    assignmentActorNodeId, autonomous: true,
+  });
+  const decision = evaluateMergePolicy({
+    pullRequest, files, reviews, checkRuns, copilotIdentity, repository: `${owner}/${repo}`,
+    factoryMode: FACTORY_MODES.ACTIVE, autonomous: true,
+    agentImplementationProvenance: provenance.valid, issueRiskLabel: provenance.riskLabel,
+    issueAllowedPaths: provenance.allowedPaths, goalMaxRiskTier: provenance.goalMaxRiskTier,
+  });
+  if (decision.state !== "success") return { valid: false, reason: decision.description };
+  return verifyTrustedReviewEvidence({
+    github, owner, repo, defaultBranch: "main", serverUrl,
+    pullNumber: pullRequest.number, headSha: pullRequest.head.sha, checkRuns,
+    requiredChecks: [...AGENTIC_POLICY.requiredContexts, ...decision.requiredSpecialistChecks],
+  });
+}
+
+function hasPendingSpecialistReview({ requiredChecks, checkStates, ciFailed, autonomous }) {
+  return requiredChecks.some((name) => {
+    // QA consumes completed CI evidence. A demonstrated CI failure must be
+    // repairable before QA runs; other specialist reviews still have to settle.
+    if (autonomous && ciFailed && name === QA_CHECK_NAME) return false;
+    return checkStates[name] === "missing" || checkStates[name] === "pending";
+  });
 }
 
 function canAttemptSelfHeal({
@@ -806,7 +869,12 @@ async function reconcileAgenticPullRequests({
   context,
   core,
   assignmentActorNodeId,
+  autonomous = false,
+  onVerifiedMerge,
+  onDispatch,
+  dispatchIdentity,
 }) {
+  autonomous = autonomous === true && AGENTIC_POLICY.autonomy.enabled;
   const { owner, repo } = context.repo;
   const repository = `${owner}/${repo}`;
   const defaultBranch =
@@ -882,6 +950,7 @@ async function reconcileAgenticPullRequests({
       );
     }
   } catch (error) {
+    factoryMode = FACTORY_MODES.PAUSED;
     core.warning(
       `Could not resolve factory mode; keeping enrolled PRs paused: ${getErrorMessage(error)}`,
     );
@@ -902,8 +971,9 @@ async function reconcileAgenticPullRequests({
       );
       return response.data.workflow_runs
         .filter(
-          (run) =>
-            run.head_sha === headSha ||
+          (run) => autonomous
+            ? isControllerDispatchedRun(run, { pullNumber, headSha, workflow: workflowId, defaultBranch })
+            : run.head_sha === headSha ||
             (run.display_title === correlationId &&
               run.head_branch === defaultBranch &&
               run.event === "workflow_dispatch"),
@@ -1136,6 +1206,7 @@ async function reconcileAgenticPullRequests({
         github,
         owner,
         repo,
+        verifyPinnedIdentity: autonomous,
       });
     } catch (error) {
       const code =
@@ -1163,12 +1234,22 @@ async function reconcileAgenticPullRequests({
     try {
       const number = pullRequest.number;
       const sha = pullRequest.head.sha;
+      if (autonomous && pullRequest.auto_merge && getLabels(pullRequest).has(AUTO_MERGE_LABEL) &&
+          isSameRepositoryPullRequest(pullRequest, repository)) {
+        await github.graphql(
+          "mutation DisableLegacyAutoMerge($id: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $id}) { pullRequest { number } } }",
+          { id: pullRequest.node_id },
+        );
+      }
+      if (autonomous && !getLabels(pullRequest).has(AUTO_MERGE_LABEL)) {
+        continue;
+      }
       const [
         files,
         reviews,
         commits,
-        checkRuns,
-        ciRuns,
+        rawCheckRuns,
+        rawCiRuns,
         rawReviewRuns,
         rawQaRuns,
         rawSecurityRuns,
@@ -1200,8 +1281,14 @@ async function reconcileAgenticPullRequests({
           listRuns("security-review.lock.yml", sha, number),
           listRuns("trading-safety-review.lock.yml", sha, number),
         ]);
+      const checkRuns = autonomous ? await selectTrustedCheckRuns({
+        github, owner, repo, defaultBranch,
+        serverUrl: context.serverUrl || process.env.GITHUB_SERVER_URL || "https://github.com",
+        pullNumber: number, headSha: sha, checkRuns: rawCheckRuns,
+      }) : rawCheckRuns;
       const dispatchedRuns = (runs) =>
         runs.filter((run) => run.event === "workflow_dispatch");
+      const ciRuns = autonomous ? dispatchedRuns(rawCiRuns) : rawCiRuns;
       const reviewRuns = dispatchedRuns(rawReviewRuns);
       const qaRuns = dispatchedRuns(rawQaRuns);
       const securityRuns = dispatchedRuns(rawSecurityRuns);
@@ -1223,6 +1310,7 @@ async function reconcileAgenticPullRequests({
           copilotIdentity,
           assignmentActorNodeId: configuredAssignmentActorNodeId,
           allPullRequests,
+          autonomous,
         });
       const policy = evaluateMergePolicy({
         pullRequest,
@@ -1237,6 +1325,7 @@ async function reconcileAgenticPullRequests({
         issueAllowedPaths: implementationProvenance.allowedPaths,
         goalMaxRiskTier: implementationProvenance.goalMaxRiskTier,
         copilotIdentity,
+        autonomous,
       });
 
       if (implementationProvenance.pauseFactory) {
@@ -1284,12 +1373,19 @@ async function reconcileAgenticPullRequests({
         );
       };
       const dispatchForPullRequest = async (workflowId, inputs = {}) => {
-        return runPolicyOperation(() =>
-          dispatch(workflowId, defaultBranch, {
+        return runPolicyOperation(async () => {
+          const metadata = dispatchMetadata(workflowId, number, sha);
+          if (autonomous) {
+            if (typeof onDispatch !== "function") throw new Error("Autonomous dispatch requires a trusted receipt publisher.");
+            const record = createDispatchRecord({ ...dispatchIdentity, pullNumber: number, headSha: sha, workflow: workflowId });
+            metadata.correlation_id = record.correlation;
+            await onDispatch(record);
+          }
+          return dispatch(workflowId, defaultBranch, {
             ...inputs,
-            ...dispatchMetadata(workflowId, number, sha),
-          }),
-        );
+            ...metadata,
+          });
+        });
       };
       if (policy.riskExceedsGoal) {
         await addHumanBoundaryLabel();
@@ -1303,7 +1399,7 @@ async function reconcileAgenticPullRequests({
       const ciNeedsDispatch = ciRuns.length === 0;
       const reviewNeedsDispatch =
         reviewRuns.length === 0 &&
-        policy.agentCheckStates[REVIEW_CHECK_NAME] === "missing";
+        (autonomous || policy.agentCheckStates[REVIEW_CHECK_NAME] === "missing");
       const ciHeld = ciRuns[0] && ciRuns[0].conclusion === "action_required";
       const ciShouldDispatch = ciNeedsDispatch || ciHeld;
       const reviewHeld =
@@ -1319,24 +1415,30 @@ async function reconcileAgenticPullRequests({
         );
       const securityShouldDispatch =
         securityRequired &&
-        policy.agentCheckStates[SECURITY_CHECK_NAME] !== "success" &&
+        (autonomous || policy.agentCheckStates[SECURITY_CHECK_NAME] !== "success") &&
         (securityRuns.length === 0 ||
           securityRuns[0].conclusion === "action_required");
+      const ciEvidenceComplete = AGENTIC_POLICY.requiredContexts
+        .filter((name) => name !== REVIEW_CHECK_NAME)
+        .every((name) => getCheckState(checkRuns.filter((check) =>
+          !autonomous || check.head_sha === sha), name) === "success");
       const qaShouldDispatch =
         qaRequired &&
-        policy.agentCheckStates[QA_CHECK_NAME] !== "success" &&
+        (!autonomous || ciEvidenceComplete) &&
+        (autonomous || policy.agentCheckStates[QA_CHECK_NAME] !== "success") &&
         (qaRuns.length === 0 ||
           qaRuns[0].conclusion === "action_required");
       const tradingSafetyShouldDispatch =
         tradingSafetyRequired &&
-        policy.agentCheckStates[TRADING_SAFETY_CHECK_NAME] !== "success" &&
+        (autonomous || policy.agentCheckStates[TRADING_SAFETY_CHECK_NAME] !== "success") &&
         (tradingSafetyRuns.length === 0 ||
           tradingSafetyRuns[0].conclusion === "action_required");
-      const specialistReviewPending = policy.requiredSpecialistChecks.some(
-        (name) =>
-          policy.agentCheckStates[name] === "missing" ||
-          policy.agentCheckStates[name] === "pending",
-      );
+      const specialistReviewPending = hasPendingSpecialistReview({
+        requiredChecks: policy.requiredSpecialistChecks,
+        checkStates: policy.agentCheckStates,
+        ciFailed: hasFailedCiRun(ciRuns),
+        autonomous,
+      });
       const hasPendingPolicyOperations =
         ciShouldDispatch ||
         reviewShouldDispatch ||
@@ -1382,11 +1484,29 @@ async function reconcileAgenticPullRequests({
       if (
         policy.state === "success" &&
         !hasPendingPolicyOperations &&
-        !policyWriteFailed
+        !policyWriteFailed &&
+        (!autonomous || AGENTIC_POLICY.requiredContexts.every((name) =>
+          getCheckState(checkRuns.filter((check) => check.head_sha === sha), name) === "success"))
       ) {
-        await runPolicyOperation(() =>
-          ensureAutoMergeEnabled({ github, core, pullRequest }),
-        );
+        if (autonomous) {
+          const evidence = await verifyTrustedReviewEvidence({
+            github, owner, repo, defaultBranch,
+            serverUrl: context.serverUrl || process.env.GITHUB_SERVER_URL || "https://github.com",
+            pullNumber: number, headSha: sha, checkRuns,
+            requiredChecks: [...AGENTIC_POLICY.requiredContexts, ...policy.requiredSpecialistChecks],
+          });
+          if (!evidence.valid) {
+            core.warning(`PR #${number} is not merge-authorized: ${evidence.reason}.`);
+            continue;
+          }
+        }
+        await runPolicyOperation(async () => {
+          if (!autonomous) return ensureAutoMergeEnabled({ github, core, pullRequest });
+          if (typeof onVerifiedMerge !== "function") {
+            throw new Error("Autonomous merging requires the isolated merge publisher.");
+          }
+          await onVerifiedMerge({ number, headSha: sha });
+        });
       }
 
       if (
@@ -1495,11 +1615,13 @@ module.exports = {
   hasSelfHealBlockingLabel,
   hasFailedCiRun,
   hasFailedReviewCheck,
+  hasPendingSpecialistReview,
   isLowRiskChange,
   isLowRiskPath,
   isSameRepositoryPullRequest,
   isTrustedAgentPullRequest,
   verifyAgentImplementationProvenance,
+  verifyAutonomousMergeCandidate,
   pullRequestDispatchInputs,
   requiresSecurityReview,
   requiresTradingSafetyReview,

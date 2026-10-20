@@ -1,0 +1,52 @@
+WEBVTT
+
+NOTE Five-minute presenter draft, NOT synchronized to walkthrough.webm.
+Record narration and retime these captions against the final video before sharing.
+
+00:00:00.000 --> 00:00:20.000
+Project Krypto: governed AI decisioning.
+Synthetic ETH/USDC engineering demo, not investment advice.
+
+00:00:20.000 --> 00:00:45.000
+A recommendation is not permission to act.
+The model proposes; deterministic software authorizes.
+
+00:00:45.000 --> 00:01:10.000
+This isolated console uses mock providers and shadow mode.
+No Azure account, customer data, or exchange orders are involved.
+
+00:01:10.000 --> 00:01:30.000
+Inspect the account, rollout mode, and operator controls.
+Charts are engineering fixtures, not this account's trading history.
+
+00:01:30.000 --> 00:02:00.000
+On a fresh account, the first run establishes a reference price.
+That cold-start HOLD does not require model inference.
+
+00:02:00.000 --> 00:02:30.000
+The next run receives a deterministic BUY proposal.
+The static price has not dropped below its new reference.
+
+00:02:30.000 --> 00:03:00.000
+Policy rejects the proposal. Inspect the journal and empty ledger.
+Shadow records the outcome; it never executes a fill.
+
+00:03:00.000 --> 00:03:30.000
+These paused and locked states are browser-test fixtures.
+They are not evidence that a market crash caused a lock.
+
+00:03:30.000 --> 00:04:00.000
+Mandatory safety paths can bypass the model entirely.
+Never clear a real lock or weaken authorization to improve a demo.
+
+00:04:00.000 --> 00:04:15.000
+The reusable pattern is structured advice, deterministic authorization,
+run evidence, and explicit operator control.
+
+00:04:15.000 --> 00:04:40.000
+Which customer workflow needs these boundaries?
+Agree on synthetic inputs, forbidden actions, and measurable success.
+
+00:04:40.000 --> 00:05:00.000
+Choose one workflow. Nominate a process owner and platform engineer
+for a discovery workshop and a non-production pilot.

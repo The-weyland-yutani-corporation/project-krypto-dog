@@ -23,7 +23,7 @@ describe("canonical specification surface", () => {
     expect(entries.map((entry) => entry.name).sort()).toEqual(canonicalSpecs);
   });
 
-  it("documents the non-negotiable safety boundaries", () => {
+  it("documents application safety independently of per-change human approval", () => {
     const combined = canonicalSpecs
       .map((filename) =>
         fs.readFileSync(path.join(specsRoot, filename), "utf8"),
@@ -37,11 +37,12 @@ describe("canonical specification surface", () => {
       "deterministic",
       "guardrail",
       "reconciliation",
-      "human-only",
-      "live trading",
+      "real-money",
+      "transfers",
     ]) {
       expect(combined).toContain(term);
     }
+    expect(combined).toContain("without per-change human approval");
   });
 
   it("preserves immutable migration provenance through Git history", () => {
