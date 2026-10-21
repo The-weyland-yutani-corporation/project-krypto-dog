@@ -38,6 +38,7 @@ safe-outputs:
     allowed-files:
       - "docs/**"
       - "specs/**"
+      - "infra/README.md"
     protected-files: fallback-to-issue
   create-issue:
     title-prefix: "[docs-gap] "
@@ -73,7 +74,9 @@ Check whether docs and specs need updates.
   Keep `auto-merge: false` here: the creation step must not arm a merge before
   trusted CI/review receipts exist. Sensitive documentation gets the applicable
   QA, security, and trading-safety checks, not per-change human approval.
-- For protected files such as README or `.github/**`, create a follow-up issue instead of trying to modify them.
+- `infra/README.md` is an allowed deployment-documentation target.
+- For protected files such as the root `README.md` or `.github/**`, create a
+  follow-up issue instead of trying to modify them.
 - For larger or ambiguous gaps, create a follow-up issue or comment with required changes.
 
 ## Safe outputs

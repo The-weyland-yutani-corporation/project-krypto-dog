@@ -243,6 +243,11 @@ describe("agentic SDLC workflow contracts", () => {
 
   it("enrolls docs-sync repairs without arming unverified auto-merge", () => {
     expect(docsSync).toContain('      - "specs/**"');
+    expect(docsSync).toContain('      - "infra/README.md"');
+    expect(docsSync).toContain(
+      "`infra/README.md` is an allowed deployment-documentation target.",
+    );
+    expect(docsSync).toContain("the root `README.md`");
     expect(docsSync).toContain("auto-merge: false");
     expect(docsSync).toContain("protected-files: fallback-to-issue");
     expect(docsSync).toContain("labels: [agentic-factory, docs-sync, agentic-automerge]");
