@@ -1,10 +1,32 @@
 # Project Krypto deployment recovery
 
-> **Status:** Planning
+> **Status:** Validated
 
-Not approved for provisioning, access changes, protected-setting replacement,
-or live workflow dispatch. Existing Bicep is the selected recipe; this is a
-modification/recovery of the Next.js application, not an AZD migration.
+Validated scope: **dedicated Foundry account only**. Subscription
+bootstrap is deployed and verified. Overall commissioning remains incomplete.
+The account and all later stages still require protected workflow admission;
+local validation does not authorize a local apply around that gate.
+
+The owner approved conditional commissioning after reviewing this plan.
+Current-head checks, native validation, and applicable GitHub Environment
+gates must pass before execution. Approval is not validation or deployment
+proof. Existing Bicep is the selected recipe; this is a modification/recovery
+of the Next.js application, not an AZD migration.
+
+## Conditional commissioning authorization
+
+Approval covers one commissioning pass for the selected new target, at most
+one corrective retry per stage, and one full factory canary with a six-hour
+bound after readiness. It includes the listed OIDC/workload grants,
+Azure/platform setting rebindings, and fresh database-secret bindings.
+Existing app-auth and telemetry secrets may be consumed only by trusted
+hosted workflows. `azure-deploy-prod.yml` may be enabled only for its
+protected disabled/Manual release.
+
+Reviewers and branch protections remain unchanged. Old Azure resources and
+historical data stay untouched. Production activation and real-money
+execution remain excluded. Failed validation, source checks, or Environment
+admission block execution; this approval does not waive any of them.
 
 ## Goal
 
@@ -35,8 +57,11 @@ evidence requirements.
   `gpt-5.3-codex` with explicit owner approval and verified by readback. A
   subsequent hosted PM Triage run
   [completed successfully](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39540190455)
-  with that configured setting. Daily MonitorOps itself still needs a
-  successful post-change run.
+  with that configured setting. The subsequent
+  [MonitorOps run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39551325097)
+  also executed its agent successfully, but the collector command was denied
+  permission and the agent emitted a no-op instead of a status report.
+  Model startup is repaired; operational monitoring is not yet verified.
 - Target selection does not authorize provisioning, permission changes,
   production activation, or removal of platform protections.
 
@@ -45,8 +70,143 @@ evidence requirements.
 - [x] Inspect only the selected target for existing Krypto resources.
 - [x] Map the existing Bicep and GitHub deployment pipeline to the new target.
 - [x] Record region, footprint, cost assumptions, identity effects, and prerequisites.
-- [ ] Obtain approval for the bounded provisioning/configuration plan.
-- [ ] Validate the approved configuration before deployment.
+- [x] Obtain approval for the bounded provisioning/configuration plan.
+- [x] Validate, provision, and read back the approved subscription bootstrap.
+- [ ] Validate each remaining stage before its protected deployment.
+
+## Staged validation
+
+Completed stage: **subscription bootstrap only** (`infra/bootstrap.bicep` and
+`infra/params/bootstrap.bicepparam`). Its three groups and four OIDC identities
+have been read back successfully. Each subsequent stage must repeat native
+validation with those real outputs before execution. A bootstrap result is not
+validation of the model, application, or full factory. Do not repeat the
+bootstrap simply to advance commissioning.
+
+Current stage: **dedicated Foundry account only**
+(`infra/platform-account.bicep` and
+`infra/params/platform-account.bicepparam`). Validate only the account and
+its delete lock in the verified platform group. Model deployments and workload
+access are separate later stages; no account apply is permitted locally.
+
+- [x] All validation checks pass for the current account stage.
+  - [x] Core Validation (CLI, auth, build, validate, what-if).
+  - [x] Linting: compile the exact account template and parameter file.
+  - [x] Azure Policy Validation: reconcile applicable policy with the preview.
+- [x] Verify current-head source gates and static roles for the account stage.
+- [x] Record account-stage proof and resolve any validation errors.
+
+- [x] All validation checks passed for the completed bootstrap stage.
+  - [x] Core Validation (CLI, auth, build, validate, what-if), using the shared
+    PowerShell `validate-deployment` helper with explicit subscription scope.
+  - [x] Linting: bootstrap compilation and current-head infrastructure checks pass.
+  - [x] Azure Policy Validation: reconcile applicable policy with the preview.
+- [x] Application build and Docker targets pass on the reviewed source head.
+- [x] Static bootstrap roles match the disclosed resource-group grants and
+  subscription read-only exceptions.
+- [x] Native preview contains no destructive or out-of-scope resource changes.
+- [x] Current-head GitHub review/check gates pass before cloud mutation.
+
+## 7. Validation Proof
+
+### Bootstrap
+
+Validated evidence scope: **bootstrap only**, source commit
+`cb299d8fbb1eda308df6f3ae9146d8d4573462ce`.
+The structured native preview was recorded at
+`2026-10-21T05:40:52Z`; the source checks were confirmed before execution.
+Subscription and location were explicitly selected and reconfirmed in the
+commissioning approval. The preview shows no existing Krypto group conflicts.
+AZD environment/tag steps and Container Apps image-pull checks do not apply
+to this Bicep-only bootstrap; no application container is created in this stage.
+
+| Check | Command or evidence | Result |
+| --- | --- | --- |
+| Core native validation | Shared `validate-deployment.ps1`, scope `sub`, location `westus3`, explicit selected subscription, bootstrap Bicep and parameter files | All five steps PASS; no provisioning |
+| Structured native preview | `az deployment sub what-if`, `FullResourcePayloads`, JSON retained privately | 25 actual Create entries; no Modify/Delete |
+| Preview boundaries | Inspect every JSON change | Three approved groups, four identities, four federations, nine RG role grants, four subscription read-only grants, one custom read-only role |
+| Current-head source gates | Recovery PR checks at the source commit above | Quality, PostgreSQL migrations/execution, Agentic code review, CodeQL, Bicep, helper tests, Docker targets, and harness integrity passed |
+| Static bootstrap roles | Read `bootstrap.bicep` and `modules/oidc-identity.bicep` | Disclosed RG grants and minimal subscription read-only exceptions; no subscription-write role |
+| Policy | Azure MCP assignment listing plus direct definition reads and native validation | No bootstrap policy conflict; classic-resource denies do not cover these resource types |
+
+The helper's text counted 26 `+` markers; the structured preview contains
+25 resource changes. Use the structured count, not the text marker count.
+Inherited governance and MFA policies remain enforced. No model/foundation/
+release admission, production activation, or full-factory success is attested
+by this bootstrap proof.
+
+### Dedicated Foundry account
+
+The shared native validation helper passed CLI availability, authentication,
+Bicep build, resource-group validation, and what-if for
+`infra/platform-account.bicep` with its real nonsecret parameter file and
+the explicit approved subscription. Structured preview evidence was recorded
+at `2026-10-21T16:40:57Z`.
+
+| Check | Command or evidence | Result |
+| --- | --- | --- |
+| Core native validation | `validate-deployment.ps1 -Scope group -ResourceGroup rg-krypto-platform`, account template/parameters, explicit subscription | All five steps PASS; no provisioning |
+| Structured preview | `az deployment group what-if`, `FullResourcePayloads`, JSON retained privately | Exactly two Create entries; no Modify/Delete |
+| Account security | Inspect the account preview | Approved `westus3` AIServices/S0 account, local auth disabled, intended public network setting |
+| Delete protection | Inspect the lock preview and its exact parent | `CanNotDelete` lock on the proposed account only |
+| Build and roles | Compile real account parameters; inspect both compiled resource types and verified platform grants | No new IAM grants; existing scoped Contributor and Locks Contributor cover this stage |
+| Source | Unchanged executable source at `cb299d8fbb1eda308df6f3ae9146d8d4573462ce` and its current-head hosted gates | Passed; subsequent edits are recovery documentation only |
+| Policy | Re-read applicable assignments, actual OpenAI provisioned-capacity deny rule, and current MFA enforcement; native provider validation | No account-stage validation conflict; policies unchanged |
+
+The helper's pretty-output counter includes the legend and reported three
+create markers; the JSON contains two resource creates. The OpenAI deny rule
+targets `ProvisionedManaged` model deployments, not this S0 account. This
+does not validate the later model stage, quota, or inference. MFA and other
+inherited policies remain enforced. The account has **not** been deployed:
+the commissioning stop and the protected platform workflow still apply.
+
+## Bootstrap execution receipt
+
+The first bootstrap attempt completed at `2026-10-21T05:57:09Z`, using
+`az deployment sub create` with the reviewed Bicep and parameter files,
+explicit approved subscription, `westus3`, and deployment name
+`krypto-bootstrap-cb299d8`. No corrective retry was used. Current-head
+checks and unchanged infrastructure/workflow source were checked again
+immediately before execution; all three planned groups were still absent.
+
+Independent Azure readback completed at `2026-10-21T06:01:44Z`:
+
+| Persisted boundary | Observed result |
+| --- | --- |
+| Subscription deployment | Succeeded in the selected region |
+| Resource groups | All three present with the expected project tag and region |
+| OIDC identities | All four actual client/principal/resource IDs match deployment outputs and the selected tenant |
+| Federated credentials | Four exact repository/immutable-ID/Environment subjects, expected issuer and audience |
+| RG role assignments | Nine expected grants; no unexpected grants |
+| Subscription assignments | Four expected read-only grants; no subscription-write grant |
+| Custom provider reader | Exactly the approved single read action and subscription assignable scope |
+
+Raw identity outputs and role evidence remain private. No application
+foundation, model host, database, container, or schedule was created by this
+stage. Protected GitHub bindings have not yet been changed. Factory control
+remains paused, and production remains unactivated.
+
+## Commissioning stop receipt
+
+The owner separately approved a temporary pause of `azure-deploy-dev.yml`
+while credentials, source, and initial dependencies are aligned, with
+re-enablement for controlled foundation/full runs. Its state was read back
+as `disabled_manually` at `2026-10-21T14:52:36Z`. This changes no Environment
+reviewer or branch protection and does not resume factory control.
+
+One older [development run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/37642379119),
+created on October 7, still reports `queued` with zero jobs. The owner approved
+its cancellation. Both the normal cancellation and one supported force-cancel
+attempt were rejected as already completed, while fresh run/list APIs still
+report queued. The cancellation retry is exhausted; do not retry indefinitely,
+delete its audit history, or treat the contradictory response as a verified
+cancellation.
+
+Protected credential rebinding and the recovery merge remain on hold until
+that stale-run state is resolved. No Azure bindings or database secrets were
+changed. Read-only validation of later stages may proceed, but it does not
+remove this stop. Other platform, workload-access, production, and rotation
+workflows had no active runs when checked.
 
 ## Verified preparation evidence
 
@@ -77,7 +237,8 @@ immutable owner/repository IDs. This repair corrects the stale owner in
 
 The proposed ACR, Key Vault, storage, PostgreSQL, Communication Services,
 and Foundry custom-domain names below passed name-availability checks.
-They are not reserved or provisioned. No old resources are adopted by name.
+Those service names are not reserved or provisioned; only the bootstrap
+groups and OIDC identities now exist. No old resources are adopted by name.
 
 | Resource | Development | Production / shared platform |
 | --- | --- | --- |
@@ -160,7 +321,7 @@ resources for the Container Apps environments.
 | PostgreSQL Flexible Servers | 2 | 4 in westus3 | SKU/version/geo-backup capabilities observed; quota CLI returns BadRequest |
 | Registries | 2 | 5 in westus3 | Names available; quota CLI returns BadRequest |
 | Key Vaults | 2 | 4 in westus3 | Names available; quota CLI returns BadRequest |
-| User-assigned managed identities | 10 | 13 in westus3 | No new Krypto identities exist yet; scoped deployment validation required |
+| User-assigned managed identities | 10 | 13 in westus3 | Four bootstrap identities verified; six workload identities remain pending |
 | Communication / Email Services | 2 / 2 | 4 / 4 global | Communication names available; Azure-managed email domains |
 | Log Analytics workspaces | 2 | 4 in westus3 | New workspace per environment; usage-based ingestion allowance |
 | Action groups / scheduled-query alerts | 2 / 4 | 5 global action groups / 4 new alerts | One failed-job and one missing-success alert per environment |
@@ -176,8 +337,8 @@ record does not assert that all cloud checks have passed.
 
 ## Proposed permission and configuration effects
 
-The following effects require explicit approval; no row is already authorized
-by target, region, budget, or environment-scope selection.
+The following effects are covered by the separate conditional commissioning
+approval, not by target, region, budget, or environment-scope selection alone.
 
 | OIDC identity | Resource-group permissions | Subscription permissions |
 | --- | --- | --- |
@@ -231,8 +392,8 @@ bindings does not migrate or alter the old Azure database.
    overwrite old data, remove locks/protections, or claim activation.
 
 This is a fresh deployment, not a migration of inaccessible historical data.
-No workflow dispatch, real-provider smoke, secret replacement, or provisioning
-is authorized until the bounded plan approval is recorded.
+The conditional approval is recorded; its source, validation, admission, and
+retry conditions still apply to every stage.
 
 ## Protection-state observation
 
@@ -268,13 +429,20 @@ bypass those protections under this plan.
 ## Unresolved
 
 - Independent model-host creation/admission and final service validation.
-- Required Azure/GitHub identity setup and external service configuration.
-- Formal validation, protected-workflow admission, and exact
-  provisioning/permission approval.
+- Protected GitHub rebinding, workload identity setup, and external service configuration.
+- Native validation and protected-workflow admission for all post-bootstrap stages.
+- Safe initial-deployment sequencing: a successful main CI automatically starts
+  the full dev rollout, independently of the factory pause. New automatic
+  dispatch is temporarily disabled, but the stale run above remains unresolved.
+- MonitorOps collector permission failure, despite a green agent run.
+  Its separate repair session also remains blocked by the tool-approval layer,
+  including after the owner's fresh approval for scoped local validation tools;
+  no source fix or permission workaround was attempted.
 - Production software-delivery scope, which remains manual and disabled.
 
 ## Validation and activation
 
-No deployment or factory activation is authorized by this draft. Readiness
-requires successful exact-SHA application deployment evidence, not a green
-infrastructure-only job. The full factory canary has no recorded successful run.
+No deployment or factory activation may bypass the conditional approval's
+prerequisites. Readiness requires successful exact-SHA application deployment
+evidence, not a green infrastructure-only job. The full factory canary has no
+recorded successful run.
