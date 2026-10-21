@@ -477,7 +477,9 @@ with boundary `0`.
   activation-check with that key and the pre-run timestamp. The report must
   prove the exact new SHADOW `AgentRun` started after the boundary, reached a
   safe terminal outcome, created zero `TradeExecution`, and released the
-  lease.
+  lease. Activation also requires operator pause and drawdown lock to be
+  explicitly false; missing or invalid control state blocks activation.
+  This read-only check never clears either stop control.
 - Schedule activation binds hourly idempotency to the exact image digest and
   current activation generation before observing scheduled success. Run
   acquisition rejects cross-mode replay of an existing key.

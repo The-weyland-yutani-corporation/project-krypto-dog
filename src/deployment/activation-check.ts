@@ -19,13 +19,13 @@ import {
  * target-smoke approval, persisted by `runTargetSmoke`, still exactly match
  * this activation's release SHA, image digest, target origin, and cron
  * secret -- and is the underlying database currently safe (reconciled,
- * position-free, lease-free)?"
+ * position-free, lease-free, neither operator-paused nor drawdown-locked)?"
  *
  * Every comparison is exact and fails closed: a missing approval row, a
  * missing binding row, any field mismatch, a non-"disabled" persisted
  * rollout mode, an active lease, an unreconciled/quarantined accounting
- * status, or an open paper position all reject activation. There is no
- * partial-credit or best-effort path.
+ * status, an open paper position, or either stop control not explicitly
+ * false all reject activation. There is no partial-credit or best-effort path.
  *
  * The cron-secret binding and approval signature are both keyed
  * HMAC-SHA256 values over DEPLOYMENT_APPROVAL_SECRET -- a secret that is
@@ -98,6 +98,8 @@ type LatestApprovalRow = {
 type AgentStateRow = {
   accountingStatus: string;
   ethBalance: string | null;
+  isOperatorPaused: boolean;
+  isLocked: boolean;
   isRunning: boolean;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
@@ -196,6 +198,8 @@ async function loadAgentState(
         "currentPositionETHDecimal",
         "currentPositionETH"::numeric
       )::text AS "ethBalance",
+      "isOperatorPaused",
+      "isLocked",
       "isRunning",
       "leaseOwner",
       "leaseExpiresAt"
@@ -477,6 +481,24 @@ export async function runActivationCheck(
     approval?.rolloutMode === "disabled"
       ? "The approved smoke run was recorded with rollout mode disabled."
       : "The approved smoke run was not recorded with rollout mode disabled.",
+  );
+
+  const operatorNotPaused = state?.isOperatorPaused === false;
+  record(
+    "operator-not-paused",
+    operatorNotPaused,
+    operatorNotPaused
+      ? "Operator pause is explicitly inactive."
+      : "Operator pause is active or its state cannot be verified.",
+  );
+
+  const drawdownNotLocked = state?.isLocked === false;
+  record(
+    "drawdown-not-locked",
+    drawdownNotLocked,
+    drawdownNotLocked
+      ? "Drawdown lock is explicitly inactive."
+      : "Drawdown lock is active or its state cannot be verified.",
   );
 
   const activeLease =

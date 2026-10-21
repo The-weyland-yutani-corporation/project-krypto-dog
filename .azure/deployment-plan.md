@@ -202,11 +202,35 @@ report queued. The cancellation retry is exhausted; do not retry indefinitely,
 delete its audit history, or treat the contradictory response as a verified
 cancellation.
 
-Protected credential rebinding and the recovery merge remain on hold until
-that stale-run state is resolved. No Azure bindings or database secrets were
-changed. Read-only validation of later stages may proceed, but it does not
-remove this stop. Other platform, workload-access, production, and rotation
-workflows had no active runs when checked.
+The owner subsequently merged
+[PR #374](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/pull/374)
+at `104c39197b41db396bb86c3c2c669ca950a3b07a`; its exact-SHA push CI
+[passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39639335132).
+The source-merge hold is superseded, but protected credential rebinding
+remains on hold until the stale-run state is resolved. No Azure bindings or
+database secrets were changed. Read-only validation of later stages may
+proceed, but it does not remove this stop.
+
+## Full-factory implementation follow-up
+
+The owner approved a native GitHub Actions design for unattended delivery
+through monitored paper production in
+[issue #375](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/375).
+For a healthy release with an open paper position or active lease, upgrades
+must defer without forcing a trade or changing balances. Full factory
+completion must eventually include exact-release production evidence.
+
+The read-only activation verifier now rejects operator pause, drawdown lock,
+and missing or invalid values for either control. This safeguard neither
+clears those controls nor implements or authorizes production promotion.
+The production orchestration, cutover fence, and completion path are still
+pending. MonitorOps' separately denied pinned-tool verification remains
+blocked and must not be retried through an alternate path.
+
+Exact Environment protection changes, production activation, external
+telemetry effects, and the irreversible evidence-policy lock still require
+their separate approvals. Factory control and the deployment workflows remain
+paused/disabled; the bootstrap remains the only completed provisioning stage.
 
 ## Verified preparation evidence
 
@@ -438,7 +462,9 @@ bypass those protections under this plan.
   Its separate repair session also remains blocked by the tool-approval layer,
   including after the owner's fresh approval for scoped local validation tools;
   no source fix or permission workaround was attempted.
-- Production software-delivery scope, which remains manual and disabled.
+- The approved unattended paper-production design still requires
+  implementation, verification, and its separate external-effects approvals.
+  Production remains manual and disabled.
 
 ## Validation and activation
 

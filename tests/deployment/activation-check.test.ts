@@ -50,6 +50,8 @@ type ApprovalRowOverrides = Partial<{
 type AgentStateOverrides = Partial<{
   accountingStatus: string;
   ethBalance: string | null;
+  isOperatorPaused: unknown;
+  isLocked: unknown;
   isRunning: boolean;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
@@ -165,6 +167,11 @@ function createSqlMock(options: {
               agentState.ethBalance === undefined
                 ? "0"
                 : agentState.ethBalance,
+            isOperatorPaused:
+              "isOperatorPaused" in agentState
+                ? agentState.isOperatorPaused
+                : false,
+            isLocked: "isLocked" in agentState ? agentState.isLocked : false,
             isRunning: agentState.isRunning ?? false,
             leaseOwner:
               agentState.leaseOwner === undefined
@@ -226,6 +233,11 @@ describe("schedule-activation verifier", () => {
       report.checks.find((check) => check.id === "approval-signature-valid"),
     ).toEqual(expect.objectContaining({ status: "pass" }));
     expect(sql.__calls[0]).toBe("BEGIN READ ONLY");
+    const stateQuery = sql.__calls.find((query) =>
+      query.includes('FROM "krypto"."AgentState"'),
+    );
+    expect(stateQuery).toContain('"isOperatorPaused"');
+    expect(stateQuery).toContain('"isLocked"');
     expect(sql.__calls).not.toContain("COMMIT");
     expect(sql.__calls[sql.__calls.length - 1]).toBe("ROLLBACK");
   });
@@ -387,6 +399,45 @@ describe("schedule-activation verifier", () => {
         (check) => check.id === "smoke-rollout-mode-disabled",
       ),
     ).toEqual(expect.objectContaining({ status: "block" }));
+  });
+
+  describe.each([
+    { field: "isOperatorPaused", checkId: "operator-not-paused" },
+    { field: "isLocked", checkId: "drawdown-not-locked" },
+  ])("$field control", ({ field, checkId }) => {
+    it.each([true, null, undefined, 0, "", "false"])(
+      "rejects activation when the control is %p rather than explicitly false",
+      async (value) => {
+        const sql = createSqlMock({ agentState: { [field]: value } });
+        mockedPostgres.mockReturnValueOnce(sql as never);
+
+        const report = await runActivationCheck(BASE_OPTIONS);
+
+        expect(report.approved).toBe(false);
+        expect(report.checks.find((check) => check.id === checkId)).toEqual(
+          expect.objectContaining({ status: "block" }),
+        );
+        expect(report.blockers).not.toEqual([]);
+        expect(
+          sql.__calls.some((query) => /^(UPDATE|INSERT|DELETE)\b/.test(query)),
+        ).toBe(false);
+      },
+    );
+  });
+
+  it("rejects both stop controls when agent state is missing", async () => {
+    const sql = createSqlMock({ agentState: null });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runActivationCheck(BASE_OPTIONS);
+
+    expect(report.approved).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "operator-not-paused", status: "block" }),
+        expect.objectContaining({ id: "drawdown-not-locked", status: "block" }),
+      ]),
+    );
   });
 
   it("rejects an active run lease", async () => {
