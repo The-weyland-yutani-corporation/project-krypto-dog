@@ -74,7 +74,10 @@ on:
     - src/db/**
     - drizzle/**
     - supabase/migrations/**
-    - specs/**
+    - specs/product.md
+    - specs/operations.md
+    - specs/evaluation.md
+    - specs/governance.md
     types:
     - opened
     - synchronize
@@ -1917,4 +1920,3 @@ jobs:
             /tmp/gh-aw/safe-output-items.jsonl
             /tmp/gh-aw/temporary-id-map.json
           if-no-files-found: ignore
-

@@ -249,7 +249,10 @@ describe("agentic SDLC workflow contracts", () => {
   });
 
   it("runs trading-safety review for every canonical or attempted proposal spec", () => {
-    expect(tradingSafetyReview).toContain('- "specs/**"');
+    expect(tradingSafetyReview).toContain('- "specs/product.md"');
+    expect(tradingSafetyReview).toContain('- "specs/operations.md"');
+    expect(tradingSafetyReview).toContain('- "specs/evaluation.md"');
+    expect(tradingSafetyReview).toContain('- "specs/governance.md"');
   });
 
   it("correlates trusted workflow dispatches to an exact pull-request head", () => {

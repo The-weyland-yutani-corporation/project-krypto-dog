@@ -487,13 +487,22 @@ function requiresSecurityCheck(filename) {
   );
 }
 
+const TRADING_SAFETY_SPEC_PATHS = new Set([
+  "specs/product.md",
+  "specs/operations.md",
+  "specs/evaluation.md",
+  "specs/governance.md",
+]);
+
 function requiresTradingSafetyCheck(filename) {
   return (
     typeof filename === "string" &&
-    (    /^src\/(?:agent|backtest|db|guardrails|tools|trading)\//.test(filename) ||
-    /^src\/app\/api\/agent\//.test(filename) ||
-    /^(?:drizzle|supabase\/migrations)\//.test(filename) ||
-    /^specs\//.test(filename))
+    (
+      /^src\/(?:agent|backtest|db|guardrails|tools|trading)\//.test(filename) ||
+      /^src\/app\/api\/agent\//.test(filename) ||
+      /^(?:drizzle|supabase\/migrations)\//.test(filename) ||
+      TRADING_SAFETY_SPEC_PATHS.has(filename)
+    )
   );
 }
 

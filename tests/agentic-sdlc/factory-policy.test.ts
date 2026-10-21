@@ -533,7 +533,6 @@ describe("required checks", () => {
   it("selects the trading-safety specialist check from changed paths", () => {
     expect(policy.requiresTradingSafetyCheck("src/trading/policy.ts")).toBe(true);
     expect(policy.requiresTradingSafetyCheck("supabase/migrations/0001.sql")).toBe(true);
-    expect(policy.requiresTradingSafetyCheck("specs/rfcs/live-trading.md")).toBe(true);
     expect(policy.requiresTradingSafetyCheck("src/components/ui/button.tsx")).toBe(false);
     const checks = policy.getRequiredChecks(RISK_TIERS.SENSITIVE, [file("src/trading/policy.ts")]);
     expect(checks).toContain(policy.TRADING_SAFETY_CHECK);
@@ -543,7 +542,6 @@ describe("required checks", () => {
     "specs/product.md",
     "specs/operations.md",
     "specs/evaluation.md",
-    "specs/factory.md",
     "specs/governance.md",
   ])("requires trading-safety review for canonical safety spec %s", (filename) => {
     expect(policy.requiresTradingSafetyCheck(filename)).toBe(true);
@@ -554,6 +552,13 @@ describe("required checks", () => {
       ),
     ).toContain(policy.TRADING_SAFETY_CHECK);
   });
+
+  it.each(["specs/factory.md", "specs/rfcs/live-trading.md"])(
+    "does not require trading-safety review for non-canonical spec %s",
+    (filename) => {
+      expect(policy.requiresTradingSafetyCheck(filename)).toBe(false);
+    },
+  );
 
   it("requires human boundary approval only at the boundary tier", () => {
     expect(policy.requiresHumanBoundaryApproval(RISK_TIERS.BOUNDARY)).toBe(true);
