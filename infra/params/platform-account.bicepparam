@@ -4,7 +4,7 @@
 using '../platform-account.bicep'
 
 param location = 'westus3'
-param foundryAccountName = 'ai-krypto-westus3'
+param foundryAccountName = 'ai-krypto-westus3-02'
 param tags = {
   project: 'project-krypto'
   component: 'foundry-platform'

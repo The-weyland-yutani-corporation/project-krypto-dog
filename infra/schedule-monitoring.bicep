@@ -13,16 +13,19 @@ param environmentName string
 @description('Azure region for the scheduled query rule.')
 param location string
 
+@description('Resource name prefix used by environment.bicep for the existing workspace and Action Group.')
+param namePrefix string = 'krypto-${environmentName}'
+
 @description('Existing Log Analytics workspace resource ID.')
 param logAnalyticsWorkspaceId string = resourceId(
   'Microsoft.OperationalInsights/workspaces',
-  'log-krypto-${environmentName}'
+  'log-${namePrefix}'
 )
 
 @description('Existing Action Group resource ID.')
 param actionGroupId string = resourceId(
   'Microsoft.Insights/actionGroups',
-  'ag-krypto-${environmentName}'
+  'ag-${namePrefix}'
 )
 
 @description('Hourly agent-run Container Apps Job name.')

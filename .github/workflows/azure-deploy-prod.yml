@@ -63,11 +63,11 @@ env:
   ACTIVATION_CHECK_JOB_NAME: caj-prod-activation-check
   PROD_HOURLY_JOB_NAME: caj-prod-agent-run
   PROD_DAILY_JOB_NAME: caj-prod-daily-summary
-  ACR_NAME: acrkryptoprod
-  CONTAINER_APPS_ENVIRONMENT_NAME: cae-krypto-prod
-  RUNTIME_IDENTITY_NAME: id-krypto-prod-runtime
-  SCHEDULER_IDENTITY_NAME: id-krypto-prod-scheduler
-  EVIDENCE_STORAGE_ACCOUNT_NAME: stkryptoprodevid
+  ACR_NAME: acrkryptoprod02
+  CONTAINER_APPS_ENVIRONMENT_NAME: cae-krypto-prod02
+  RUNTIME_IDENTITY_NAME: id-krypto-prod02-runtime
+  SCHEDULER_IDENTITY_NAME: id-krypto-prod02-scheduler
+  EVIDENCE_STORAGE_ACCOUNT_NAME: stkryptoprod02evid
 
 jobs:
   gate:

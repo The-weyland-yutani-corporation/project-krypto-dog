@@ -19,6 +19,7 @@ targetScope = 'resourceGroup'
 @description('Name of the existing dedicated Microsoft Foundry / Cognitive Services account. Created separately by platform-account.bicep.')
 @allowed([
   'ai-krypto-westus3'
+  'ai-krypto-westus3-02'
 ])
 param foundryAccountName string = 'ai-krypto-westus3'
 

@@ -19,7 +19,7 @@ using '../rollout.bicep'
 param environmentName = 'prod'
 param location = 'westus3'
 
-param keyVaultName = 'kv-krypto-prod'
+param keyVaultName = 'kv-krypto-prod02'
 param containerAppsEnvironmentId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId'
 param registryLoginServer = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer'
 param runtimeIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId'
@@ -36,7 +36,7 @@ param dailyJobName = 'caj-prod-daily-summary'
 param webImageName = 'krypto-web'
 param imageDigest = 'sha256:REPLACE_WITH_CURRENTLY_RELEASED_DIGEST'
 
-param azureOpenAIBaseUrl = 'https://ghcp-foundry-eastus2.openai.azure.com/openai/v1/'
+param azureOpenAIBaseUrl = 'https://ai-krypto-westus3-02.openai.azure.com/openai/v1/'
 param azureOpenAIDeploymentName = 'krypto-prod-luna'
 
 param posthogHost = 'https://us.i.posthog.com'

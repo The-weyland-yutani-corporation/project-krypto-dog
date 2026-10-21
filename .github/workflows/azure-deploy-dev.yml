@@ -1000,10 +1000,13 @@ jobs:
           SCHEDULE_ENABLED_AT: ${{ steps.render.outputs.schedule_enabled_at }}
         run: |
           set -euo pipefail
+          az bicep build-params \
+            --file infra/params/schedule-monitoring.dev.bicepparam \
+            --outfile /tmp/schedule-monitoring.dev.parameters.json
           az deployment group what-if \
             --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
             --template-file infra/schedule-monitoring.bicep \
-            --parameters infra/params/schedule-monitoring.dev.bicepparam \
+            --parameters @/tmp/schedule-monitoring.dev.parameters.json \
             --parameters enabled=true scheduleEnabledAtUnixSeconds="${SCHEDULE_ENABLED_AT}" \
             --result-format FullResourcePayloads \
             --no-pretty-print \
@@ -1012,7 +1015,7 @@ jobs:
             --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
             --name "monitor-dev-schedule-${RESOLVED_SHA}" \
             --template-file infra/schedule-monitoring.bicep \
-            --parameters infra/params/schedule-monitoring.dev.bicepparam \
+            --parameters @/tmp/schedule-monitoring.dev.parameters.json \
             --parameters enabled=true scheduleEnabledAtUnixSeconds="${SCHEDULE_ENABLED_AT}" \
             --query properties.outputs \
             --output json > /tmp/monitoring-shadow-schedule-outputs.json

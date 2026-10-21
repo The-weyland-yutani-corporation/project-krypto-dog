@@ -16,13 +16,13 @@ using '../environment.bicep'
 
 param environmentName = 'dev'
 param location = 'westus3'
-param namePrefix = 'krypto-dev'
+param namePrefix = 'krypto-dev02'
 
-param acrName = 'acrkryptodev'
-param keyVaultName = 'kv-krypto-dev'
-param evidenceStorageAccountName = 'stkryptodevevid'
-param communicationServiceName = 'acs-krypto-dev'
-param emailServiceName = 'email-krypto-dev'
+param acrName = 'acrkryptodev02'
+param keyVaultName = 'kv-krypto-dev02'
+param evidenceStorageAccountName = 'stkryptodev02evid'
+param communicationServiceName = 'acs-krypto-dev02'
+param emailServiceName = 'email-krypto-dev02'
 
 // Principal ID of the "development" GitHub Environment's OIDC deployment
 // identity (bootstrap.bicep output devIdentityPrincipalId). Grants that
