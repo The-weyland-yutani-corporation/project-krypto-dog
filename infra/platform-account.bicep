@@ -29,6 +29,7 @@ param location string = 'westus3'
 @description('Globally unique account and custom subdomain name.')
 @allowed([
   'ai-krypto-westus3'
+  'ai-krypto-westus3-02'
 ])
 param foundryAccountName string = 'ai-krypto-westus3'
 

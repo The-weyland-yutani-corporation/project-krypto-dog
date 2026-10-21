@@ -18,6 +18,7 @@ targetScope = 'resourceGroup'
 @description('Name of the existing dedicated Microsoft Foundry account.')
 @allowed([
   'ai-krypto-westus3'
+  'ai-krypto-westus3-02'
 ])
 param foundryAccountName string = 'ai-krypto-westus3'
 

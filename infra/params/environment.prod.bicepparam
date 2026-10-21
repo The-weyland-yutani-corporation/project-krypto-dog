@@ -16,13 +16,13 @@ using '../environment.bicep'
 
 param environmentName = 'prod'
 param location = 'westus3'
-param namePrefix = 'krypto-prod'
+param namePrefix = 'krypto-prod02'
 
-param acrName = 'acrkryptoprod'
-param keyVaultName = 'kv-krypto-prod'
-param evidenceStorageAccountName = 'stkryptoprodevid'
-param communicationServiceName = 'acs-krypto-prod'
-param emailServiceName = 'email-krypto-prod'
+param acrName = 'acrkryptoprod02'
+param keyVaultName = 'kv-krypto-prod02'
+param evidenceStorageAccountName = 'stkryptoprod02evid'
+param communicationServiceName = 'acs-krypto-prod02'
+param emailServiceName = 'email-krypto-prod02'
 
 // Principal IDs of the "production-deploy" and "production-promotion"
 // GitHub Environments' OIDC deployment identities (bootstrap.bicep

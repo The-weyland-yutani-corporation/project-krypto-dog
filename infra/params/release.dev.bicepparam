@@ -26,7 +26,7 @@ using '../release.bicep'
 param environmentName = 'dev'
 param location = 'westus3'
 
-param keyVaultName = 'kv-krypto-dev'
+param keyVaultName = 'kv-krypto-dev02'
 param containerAppsEnvironmentId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_containerAppsEnvironmentId'
 param registryLoginServer = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_acrLoginServer'
 param runtimeIdentityId = 'REPLACE_WITH_ENVIRONMENT_OUTPUT_runtimeIdentityId'
@@ -66,7 +66,7 @@ param opsImageDigest = 'sha256:REPLACE_WITH_PUSHED_OPS_DIGEST'
 // deployed.
 param releaseSha = 'REPLACE_WITH_REAL_COMMIT_SHA000000000000'
 
-param azureOpenAIBaseUrl = 'https://ghcp-foundry-eastus2.openai.azure.com/openai/v1/'
+param azureOpenAIBaseUrl = 'https://ai-krypto-westus3-02.openai.azure.com/openai/v1/'
 param azureOpenAIDeploymentName = 'krypto-dev-luna'
 
 param posthogHost = 'https://us.i.posthog.com'

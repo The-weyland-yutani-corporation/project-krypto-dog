@@ -3,32 +3,40 @@
 This tree implements the Azure-native target accepted by
 [`specs/governance.md`](../specs/governance.md).
 
-> **Deployment state (2026-08-15): FOUNDATIONS + FALLBACK LUNA + RELEASES
-> DEPLOYED.** Bootstrap, both environment foundations, operational Luna
-> deployments, workload access, and dev/prod releases exist. Dev is
-> shadow/scheduled; production is disabled/manual.
+> **Recovery configuration, not deployment proof (2026-10-21).** The owner
+> selected a new subscription for both development and production. The
+> recovery parameter files use a new `02` resource namespace and the current
+> GitHub organization identity. No new-target provisioning or permission
+> changes are approved by these files.
 >
 > **Paper only.** Templates support `disabled`, `shadow`, and `paper`.
 > Nothing provisions or authorizes live-money execution.
 
 **Historical checkpoint, not a current environment attestation.** The dates and
-live-state tables below record earlier provisioning work. Previous README and
+live-state tables below record the 2026-08-15 provisioning work. Previous README and
 infrastructure notes conflicted on required-reviewer enforcement. Its current
-state is unverified for the accelerator package: an authorized owner must inspect
-GitHub environment protections and record dated evidence before any deployment.
+state must be checked against the environments actually referenced by each
+workflow, with dated evidence before any deployment.
 Do not infer approval from workflow YAML, a configured reviewer name, or a past
-successful run. Unknown enforcement blocks deployment; it never relaxes the
-human-only authority in `specs/governance.md`.
+successful run. Unknown enforcement blocks deployment; it never authorizes
+removing or bypassing a protection.
 
-## Fixed target contract
+## Recovery target contract
 
-- Runtime-selected subscription: **Visual Studio Enterprise Subscription**.
-  Its ID and internal identifiers must not be published.
+- Runtime-selected subscription: the owner's newly selected target, not
+  the historical Visual Studio Enterprise subscription. Its ID and
+  internal identifiers must remain in private/protected settings.
 - Region: `westus3`.
 - Resource groups: `rg-krypto-platform`, `rg-krypto-dev`,
   `rg-krypto-prod`.
-- Dedicated future Foundry account: `ai-krypto-westus3`.
-- Operational model host: established `ghcp-foundry-eastus2`.
+- Dedicated Foundry account: `ai-krypto-westus3-02`. Account creation, its
+  returned endpoint, account-specific model availability, and Entra smokes
+  must be verified before application release. Do not reuse the historical
+  `ghcp-foundry-eastus2` fallback across tenants.
+- Development/production name prefixes: `krypto-dev02` / `krypto-prod02`.
+  Registry, vault, storage, and communication names are in the corresponding
+  `environment.*.bicepparam` files. Production deployment and secret-rotation
+  workflow constants must match those files; regression tests enforce this.
 - Model: OpenAI `gpt-5.6-luna`, version `2026-07-09`,
   `GlobalStandard`.
 - Deployments: `krypto-dev-luna` and `krypto-prod-luna`, capacity 10 each.
@@ -39,15 +47,19 @@ human-only authority in `specs/governance.md`.
 - Every event is tagged with `deployment_environment`; separate PostHog
   projects remain required before production promotion.
 
-`eastus2` was a rejected candidate because the selected subscription cannot
-provision PostgreSQL there. It is not a current target.
+The owner retained `westus3`. Historical region restrictions from the previous
+subscription do not establish capabilities in the new target.
 
-## Live provisioning checkpoint
+The $500/month Azure planning ceiling is not a hard spending cap. See
+[the recovery plan](../.azure/deployment-plan.md) for observed capacity,
+cost assumptions, outstanding prerequisites, and approval boundaries.
+
+## Historical provisioning checkpoint (2026-08-15)
 
 | Surface | Live state | Evidence |
 |---|---|---|
 | Subscription/bootstrap | Required providers registered; three resource groups and four GitHub OIDC identities exist | Bootstrap complete |
-| GitHub controls | Historical notes disagree on required-reviewer enforcement; current GitHub environment protections and protected values require authorized owner verification | Unverified; deployment blocker until dated evidence is recorded |
+| GitHub controls | Historical notes disagree on required-reviewer enforcement | Superseded by the dated configuration observation in [OIDC boundaries](#github-oidc-identities-and-process-boundaries); protected values and live admission still require verification |
 | Foundry accounts | Dedicated `ai-krypto-westus3` remains model-empty after `715-123420`; operational dev/prod Luna deployments on `ghcp-foundry-eastus2` succeeded and passed Entra smokes | Fallback active |
 | Foundry workload access | Dev/prod runtime and ops identities each have Cognitive Services OpenAI User on the operational account | Applied |
 | Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
@@ -56,8 +68,8 @@ provision PostgreSQL there. It is not a current target.
 | Analytics | Shared ingestion key temporarily staged with mandatory dev/prod event tags; separate projects remain a promotion gate | Release-testable |
 
 Azure Support API ticket creation for the dedicated account failed because the
-subscription has no eligible support plan. The established account removes
-that release blocker; keep the dedicated account for a future migration.
+subscription has no eligible support plan. The established account removed that historical release blocker. That does
+not establish access or model availability for the newly selected target.
 
 ## Subscription prerequisite
 
@@ -127,10 +139,14 @@ receive it.
 Azure enforces resource-group scope, not the intended template list. A
 resource-group Contributor can deploy other resources in that group.
 Template separation therefore also depends on protected workflow files,
-GitHub Environment reviewers, branch rules, and CODEOWNERS. Required-reviewer
-rules are not available on the current private-repo billing plan, so the
-current workflows remain manual/paused with branch, exact-SHA, and CI gates;
-reviewer-backed automation must not be assumed.
+GitHub Environment reviewers, branch rules, and CODEOWNERS. On 2026-10-21,
+the live Environment API reported branch restrictions for `development`,
+and branch restrictions plus required reviewers and `prevent_self_review`
+for `platform`, `production-deploy`, and `production-promotion`. All permit
+only `main` and `develop/azure`. These are configuration observations, not a
+successful deployment attestation. Preserve those protections; a chat
+approval or a green local build does not bypass them. Fully unattended
+production delivery still needs an explicitly approved protection design.
 
 No executable production promotion workflow is shipped or approved. The
 `production-promotion` name denotes the separately reviewed forced-disable
@@ -145,8 +161,9 @@ their own resource-group scope. The platform identity has Locks Contributor in
 Locks Contributor in `rg-krypto-prod` because `environment.bicep` creates the
 prod PostgreSQL, Key Vault, and evidence-storage locks. Role Based Access
 Control Administrator is powerful within those resource groups; it is not a
-role-assignment allow-list. Keep mutation workflows manual/paused until an
-equivalent reviewer-enforced boundary is available.
+role-assignment allow-list. Honor each workflow's configured Environment,
+branch restrictions, reviewers, and current-head evidence gates. Automation
+must not silently remove a configured review requirement.
 
 All mutation permissions remain resource-group-scoped. Subscription scope is
 read-only: the minimal provider-state role above, plus **Cognitive Services
@@ -159,7 +176,8 @@ No long-lived Azure service-principal credential is stored in GitHub.
 
 ### Account lifecycle
 
-`platform-account.bicep` creates `ai-krypto-westus3` as
+`platform-account.bicep`, using the recovery parameter file, creates
+`ai-krypto-westus3-02` as
 `Microsoft.CognitiveServices/accounts`:
 
 - kind `AIServices`, SKU `S0`;
@@ -247,19 +265,23 @@ Planned communication names are:
 
 | Environment | Communication Service | Email Communication Service |
 |---|---|---|
-| dev | `acs-krypto-dev` | `email-krypto-dev` |
-| prod | `acs-krypto-prod` | `email-krypto-prod` |
+| dev | `acs-krypto-dev02` | `email-krypto-dev02` |
+| prod | `acs-krypto-prod02` | `email-krypto-prod02` |
 
 The Azure-managed sender is an `environment.bicep` output. No custom DNS is
 required.
 
 ## Deployment order and foundation handoff
 
-1. Subscription owner runs `register-providers.sh` and waits for `Registered`.
-2. Local `bootstrap.bicep`.
-3. Provision the exact Luna deployment pair and run Entra no-trade smokes.
-   Current operation uses established `ghcp-foundry-eastus2`; the dedicated
-   `azure-platform.yml` path remains available for a future migration.
+1. Inspect provider registrations in the explicitly selected subscription;
+   register missing providers only with approval. All required providers
+   were already registered during the recovery assessment.
+2. Validate and approve the exact new-target `bootstrap.bicep` effects,
+   then provision the three resource groups and four scoped OIDC identities.
+   Do not rebind protected GitHub settings to unverified identity outputs.
+3. Provision `platform-account.bicep`, then the exact Luna deployment pair
+   and Entra no-trade smokes through the protected `azure-platform.yml`
+   path. Verify the returned endpoint against the release/rollout inputs.
 4. `azure-deploy-dev.yml` with `deployment_stage=foundation`.
 5. `azure-deploy-prod.yml` with `deployment_stage=foundation`.
 6. Environment-scoped manual `azure-platform-access.yml` with the four retained
@@ -268,8 +290,9 @@ required.
 8. Full prod release, ending disabled/manual. No production promotion
    workflow is shipped or approved.
 
-Current checkpoint: steps 1 through 8 are complete. Dev is shadow/scheduled
-with monitored activation evidence, and prod is deployed disabled/manual.
+New-target checkpoint: preparation only. The historical assertion that all
+eight steps completed is not evidence for this subscription. A foundation-only
+workflow success is not an application release or full factory canary.
 
 Both foundation workflows publish a nonsecret handoff artifact containing
 identity IDs, evidence metadata, ACS sender, and monitoring IDs. The access
@@ -277,9 +300,11 @@ workflow consumes the principal IDs through explicit reviewed inputs; it
 does not guess them.
 
 Manual workflows support `foundation` and `full`; the workflow definition maps
-`workflow_run` events to `full`. Automatic mutation is currently paused because
-required-reviewer enforcement is unavailable. Use manual dispatch with the
-configured branch, exact CI-passed SHA, and CI gate.
+`workflow_run` events to `full` for development. Production remains manual-only
+and disabled/Manual. The development workflow uses the `development`
+Environment, not the legacy `development-promotion` Environment; inspect the
+protections actually referenced by each workflow. Any approved dispatch must
+use the configured branch, exact CI-passed SHA, and existing CI gate.
 
 ## Release secrets and Azure-generated values
 

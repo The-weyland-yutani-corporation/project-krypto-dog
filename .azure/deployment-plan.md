@@ -1,0 +1,448 @@
+# Project Krypto deployment recovery
+
+> **Status:** Validated
+
+Validated scope: **dedicated Foundry account only**. Subscription
+bootstrap is deployed and verified. Overall commissioning remains incomplete.
+The account and all later stages still require protected workflow admission;
+local validation does not authorize a local apply around that gate.
+
+The owner approved conditional commissioning after reviewing this plan.
+Current-head checks, native validation, and applicable GitHub Environment
+gates must pass before execution. Approval is not validation or deployment
+proof. Existing Bicep is the selected recipe; this is a modification/recovery
+of the Next.js application, not an AZD migration.
+
+## Conditional commissioning authorization
+
+Approval covers one commissioning pass for the selected new target, at most
+one corrective retry per stage, and one full factory canary with a six-hour
+bound after readiness. It includes the listed OIDC/workload grants,
+Azure/platform setting rebindings, and fresh database-secret bindings.
+Existing app-auth and telemetry secrets may be consumed only by trusted
+hosted workflows. `azure-deploy-prod.yml` may be enabled only for its
+protected disabled/Manual release.
+
+Reviewers and branch protections remain unchanged. Old Azure resources and
+historical data stay untouched. Production activation and real-money
+execution remain excluded. Failed validation, source checks, or Environment
+admission block execution; this approval does not waive any of them.
+
+## Goal
+
+Recover unattended software delivery through a verified development/shadow
+deployment and a separately protected, disabled production release. Keep
+real-money trading disabled and preserve the emergency pause,
+current-head review, migrations, reconciliation, backup, rollback, and health
+evidence requirements.
+
+## Confirmed decisions
+
+- The owner selected the signed-in default Azure subscription as the new target.
+- Region: `westus3`.
+- The owner selected development and production infrastructure together,
+  including their dedicated shared model host. This is implementation scope,
+  not production activation or provisioning authorization.
+- Azure planning ceiling: $500/month, including application-model use and
+  monitoring but excluding existing GitHub/Copilot subscriptions. This is not
+  an Azure-enforced spending cap or an authorization to spend.
+- Target subscription and tenant bindings are kept in private session state
+  and, after separate approval, protected deployment settings. Do not commit
+  them or copy old credentials.
+- Existing Azure resources and credentials are not to be deleted or migrated
+  implicitly.
+- The owner approved one factory resume only after blocking repairs and
+  readiness checks pass.
+- The shared factory model setting was changed from unavailable `gpt-5.4` to
+  `gpt-5.3-codex` with explicit owner approval and verified by readback. A
+  subsequent hosted PM Triage run
+  [completed successfully](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39540190455)
+  with that configured setting. The subsequent
+  [MonitorOps run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39551325097)
+  also executed its agent successfully, but the collector command was denied
+  permission and the agent emitted a no-op instead of a status report.
+  Model startup is repaired; operational monitoring is not yet verified.
+- Target selection does not authorize provisioning, permission changes,
+  production activation, or removal of platform protections.
+
+## Preparation
+
+- [x] Inspect only the selected target for existing Krypto resources.
+- [x] Map the existing Bicep and GitHub deployment pipeline to the new target.
+- [x] Record region, footprint, cost assumptions, identity effects, and prerequisites.
+- [x] Obtain approval for the bounded provisioning/configuration plan.
+- [x] Validate, provision, and read back the approved subscription bootstrap.
+- [ ] Validate each remaining stage before its protected deployment.
+
+## Staged validation
+
+Completed stage: **subscription bootstrap only** (`infra/bootstrap.bicep` and
+`infra/params/bootstrap.bicepparam`). Its three groups and four OIDC identities
+have been read back successfully. Each subsequent stage must repeat native
+validation with those real outputs before execution. A bootstrap result is not
+validation of the model, application, or full factory. Do not repeat the
+bootstrap simply to advance commissioning.
+
+Current stage: **dedicated Foundry account only**
+(`infra/platform-account.bicep` and
+`infra/params/platform-account.bicepparam`). Validate only the account and
+its delete lock in the verified platform group. Model deployments and workload
+access are separate later stages; no account apply is permitted locally.
+
+- [x] All validation checks pass for the current account stage.
+  - [x] Core Validation (CLI, auth, build, validate, what-if).
+  - [x] Linting: compile the exact account template and parameter file.
+  - [x] Azure Policy Validation: reconcile applicable policy with the preview.
+- [x] Verify current-head source gates and static roles for the account stage.
+- [x] Record account-stage proof and resolve any validation errors.
+
+- [x] All validation checks passed for the completed bootstrap stage.
+  - [x] Core Validation (CLI, auth, build, validate, what-if), using the shared
+    PowerShell `validate-deployment` helper with explicit subscription scope.
+  - [x] Linting: bootstrap compilation and current-head infrastructure checks pass.
+  - [x] Azure Policy Validation: reconcile applicable policy with the preview.
+- [x] Application build and Docker targets pass on the reviewed source head.
+- [x] Static bootstrap roles match the disclosed resource-group grants and
+  subscription read-only exceptions.
+- [x] Native preview contains no destructive or out-of-scope resource changes.
+- [x] Current-head GitHub review/check gates pass before cloud mutation.
+
+## 7. Validation Proof
+
+### Bootstrap
+
+Validated evidence scope: **bootstrap only**, source commit
+`cb299d8fbb1eda308df6f3ae9146d8d4573462ce`.
+The structured native preview was recorded at
+`2026-10-21T05:40:52Z`; the source checks were confirmed before execution.
+Subscription and location were explicitly selected and reconfirmed in the
+commissioning approval. The preview shows no existing Krypto group conflicts.
+AZD environment/tag steps and Container Apps image-pull checks do not apply
+to this Bicep-only bootstrap; no application container is created in this stage.
+
+| Check | Command or evidence | Result |
+| --- | --- | --- |
+| Core native validation | Shared `validate-deployment.ps1`, scope `sub`, location `westus3`, explicit selected subscription, bootstrap Bicep and parameter files | All five steps PASS; no provisioning |
+| Structured native preview | `az deployment sub what-if`, `FullResourcePayloads`, JSON retained privately | 25 actual Create entries; no Modify/Delete |
+| Preview boundaries | Inspect every JSON change | Three approved groups, four identities, four federations, nine RG role grants, four subscription read-only grants, one custom read-only role |
+| Current-head source gates | Recovery PR checks at the source commit above | Quality, PostgreSQL migrations/execution, Agentic code review, CodeQL, Bicep, helper tests, Docker targets, and harness integrity passed |
+| Static bootstrap roles | Read `bootstrap.bicep` and `modules/oidc-identity.bicep` | Disclosed RG grants and minimal subscription read-only exceptions; no subscription-write role |
+| Policy | Azure MCP assignment listing plus direct definition reads and native validation | No bootstrap policy conflict; classic-resource denies do not cover these resource types |
+
+The helper's text counted 26 `+` markers; the structured preview contains
+25 resource changes. Use the structured count, not the text marker count.
+Inherited governance and MFA policies remain enforced. No model/foundation/
+release admission, production activation, or full-factory success is attested
+by this bootstrap proof.
+
+### Dedicated Foundry account
+
+The shared native validation helper passed CLI availability, authentication,
+Bicep build, resource-group validation, and what-if for
+`infra/platform-account.bicep` with its real nonsecret parameter file and
+the explicit approved subscription. Structured preview evidence was recorded
+at `2026-10-21T16:40:57Z`.
+
+| Check | Command or evidence | Result |
+| --- | --- | --- |
+| Core native validation | `validate-deployment.ps1 -Scope group -ResourceGroup rg-krypto-platform`, account template/parameters, explicit subscription | All five steps PASS; no provisioning |
+| Structured preview | `az deployment group what-if`, `FullResourcePayloads`, JSON retained privately | Exactly two Create entries; no Modify/Delete |
+| Account security | Inspect the account preview | Approved `westus3` AIServices/S0 account, local auth disabled, intended public network setting |
+| Delete protection | Inspect the lock preview and its exact parent | `CanNotDelete` lock on the proposed account only |
+| Build and roles | Compile real account parameters; inspect both compiled resource types and verified platform grants | No new IAM grants; existing scoped Contributor and Locks Contributor cover this stage |
+| Source | Unchanged executable source at `cb299d8fbb1eda308df6f3ae9146d8d4573462ce` and its current-head hosted gates | Passed; subsequent edits are recovery documentation only |
+| Policy | Re-read applicable assignments, actual OpenAI provisioned-capacity deny rule, and current MFA enforcement; native provider validation | No account-stage validation conflict; policies unchanged |
+
+The helper's pretty-output counter includes the legend and reported three
+create markers; the JSON contains two resource creates. The OpenAI deny rule
+targets `ProvisionedManaged` model deployments, not this S0 account. This
+does not validate the later model stage, quota, or inference. MFA and other
+inherited policies remain enforced. The account has **not** been deployed:
+the commissioning stop and the protected platform workflow still apply.
+
+## Bootstrap execution receipt
+
+The first bootstrap attempt completed at `2026-10-21T05:57:09Z`, using
+`az deployment sub create` with the reviewed Bicep and parameter files,
+explicit approved subscription, `westus3`, and deployment name
+`krypto-bootstrap-cb299d8`. No corrective retry was used. Current-head
+checks and unchanged infrastructure/workflow source were checked again
+immediately before execution; all three planned groups were still absent.
+
+Independent Azure readback completed at `2026-10-21T06:01:44Z`:
+
+| Persisted boundary | Observed result |
+| --- | --- |
+| Subscription deployment | Succeeded in the selected region |
+| Resource groups | All three present with the expected project tag and region |
+| OIDC identities | All four actual client/principal/resource IDs match deployment outputs and the selected tenant |
+| Federated credentials | Four exact repository/immutable-ID/Environment subjects, expected issuer and audience |
+| RG role assignments | Nine expected grants; no unexpected grants |
+| Subscription assignments | Four expected read-only grants; no subscription-write grant |
+| Custom provider reader | Exactly the approved single read action and subscription assignable scope |
+
+Raw identity outputs and role evidence remain private. No application
+foundation, model host, database, container, or schedule was created by this
+stage. Protected GitHub bindings have not yet been changed. Factory control
+remains paused, and production remains unactivated.
+
+## Commissioning stop receipt
+
+The owner separately approved a temporary pause of `azure-deploy-dev.yml`
+while credentials, source, and initial dependencies are aligned, with
+re-enablement for controlled foundation/full runs. Its state was read back
+as `disabled_manually` at `2026-10-21T14:52:36Z`. This changes no Environment
+reviewer or branch protection and does not resume factory control.
+
+One older [development run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/37642379119),
+created on October 7, still reports `queued` with zero jobs. The owner approved
+its cancellation. Both the normal cancellation and one supported force-cancel
+attempt were rejected as already completed, while fresh run/list APIs still
+report queued. The cancellation retry is exhausted; do not retry indefinitely,
+delete its audit history, or treat the contradictory response as a verified
+cancellation.
+
+Protected credential rebinding and the recovery merge remain on hold until
+that stale-run state is resolved. No Azure bindings or database secrets were
+changed. Read-only validation of later stages may proceed, but it does not
+remove this stop. Other platform, workload-access, production, and rotation
+workflows had no active runs when checked.
+
+## Verified preparation evidence
+
+Read-only discovery on 2026-10-21 found no `rg-krypto-*` resource groups in
+the selected subscription. All 12 providers required by
+`.github/scripts/azure/register-providers.sh` are already registered.
+
+| Capacity | Current / limit | Planned incremental demand |
+| --- | --- | --- |
+| Container Apps managed environments, westus3 | 2 / 50 | Two environments; projected 4 / 50 |
+| Virtual networks, westus3 | 1 / 1000 | Two networks; projected 3 / 1000 |
+| Storage accounts, westus3 | 2 / 250 | Two evidence accounts; projected 4 / 250 |
+| OpenAI GlobalStandard gpt-5.6-luna, westus3 | 0 / 250 capacity units | Two deployments of 10; projected 20 / 250 |
+
+The regional catalog offers `OpenAI/gpt-5.6-luna/2026-07-09` with
+`GlobalStandard`. Account-specific catalog validation and an actual Entra
+inference smoke are still required after an approved account creation.
+PostgreSQL `Standard_B1ms` and `Standard_D2ds_v5` appear in the regional
+capabilities catalog, and the region reports geo-backup support as Enabled.
+Those listings are not guarantees of provisioning
+admission. Preserve the existing dev 32-GB/Burstable and prod
+64-GB/GeneralPurpose sizing, 35-day PITR, and prod geo-redundant backup.
+
+The observed GitHub OIDC subject includes the current organization and
+immutable owner/repository IDs. This repair corrects the stale owner in
+`infra/params/bootstrap.bicepparam`; the subject construction in
+`infra/modules/oidc-identity.bicep` remains unchanged.
+
+The proposed ACR, Key Vault, storage, PostgreSQL, Communication Services,
+and Foundry custom-domain names below passed name-availability checks.
+Those service names are not reserved or provisioned; only the bootstrap
+groups and OIDC identities now exist. No old resources are adopted by name.
+
+| Resource | Development | Production / shared platform |
+| --- | --- | --- |
+| Resource group | `rg-krypto-dev` | `rg-krypto-prod`; `rg-krypto-platform` |
+| Name prefix | `krypto-dev02` | `krypto-prod02` |
+| ACR | `acrkryptodev02` | `acrkryptoprod02` |
+| Key Vault | `kv-krypto-dev02` | `kv-krypto-prod02` |
+| Evidence storage | `stkryptodev02evid` | `stkryptoprod02evid` |
+| PostgreSQL | `psql-krypto-dev02` | `psql-krypto-prod02` |
+| Communication Services | `acs-krypto-dev02` | `acs-krypto-prod02` |
+| Email Services | `email-krypto-dev02` | `email-krypto-prod02` |
+| Foundry account / custom domain | Shared | `ai-krypto-westus3-02` |
+
+Inherited policies deploy Advanced Threat Protection for PostgreSQL Flexible
+Server. The subscription's `OpenSourceRelationalDatabases` Defender plan is
+already Standard. Do not disable that policy or plan to meet the budget;
+include its incremental charges in the estimate.
+
+## Cost inputs, not a deployment quote
+
+The Azure Retail Prices API returned these USD consumption meters for
+`westus3`:
+
+| Meter | Observed retail rate | Planning calculation |
+| --- | --- | --- |
+| PostgreSQL Flexible Server B1MS | $0.017/hour | $12.41 per 730-hour month |
+| PostgreSQL Flexible Server Standard_D2ds_v5, 2-vCore SKU | $0.178/hour | $129.94 per 730-hour month |
+| PostgreSQL Flex Server storage | $0.115/GB/month | $11.04 for 32 + 64 GB |
+| PostgreSQL Flexible Server LRS backup storage | $0.095/GB/month | Depends on billable retained backup volume |
+| ACR Basic registry | $0.1666/day | Approximately $10.00/month for two registries |
+| Container Apps active vCPU | $0.000024/second | $31.54 per continuously active 0.5-vCPU replica/month |
+| Container Apps active/idle memory | $0.000003/GiB-second | $7.88 per 1-GiB replica/month |
+| GPT-5.6 Luna GlobalStandard short-context input/output | $0.20 / $1.20 per million tokens | Usage-dependent |
+| GPT-5.6 Luna GlobalStandard long-context input/output | $0.40 / $1.80 per million tokens | Usage-dependent |
+
+Source: <https://prices.azure.com/api/retail/prices>, retrieved during recovery.
+These are public retail meter readings, not a contractual quote. Container
+Apps replica resource assignments must be verified from the admitted
+configuration; the templates do not explicitly size the web containers.
+ACR builds, storage operations, monitoring, email, egress, retained backups,
+and the existing Defender plan incur additional consumption charges.
+
+### Combined monthly planning envelope
+
+| Category | Monthly USD allowance | Basis |
+| --- | --- | --- |
+| Both databases: compute and provisioned storage | $153.39 | Observed SKU/storage meters, 730 hours |
+| Web apps, short-lived jobs, and image-build compute | $100.00 | Low-volume baseline; verify admitted container sizes |
+| Two Basic registries | $10.00 | Observed daily registry meter, rounded |
+| Log ingestion | $23.00 | 10 GB/month combined at the observed $2.30/GB meter |
+| Application-model use | $40.00 | Usage allowance, not reserved-throughput spending |
+| Backups, evidence, network, email, Key Vault, and Defender | $110.00 | Conservative combined allowance; not a quoted Defender meter |
+| Contingency | $63.61 | Headroom |
+| Total planning ceiling | $500.00 | Not a technical spending cap |
+
+This envelope assumes two low-traffic applications, not all maximum replicas
+running continuously. Higher traffic, logs, model usage, retained data, taxes,
+or contractual pricing can exceed it. Stop if validation requires a larger
+configuration or reveals costs outside this envelope; do not silently resize,
+remove protection, or request more quota. Public documentation did not expose
+a directly verifiable Defender amount in the retrieved page, so its cost is
+included as an allowance rather than a fabricated precise quote.
+
+## Resource inventory and capacity qualifications
+
+The full source footprint creates three Krypto resource groups, four OIDC
+identities/federations, six runtime/scheduler/ops identities, two application
+foundations, two web applications, fourteen jobs, and one dedicated Foundry
+account with two deployments. Azure may create its own managed infrastructure
+resources for the Container Apps environments.
+
+| Resource class | New | Projected total after deployment | Capacity evidence |
+| --- | --- | --- | --- |
+| Krypto resource groups | 3 | 34 subscription groups before service-managed additions | Existing groups counted; ARM validation required |
+| Container Apps environments | 2 | 4 in westus3 | Live quota 50 |
+| Web Container Apps / jobs | 2 / 14 | 5 / 16 in westus3 | New environments; admitted compute and per-environment limits must pass |
+| Virtual networks | 2 | 3 in westus3 | Live quota 1000 |
+| Private DNS zones | 2 | 15 subscription-wide | New resource groups; provider validation required |
+| Evidence storage accounts | 2 | 4 in westus3 | Live quota 250 |
+| PostgreSQL Flexible Servers | 2 | 4 in westus3 | SKU/version/geo-backup capabilities observed; quota CLI returns BadRequest |
+| Registries | 2 | 5 in westus3 | Names available; quota CLI returns BadRequest |
+| Key Vaults | 2 | 4 in westus3 | Names available; quota CLI returns BadRequest |
+| User-assigned managed identities | 10 | 13 in westus3 | Four bootstrap identities verified; six workload identities remain pending |
+| Communication / Email Services | 2 / 2 | 4 / 4 global | Communication names available; Azure-managed email domains |
+| Log Analytics workspaces | 2 | 4 in westus3 | New workspace per environment; usage-based ingestion allowance |
+| Action groups / scheduled-query alerts | 2 / 4 | 5 global action groups / 4 new alerts | One failed-job and one missing-success alert per environment |
+| Foundry account | 1 | 2 in westus3 | Custom domain available; account-specific admission still required |
+| Model deployments | 2 | 20 of 250 capacity units in westus3 | Exact model/version/GlobalStandard catalog and live quota |
+
+Failed quota queries and absent published count limits are not evidence of
+unlimited capacity. The public
+[PostgreSQL limits page](https://learn.microsoft.com/en-us/azure/postgresql/configure-maintain/concepts-limits)
+documents connection and functional limits, not a server-count quota. Native
+provider validation and fail-closed admission remain required; this preparation
+record does not assert that all cloud checks have passed.
+
+## Proposed permission and configuration effects
+
+The following effects are covered by the separate conditional commissioning
+approval, not by target, region, budget, or environment-scope selection alone.
+
+| OIDC identity | Resource-group permissions | Subscription permissions |
+| --- | --- | --- |
+| Development | Contributor + Role Based Access Control Administrator on `rg-krypto-dev` | One-action provider-registration reader |
+| Production deploy | Contributor + Role Based Access Control Administrator + Locks Contributor on `rg-krypto-prod` | One-action provider-registration reader |
+| Production promotion | Contributor on `rg-krypto-prod` | None |
+| Platform | Contributor + Role Based Access Control Administrator + Locks Contributor on `rg-krypto-platform` | Provider-registration reader + Cognitive Services Usages Reader |
+
+These existing template roles are not being broadened. RBAC Administrator
+can nevertheless assign powerful roles inside its resource group; it is not
+limited to the named workload roles. The bootstrap operator's permission
+listing allows group/deployment creation, role definitions/assignments, and
+locks. No subscription-write permission is granted to a workflow identity.
+The custom reader permits only
+`Microsoft.Resources/subscriptions/providers/read`, not provider registration.
+
+Workload bindings remain resource-scoped: image pull, Key Vault secret reads,
+evidence access, and four runtime/ops OpenAI User grants on the shared model
+account. The platform smoke principal also receives account-scoped inference
+access. Preserve private PostgreSQL, Foundry local-auth disablement, production
+delete locks, and existing 7-day dev / 90-day prod evidence retention. Do not
+irreversibly lock evidence retention as part of this recovery approval.
+
+Protected GitHub changes would replace Azure subscription/tenant/client
+bindings in the four existing Environments using verified bootstrap outputs,
+and update platform account/principal metadata. Fresh per-environment database
+administrator/runtime passwords and database URLs are required. Do not display,
+commit, or put their values in an issue. Other existing application-auth and
+telemetry secrets remain in their respective protected Environments and are
+consumed only by the trusted hosted release workflow. Replacing database
+bindings does not migrate or alter the old Azure database.
+
+## Execution and stop conditions
+
+1. Complete source review and current-head CI through the recovery PR.
+2. Obtain the exact provisioning/configuration approval and complete the
+   Azure validation workflow. Keep native quota, name, policy, and role
+   failures blocking; do not auto-escalate privileges or switch targets.
+3. Bootstrap only the selected subscription, then re-read the produced
+   identities and bind protected settings. Leave old Azure resources intact.
+4. Validate/provision the dedicated account, model pair, both foundations,
+   and the four workload inference bindings in their existing dependency order.
+5. Configure fresh database bindings securely. Run the exact-SHA development
+   release and its migration/smoke/activation/schedule observation path.
+6. Run production only through its protected exact-SHA path, ending
+   disabled/Manual. Required GitHub approvals remain effective.
+7. If readiness passes, use the separately granted one-time factory resume
+   authorization and observe the complete owned issue-to-merge-to-dev canary.
+8. On failure, preserve diagnostics and force only the new environment's
+   jobs to Manual and app to disabled before rollback. Do not delete resources,
+   overwrite old data, remove locks/protections, or claim activation.
+
+This is a fresh deployment, not a migration of inaccessible historical data.
+The conditional approval is recorded; its source, validation, admission, and
+retry conditions still apply to every stage.
+
+## Protection-state observation
+
+On 2026-10-21 the Environment API showed branch restrictions on `development`,
+and required reviewers with `prevent_self_review` plus branch restrictions on
+`platform`, `production-deploy`, and `production-promotion`. Allowed branches
+are `main` and `develop/azure`. Development does not reference the legacy
+`development-promotion` Environment.
+
+Consequently, this infrastructure recovery alone cannot truthfully deliver
+100% unattended production delivery. A separate, explicitly approved
+production-protection/promotion design is still required. Do not remove or
+bypass those protections under this plan.
+
+## Proposed repair surfaces
+
+- Correct only the stale GitHub owner parameters, retaining immutable-ID
+  federation and resource-group-scoped deployment privileges.
+- Reuse the existing Bicep architecture and exact-SHA development pipeline.
+- Keep resource names, Key Vault, model endpoint, and identity bindings
+  consistent across foundation, release, rollout, schedule monitoring, and
+  rollback. Monitoring selects the same name prefix; activation uses compiled
+  JSON parameters before applying its boolean/time overrides.
+- Do not reuse the old cross-tenant Foundry endpoint or database URLs.
+- Use the owner-selected full footprint: three resource groups, four OIDC
+  identities, two model deployments, and both dev and prod workload
+  identities. There is no new dev-only abstraction or automatic production
+  activation path.
+- Disclose each identity, role grant, protected-setting change, and secret
+  prerequisite in the final approval request. No secret values are to be
+  displayed or committed.
+
+## Unresolved
+
+- Independent model-host creation/admission and final service validation.
+- Protected GitHub rebinding, workload identity setup, and external service configuration.
+- Native validation and protected-workflow admission for all post-bootstrap stages.
+- Safe initial-deployment sequencing: a successful main CI automatically starts
+  the full dev rollout, independently of the factory pause. New automatic
+  dispatch is temporarily disabled, but the stale run above remains unresolved.
+- MonitorOps collector permission failure, despite a green agent run.
+  Its separate repair session also remains blocked by the tool-approval layer,
+  including after the owner's fresh approval for scoped local validation tools;
+  no source fix or permission workaround was attempted.
+- Production software-delivery scope, which remains manual and disabled.
+
+## Validation and activation
+
+No deployment or factory activation may bypass the conditional approval's
+prerequisites. Readiness requires successful exact-SHA application deployment
+evidence, not a green infrastructure-only job. The full factory canary has no
+recorded successful run.

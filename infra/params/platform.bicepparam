@@ -3,7 +3,7 @@
 // platform-account.bicep.
 using '../platform.bicep'
 
-param foundryAccountName = 'ai-krypto-westus3'
+param foundryAccountName = 'ai-krypto-westus3-02'
 param platformSmokePrincipalId = 'REPLACE_WITH_PLATFORM_SMOKE_PRINCIPAL_ID'
 
 param devDeploymentName = 'krypto-dev-luna'
