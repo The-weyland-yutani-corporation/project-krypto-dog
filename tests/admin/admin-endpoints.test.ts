@@ -330,6 +330,26 @@ describe("POST /api/admin/release-run-lease", () => {
   });
 
   describe("POST /api/admin/unlock", () => {
+    const unlockReason =
+      "Reviewed accounting and confirmed the lock cause.";
+
+    function lockedState(
+      overrides: Record<string, unknown> = {},
+    ): Record<string, unknown> {
+      return {
+        isLocked: true,
+        lockReason: "drawdown limit",
+        lockedAt: new Date("2026-01-01T00:00:00.000Z"),
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        accountingStatus: "RECONCILED",
+        currentPositionETHDecimal: "0.000000000000000000",
+        referencePriceUSD: "2100.00000000",
+        lastBuyPriceUSD: null,
+        ...overrides,
+      };
+    }
+
     it("requires an explicit audit reason", async () => {
       const res = await unlock(
         makeReq("http://localhost:3000/api/admin/unlock", {
@@ -343,38 +363,74 @@ describe("POST /api/admin/release-run-lease", () => {
 
     it("refuses to unlock while an owned lease is active", async () => {
       mockDb._selectChain.limit.mockResolvedValueOnce([
-        {
-          isLocked: true,
+        lockedState({
           lockReason: "drawdown",
-          lockedAt: new Date("2026-01-01T00:00:00.000Z"),
           leaseOwner: "active-run",
           leaseExpiresAt: new Date(Date.now() + 60_000),
-        },
+        }),
       ]);
 
       const res = await unlock(
         makeReq("http://localhost:3000/api/admin/unlock", {
           body: {
             confirm: "UNLOCK",
-            reason: "Reviewed accounting and confirmed the lock cause.",
+            reason: unlockReason,
           },
         }),
       );
 
       expect(res.status).toBe(409);
       expect(mockDb.update).not.toHaveBeenCalled();
+      expect(mockDb._insertChain.values).not.toHaveBeenCalled();
     });
 
-    it("clears the safety lock and writes an audit entry", async () => {
+    it("returns 409 with no mutation when accounting is not RECONCILED", async () => {
       mockDb._selectChain.limit.mockResolvedValueOnce([
-        {
-          isLocked: true,
-          lockReason: "drawdown limit",
-          lockedAt: new Date("2026-01-01T00:00:00.000Z"),
-          leaseOwner: null,
-          leaseExpiresAt: null,
-        },
+        lockedState({ accountingStatus: "QUARANTINED" }),
       ]);
+
+      const res = await unlock(
+        makeReq("http://localhost:3000/api/admin/unlock", {
+          body: { confirm: "UNLOCK", reason: unlockReason },
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error:
+          "Cannot clear the safety lock while accounting is not RECONCILED",
+        accountingStatus: "QUARANTINED",
+      });
+      expect(mockDb.update).not.toHaveBeenCalled();
+      expect(mockDb._insertChain.values).not.toHaveBeenCalled();
+    });
+
+    it("refuses flat unlock when lastBuyPriceUSD is still set", async () => {
+      mockDb._selectChain.limit.mockResolvedValueOnce([
+        lockedState({
+          currentPositionETHDecimal: "0",
+          lastBuyPriceUSD: "2000.00000000",
+        }),
+      ]);
+
+      const res = await unlock(
+        makeReq("http://localhost:3000/api/admin/unlock", {
+          body: { confirm: "UNLOCK", reason: unlockReason },
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error:
+          "Cannot clear the safety lock while flat with a non-null lastBuyPriceUSD",
+        lastBuyPriceUSD: "2000.00000000",
+      });
+      expect(mockDb.update).not.toHaveBeenCalled();
+      expect(mockDb._insertChain.values).not.toHaveBeenCalled();
+    });
+
+    it("clears the safety lock and writes an audit entry for a flat position", async () => {
+      mockDb._selectChain.limit.mockResolvedValueOnce([lockedState()]);
       mockDb._updateChain.returning.mockResolvedValueOnce([
         { isLocked: false, isOperatorPaused: true },
       ]);
@@ -383,7 +439,7 @@ describe("POST /api/admin/release-run-lease", () => {
         makeReq("http://localhost:3000/api/admin/unlock", {
           body: {
             confirm: "UNLOCK",
-            reason: "Reviewed accounting and confirmed the lock cause.",
+            reason: unlockReason,
           },
         }),
       );
@@ -394,18 +450,129 @@ describe("POST /api/admin/release-run-lease", () => {
         lockReason: null,
         lockedAt: null,
         isOperatorPaused: true,
+        referencePriceUSD: null,
       });
       expect(mockDb._insertChain.values).toHaveBeenCalledWith(
         expect.objectContaining({
-          entryText: expect.stringContaining(
-            "Reviewed accounting and confirmed the lock cause.",
-          ),
+          entryText: expect.stringContaining(unlockReason),
           marketConditions: expect.objectContaining({
             event: "operator-unlock",
+            reason: unlockReason,
+            positionClass: "flat",
+            accountingStatus: "RECONCILED",
+            currentPositionETHDecimal: "0.000000000000000000",
+            referencePriceUSD: {
+              before: "2100.00000000",
+              after: null,
+            },
+            lastBuyPriceUSD: {
+              before: null,
+              after: null,
+            },
             priorLockReason: "drawdown limit",
+            priorLockedAt: "2026-01-01T00:00:00.000Z",
+            isOperatorPaused: true,
           }),
         }),
       );
+    });
+
+    it("nulls lastBuyPriceUSD and retains referencePriceUSD for an open position", async () => {
+      mockDb._selectChain.limit.mockResolvedValueOnce([
+        lockedState({
+          currentPositionETHDecimal: "0.050000000000000000",
+          referencePriceUSD: "2100.00000000",
+          lastBuyPriceUSD: "2050.00000000",
+        }),
+      ]);
+      mockDb._updateChain.returning.mockResolvedValueOnce([
+        { isLocked: false, isOperatorPaused: true },
+      ]);
+
+      const res = await unlock(
+        makeReq("http://localhost:3000/api/admin/unlock", {
+          body: { confirm: "UNLOCK", reason: unlockReason },
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockDb._updateChain.set).toHaveBeenCalledWith({
+        isLocked: false,
+        lockReason: null,
+        lockedAt: null,
+        isOperatorPaused: true,
+        lastBuyPriceUSD: null,
+      });
+      expect(mockDb._insertChain.values).toHaveBeenCalledWith(
+        expect.objectContaining({
+          marketConditions: expect.objectContaining({
+            event: "operator-unlock",
+            positionClass: "open",
+            accountingStatus: "RECONCILED",
+            currentPositionETHDecimal: "0.050000000000000000",
+            referencePriceUSD: {
+              before: "2100.00000000",
+              after: "2100.00000000",
+            },
+            lastBuyPriceUSD: {
+              before: "2050.00000000",
+              after: null,
+            },
+            isOperatorPaused: true,
+          }),
+        }),
+      );
+    });
+
+    it("rolls back when the journal insert fails", async () => {
+      mockDb._selectChain.limit.mockResolvedValueOnce([lockedState()]);
+      mockDb._updateChain.returning.mockResolvedValueOnce([
+        { isLocked: false, isOperatorPaused: true },
+      ]);
+      mockDb._insertChain.values.mockImplementationOnce(() => {
+        throw new Error("journal write failed");
+      });
+
+      await expect(
+        unlock(
+          makeReq("http://localhost:3000/api/admin/unlock", {
+            body: { confirm: "UNLOCK", reason: unlockReason },
+          }),
+        ),
+      ).rejects.toThrow("journal write failed");
+    });
+
+    it("returns 409 when the safety lock is not active", async () => {
+      mockDb._selectChain.limit.mockResolvedValueOnce([
+        lockedState({ isLocked: false }),
+      ]);
+
+      const res = await unlock(
+        makeReq("http://localhost:3000/api/admin/unlock", {
+          body: { confirm: "UNLOCK", reason: unlockReason },
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error: "Safety lock is not active",
+      });
+      expect(mockDb.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects unlock without a valid admin session", async () => {
+      mockedRequireAdminSession.mockResolvedValueOnce(
+        NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
+      );
+
+      const res = await unlock(
+        makeReq("http://localhost:3000/api/admin/unlock", {
+          body: { confirm: "UNLOCK", reason: unlockReason },
+        }),
+      );
+
+      expect(res.status).toBe(401);
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
     it("rejects cross-origin unlock requests", async () => {
@@ -414,7 +581,7 @@ describe("POST /api/admin/release-run-lease", () => {
           origin: "https://evil.example.com",
           body: {
             confirm: "UNLOCK",
-            reason: "Reviewed accounting and confirmed the lock cause.",
+            reason: unlockReason,
           },
         }),
       );
