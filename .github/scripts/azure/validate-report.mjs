@@ -152,7 +152,7 @@ switch (operation) {
     }
     if (origin.protocol !== "https:" || origin.origin !== targetOrigin) fail("--target-origin must be a bare HTTPS origin.");
     for (const [field, expected] of Object.entries({
-      schemaVersion: "1.1.0", operation, phase, intendedMode: "paper",
+      schemaVersion: "1.2.0", operation, phase, intendedMode: "paper",
       authorizationId, releaseSha: expectedReleaseSha, imageDigest: expectedImageDigest,
       targetOrigin, environmentName: "prod", jobExecutionId: executionId, azureExecutionName,
     })) requireMatch(report, field, expected, "production-verification report");

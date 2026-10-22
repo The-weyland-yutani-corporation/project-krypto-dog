@@ -239,7 +239,7 @@ try {
     "scheduled-run-journal", "scheduled-run-fills",
   ];
   const base = {
-    schemaVersion: "1.1.0", operation: "production-verification", phase: "ready",
+    schemaVersion: "1.2.0", operation: "production-verification", phase: "ready",
     intendedMode: "paper", generatedAt: new Date().toISOString(),
     releaseSha: RELEASE_SHA_A, imageDigest: DIGEST_1, targetOrigin: "https://krypto.example.com",
     authorizationId: "d".repeat(64), scheduleGeneration: generation, approved: true,
@@ -276,6 +276,7 @@ try {
     [scheduled, { scheduledRun: { ...scheduled.scheduledRun, outcome: "EXECUTED", tradeCount: 1, tradeJournalCount: 1 } }, 0],
     ...[base, scheduled].flatMap((report) => [
       [report, { schemaVersion: "1.0.0" }, 1],
+      [report, { schemaVersion: "1.1.0" }, 1],
       [report, { posthog: { host: base.posthog.host, environment: "prod", keySha256: "a".repeat(64) } }, 1],
       [report, { posthog: { ...base.posthog, keyBinding: null } }, 1],
       [report, { posthog: { ...base.posthog, keyBinding: ["a".repeat(64)] } }, 1],

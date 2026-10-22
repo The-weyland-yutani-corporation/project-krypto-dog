@@ -273,7 +273,8 @@ async function main(): Promise<void> {
   `;
   const owners = [randomUUID(), randomUUID()];
   const results = await Promise.all(owners.map((owner) => runDeploymentAdmission({ ...base, owner })));
-  assert.deepEqual(results.map((result) => result.status).sort(), ["admitted", "blocked"]);
+  assert.deepEqual(results.map((result) => result.status).sort(), ["admitted", "blocked"],
+    "Released singleton history must allow one new owner to acquire the active partial-index slot.");
   assert.equal((await runDeploymentAdmission({ ...base, action: "release" })).status, "blocked",
     "An old owner must never release a newer cutover.");
   const winner = results.find((result) => result.status === "admitted");
@@ -283,11 +284,13 @@ async function main(): Promise<void> {
   assert.equal((await runDeploymentAdmission(base)).reason, "released-owner",
     "Owner A must remain consumed after owner B completes a later cutover.");
   assert.equal(await fenceSnapshot(), completedFences, "A completed-owner replay must not mutate history.");
-  const [history] = await sql<Array<{ count: number }>>`
-    SELECT COUNT(*)::int AS count FROM "krypto"."DeploymentFence"
+  const [history] = await sql<Array<{ count: number; logicalIds: number }>>`
+    SELECT COUNT(*)::int AS count, COUNT(DISTINCT id)::int AS "logicalIds"
+    FROM "krypto"."DeploymentFence"
     WHERE "releasedAt" IS NOT NULL
   `;
   assert.equal(history.count, 2, "Both completed owners must remain recorded.");
+  assert.equal(history.logicalIds, 1, "Released owners must coexist with the same logical singleton ID.");
   await assert.rejects(
     sql`
       INSERT INTO "krypto"."DeploymentFence" (
@@ -322,7 +325,7 @@ async function main(): Promise<void> {
   })).kind, "mutex");
   assert.equal((await runDeploymentAdmission({ ...base, owner: resetOwner, action: "release" })).status, "released");
 
-  console.log("Deployment admission passed: exact source binding, mutation-free deferral, native row-lock race, runtime read-only fence, executor refusal, expiry, durable owner replay protection, single-active uniqueness, stop preservation, and seed/reset history preservation.");
+  console.log("Deployment admission passed: exact source binding, mutation-free deferral, native row-lock race, runtime read-only fence, executor refusal, expiry, durable owner replay protection, multi-owner singleton history, single-active uniqueness, stop preservation, and seed/reset history preservation.");
 }
 
 main()

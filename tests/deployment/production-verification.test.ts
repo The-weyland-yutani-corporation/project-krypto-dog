@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { scryptSync } from "node:crypto";
 import postgres from "postgres";
 
 import {
@@ -114,11 +114,14 @@ describe("read-only paper production verification", () => {
     expect(queries.every((query) => !/\b(INSERT|UPDATE|DELETE|COMMIT)\b/.test(query))).toBe(true);
     expect(JSON.stringify(report)).not.toContain(binding.posthogApiKey);
     expect(JSON.stringify(report)).not.toContain(binding.approvalSecret);
-    expect(report.schemaVersion).toBe("1.1.0");
+    expect(report.schemaVersion).toBe("1.2.0");
     expect(report.posthog).not.toHaveProperty("keySha256");
-    expect(report.posthog.keyBinding).toBe(createHmac("sha256", binding.approvalSecret)
-      .update(JSON.stringify(["production-posthog-key-binding", 1, binding.posthogHost, binding.posthogApiKey]))
-      .digest("hex"));
+    expect(report.posthog.keyBinding).toBe(scryptSync(
+      binding.posthogApiKey,
+      JSON.stringify(["production-posthog-key-binding", 2, binding.posthogHost, binding.approvalSecret]),
+      32,
+      { cost: 131_072, blockSize: 8, parallelization: 1, maxmem: 256 * 1024 * 1024 },
+    ).toString("hex"));
   });
 
   it("binds telemetry to the ops-only secret, host and project key consistently across phases", async () => {

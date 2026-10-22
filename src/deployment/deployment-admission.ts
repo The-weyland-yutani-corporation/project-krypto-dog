@@ -346,6 +346,7 @@ export async function runDeploymentAdmission(
             "A completed cutover owner cannot re-arm its released fence.",
           );
         }
+        // Owner is the primary key; the singleton index excludes released history.
         const [created] = await tx<Array<{ expiresAt: Date }>>`
           INSERT INTO "krypto"."DeploymentFence" (
             id, owner, "sourceReleaseSha", "candidateReleaseSha",

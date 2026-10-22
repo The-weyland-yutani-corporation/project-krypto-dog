@@ -467,11 +467,12 @@ require released leases/fences and explicitly inactive operator/drawdown stops.
 
 Reports are bound to the release, image, target, authorization digest, and
 logical/Azure execution identities. The native validator rejects incomplete,
-wrong-phase, wrong-generation, or older-than-ten-minute proof. Version 1.1
-reports bind the PostHog host and project key with a domain-separated
-HMAC-SHA256 using the existing ops-only `DEPLOYMENT_APPROVAL_SECRET`.
+wrong-phase, wrong-generation, or older-than-ten-minute proof. Version 1.2
+reports derive the PostHog key binding with memory-hard scrypt (N=131072,
+r=8, p=1, capped at 256 MiB). Its domain-separated salt contains the host
+and the existing ops-only `DEPLOYMENT_APPROVAL_SECRET`.
 Both phases require that mounted secret; neither it nor an unkeyed
-credential hash is exposed in the report. Old version 1.0 reports are rejected.
+credential hash is exposed in the report. Older 1.0/1.1 reports are rejected.
 The reported host and keyed binding identify the mounted telemetry settings; they do
 **not** prove separate projects or backend event visibility. This read-only
 operation is not an activation authority or an executable promotion workflow.

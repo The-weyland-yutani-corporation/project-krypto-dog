@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { scryptSync } from "node:crypto";
 
 import {
   runActivationCheck,
@@ -61,7 +61,7 @@ type RunRow = {
 };
 
 export type ProductionVerificationReport = {
-  schemaVersion: "1.1.0";
+  schemaVersion: "1.2.0";
   operation: "production-verification";
   intendedMode: "paper";
   phase: "ready" | "scheduled";
@@ -244,7 +244,7 @@ export async function runProductionVerification(
   }
 
   return {
-    schemaVersion: "1.1.0", operation: "production-verification", intendedMode: "paper",
+    schemaVersion: "1.2.0", operation: "production-verification", intendedMode: "paper",
     phase: options.phase, generatedAt: new Date().toISOString(),
     releaseSha, imageDigest, targetOrigin, authorizationId: options.authorizationId,
     scheduleGeneration: options.scheduleGeneration,
@@ -253,9 +253,12 @@ export async function runProductionVerification(
     shadowRun,
     posthog: {
       host: options.posthogHost, environment: "prod",
-      keyBinding: createHmac("sha256", approvalSecret)
-        .update(JSON.stringify(["production-posthog-key-binding", 1, options.posthogHost, options.posthogApiKey]))
-        .digest("hex"),
+      keyBinding: scryptSync(
+        options.posthogApiKey,
+        JSON.stringify(["production-posthog-key-binding", 2, options.posthogHost, approvalSecret]),
+        32,
+        { cost: 131_072, blockSize: 8, parallelization: 1, maxmem: 256 * 1024 * 1024 },
+      ).toString("hex"),
     },
     scheduledRun: scheduledRun ? {
       id: scheduledRun.id, idempotencyKey: scheduledRun.idempotencyKey, outcome: scheduledRun.outcome,

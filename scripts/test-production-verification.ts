@@ -52,7 +52,7 @@ async function verify(options: ProductionVerificationOptions, approved: boolean)
   const before = await snapshot();
   const report = await runProductionVerification(options);
   assert.equal(report.approved, approved, JSON.stringify(report.blockers));
-  assert.equal(report.schemaVersion, "1.1.0");
+  assert.equal(report.schemaVersion, "1.2.0");
   assert.match(report.posthog.keyBinding, /^[0-9a-f]{64}$/);
   assert(!JSON.stringify(report).includes(options.posthogApiKey));
   assert(!JSON.stringify(report).includes(options.approvalSecret));

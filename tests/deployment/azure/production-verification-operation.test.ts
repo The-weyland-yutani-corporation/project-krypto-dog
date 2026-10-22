@@ -9,7 +9,7 @@ const context = {
   jobExecutionId: "run1-a1-ready", reportDirectory: "unused",
 };
 const report: ProductionVerificationReport = {
-  schemaVersion: "1.1.0", operation: "production-verification", phase: "ready", intendedMode: "paper",
+  schemaVersion: "1.2.0", operation: "production-verification", phase: "ready", intendedMode: "paper",
   generatedAt: "2026-10-22T00:01:00Z", releaseSha: context.releaseSha, imageDigest: `sha256:${"b".repeat(64)}`,
   targetOrigin: "https://production.example.com", authorizationId: "c".repeat(64), scheduleGeneration: 1792620000,
   approved: true, checks: [], blockers: [], approvalId: "approval-1", shadowRun: null, scheduledRun: null,
