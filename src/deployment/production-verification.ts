@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 
 import {
   runActivationCheck,
@@ -7,12 +7,12 @@ import {
   type ActivationCheckResult,
 } from "@/deployment/activation-check";
 import { buildIdempotencyKey } from "@/deployment/scheduled-trigger";
-import { readOnly, validateImageDigest, validateReleaseSha, validateTargetBaseUrl } from "@/deployment/target-smoke";
+import { readOnly, validateApprovalSecret, validateImageDigest, validateReleaseSha, validateTargetBaseUrl } from "@/deployment/target-smoke";
 import { ETH_SCALE, USD_SCALE, parseDecimal } from "@/trading/accounting";
 import { AccountingError } from "@/trading/errors";
 
 type ProductionVerificationBinding = Pick<
-  ActivationCheckOptions, "databaseUrl" | "releaseSha" | "imageDigest" | "targetOrigin"
+  ActivationCheckOptions, "databaseUrl" | "releaseSha" | "imageDigest" | "targetOrigin" | "approvalSecret"
 > & {
   authorizationId: string;
   scheduleGeneration: number;
@@ -61,7 +61,7 @@ type RunRow = {
 };
 
 export type ProductionVerificationReport = {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.1.0";
   operation: "production-verification";
   intendedMode: "paper";
   phase: "ready" | "scheduled";
@@ -76,7 +76,7 @@ export type ProductionVerificationReport = {
   blockers: string[];
   approvalId: string | null;
   shadowRun: ActivationCheckReport["shadowRun"] | null;
-  posthog: { host: string; environment: "prod"; keySha256: string };
+  posthog: { host: string; environment: "prod"; keyBinding: string };
   scheduledRun: {
     id: string; idempotencyKey: string; outcome: string;
     startedAt: string; completedAt: string | null;
@@ -122,6 +122,7 @@ export async function runProductionVerification(
       !["https://us.i.posthog.com", "https://eu.i.posthog.com"].includes(options.posthogHost)) {
     throw new Error("Production telemetry must use the explicitly bound production PostHog host and key.");
   }
+  const approvalSecret = validateApprovalSecret(options.approvalSecret);
   const checks: ActivationCheckResult[] = [];
   const blockers: string[] = [];
   function record(id: string, ok: boolean, summary: string) {
@@ -243,7 +244,7 @@ export async function runProductionVerification(
   }
 
   return {
-    schemaVersion: "1.0.0", operation: "production-verification", intendedMode: "paper",
+    schemaVersion: "1.1.0", operation: "production-verification", intendedMode: "paper",
     phase: options.phase, generatedAt: new Date().toISOString(),
     releaseSha, imageDigest, targetOrigin, authorizationId: options.authorizationId,
     scheduleGeneration: options.scheduleGeneration,
@@ -252,7 +253,9 @@ export async function runProductionVerification(
     shadowRun,
     posthog: {
       host: options.posthogHost, environment: "prod",
-      keySha256: createHash("sha256").update(options.posthogApiKey).digest("hex"),
+      keyBinding: createHmac("sha256", approvalSecret)
+        .update(JSON.stringify(["production-posthog-key-binding", 1, options.posthogHost, options.posthogApiKey]))
+        .digest("hex"),
     },
     scheduledRun: scheduledRun ? {
       id: scheduledRun.id, idempotencyKey: scheduledRun.idempotencyKey, outcome: scheduledRun.outcome,

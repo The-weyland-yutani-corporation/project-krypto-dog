@@ -30,11 +30,11 @@ export async function run(context: AzureOperationContext): Promise<AzureOperatio
     posthogApiKey: required("POSTHOG_API_KEY"),
     posthogHost: required("POSTHOG_HOST"),
     posthogEnvironment: required("POSTHOG_ENVIRONMENT"),
+    approvalSecret: required("DEPLOYMENT_APPROVAL_SECRET"),
   };
   const report = await runProductionVerification(phase === "ready" ? {
     ...binding, phase,
     cronSecret: required("CRON_SECRET"),
-    approvalSecret: required("DEPLOYMENT_APPROVAL_SECRET"),
     expectedApprovalId: required("EXPECTED_APPROVAL_ID"),
     approvalCreatedAfter: required("EXPECTED_APPROVAL_CREATED_AFTER"),
     expectedShadowIdempotencyKey: required("EXPECTED_SHADOW_IDEMPOTENCY_KEY"),

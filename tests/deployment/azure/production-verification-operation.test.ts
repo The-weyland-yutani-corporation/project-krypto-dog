@@ -9,18 +9,18 @@ const context = {
   jobExecutionId: "run1-a1-ready", reportDirectory: "unused",
 };
 const report: ProductionVerificationReport = {
-  schemaVersion: "1.0.0", operation: "production-verification", phase: "ready", intendedMode: "paper",
+  schemaVersion: "1.1.0", operation: "production-verification", phase: "ready", intendedMode: "paper",
   generatedAt: "2026-10-22T00:01:00Z", releaseSha: context.releaseSha, imageDigest: `sha256:${"b".repeat(64)}`,
   targetOrigin: "https://production.example.com", authorizationId: "c".repeat(64), scheduleGeneration: 1792620000,
   approved: true, checks: [], blockers: [], approvalId: "approval-1", shadowRun: null, scheduledRun: null,
-  posthog: { environment: "prod", host: "https://us.i.posthog.com", keySha256: "d".repeat(64) },
+  posthog: { environment: "prod", host: "https://us.i.posthog.com", keyBinding: "d".repeat(64) },
 };
 const env = {
   PRODUCTION_VERIFICATION_PHASE: "ready",
   CONTAINER_APP_JOB_EXECUTION_NAME: "azure-execution-1",
   DIRECT_URL: "postgresql://test.invalid/krypto", IMAGE_DIGEST: report.imageDigest,
   TARGET_BASE_URL: report.targetOrigin, CRON_SECRET: "test-only-cron-secret",
-  DEPLOYMENT_APPROVAL_SECRET: "test-only-long-approval-secret",
+  DEPLOYMENT_APPROVAL_SECRET: "test-only-long-approval-secret-with-sufficient-length",
   PRODUCTION_AUTHORIZATION_ID: report.authorizationId,
   SCHEDULE_GENERATION_UNIX_SECONDS: String(report.scheduleGeneration),
   EXPECTED_APPROVAL_ID: "approval-1", EXPECTED_APPROVAL_CREATED_AFTER: "2026-10-22T00:00:00Z",
@@ -49,22 +49,30 @@ describe("production verification ops adapter", () => {
       phase: "ready", expectedApprovalId: env.EXPECTED_APPROVAL_ID,
       approvalCreatedAfter: env.EXPECTED_APPROVAL_CREATED_AFTER,
       expectedShadowIdempotencyKey: env.EXPECTED_SHADOW_IDEMPOTENCY_KEY,
+      approvalSecret: env.DEPLOYMENT_APPROVAL_SECRET,
     }));
   });
 
-  it("passes the actual enablement and execution boundaries without consulting unused shadow credentials", async () => {
+  it("uses the ops-only telemetry binding secret without consulting unused shadow credentials", async () => {
     process.env.PRODUCTION_VERIFICATION_PHASE = "scheduled";
     process.env.SCHEDULE_ENABLED_AT_UNIX_SECONDS = "1792620005";
     process.env.SCHEDULED_EXECUTION_STARTED_AT = "2026-10-22T01:00:01Z";
     delete process.env.CRON_SECRET;
-    delete process.env.DEPLOYMENT_APPROVAL_SECRET;
     delete process.env.EXPECTED_SHADOW_IDEMPOTENCY_KEY;
     await run(context);
     expect(verify).toHaveBeenCalledWith(expect.objectContaining({
       phase: "scheduled", scheduleEnabledAt: 1792620005,
       scheduledExecutionStartedAt: "2026-10-22T01:00:01Z",
+      approvalSecret: env.DEPLOYMENT_APPROVAL_SECRET,
     }));
     expect(verify.mock.calls[0][0]).not.toHaveProperty("cronSecret");
+  });
+
+  it.each(["ready", "scheduled"])("requires the mounted ops-only binding secret for %s proof", async (phase) => {
+    process.env.PRODUCTION_VERIFICATION_PHASE = phase;
+    delete process.env.DEPLOYMENT_APPROVAL_SECRET;
+    await expect(run(context)).rejects.toThrow("DEPLOYMENT_APPROVAL_SECRET");
+    expect(verify).not.toHaveBeenCalled();
   });
 
   it.each([

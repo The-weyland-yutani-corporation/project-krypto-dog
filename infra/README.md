@@ -387,6 +387,13 @@ secret. Target smoke validates ACS by asking the running app to send and
 persist a daily-summary delivery; the runtime, not the ops process, holds the
 ACS secret.
 
+Target-smoke evidence retains the response's opaque provider message ID and
+requires exactly one matching `daily-summary-delivery` journal row created
+during the smoke run. Unrelated, stale, future-dated, malformed or duplicate
+audits cannot substitute for that correlation. This proves provider acceptance
+and local audit persistence, **not** final recipient delivery; the latter
+remains a separate readiness gate.
+
 ## Web/runtime configuration
 
 The web Container App receives:
@@ -460,8 +467,12 @@ require released leases/fences and explicitly inactive operator/drawdown stops.
 
 Reports are bound to the release, image, target, authorization digest, and
 logical/Azure execution identities. The native validator rejects incomplete,
-wrong-phase, wrong-generation, or older-than-ten-minute proof. The PostHog
-host and key fingerprint identify the mounted telemetry binding; they do
+wrong-phase, wrong-generation, or older-than-ten-minute proof. Version 1.1
+reports bind the PostHog host and project key with a domain-separated
+HMAC-SHA256 using the existing ops-only `DEPLOYMENT_APPROVAL_SECRET`.
+Both phases require that mounted secret; neither it nor an unkeyed
+credential hash is exposed in the report. Old version 1.0 reports are rejected.
+The reported host and keyed binding identify the mounted telemetry settings; they do
 **not** prove separate projects or backend event visibility. This read-only
 operation is not an activation authority or an executable promotion workflow.
 Independent readiness authorization and backend delivery evidence remain

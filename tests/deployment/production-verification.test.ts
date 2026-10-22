@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import postgres from "postgres";
 
 import {
@@ -28,12 +28,12 @@ const binding = {
   posthogApiKey: "test-only-project-key",
   posthogHost: "https://us.i.posthog.com",
   posthogEnvironment: "prod",
+  approvalSecret: "test-only-approval-secret-with-sufficient-length",
 };
 const ready: Extract<ProductionVerificationOptions, { phase: "ready" }> = {
   ...binding,
   phase: "ready",
   cronSecret: "test-cron-secret",
-  approvalSecret: "test-only-approval-secret-with-sufficient-length",
   expectedApprovalId: "smoke-approval-id",
   approvalCreatedAfter: "2026-08-13T12:30:00Z",
   expectedShadowIdempotencyKey: "manual-shadow:production-test",
@@ -113,7 +113,36 @@ describe("read-only paper production verification", () => {
     expect(queries).toContain("ROLLBACK");
     expect(queries.every((query) => !/\b(INSERT|UPDATE|DELETE|COMMIT)\b/.test(query))).toBe(true);
     expect(JSON.stringify(report)).not.toContain(binding.posthogApiKey);
-    expect(report.posthog.keySha256).toBe(createHash("sha256").update(binding.posthogApiKey).digest("hex"));
+    expect(JSON.stringify(report)).not.toContain(binding.approvalSecret);
+    expect(report.schemaVersion).toBe("1.1.0");
+    expect(report.posthog).not.toHaveProperty("keySha256");
+    expect(report.posthog.keyBinding).toBe(createHmac("sha256", binding.approvalSecret)
+      .update(JSON.stringify(["production-posthog-key-binding", 1, binding.posthogHost, binding.posthogApiKey]))
+      .digest("hex"));
+  });
+
+  it("binds telemetry to the ops-only secret, host and project key consistently across phases", async () => {
+    mockDatabase();
+    const initial = (await runProductionVerification(ready)).posthog.keyBinding;
+    expect((await runProductionVerification(scheduled)).posthog.keyBinding).toBe(initial);
+    for (const overrides of [
+      { approvalSecret: "a-different-test-only-approval-secret-of-sufficient-length" },
+      { posthogHost: "https://eu.i.posthog.com" },
+      { posthogApiKey: "another-test-only-project-key" },
+    ]) {
+      const report = await runProductionVerification({ ...scheduled, ...overrides });
+      expect(report.posthog.keyBinding).toMatch(/^[0-9a-f]{64}$/);
+      expect(report.posthog.keyBinding).not.toBe(initial);
+    }
+  });
+
+  it.each([
+    { ...ready, approvalSecret: "" }, { ...ready, approvalSecret: "too-short" },
+    { ...scheduled, approvalSecret: "" }, { ...scheduled, approvalSecret: "too-short" },
+  ])("requires the ops-only binding secret before reading either phase ($phase)", async (options) => {
+    await expect(runProductionVerification(options)).rejects.toThrow("DEPLOYMENT_APPROVAL_SECRET");
+    expect(db).not.toHaveBeenCalled();
+    expect(activation).not.toHaveBeenCalled();
   });
 
   it.each([

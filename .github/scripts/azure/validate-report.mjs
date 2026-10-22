@@ -152,7 +152,7 @@ switch (operation) {
     }
     if (origin.protocol !== "https:" || origin.origin !== targetOrigin) fail("--target-origin must be a bare HTTPS origin.");
     for (const [field, expected] of Object.entries({
-      schemaVersion: "1.0.0", operation, phase, intendedMode: "paper",
+      schemaVersion: "1.1.0", operation, phase, intendedMode: "paper",
       authorizationId, releaseSha: expectedReleaseSha, imageDigest: expectedImageDigest,
       targetOrigin, environmentName: "prod", jobExecutionId: executionId, azureExecutionName,
     })) requireMatch(report, field, expected, "production-verification report");
@@ -184,7 +184,8 @@ switch (operation) {
     }
     const telemetry = requireField(report, "posthog", "object");
     if (!["https://us.i.posthog.com", "https://eu.i.posthog.com"].includes(telemetry.host) ||
-        telemetry.environment !== "prod" || !/^[0-9a-f]{64}$/.test(telemetry.keySha256 ?? "")) {
+        telemetry.environment !== "prod" || typeof telemetry.keyBinding !== "string" ||
+        !/^[0-9a-f]{64}$/.test(telemetry.keyBinding)) {
       fail("Production telemetry identity is malformed.");
     }
     if (phase === "ready") {

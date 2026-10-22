@@ -15,11 +15,18 @@ const TEST_APPROVAL_SECRET = "test-approval-secret-".padEnd(40, "x");
 async function main(): Promise<void> {
   const databaseUrl = process.env.DIRECT_URL;
   if (!databaseUrl) throw new Error("DIRECT_URL is required");
+  const target = new URL(databaseUrl);
+  assert(["postgres:", "postgresql:"].includes(target.protocol) && !target.search && !target.hash,
+    "Target-smoke fixtures require a plain PostgreSQL URL without query overrides.");
+  assert(["localhost", "127.0.0.1", "[::1]"].includes(target.hostname),
+    "Target-smoke fixtures require a loopback database.");
+  assert.equal(target.pathname, "/operations", "Use the suite's disposable operations database only.");
   const sql = postgres(databaseUrl, {
     max: 1,
     prepare: false,
   });
   const startedAt = new Date();
+  const providerMessageId = "target-smoke-provider-message";
   const keys = [
     "target-smoke-evidence-cron",
     "target-smoke-evidence-admin",
@@ -125,35 +132,60 @@ async function main(): Promise<void> {
           NOW()
         )
     `;
-    await sql`
-      INSERT INTO "krypto"."AgentJournal" (
-        id,
-        "entryText",
-        "marketConditions",
-        "createdAt"
-      ) VALUES (
-        'target-smoke-evidence-delivery',
-        'Target smoke delivery sent.',
-        ${sql.json({
-          event: "daily-summary-delivery",
-          status: "sent",
-        })},
-        NOW()
-      )
-    `;
+    async function insertDeliveryAudit(
+      id: string,
+      detail: string | number,
+      status = "sent",
+      createdAt = new Date(),
+    ): Promise<void> {
+      await sql`
+        INSERT INTO "krypto"."AgentJournal" (
+          id, "entryText", "marketConditions", "createdAt"
+        ) VALUES (
+          ${id}, 'Disposable provider-acceptance audit.',
+          ${sql.json({ event: "daily-summary-delivery", status, detail })},
+          ${createdAt}
+        )
+      `;
+    }
+
+    await insertDeliveryAudit("unrelated-message", "another-provider-message");
+    await insertDeliveryAudit("stale-message", providerMessageId, "sent",
+      new Date(startedAt.getTime() - 1000));
+    await insertDeliveryAudit("future-message", providerMessageId, "sent",
+      new Date(Date.now() + 3_600_000));
+    await insertDeliveryAudit("non-string-message", 123);
+    for (const selectedId of [providerMessageId, "123"]) {
+      const missing = await inspectTargetAfter({
+        databaseUrl, idempotencyKeys: keys, startedAt, providerMessageId: selectedId,
+      });
+      assert.equal(missing.deliveryAuditCount, 0);
+      assert.equal(missing.deliveryStatus, null);
+      assert.equal(missing.providerMessageId, null);
+    }
+    await insertDeliveryAudit("target-smoke-evidence-delivery", providerMessageId);
+    await insertDeliveryAudit("later-unrelated-failure", "another-provider-message", "failed");
 
     const after = await inspectTargetAfter({
       databaseUrl,
       idempotencyKeys: keys,
       startedAt,
+      providerMessageId,
     });
     assert.equal(after.runCount, 2);
     assert.equal(after.disabledRunCount, 2);
     assert.equal(after.tradeCount, before.tradeCount);
     assert.equal(after.leaseReleased, true);
     assert.equal(after.deliveryStatus, "sent");
+    assert.equal(after.providerMessageId, providerMessageId);
+    assert.equal(after.deliveryAuditCount, 1);
+    await insertDeliveryAudit("duplicate-message", providerMessageId);
+    const duplicate = await inspectTargetAfter({
+      databaseUrl, idempotencyKeys: keys, startedAt, providerMessageId,
+    });
+    assert.equal(duplicate.deliveryAuditCount, 2);
     console.log(
-      "Target smoke evidence queries passed for database safety, disabled runs, unchanged trades, lease release, and email audit.",
+      "Target smoke evidence queries passed for database safety, disabled runs, unchanged trades, lease release, and exact email message-ID correlation rejecting unrelated, stale, future, non-string and duplicate audits. Provider acceptance is not recipient delivery.",
     );
   } finally {
     await sql.end();

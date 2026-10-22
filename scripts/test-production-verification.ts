@@ -28,6 +28,7 @@ const common = {
   authorizationId: "c".repeat(64), scheduleGeneration: hour - 120,
   posthogApiKey: "disposable-test-project-key", posthogHost: "https://us.i.posthog.com",
   posthogEnvironment: "prod",
+  approvalSecret: "disposable-production-approval-secret-with-32-characters",
 };
 const scheduled: Extract<ProductionVerificationOptions, { phase: "scheduled" }> = {
   ...common, phase: "scheduled", scheduleEnabledAt: hour - 60,
@@ -51,6 +52,10 @@ async function verify(options: ProductionVerificationOptions, approved: boolean)
   const before = await snapshot();
   const report = await runProductionVerification(options);
   assert.equal(report.approved, approved, JSON.stringify(report.blockers));
+  assert.equal(report.schemaVersion, "1.1.0");
+  assert.match(report.posthog.keyBinding, /^[0-9a-f]{64}$/);
+  assert(!JSON.stringify(report).includes(options.posthogApiKey));
+  assert(!JSON.stringify(report).includes(options.approvalSecret));
   assert.equal(await snapshot(), before, "Verification must not change ledger, journal, lease or fence state.");
 }
 
@@ -106,7 +111,6 @@ async function main(): Promise<void> {
   const ready: Extract<ProductionVerificationOptions, { phase: "ready" }> = {
     ...common, phase: "ready",
     cronSecret: "disposable-production-cron-secret",
-    approvalSecret: "disposable-production-approval-secret-with-32-characters",
     expectedApprovalId: approvalId, approvalCreatedAfter: boundary,
     expectedShadowIdempotencyKey: "manual-shadow:production-proof-test",
     expectedShadowStartedAfter: boundary,

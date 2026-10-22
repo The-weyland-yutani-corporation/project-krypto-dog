@@ -239,7 +239,7 @@ try {
     "scheduled-run-journal", "scheduled-run-fills",
   ];
   const base = {
-    schemaVersion: "1.0.0", operation: "production-verification", phase: "ready",
+    schemaVersion: "1.1.0", operation: "production-verification", phase: "ready",
     intendedMode: "paper", generatedAt: new Date().toISOString(),
     releaseSha: RELEASE_SHA_A, imageDigest: DIGEST_1, targetOrigin: "https://krypto.example.com",
     authorizationId: "d".repeat(64), scheduleGeneration: generation, approved: true,
@@ -250,7 +250,7 @@ try {
       startedAt: start, completedAt: start, tradeCount: 0, errorType: null,
     },
     scheduledRun: null,
-    posthog: { host: "https://us.i.posthog.com", environment: "prod", keySha256: "a".repeat(64) },
+    posthog: { host: "https://us.i.posthog.com", environment: "prod", keyBinding: "a".repeat(64) },
     environmentName: "prod", jobExecutionId: "run1-a1-ready", azureExecutionName: "execution-1",
   };
   const scheduled = {
@@ -275,6 +275,11 @@ try {
     [base, {}, 0], [scheduled, {}, 0],
     [scheduled, { scheduledRun: { ...scheduled.scheduledRun, outcome: "EXECUTED", tradeCount: 1, tradeJournalCount: 1 } }, 0],
     ...[base, scheduled].flatMap((report) => [
+      [report, { schemaVersion: "1.0.0" }, 1],
+      [report, { posthog: { host: base.posthog.host, environment: "prod", keySha256: "a".repeat(64) } }, 1],
+      [report, { posthog: { ...base.posthog, keyBinding: null } }, 1],
+      [report, { posthog: { ...base.posthog, keyBinding: ["a".repeat(64)] } }, 1],
+      [report, { posthog: { ...base.posthog, keyBinding: "a".repeat(63) } }, 1],
       [report, { approved: false }, 1],
       [report, { checks: [] }, 1],
       [report, { checks: [...report.checks, report.checks[0]] }, 1],
