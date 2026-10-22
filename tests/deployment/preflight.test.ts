@@ -33,6 +33,10 @@ const canonicalMigrationRows = [
     "drizzle/0008_deployment_cutover_fence.sql",
     "1792612861659",
   ],
+  [
+    "drizzle/0009_deployment_fence_history.sql",
+    "1792629857081",
+  ],
 ].map(([path, createdAt]) => ({
   hash: createHash("sha256")
     .update(readFileSync(path!, "utf8"))
@@ -594,7 +598,7 @@ describe("deployment preflight helpers", () => {
     expect(report.schemaVersion).toBe("2.0.0");
     expect(report.provider).toBe("azure");
     expect(report.inventory.database).toBe("krypto");
-    expect(report.inventory.drizzleMigrationCount).toBe(9);
+    expect(report.inventory.drizzleMigrationCount).toBe(10);
     expect(report.inventory.openPaperPosition).toBe(false);
     expect(report.inventory.restrictedRolePrivileges).toHaveLength(2);
     expect(report.inventory.obsoleteInvocationFunctions).toEqual([]);
@@ -906,7 +910,7 @@ describe("deployment preflight helpers", () => {
     expect(report.provider).toBe("azure");
     expect(report.databasePreflightPassed).toBe(true);
     expect(report.blockers).toEqual([]);
-    expect(report.inventory.drizzleMigrationCount).toBe(9);
+    expect(report.inventory.drizzleMigrationCount).toBe(10);
     expect(report.inventory.obsoleteInvocationFunctions).toEqual([]);
     expect(report.inventory.runtimeRole).toEqual(
       expect.objectContaining({

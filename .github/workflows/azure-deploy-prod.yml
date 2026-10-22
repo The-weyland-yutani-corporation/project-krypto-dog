@@ -386,7 +386,7 @@ jobs:
         run: |
           set -euo pipefail
           source .github/scripts/azure/lib/common.sh
-          owner="$(node -e 'console.log(require("node:crypto").randomUUID())')"
+          owner="$(azure_deployment_fence_owner)"
           echo "owner=${owner}" >> "$GITHUB_OUTPUT"
           execution_id="$(azure_new_job_execution_id deployment-admission acquire)"
           status=0
@@ -407,6 +407,17 @@ jobs:
             echo "status=deferred" >> "$GITHUB_OUTPUT"
             echo "Production deployment DEFERRED. The source release, schedules, credentials, and balances were not changed." >> "$GITHUB_STEP_SUMMARY"
           elif [ "${status}" -eq 0 ]; then
+            binding="$(jq -cn \
+              --arg owner "${owner}" \
+              --arg source "${CURRENT_SHA}" \
+              --arg candidate "${RESOLVED_SHA}" \
+              --arg digest "${CURRENT_WEB_DIGEST_HEX}" \
+              --arg origin "${TARGET_ORIGIN}" \
+              --arg evidence "${EVIDENCE_CONTAINER_URL}" \
+              '{existing_release:"true", admission_status:"admitted",
+                fence_owner:$owner, current_sha:$source, candidate_sha:$candidate,
+                current_digest:$digest, target_origin:$origin, evidence_container_url:$evidence}')"
+            echo "binding=${binding}" >> "$GITHUB_OUTPUT"
             echo "status=admitted" >> "$GITHUB_OUTPUT"
           else
             echo "Production admission failed; no cutover is authorized." >&2
@@ -416,6 +427,7 @@ jobs:
       - name: Force rollout.bicep to disabled/Manual before touching infrastructure
         if: steps.admission.outputs.status == 'admitted'
         env:
+          CUTOVER_BINDING_JSON: ${{ steps.admission.outputs.binding }}
           CURRENT_WEB_DIGEST_HEX: ${{ steps.current.outputs.digest }}
           LIVE_ACR_LOGIN_SERVER: ${{ steps.live.outputs.acr_login_server }}
         run: |
@@ -427,6 +439,7 @@ jobs:
             echo "The source image changed after admission; refusing a stale cutover." >&2
             exit 1
           fi
+          bash .github/scripts/azure/revalidate-deployment-fence.sh source check-disable
           az deployment group create \
            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
            --name "roll-prod-force-disable-${RESOLVED_SHA}" \
@@ -469,8 +482,11 @@ jobs:
 
       - name: Disable missing-success monitoring after prod jobs are Manual
         if: steps.admission.outputs.status == 'admitted'
+        env:
+          CUTOVER_BINDING_JSON: ${{ steps.admission.outputs.binding }}
         run: |
           set -euo pipefail
+          bash .github/scripts/azure/revalidate-deployment-fence.sh source check-monitor
           az deployment group create \
             --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
             --name "mon-pfd-${RESOLVED_SHA:0:12}-${GITHUB_RUN_ID}" \
@@ -504,7 +520,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: azure-prod-admission-${{ github.run_id }}-${{ github.run_attempt }}
-          path: evidence-admission/
+          path: |
+            evidence-admission/
+            evidence-cutover/
           if-no-files-found: warn
           retention-days: 90
 
@@ -1126,8 +1144,8 @@ jobs:
             echo "${snake}=${value}" >> "$GITHUB_OUTPUT"
           done
 
-  migrate-backup-smoke:
-    name: migrate-init -> baseline verified-backup -> target-smoke (new release)
+  migrate-backup:
+    name: Migrate and restore-verify the candidate while its fence is held
     needs: [gate, force-disable-rollout, deploy-environment, deploy-release, build-images]
     if: >-
       always() &&
@@ -1148,13 +1166,6 @@ jobs:
       EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
       MIGRATE_INIT_JOB_NAME: ${{ needs.deploy-release.outputs.migrate_init_job_name }}
       VERIFIED_BACKUP_JOB_NAME_NEW: ${{ needs.deploy-release.outputs.verified_backup_job_name }}
-      TARGET_SMOKE_JOB_NAME_NEW: ${{ needs.deploy-release.outputs.target_smoke_job_name }}
-      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
-      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
-      CURRENT_SHA: ${{ needs.force-disable-rollout.outputs.current_sha }}
-      CURRENT_WEB_DIGEST_HEX: ${{ needs.force-disable-rollout.outputs.current_digest }}
-      FENCE_OWNER: ${{ needs.force-disable-rollout.outputs.fence_owner }}
-      TARGET_ORIGIN: ${{ needs.force-disable-rollout.outputs.target_origin }}
     steps:
       - name: Checkout ${{ needs.gate.outputs.sha }}
         uses: actions/checkout@v4
@@ -1224,16 +1235,86 @@ jobs:
             --operation verified-backup \
             --release-sha "${RESOLVED_SHA}"
 
+      - name: Publish migration and baseline backup evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-prod-migration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 90
+
+  release-cutover-fence:
+    name: Persist the quiescent cutover release checkpoint
+    needs: [gate, force-disable-rollout, deploy-environment, deploy-release, build-images, migrate-backup]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.force-disable-rollout.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.deploy-release.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.migrate-backup.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      status: ${{ steps.release.outputs.status }}
+    env:
+      EXISTING_RELEASE: ${{ needs.force-disable-rollout.outputs.existing_release }}
+      ADMISSION_STATUS: ${{ needs.force-disable-rollout.outputs.admission_status }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+      CURRENT_SHA: ${{ needs.force-disable-rollout.outputs.current_sha }}
+      CURRENT_WEB_DIGEST_HEX: ${{ needs.force-disable-rollout.outputs.current_digest }}
+      FENCE_OWNER: ${{ needs.force-disable-rollout.outputs.fence_owner }}
+      TARGET_ORIGIN: ${{ needs.force-disable-rollout.outputs.target_origin }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - name: Verify the new disabled release before releasing its cutover fence
-        if: needs.force-disable-rollout.outputs.existing_release == 'true'
+        id: release
         run: |
           set -euo pipefail
+          case "${EXISTING_RELEASE}" in
+            false) ;;
+            true)
+              if [ "${ADMISSION_STATUS}" != "admitted" ]; then
+                echo "An existing release requires its original admitted cutover binding." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Cutover release requires an explicit release inventory result." >&2
+              exit 1
+              ;;
+          esac
           bash .github/scripts/azure/verify-disabled-rollout.sh \
             --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
             --web-app "${WEB_APP_NAME}" \
             --hourly-job "${PROD_HOURLY_JOB_NAME}" \
             --daily-job "${PROD_DAILY_JOB_NAME}" \
             --image "${ACR_LOGIN_SERVER}/krypto-web@sha256:${WEB_DIGEST_HEX}"
+          if [ "${EXISTING_RELEASE}" = "false" ]; then
+            echo "status=fresh" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           source .github/scripts/azure/lib/common.sh
           execution_id="$(azure_new_job_execution_id deployment-admission release)"
           bash .github/scripts/azure/run-deployment-admission.sh \
@@ -1249,6 +1330,66 @@ jobs:
             --job-execution-id "${execution_id}" \
             --destination evidence \
             --timeout-seconds 600
+          echo "status=released" >> "$GITHUB_OUTPUT"
+
+      - name: Publish cutover release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-prod-cutover-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 90
+
+  target-smoke:
+    name: Verify and approve the released disabled candidate
+    needs: [gate, deploy-environment, deploy-release, build-images, release-cutover-fence]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.deploy-release.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.release-cutover-fence.result == 'success' &&
+      (needs.release-cutover-fence.outputs.status == 'released' ||
+       needs.release-cutover-fence.outputs.status == 'fresh') &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      job_execution_id: ${{ steps.target_smoke.outputs.job_execution_id }}
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+      TARGET_SMOKE_JOB_NAME_NEW: ${{ needs.deploy-release.outputs.target_smoke_job_name }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Recheck the disabled candidate before every smoke attempt
+        run: |
+          set -euo pipefail
+          bash .github/scripts/azure/verify-disabled-rollout.sh \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --web-app "${WEB_APP_NAME}" \
+            --hourly-job "${PROD_HOURLY_JOB_NAME}" \
+            --daily-job "${PROD_DAILY_JOB_NAME}" \
+            --image "${ACR_LOGIN_SERVER}/krypto-web@sha256:${WEB_DIGEST_HEX}"
 
       - name: Run target-smoke (new release)
         id: target_smoke
@@ -1312,7 +1453,7 @@ jobs:
         deploy-environment,
         deploy-release,
         build-images,
-        migrate-backup-smoke,
+        target-smoke,
       ]
     if: >-
       always() &&
@@ -1320,7 +1461,7 @@ jobs:
       needs.deploy-environment.result == 'success' &&
       needs.deploy-release.result == 'success' &&
       needs.build-images.result == 'success' &&
-      needs.migrate-backup-smoke.result == 'success' &&
+      needs.target-smoke.result == 'success' &&
       needs.gate.outputs.deployment_stage == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -171,6 +171,10 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
     createdAt: "1792612861659",
     hash: "bcaae32474a014dd66bc752571d13dc74c29a99b242bc53eca87d4bc4149c63b",
   },
+  {
+    createdAt: "1792629857081",
+    hash: "2d7e0b464bbe39c9bf0202e5529f295fa8378bc5307b1318c56027dddf71d3e2",
+  },
 ] as const;
 const RUNTIME_ROLE_NAME = "krypto_runtime";
 /**

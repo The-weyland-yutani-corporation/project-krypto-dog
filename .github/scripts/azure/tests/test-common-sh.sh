@@ -105,6 +105,33 @@ assert_reject azure_validate_job_execution_id "../../etc/passwd"
 assert_reject azure_validate_job_execution_id "has a space"
 
 echo
+echo "== stable deployment fence ownership =="
+expected_owner="34aa399d-f243-5b32-832f-e399e1f22b74"
+owner_for_repository() { GITHUB_REPOSITORY_ID="$1" GITHUB_RUN_ID=123 azure_deployment_fence_owner; }
+owner_for_run() { GITHUB_REPOSITORY_ID=456 GITHUB_RUN_ID="$1" azure_deployment_fence_owner; }
+assert_accept owner_for_repository 456 "${expected_owner}"
+assert_accept owner_for_run 123 "${expected_owner}"
+GITHUB_RUN_ATTEMPT=99 assert_accept owner_for_run 123 "${expected_owner}"
+assert_accept azure_validate_fence_owner "${expected_owner}"
+assert_accept azure_validate_fence_owner "11111111-1111-4111-8111-111111111111"
+assert_reject azure_validate_fence_owner "11111111-1111-1111-8111-111111111111"
+assert_reject azure_validate_fence_owner "11111111-1111-5111-1111-111111111111"
+assert_reject azure_validate_fence_owner "${expected_owner^^}"
+for invalid in "" 0 -1 01 1.5 '$(whoami)' $'123\n456'; do
+  assert_reject owner_for_repository "${invalid}"
+  assert_reject owner_for_run "${invalid}"
+done
+for alternate_owner in "$(owner_for_repository 457)" "$(owner_for_run 124)"; do
+  total=$((total + 1))
+  if [ "${alternate_owner}" != "${expected_owner}" ]; then
+    echo "PASS  another repository/run has a distinct cutover owner"
+  else
+    failures=$((failures + 1))
+    echo "FAIL  independent repository/run reused a cutover owner"
+  fi
+done
+
+echo
 echo "== azure_validate_safe_token =="
 # azure_validate_safe_token takes (label, value); wrap it so it fits the
 # single-value assert_accept/assert_reject helpers above.

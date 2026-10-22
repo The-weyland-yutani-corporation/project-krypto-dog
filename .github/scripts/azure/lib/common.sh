@@ -132,11 +132,31 @@ azure_validate_job_execution_id() {
 
 azure_validate_fence_owner() {
   local value="${1:-}"
-  if ! [[ "${value}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
-    echo "Deployment fence owner must be a lowercase random UUID." >&2
+  if ! [[ "${value}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+    echo "Deployment fence owner must be a lowercase UUID v4 or v5." >&2
     return 1
   fi
   printf '%s' "${value}"
+}
+
+# UUID v5 is stable across attempts of one trusted repository/workflow run.
+# The owner is an idempotency key, not an authorization credential.
+azure_deployment_fence_owner() {
+  local repository_id="${GITHUB_REPOSITORY_ID:-}" run_id="${GITHUB_RUN_ID:-}"
+  if ! [[ "${repository_id}" =~ ^[1-9][0-9]*$ ]] ||
+     ! [[ "${run_id}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Fence ownership requires positive GITHUB_REPOSITORY_ID and GITHUB_RUN_ID." >&2
+    return 1
+  fi
+  node -e '
+    const namespace = Buffer.from("6ba7b8109dad11d180b400c04fd430c8", "hex");
+    const name = `project-krypto/production-cutover/${process.argv[1]}/${process.argv[2]}`;
+    const bytes = require("node:crypto").createHash("sha1").update(namespace).update(name).digest().subarray(0, 16);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = bytes.toString("hex");
+    process.stdout.write(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`);
+  ' "${repository_id}" "${run_id}"
 }
 
 azure_validate_job_name() {

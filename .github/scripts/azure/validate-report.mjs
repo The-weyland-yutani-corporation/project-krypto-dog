@@ -134,8 +134,8 @@ switch (operation) {
     const executionId = args["job-execution-id"];
     const azureExecutionName = args["azure-execution-name"];
     if (!["acquire", "verify", "release"].includes(action)) fail("--admission-action must be acquire, verify, or release.");
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(owner ?? "")) {
-      fail("--fence-owner must be a lowercase random UUID.");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(owner ?? "")) {
+      fail("--fence-owner must be a lowercase UUID v4 or v5.");
     }
     if (!RELEASE_SHA_PATTERN.test(sourceSha ?? "") || !RELEASE_SHA_PATTERN.test(candidateSha ?? "")) {
       fail("Both source and candidate release SHAs are required.");

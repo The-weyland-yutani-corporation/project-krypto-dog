@@ -50,6 +50,7 @@ quarantine_url="$url_prefix/quarantine"
 executor_url="$url_prefix/executor"
 orchestration_url="$url_prefix/orchestration"
 deployment_admission_url="$url_prefix/deployment_admission"
+deployment_fence_upgrade_url="$url_prefix/deployment_fence_upgrade"
 operations_url="$url_prefix/operations"
 migration_only_url="$url_prefix/migration_only"
 rollout_upgrade_url="$url_prefix/rollout_upgrade"
@@ -137,6 +138,7 @@ NODE
 # against disposable databases pinned before migration 0007.
 through_0006_config="$(build_through_config 6 0006)"
 through_0007_config="$(build_through_config 7 0007)"
+through_0008_config="$(build_through_config 8 0008)"
 
 psql "$admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 DO $$
@@ -824,8 +826,31 @@ deployment_fence_result="$(psql "$azure_upgrade_url" -Atc \
           has_table_privilege('\''public'\'', '\''krypto."DeploymentFence"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
           has_table_privilege('\''anon'\'', '\''krypto."DeploymentFence"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
           has_table_privilege('\''authenticated'\'', '\''krypto."DeploymentFence"'\'', '\''SELECT'\'')::text;')"
-if [[ "$deployment_fence_result" != "9|1|1|1|1|0|0.123456789012345678|true|false|false|false|false|false|false|false" ]]; then
+if [[ "$deployment_fence_result" != "10|1|1|1|1|0|0.123456789012345678|true|false|false|false|false|false|false|false" ]]; then
   echo "Deployment fence migration changed history, initialized a fence, or granted excess privileges: $deployment_fence_result" >&2
+  exit 1
+fi
+
+create_database deployment_fence_upgrade
+DIRECT_URL="$deployment_fence_upgrade_url" \
+  npx drizzle-kit migrate --config "$through_0008_config" >/dev/null
+psql "$deployment_fence_upgrade_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+INSERT INTO "krypto"."DeploymentFence" (
+  owner, "sourceReleaseSha", "candidateReleaseSha", "imageDigest",
+  "targetOrigin", "expiresAt"
+) VALUES (
+  '11111111-1111-4111-8111-111111111111', repeat('a', 40), repeat('b', 40),
+  'sha256:' || repeat('c', 64), 'https://fence-upgrade.example.com',
+  clock_timestamp() + INTERVAL '1 hour'
+);
+SQL
+fence_before_upgrade="$(psql "$deployment_fence_upgrade_url" -Atc \
+  'SELECT row_to_json(fence)::text FROM "krypto"."DeploymentFence" fence;')"
+DIRECT_URL="$deployment_fence_upgrade_url" npx drizzle-kit migrate >/dev/null
+fence_after_upgrade="$(psql "$deployment_fence_upgrade_url" -Atc \
+  'SELECT row_to_json(fence)::text FROM "krypto"."DeploymentFence" fence;')"
+if [[ -z "$fence_before_upgrade" || "$fence_before_upgrade" != "$fence_after_upgrade" ]]; then
+  echo "0008-to-0009 upgrade changed or lost the existing owned cutover fence." >&2
   exit 1
 fi
 
@@ -1276,6 +1301,14 @@ INSERT INTO "krypto"."DeploymentFence" (
   'sha256:' || repeat('c', 64), 'https://backup-fixture.example.com',
   clock_timestamp() + INTERVAL '1 hour'
 );
+INSERT INTO "krypto"."DeploymentFence" (
+  owner, "sourceReleaseSha", "candidateReleaseSha", "imageDigest",
+  "targetOrigin", "expiresAt", "releasedAt"
+) VALUES (
+  '22222222-2222-5222-8222-222222222222', repeat('a', 40), repeat('b', 40),
+  'sha256:' || repeat('c', 64), 'https://backup-fixture.example.com',
+  clock_timestamp() + INTERVAL '1 hour', clock_timestamp()
+);
 SQL
 DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
   npx tsx scripts/create-verified-backup.ts \
@@ -1292,8 +1325,8 @@ if (
   !manifest.source?.directTarget ||
   manifest.archives.length === 0 ||
   manifest.restoreVerification?.matched !== true ||
-  manifest.restoreVerification.sourceRowCounts["krypto.DeploymentFence"] !== 1 ||
-  manifest.restoreVerification.restoredRowCounts["krypto.DeploymentFence"] !== 1
+  manifest.restoreVerification.sourceRowCounts["krypto.DeploymentFence"] !== 2 ||
+  manifest.restoreVerification.restoredRowCounts["krypto.DeploymentFence"] !== 2
 ) {
   throw new Error("Verified backup manifest is incomplete.");
 }

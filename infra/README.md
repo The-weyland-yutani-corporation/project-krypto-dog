@@ -307,7 +307,10 @@ protections actually referenced by each workflow. Any approved dispatch must
 use the configured branch, exact CI-passed SHA, and existing CI gate.
 
 Both production stages require dispatch from protected `main` and successful
-main push CI for the exact candidate SHA. Production `foundation` is only for
+main push CI for the exact candidate SHA. The verifier refreshes the exact
+remote-tracking branch and independently checks each returned run's SHA,
+branch, event, terminal status, and successful conclusion; another branch's
+success does not authorize production. Production `foundation` is only for
 an environment without an application release; it rejects a complete existing
 release and partial release inventory. Existing releases use `full` and the
 owned cutover protocol below.
@@ -519,6 +522,11 @@ with boundary `0`.
 - Admission has no automatic replica retries. Deferral requires a terminal
   failed Azure execution and its exact immutable deferred report; timeouts,
   unknown submissions, or another execution's report are failures, not deferral.
+- The immutable repository ID and workflow run ID derive a stable UUID v5
+  cutover owner, unchanged on failed-job retries. Execution/evidence IDs still
+  include the attempt. Completed owners retain their own database rows; a
+  partial unique index permits only one unreleased fence. An active foreign
+  owner takes precedence over any older completed record.
 - After admission, prod proves disabled/Manual and quiescence, then takes a
   verified backup **before** `environment.bicep` mutates infrastructure.
   Existing-release updates preserve the PostgreSQL administrator password.
@@ -527,13 +535,26 @@ with boundary `0`.
   new-release baseline evidence. Its forced-disable path verifies Manual jobs
   before disabling monitoring.
 - The runtime and paper executor can read but cannot mutate the fence.
-  Every mutation stage revalidates the actual owner and six-hour deadline.
+  Every mutation stage, including forced disable and its monitoring change,
+  revalidates the actual owner and six-hour deadline.
   Expiry never resumes execution or permits ownership theft; seed/reset do
-  not clear the fence. A failure leaves the fence held for owned recovery.
+  not clear active or completed owners. A pre-release failure leaves the fence
+  held for owned recovery.
 - After migrations and a restore-verified baseline backup, prod verifies the
   new disabled release and all inactive revisions are quiescent before the
   exact owner releases the fence and target-smoke runs. Release preserves
-  operator/drawdown stops and a replay-resistant ownership tombstone.
+  operator/drawdown stops and every completed owner's replay protection.
+- Migration/backup, release, and target-smoke are separate jobs. After an
+  ambiguous release response, retrying the failed release job rechecks live
+  quiescence and uses exact-owner idempotent release, not held-fence verification.
+  A smoke failure before approval persistence retries only smoke and its live
+  quiescence barrier. It does not repeat migrations or reacquire a released
+  owner. Use failed-job recovery, not a new dispatch or an all-jobs rerun that
+  attempts to replay the old source binding.
+- After release, disabled/Manual remains the runtime guard while smoke is
+  pending or failed. This ordering lets the disabled cron smoke execute after
+  the fence is released without enabling trading or schedules. Neither fence
+  release nor a passing disabled smoke is evidence of production promotion.
 - Prod full deployment and secret rotation end disabled/manual. No executable
   production promotion workflow is shipped or approved.
 - Prod deploy and rotation share concurrency group
@@ -544,6 +565,11 @@ readback. Quiescence requires the desired ready revision, exact images,
 zero replicas on every inactive revision, disabled/Manual jobs without event
 or schedule configuration, and only known-terminal scheduler executions.
 Missing state is never interpreted as zero replicas or successful shutdown.
+
+Existing-source ops images and databases must already support cutover admission.
+A pre-fence source cannot be adopted by skipping its handshake. The selected
+new target uses the explicit fresh disabled-release path; adopting a legacy
+source requires a separately reviewed compatibility/migration procedure.
 
 ## Evidence storage
 

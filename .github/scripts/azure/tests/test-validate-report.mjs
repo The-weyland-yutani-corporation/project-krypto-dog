@@ -200,6 +200,20 @@ try {
     assert.equal(result.status, expectedStatus, `${action}/${status}: ${result.stderr}`);
     passCount += 1;
   }
+  for (const [reportOwner, expectedStatus] of [
+    ["34aa399d-f243-5b32-832f-e399e1f22b74", 0],
+    ["11111111-1111-1111-8111-111111111111", 1],
+    ["11111111-1111-5111-1111-111111111111", 1],
+    ["34AA399D-F243-5B32-832F-E399E1F22B74", 1],
+  ]) {
+    const reportPath = path.join(admissionDirectory, "report.json");
+    writeFileSync(reportPath, JSON.stringify({ ...baseAdmission, owner: reportOwner }));
+    const result = spawnSync(process.execPath, [
+      scriptPath, "--report", reportPath, ...admissionArgs, "--fence-owner", reportOwner,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, expectedStatus, `UUID owner ${reportOwner}: ${result.stderr}`);
+    passCount += 1;
+  }
 } finally {
   rmSync(path.join(admissionDirectory, "report.json"), { force: true });
   rmdirSync(admissionDirectory);

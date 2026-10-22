@@ -76,11 +76,11 @@ type FenceRow = DeploymentBinding & {
 
 export function validateDeploymentFenceOwner(value: string): string {
   if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       value,
     )
   ) {
-    throw new Error("Deployment fence owner must be a lowercase random UUID.");
+    throw new Error("Deployment fence owner must be a lowercase UUID v4 or v5.");
   }
   return value;
 }
@@ -186,6 +186,9 @@ export async function runDeploymentAdmission(
           "imageDigest", "targetOrigin", "expiresAt", "releasedAt"
         FROM "krypto"."DeploymentFence"
         WHERE id = 'singleton'
+          AND ("releasedAt" IS NULL OR owner = ${binding.owner})
+        ORDER BY "releasedAt" NULLS FIRST
+        LIMIT 1
         FOR UPDATE
       `;
       if (options.action === "acquire") {
@@ -354,16 +357,6 @@ export async function runDeploymentAdmission(
             clock_timestamp() + ${DEPLOYMENT_FENCE_TIMEOUT_SECONDS} * INTERVAL '1 second',
             NULL
           )
-          ON CONFLICT (id) DO UPDATE SET
-            owner = EXCLUDED.owner,
-            "sourceReleaseSha" = EXCLUDED."sourceReleaseSha",
-            "candidateReleaseSha" = EXCLUDED."candidateReleaseSha",
-            "imageDigest" = EXCLUDED."imageDigest",
-            "targetOrigin" = EXCLUDED."targetOrigin",
-            "createdAt" = EXCLUDED."createdAt",
-            "expiresAt" = EXCLUDED."expiresAt",
-            "releasedAt" = NULL
-          WHERE "DeploymentFence"."releasedAt" IS NOT NULL
           RETURNING "expiresAt"
         `;
         if (!created) {

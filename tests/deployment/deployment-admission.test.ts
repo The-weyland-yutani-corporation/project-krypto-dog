@@ -55,8 +55,20 @@ function createSqlMock(options: {
     rolloutMode: "disabled",
     cronSecretBinding: cronSecretBinding(BASE.cronSecret, BASE.approvalSecret),
   };
+  const fences: Array<Record<string, unknown>> = options.fence
+    ? [{
+        owner: OWNER,
+        sourceReleaseSha: BASE.sourceReleaseSha,
+        candidateReleaseSha: BASE.candidateReleaseSha,
+        imageDigest: BASE.imageDigest,
+        targetOrigin: BASE.targetOrigin,
+        expiresAt: EXPIRY,
+        releasedAt: null,
+        ...options.fence,
+      }]
+    : [];
   const tag = jest.fn(
-    async (first: TemplateStringsArray, ..._values: unknown[]) => {
+    async (first: TemplateStringsArray, ...values: unknown[]) => {
       const query = Array.from(first).join(" ").replace(/\s+/g, " ").trim();
       statements.push(query);
       if (["BEGIN", "COMMIT", "ROLLBACK"].includes(query)) return [];
@@ -80,18 +92,9 @@ function createSqlMock(options: {
             }];
       }
       if (query.includes('FROM "krypto"."DeploymentFence"')) {
-        return options.fence
-          ? [{
-              owner: OWNER,
-              sourceReleaseSha: BASE.sourceReleaseSha,
-              candidateReleaseSha: BASE.candidateReleaseSha,
-              imageDigest: BASE.imageDigest,
-              targetOrigin: BASE.targetOrigin,
-              expiresAt: EXPIRY,
-              releasedAt: null,
-              ...options.fence,
-            }]
-          : [];
+        const match = fences.find((fence) => fence.releasedAt === null)
+          ?? fences.find((fence) => fence.owner === values[0]);
+        return match ? [match] : [];
       }
       if (query.includes("'deployment-smoke-approved'")) {
         return options.approval === null
@@ -115,14 +118,23 @@ function createSqlMock(options: {
           : [{ event: "deployment-smoke-binding" }];
       }
       if (query.startsWith('INSERT INTO "krypto"."DeploymentFence"')) {
+        fences.push({
+          owner: values[0],
+          sourceReleaseSha: values[1],
+          candidateReleaseSha: values[2],
+          imageDigest: values[3],
+          targetOrigin: values[4],
+          expiresAt: EXPIRY,
+          releasedAt: null,
+        });
         return [{ expiresAt: EXPIRY }];
       }
-      if (
-        query.startsWith('UPDATE "krypto"."DeploymentFence"') ||
-        query.startsWith('INSERT INTO "krypto"."AgentJournal"')
-      ) {
+      if (query.startsWith('UPDATE "krypto"."DeploymentFence"')) {
+        const match = fences.find((fence) => fence.owner === values[0]);
+        if (match) match.releasedAt = NOW;
         return [];
       }
+      if (query.startsWith('INSERT INTO "krypto"."AgentJournal"')) return [];
       throw new Error(`Unhandled SQL in admission test: ${query}`);
     },
   );
@@ -137,9 +149,10 @@ function createSqlMock(options: {
     reserve: jest.fn(async () => tx),
     end: jest.fn(async () => undefined),
   });
-  mockedPostgres.mockReturnValueOnce(sql as never);
+  mockedPostgres.mockReturnValue(sql as never);
   return {
     sql,
+    fences,
     statements,
     journalRecords,
     writes: () => statements.filter((query) => /^(INSERT|UPDATE|DELETE)/.test(query)),
@@ -189,6 +202,17 @@ describe("owned deployment cutover admission", () => {
     const mock = createSqlMock({ state });
     expect(await runDeploymentAdmission(BASE)).toMatchObject({ status: "deferred", reason });
     expect(mock.writes()).toEqual([]);
+  });
+
+  it("supports the same UUID v5 owner through acquisition, verification, and release", async () => {
+    const mock = createSqlMock();
+    const binding = { ...BASE, owner: "34aa399d-f243-5b32-832f-e399e1f22b74" };
+    expect((await runDeploymentAdmission(binding)).status).toBe("admitted");
+    expect((await runDeploymentAdmission({ ...binding, action: "verify" })).status).toBe("held");
+    expect((await runDeploymentAdmission({ ...binding, action: "release" })).status).toBe("released");
+    const writes = mock.writes().length;
+    expect((await runDeploymentAdmission(binding)).reason).toBe("released-owner");
+    expect(mock.writes()).toHaveLength(writes);
   });
 
   it.each([
@@ -292,10 +316,37 @@ describe("owned deployment cutover admission", () => {
     expect(mock.writes()).toEqual([]);
   });
 
-  it("allows a fresh owner to replace a released tombstone", async () => {
+  it("retains the previous tombstone when a fresh owner acquires", async () => {
     const mock = createSqlMock({ fence: { owner: OTHER_OWNER, releasedAt: NOW } });
     expect(await runDeploymentAdmission(BASE)).toMatchObject({ status: "admitted" });
-    expect(mock.writes()[0]).toContain('WHERE "DeploymentFence"."releasedAt" IS NOT NULL');
+    expect(mock.writes()[0]).not.toContain("ON CONFLICT");
+    expect(mock.fences).toHaveLength(2);
+    expect(mock.fences[0]).toMatchObject({ owner: OTHER_OWNER, releasedAt: NOW });
+  });
+
+  it("rejects completed-owner replay even after a different cutover has completed", async () => {
+    const mock = createSqlMock();
+    expect((await runDeploymentAdmission(BASE)).status).toBe("admitted");
+    expect((await runDeploymentAdmission({ ...BASE, action: "release" })).status).toBe("released");
+    expect((await runDeploymentAdmission({ ...BASE, owner: OTHER_OWNER })).status).toBe("admitted");
+    expect((await runDeploymentAdmission({ ...BASE, owner: OTHER_OWNER, action: "release" })).status).toBe("released");
+    const writes = mock.writes().length;
+    expect(await runDeploymentAdmission(BASE)).toMatchObject({
+      status: "blocked", reason: "released-owner",
+    });
+    expect(mock.writes()).toHaveLength(writes);
+    expect(mock.fences).toHaveLength(2);
+    expect(mock.fences.every((fence) => fence.releasedAt === NOW)).toBe(true);
+  });
+
+  it("does not mistake an old tombstone for permission to release a newer active owner", async () => {
+    createSqlMock();
+    await runDeploymentAdmission(BASE);
+    await runDeploymentAdmission({ ...BASE, action: "release" });
+    await runDeploymentAdmission({ ...BASE, owner: OTHER_OWNER });
+    expect(await runDeploymentAdmission({ ...BASE, action: "release" })).toMatchObject({
+      status: "blocked", reason: "ownership-mismatch",
+    });
   });
 
   it("verifies a held fence without writes or extending its deadline", async () => {

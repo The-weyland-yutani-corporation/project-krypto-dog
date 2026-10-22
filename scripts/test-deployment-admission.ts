@@ -23,7 +23,7 @@ const sql = postgres(databaseUrl, { max: 2, prepare: false });
 const base: DeploymentAdmissionOptions & { action: "acquire" } = {
   action: "acquire",
   databaseUrl,
-  owner: randomUUID(),
+  owner: "34aa399d-f243-5b32-832f-e399e1f22b74",
   sourceReleaseSha: "a".repeat(40),
   candidateReleaseSha: "b".repeat(40),
   imageDigest: `sha256:${"c".repeat(64)}`,
@@ -43,7 +43,7 @@ async function stateSnapshot(): Promise<string> {
 
 async function fenceSnapshot(): Promise<string> {
   const [row] = await sql<Array<{ fence: string }>>`
-    SELECT row_to_json(fence)::text AS fence
+    SELECT COALESCE(json_agg(fence ORDER BY owner), '[]'::json)::text AS fence
     FROM "krypto"."DeploymentFence" fence WHERE id = 'singleton'
   `;
   assert(row);
@@ -158,6 +158,20 @@ async function main(): Promise<void> {
   assert.equal(competing.status, "blocked");
   assert.equal(competing.reason, "ownership-mismatch");
 
+  await assert.rejects(
+    sql`
+      INSERT INTO "krypto"."DeploymentFence" (
+        owner, "sourceReleaseSha", "candidateReleaseSha", "imageDigest",
+        "targetOrigin", "expiresAt"
+      )
+      SELECT ${randomUUID()}, "sourceReleaseSha", "candidateReleaseSha", "imageDigest",
+        "targetOrigin", "expiresAt"
+      FROM "krypto"."DeploymentFence" WHERE owner = ${base.owner}
+    `,
+    (error: unknown) => error instanceof postgres.PostgresError && error.code === "23505",
+    "The database must reject a second active owner independently of application admission.",
+  );
+
   const seededFence = await fenceSnapshot();
   before = await stateSnapshot();
   runMaintenanceScript("scripts/seed.ts");
@@ -265,6 +279,28 @@ async function main(): Promise<void> {
   const winner = results.find((result) => result.status === "admitted");
   assert(winner);
   assert.equal((await runDeploymentAdmission({ ...base, owner: winner.owner, action: "release" })).status, "released");
+  const completedFences = await fenceSnapshot();
+  assert.equal((await runDeploymentAdmission(base)).reason, "released-owner",
+    "Owner A must remain consumed after owner B completes a later cutover.");
+  assert.equal(await fenceSnapshot(), completedFences, "A completed-owner replay must not mutate history.");
+  const [history] = await sql<Array<{ count: number }>>`
+    SELECT COUNT(*)::int AS count FROM "krypto"."DeploymentFence"
+    WHERE "releasedAt" IS NOT NULL
+  `;
+  assert.equal(history.count, 2, "Both completed owners must remain recorded.");
+  await assert.rejects(
+    sql`
+      INSERT INTO "krypto"."DeploymentFence" (
+        owner, "sourceReleaseSha", "candidateReleaseSha", "imageDigest",
+        "targetOrigin", "expiresAt"
+      )
+      SELECT owner, "sourceReleaseSha", "candidateReleaseSha", "imageDigest",
+        "targetOrigin", clock_timestamp() + INTERVAL '1 hour'
+      FROM "krypto"."DeploymentFence" WHERE owner = ${base.owner}
+    `,
+    (error: unknown) => error instanceof postgres.PostgresError && error.code === "23505",
+    "Completed owners cannot be inserted again even when no fence is active.",
+  );
   const resumed = await executeAgentRun({
     triggerSource: "admin",
     idempotencyKey: "released-fence-disabled-run",
@@ -276,15 +312,17 @@ async function main(): Promise<void> {
   const resetOwner = randomUUID();
   assert.equal((await runDeploymentAdmission({ ...base, owner: resetOwner })).status, "admitted");
   const resetFence = await fenceSnapshot();
+  runMaintenanceScript("scripts/seed.ts");
+  assert.equal(await fenceSnapshot(), resetFence, "Seed must preserve the active owner and all completed owners.");
   runMaintenanceScript("scripts/reset-state.ts");
-  assert.equal(await fenceSnapshot(), resetFence, "Local account reset must not remove or release a cutover fence.");
+  assert.equal(await fenceSnapshot(), resetFence, "Local account reset must preserve the active fence and completed-owner history.");
   assert.equal((await executeAgentRun({
     triggerSource: "admin",
     idempotencyKey: "account-reset-still-fenced",
   })).kind, "mutex");
   assert.equal((await runDeploymentAdmission({ ...base, owner: resetOwner, action: "release" })).status, "released");
 
-  console.log("Deployment admission passed: exact source binding, mutation-free deferral, native row-lock race, runtime read-only fence, executor refusal, expiry, ownership, stop preservation, and seed/reset fence preservation.");
+  console.log("Deployment admission passed: exact source binding, mutation-free deferral, native row-lock race, runtime read-only fence, executor refusal, expiry, durable owner replay protection, single-active uniqueness, stop preservation, and seed/reset history preservation.");
 }
 
 main()

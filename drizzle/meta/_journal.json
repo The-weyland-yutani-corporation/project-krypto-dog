@@ -64,6 +64,13 @@
       "when": 1792612861659,
       "tag": "0008_deployment_cutover_fence",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792629857081,
+      "tag": "0009_deployment_fence_history",
+      "breakpoints": true
     }
   ]
 }

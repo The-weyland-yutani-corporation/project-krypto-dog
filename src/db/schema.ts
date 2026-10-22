@@ -132,8 +132,8 @@ export const agentState = kryptoSchema.table("AgentState", {
 export const deploymentFence = kryptoSchema.table(
   "DeploymentFence",
   {
-    id: text("id").primaryKey().default("singleton"),
-    owner: text("owner").notNull(),
+    id: text("id").notNull().default("singleton"),
+    owner: text("owner").primaryKey(),
     sourceReleaseSha: text("sourceReleaseSha").notNull(),
     candidateReleaseSha: text("candidateReleaseSha").notNull(),
     imageDigest: text("imageDigest").notNull(),
@@ -155,6 +155,9 @@ export const deploymentFence = kryptoSchema.table(
   },
   (table) => [
     check("DeploymentFence_singleton", sql`${table.id} = 'singleton'`),
+    uniqueIndex("DeploymentFence_single_active")
+      .on(table.id)
+      .where(sql`${table.releasedAt} IS NULL`),
   ],
 );
 

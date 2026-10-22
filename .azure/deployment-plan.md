@@ -223,7 +223,8 @@ completion must eventually include exact-release production evidence.
 The read-only activation verifier now rejects operator pause, drawdown lock,
 and missing or invalid values for either control. This safeguard neither
 clears those controls nor implements or authorizes production promotion.
-The next source checkpoint implements an ops-owned cutover fence, runtime and
+Published source checkpoint `f0ffff8dee5547b970434d3cecd64e0a435c1653`
+implements an ops-owned cutover fence, runtime and
 paper-executor enforcement, migration/backup coverage, exact Azure execution
 binding, and production workflow admission before forced disable. Healthy
 position/lease deferral is mutation-free; an expired or failed fence remains
@@ -232,9 +233,23 @@ PostgreSQL administrator password so source ops jobs retain database access.
 Fresh provisioning remains explicit, and foundation/full production admission
 requires successful exact-SHA main push CI.
 
-These changes are implementation work, not deployment proof. The larger
-cutover checkpoint still requires current-head hosted migration/concurrency/
-restore checks and specialist review before merge. Evidence-bound paper
+Its exact-head
+[CI](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39699485807)
+and
+[infrastructure validation](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39699485790)
+passed, including real PostgreSQL migration/execution and strict harness checks.
+Required review is not complete: the code-review agent ended with a Copilot
+request HTTP 403, and the trading review reported missing Jest for its own
+targeted execution. Workflow success alone does not replace a complete review.
+
+The corrective checkpoint adds forward migration 0009 to retain completed
+owners, stable per-run ownership, independently retryable migration/backup,
+release and smoke jobs, exact returned main-push CI provenance, and fresh
+fence checks before forced disable and its monitoring change. The corrected
+head still requires hosted migration/concurrency/restore checks and complete
+current-head review before merge.
+
+These changes are implementation work, not deployment proof. Evidence-bound paper
 promotion, production-aware lifecycle completion, and actual commissioning
 remain pending. MonitorOps' separately denied pinned-tool verification remains
 blocked and must not be retried through an alternate path.
