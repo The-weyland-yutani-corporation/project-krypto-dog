@@ -50,6 +50,7 @@ quarantine_url="$url_prefix/quarantine"
 executor_url="$url_prefix/executor"
 orchestration_url="$url_prefix/orchestration"
 deployment_admission_url="$url_prefix/deployment_admission"
+production_verification_url="$url_prefix/production_verification"
 deployment_fence_upgrade_url="$url_prefix/deployment_fence_upgrade"
 operations_url="$url_prefix/operations"
 migration_only_url="$url_prefix/migration_only"
@@ -1155,6 +1156,11 @@ create_database deployment_admission
 DIRECT_URL="$deployment_admission_url" npx drizzle-kit migrate >/dev/null
 DIRECT_URL="$deployment_admission_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$deployment_admission_url" npx tsx scripts/test-deployment-admission.ts
+
+create_database production_verification
+DIRECT_URL="$production_verification_url" npx drizzle-kit migrate >/dev/null
+DIRECT_URL="$production_verification_url" npx tsx scripts/seed.ts >/dev/null
+DATABASE_URL="$production_verification_url" npx tsx scripts/test-production-verification.ts
 
 create_database operations
 # Pinned to 0006 (see through_0006_config above): this database exercises

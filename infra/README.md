@@ -431,6 +431,47 @@ All five also receive `ENVIRONMENT_NAME`, `RELEASE_SHA`,
 `AZURE_CLIENT_ID` selects the ops identity for Foundry; no model credential is
 mounted.
 
+### Read-only production proof
+
+The `production-verification` operation reuses the existing production
+`target-smoke` job; it does not add a sixth job, another identity, or secret
+grants. `run-ops-job.sh --production-verification-config <file>` accepts a
+closed, phase-specific nonsecret JSON configuration only when that live job
+is Manual with one completion, one replica, and zero retries. It preserves
+the complete template and secrets and never overrides Azure's builtin
+`CONTAINER_APP_JOB_EXECUTION_NAME`.
+
+The `ready` phase repeats signed activation verification with the exact
+approval row ID from the trusted smoke report, its lower time boundary, and
+a one-hour maximum approval age. Matching the ID matters: the approval
+signature does not cover its row ID or creation time, so copying a valid
+signature into a newly dated journal row must not refresh old evidence.
+The exact manual shadow run must be terminal, zero-fill and error-free.
+Balances use canonical decimals, not floating-point comparisons.
+
+The `scheduled` phase observes, but never starts, a paper trade. It binds the
+AgentRun to the exact image/generation/hour key and the selected Azure
+execution's start time. The observation window starts at the first full UTC
+hour after **verified schedule enablement**, not after generation allocation;
+an ARM operation can cross an hour boundary. HOLD and policy rejection are
+valid no-fill outcomes; EXECUTED needs exactly one correlated, journaled fill.
+An otherwise reconciled open position after that run is allowed. Both phases
+require released leases/fences and explicitly inactive operator/drawdown stops.
+
+Reports are bound to the release, image, target, authorization digest, and
+logical/Azure execution identities. The native validator rejects incomplete,
+wrong-phase, wrong-generation, or older-than-ten-minute proof. The PostHog
+host and key fingerprint identify the mounted telemetry binding; they do
+**not** prove separate projects or backend event visibility. This read-only
+operation is not an activation authority or an executable promotion workflow.
+Independent readiness authorization and backend delivery evidence remain
+required before production can leave disabled/Manual.
+
+`npm run test:integration` exercises the real verification queries through
+`scripts/test-production-verification.ts` against a freshly migrated, seeded
+loopback database. Its fixtures cover approval replay, run/journal/fill
+correlation, stop/lease/fence controls, and unchanged database snapshots.
+
 ## Safe per-execution full-template override
 
 `JOB_EXECUTION_ID` has no static Bicep value.
@@ -442,7 +483,7 @@ mounted.
    `volumeMounts`;
 4. requires exactly one container;
 5. always replaces/adds the validated `JOB_EXECUTION_ID`;
-6. for attended dev proof only, may additionally replace/add the allowlisted
+6. for attended shadow proof, may additionally replace/add the allowlisted
    validated `SCHEDULED_IDEMPOTENCY_KEY`,
    `EXPECTED_SHADOW_IDEMPOTENCY_KEY`, and
    `EXPECTED_SHADOW_STARTED_AFTER`;

@@ -1160,6 +1160,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      job_execution_id: ${{ steps.baseline_backup.outputs.job_execution_id }}
     env:
       CUTOVER_BINDING_JSON: ${{ toJSON(needs.force-disable-rollout.outputs) }}
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
@@ -1214,6 +1216,7 @@ jobs:
             --release-sha "${RESOLVED_SHA}"
 
       - name: Create and restore-verify a fresh baseline backup (new release)
+        id: baseline_backup
         run: |
           set -euo pipefail
           source .github/scripts/azure/lib/common.sh
@@ -1234,6 +1237,7 @@ jobs:
             --report "evidence/prod/${RESOLVED_SHA}/verified-backup/${job_execution_id}/report.json" \
             --operation verified-backup \
             --release-sha "${RESOLVED_SHA}"
+          echo "job_execution_id=${job_execution_id}" >> "$GITHUB_OUTPUT"
 
       - name: Publish migration and baseline backup evidence
         if: always()
@@ -1469,6 +1473,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      target_origin: ${{ steps.verify.outputs.target_origin }}
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       ACR_NAME_DEPLOYED: ${{ needs.deploy-environment.outputs.acr_name }}
@@ -1496,6 +1502,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Verify the live disabled release and immutable image binding
+        id: verify
         run: |
           set -euo pipefail
           source .github/scripts/azure/lib/common.sh
@@ -1575,4 +1582,56 @@ jobs:
             echo "The commit-SHA image tags no longer resolve to the exact deployed immutable digests." >&2
             exit 1
           fi
+          target_origin="$(printf '%s' "${web_json}" | jq -er '
+            .properties as $web
+            | [$web.template.containers[0].env[] | select(.name == "APP_ORIGIN")] as $origins
+            | if ($origins | length) == 1 and
+                 ($web.configuration.ingress.fqdn | type) == "string" and
+                 $origins[0].value == ("https://" + $web.configuration.ingress.fqdn)
+              then $origins[0].value else error("The live target origin is not exact") end')"
+          echo "target_origin=${target_origin}" >> "$GITHUB_OUTPUT"
           echo "Verified live prod state: disabled, both scheduler jobs Manual with no schedule, release ${release_sha}, web ${web_digest}, ops ${ops_digest}."
+
+  publish-release-receipt:
+    name: Publish an immutable full-release or deferral receipt
+    needs:
+      [gate, force-disable-rollout, deploy-environment, build-images, deploy-release,
+       migrate-backup, release-cutover-fence, target-smoke, verify-final-state]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      RELEASE_JOB_RESULTS: ${{ toJSON(needs) }}
+    steps:
+      - name: Check out the trusted workflow implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Create the attempt-bound production receipt
+        id: receipt
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { createReleaseReceipt, receiptName } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const receipt = createReleaseReceipt(process.env, JSON.parse(process.env.RELEASE_JOB_RESULTS));
+            fs.mkdirSync("production-receipt", { recursive: true });
+            fs.writeFileSync("production-receipt/receipt.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("name", receiptName("release", receipt.releaseSha, receipt.runId, receipt.runAttempt));
+            core.notice(`Production release outcome: ${receipt.status}. This is not paper-promotion evidence.`);
+      - name: Retain the immutable production receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.receipt.outputs.name }}
+          path: production-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 90

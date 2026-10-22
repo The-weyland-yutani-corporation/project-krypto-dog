@@ -14,6 +14,7 @@ const stepSchema = z.object({
   if: z.string().optional(),
   run: z.string().optional(),
   env: strings.optional(),
+  uses: z.string().optional(),
   with: z.record(z.string(), z.unknown()).optional(),
 });
 const workflow = z.object({
@@ -28,6 +29,7 @@ const workflow = z.object({
     environment: z.string().optional(),
     env: strings.optional(),
     outputs: strings.optional(),
+    permissions: strings.optional(),
     steps: z.array(stepSchema),
   })),
 }).parse(parse(read(".github/workflows/azure-deploy-prod.yml")));
@@ -58,6 +60,79 @@ function expectBefore(jobId: string, first: string, second: string) {
 }
 
 describe("production cutover workflow", () => {
+  it("publishes attempt-bound release evidence without Azure credentials, including partial failure and deferral", () => {
+    const publisher = job("publish-release-receipt");
+    expect(publisher.needs).toEqual([
+      "gate", "force-disable-rollout", "deploy-environment", "build-images", "deploy-release",
+      "migrate-backup", "release-cutover-fence", "target-smoke", "verify-final-state",
+    ]);
+    expect(publisher.if).toContain("always()");
+    expect(publisher.if).toContain("needs.gate.result == 'success'");
+    expect(publisher.if).toContain("needs.gate.outputs.deployment_stage == 'full'");
+    expect(publisher.permissions).toEqual({ contents: "read" });
+    expect(publisher.environment).toBeUndefined();
+    expect(publisher.steps[0].with).toMatchObject({
+      ref: "${{ github.sha }}", "persist-credentials": false, "sparse-checkout": ".github/scripts",
+    });
+    const upload = publisher.steps.find((entry) => entry.uses === "actions/upload-artifact@v4");
+    expect(upload?.with).toMatchObject({
+      name: "${{ steps.receipt.outputs.name }}", path: "production-receipt/receipt.json",
+      "if-no-files-found": "error", "retention-days": 90,
+    });
+    const backup = run("migrate-backup", "Create and restore-verify a fresh baseline backup (new release)");
+    expect(backup.indexOf("validate-report.mjs")).toBeLessThan(backup.indexOf('echo "job_execution_id='));
+    expect(job("migrate-backup").outputs?.job_execution_id)
+      .toBe("${{ steps.baseline_backup.outputs.job_execution_id }}");
+    expect(job("verify-final-state").outputs?.target_origin).toBe("${{ steps.verify.outputs.target_origin }}");
+  });
+
+  it("executes the real publisher and refuses to overwrite the same attempt's receipt", () => {
+    const publisher = job("publish-release-receipt");
+    const script = z.string().parse(step("publish-release-receipt", "Create the attempt-bound production receipt").with?.script);
+    const sha = "a".repeat(40);
+    const jobs = Object.fromEntries(z.array(z.string()).parse(publisher.needs).map((id) => [
+      id, { result: "success", outputs: {} as Record<string, string> },
+    ]));
+    jobs.gate.outputs = { sha, deployment_stage: "full" };
+    jobs["force-disable-rollout"].outputs.existing_release = "false";
+    jobs["release-cutover-fence"].outputs.status = "fresh";
+    jobs["deploy-environment"].outputs = {
+      acr_login_server: "acrkryptoprod.azurecr.io",
+      evidence_container_url: "https://kryptoprod.blob.core.windows.net/evidence",
+    };
+    jobs["build-images"].outputs = { web_digest_hex: "b".repeat(64), ops_digest_hex: "c".repeat(64) };
+    jobs["verify-final-state"].outputs.target_origin = "https://production.example.com";
+    jobs["migrate-backup"].outputs.job_execution_id = "run123-a1-baseline";
+    jobs["target-smoke"].outputs.job_execution_id = "run123-a1-smoke";
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "krypto-release-publisher-"));
+    try {
+      const execute = () => spawnSync(process.execPath, ["-e", `
+        const core = { setOutput: (key, value) => console.log(key + "=" + value), notice: () => {} };
+        ${script}
+      `], {
+        cwd: directory, encoding: "utf8",
+        env: {
+          ...process.env, GITHUB_WORKSPACE: root, GITHUB_REPOSITORY: "owner/project",
+          GITHUB_REPOSITORY_ID: "456", GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "1",
+          GITHUB_SHA: sha, GITHUB_REF: "refs/heads/main", RESOLVED_SHA: sha,
+          RELEASE_JOB_RESULTS: JSON.stringify(jobs),
+        },
+      });
+      const first = execute();
+      expect(first.status).toBe(0);
+      expect(first.stdout).toContain(`name=production-release-${sha}-123-1`);
+      const artifact = path.join(directory, "production-receipt", "receipt.json");
+      const original = fs.readFileSync(artifact, "utf8");
+      expect(JSON.parse(original)).toMatchObject({ status: "disabled", runId: 123, runAttempt: 1, releaseSha: sha });
+      const repeated = execute();
+      expect(repeated.status).not.toBe(0);
+      expect(repeated.stderr).toContain("EEXIST");
+      expect(fs.readFileSync(artifact, "utf8")).toBe(original);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("keeps protected main admission and successful push CI for both stages", () => {
     expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
     expect(workflow.concurrency).toEqual({

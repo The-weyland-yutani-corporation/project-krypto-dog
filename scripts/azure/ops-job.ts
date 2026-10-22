@@ -18,6 +18,7 @@ import * as activationCheck from "./operations/activation-check";
 import * as deploymentAdmission from "./operations/deployment-admission";
 import * as migrateInit from "./operations/migrate-init";
 import * as preflight from "./operations/preflight";
+import * as productionVerification from "./operations/production-verification";
 import type {
   AzureOperationContext,
   AzureOperationResult,
@@ -48,6 +49,8 @@ async function dispatch(
       return activationCheck.run(context);
     case "deployment-admission":
       return deploymentAdmission.run(context);
+    case "production-verification":
+      return productionVerification.run(context);
     /* istanbul ignore next -- exhaustiveness guard, unreachable after validateOperation */
     default: {
       const exhaustive: never = operation;

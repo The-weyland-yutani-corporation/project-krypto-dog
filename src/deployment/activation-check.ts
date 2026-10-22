@@ -1,4 +1,6 @@
 import postgres from "postgres";
+import { ETH_SCALE, parseDecimal } from "@/trading/accounting";
+import { AccountingError } from "@/trading/errors";
 
 import {
   approvalSignatureIsValid,
@@ -60,6 +62,11 @@ export type ActivationCheckOptions = {
   approvalSecret: string;
   expectedShadowIdempotencyKey: string;
   expectedShadowStartedAfter: string;
+  approvalProof?: {
+    approvalId: string;
+    createdAfter: string;
+    maxAgeSeconds: number;
+  };
 };
 
 export type ActivationCheckResult = {
@@ -84,6 +91,7 @@ export type ActivationCheckReport = {
     startedAt: string;
     completedAt: string | null;
     tradeCount: number;
+    errorType?: string | null;
   };
 };
 
@@ -106,6 +114,7 @@ type ShadowRunRow = {
   startedAt: Date;
   completedAt: Date | null;
   tradeCount: number;
+  errorType: string | null;
 };
 
 function errorCode(error: unknown): string {
@@ -180,6 +189,7 @@ async function loadShadowRun(
       agent_run.outcome::text AS outcome,
       agent_run."startedAt",
       agent_run."completedAt",
+      agent_run."errorType",
       COUNT(execution.id)::int AS "tradeCount"
     FROM "krypto"."AgentRun" agent_run
     LEFT JOIN "krypto"."TradeExecution" execution
@@ -192,7 +202,8 @@ async function loadShadowRun(
       agent_run."tradingMode",
       agent_run.outcome,
       agent_run."startedAt",
-      agent_run."completedAt"
+      agent_run."completedAt",
+      agent_run."errorType"
     LIMIT 1
   `;
   return row;
@@ -226,6 +237,19 @@ export async function runActivationCheck(
     approvalSecret,
   );
   const expectsShadowProof = true;
+  const approvalProof = options.approvalProof;
+  if (approvalProof) {
+    const boundary = new Date(approvalProof.createdAfter);
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(approvalProof.approvalId) ||
+      !Number.isFinite(boundary.getTime()) ||
+      boundary.toISOString().replace(".000Z", "Z") !== approvalProof.createdAfter.replace(".000Z", "Z") ||
+      !Number.isSafeInteger(approvalProof.maxAgeSeconds) ||
+      approvalProof.maxAgeSeconds <= 0 || approvalProof.maxAgeSeconds > 3600
+    ) {
+      throw new Error("Approval proof requires an exact approval ID, UTC time boundary, and age of at most one hour.");
+    }
+  }
   if (
     expectsShadowProof &&
     (!options.expectedShadowIdempotencyKey ||
@@ -373,6 +397,28 @@ export async function runActivationCheck(
         : "The approval's referenced database-binding row is missing.",
   );
 
+  if (approvalProof) {
+    record(
+      "exact-approval-id",
+      approval?.id === approvalProof.approvalId,
+      approval?.id === approvalProof.approvalId
+        ? "The latest signed approval is the exact selected smoke approval."
+        : "The selected smoke approval is no longer the latest approval.",
+    );
+    const createdAt = approval?.createdAt?.getTime();
+    const now = Date.now();
+    const recent = createdAt !== undefined && Number.isFinite(createdAt) &&
+      createdAt >= Date.parse(approvalProof.createdAfter) &&
+      createdAt <= now && now - createdAt <= approvalProof.maxAgeSeconds * 1000;
+    record(
+      "fresh-approval",
+      recent,
+      recent
+        ? "The selected approval is inside this release's bounded evidence window."
+        : "The selected approval is stale, future-dated, or outside this release's evidence window.",
+    );
+  }
+
   record(
     "target-origin-match",
     approval?.targetOrigin === targetOrigin,
@@ -473,20 +519,23 @@ export async function runActivationCheck(
       : `Accounting status is not RECONCILED (${state?.accountingStatus ?? "missing"}).`,
   );
 
-  const ethBalance =
-    state?.ethBalance === null || state?.ethBalance === undefined
-      ? null
-      : Number(state.ethBalance);
-  const openPosition =
-    ethBalance === null || !Number.isFinite(ethBalance)
-      ? true
-      : ethBalance !== 0;
+  let ethBalance: bigint | null = null;
+  if (typeof state?.ethBalance === "string") {
+    try {
+      ethBalance = parseDecimal(state.ethBalance, ETH_SCALE);
+    } catch (error) {
+      if (!(error instanceof AccountingError)) throw error;
+    }
+  }
+  const openPosition = ethBalance === null || ethBalance !== 0n;
   record(
     "no-open-paper-position",
     !openPosition,
     !openPosition
       ? "No open paper position is held."
-      : "An open paper position is held.",
+      : ethBalance === null
+        ? "An exact 18-decimal paper position could not be verified."
+        : "An open paper position is held.",
   );
 
   const approved = checks.every((entry) => entry.status === "pass");
@@ -508,6 +557,7 @@ export async function runActivationCheck(
           startedAt: shadowRun.startedAt.toISOString(),
           completedAt: shadowRun.completedAt?.toISOString() ?? null,
           tradeCount: shadowRun.tradeCount,
+          errorType: shadowRun.errorType,
         }
       : undefined,
   };

@@ -23,7 +23,7 @@ cleanup() {
       if [ -d "${directory}" ]; then rmdir "${directory}"; fi
     done
   fi
-  rm -f "${tmpdir}/az" "${tmpdir}/started" "${tmpdir}/launch.log"
+  rm -f "${tmpdir}/az" "${tmpdir}/started" "${tmpdir}/launch.log" "${tmpdir}/production-config.json"
   rmdir "${tmpdir}"
 }
 trap cleanup EXIT
@@ -139,6 +139,27 @@ if [ "$1 $2 $3" = "containerapp job start" ]; then
       | all(.[]; . as $pair |
           [$env[] | select(.name == $pair[0] and .value == $pair[1])] | length == 1)
     ' "${yaml_path}" >/dev/null
+  elif [ "${FAKE_PRODUCTION_PHASE:-}" != "" ]; then
+    jq -e --arg phase "${FAKE_PRODUCTION_PHASE}" '
+      .containers[0].env as $env
+      | [
+          ["OPERATION", "production-verification"],
+          ["PRODUCTION_VERIFICATION_PHASE", $phase],
+          ["PRODUCTION_AUTHORIZATION_ID", ("d" * 64)],
+          ["SCHEDULE_GENERATION_UNIX_SECONDS", "1700000000"],
+          (if $phase == "ready" then
+            ["EXPECTED_APPROVAL_ID", "approval-1"],
+            ["EXPECTED_SHADOW_IDEMPOTENCY_KEY", "manual-shadow:run-1"],
+            ["EXPECTED_SHADOW_STARTED_AFTER", "2026-08-13T12:00:00Z"],
+            ["EXPECTED_APPROVAL_CREATED_AFTER", "2026-08-13T11:55:00Z"]
+           else
+            ["SCHEDULE_ENABLED_AT_UNIX_SECONDS", "1700000001"],
+            ["SCHEDULED_EXECUTION_STARTED_AT", "2026-08-13T13:00:01Z"]
+           end)
+        ]
+      | all(.[]; . as $pair |
+          [$env[] | select(.name == $pair[0] and .value == $pair[1])] | length == 1)
+    ' "${yaml_path}" >/dev/null
   else
     jq -e '
       ([.containers[0].env[] | select(.name == "SCHEDULED_IDEMPOTENCY_KEY" and .value == "manual-shadow:run-1")] | length) == 1
@@ -232,6 +253,51 @@ if env PATH="${tmpdir}:${PATH}" FAKE_AZ_CAPTURE_DIR="${tmpdir}" FAKE_ADMISSION=1
   exit 1
 fi
 echo "PASS  admission rejects mixed shadow overrides"
+
+production_case() {
+  local phase="$1" expected="$2"
+  shift 2
+  jq -n --arg phase "${phase}" '
+    {
+      phase:$phase, authorizationId:("d"*64), scheduleGeneration:1700000000
+    } + (if $phase == "ready" then {
+      approvalId:"approval-1", approvalCreatedAfter:"2026-08-13T11:55:00Z",
+      shadowIdempotencyKey:"manual-shadow:run-1", shadowStartedAfter:"2026-08-13T12:00:00Z"
+    } else {
+      scheduleEnabledAt:1700000001, scheduledExecutionStartedAt:"2026-08-13T13:00:01Z"
+    } end)' > "${tmpdir}/production-config.json"
+  local status=0
+  rm -f "${tmpdir}/started"
+  env PATH="${tmpdir}:${PATH}" FAKE_AZ_CAPTURE_DIR="${tmpdir}" \
+    FAKE_JOB_ENVIRONMENT=prod FAKE_JOB_OPERATION=target-smoke FAKE_PRODUCTION_PHASE="${phase}" \
+    "$@" "${script_path}" \
+      --job-name caj-prod-target-smoke --resource-group rg-krypto-prod \
+      --job-execution-id run-1 --production-verification-config "${tmpdir}/production-config.json" \
+      --timeout-seconds 2 --poll-interval-seconds 1 > "${tmpdir}/launch.log" 2>&1 || status=$?
+  if [ "${status}" -ne "${expected}" ]; then
+    echo "FAIL production ${phase}: expected ${expected}, got ${status}" >&2
+    cat "${tmpdir}/launch.log" >&2
+    exit 1
+  fi
+  if [ "${expected}" -eq 1 ]; then test ! -f "${tmpdir}/started"; fi
+}
+production_case ready 0
+production_case scheduled 0
+production_case ready 2 FAKE_JOB_STATUS=Failed
+production_case ready 1 FAKE_JOB_ENVIRONMENT=dev
+production_case ready 1 FAKE_JOB_OPERATION=activation-check
+production_case ready 1 FAKE_JOB_RETRIES=1
+production_case ready 1 FAKE_JOB_PARALLELISM=2
+echo "PASS  production verification preserves credentials and only overrides the exact no-retry production smoke job"
+
+if env PATH="${tmpdir}:${PATH}" FAKE_AZ_CAPTURE_DIR="${tmpdir}" FAKE_ADMISSION=1 \
+  FAKE_JOB_ENVIRONMENT=prod FAKE_JOB_OPERATION=activation-check \
+  "${script_path}" "${admission_args[@]}" \
+  --production-verification-config "${tmpdir}/production-config.json" >/dev/null 2>&1; then
+  echo "FAIL production verification accepted a mixed admission override" >&2
+  exit 1
+fi
+echo "PASS  production verification rejects mixed admission overrides"
 
 mkdir "${tmpdir}/wrapper" "${tmpdir}/wrapper/lib"
 cp "${script_dir}/../run-deployment-admission.sh" "${tmpdir}/wrapper/run-deployment-admission.sh"

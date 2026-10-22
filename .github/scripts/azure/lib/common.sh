@@ -31,7 +31,7 @@ azure_common_image_digest_pattern='^sha256:[0-9a-f]{64}$'
 azure_common_job_execution_id_pattern='^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'
 azure_common_job_name_pattern='^[a-z][a-z0-9-]{0,30}[a-z0-9]$'
 azure_common_resource_group_pattern='^[A-Za-z0-9._()-]{1,90}$'
-azure_common_operations='migrate-init preflight verified-backup target-smoke activation-check deployment-admission'
+azure_common_operations='migrate-init preflight verified-backup target-smoke activation-check deployment-admission production-verification'
 # Bare HTTPS blob *container* URL only: exact `<account>.blob.core.windows.net`
 # host, and exactly one path segment (the container name) with no
 # trailing slash, credentials, query string, or fragment. This is

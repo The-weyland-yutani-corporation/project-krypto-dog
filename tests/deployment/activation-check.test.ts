@@ -38,6 +38,8 @@ const BASE_OPTIONS: ActivationCheckOptions = {
 };
 
 type ApprovalRowOverrides = Partial<{
+  id: string;
+  createdAt: Date;
   bindingId: string | null;
   targetOrigin: string | null;
   cronSecretBinding: string | null;
@@ -66,6 +68,7 @@ type ShadowRunOverrides = Partial<{
   startedAt: Date;
   completedAt: Date | null;
   tradeCount: number;
+  errorType: string | null;
 }>;
 
 /**
@@ -110,8 +113,8 @@ function buildApprovalRow(
       : overrides.approvalSignature;
 
   return {
-    id: "deployment-smoke-approved-uuid",
-    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    id: overrides.id ?? "deployment-smoke-approved-uuid",
+    createdAt: overrides.createdAt ?? new Date("2026-08-01T00:00:00.000Z"),
     bindingId,
     targetOrigin,
     cronSecretBinding: cronSecretBindingValue,
@@ -205,6 +208,7 @@ function createSqlMock(options: {
                 ? new Date("2026-08-13T12:00:10.000Z")
                 : shadowRun.completedAt,
             tradeCount: shadowRun.tradeCount ?? 0,
+            errorType: shadowRun.errorType ?? null,
           },
         ];
       }
@@ -220,6 +224,72 @@ describe("schedule-activation verifier", () => {
   beforeEach(() => {
     mockedPostgres.mockReset();
   });
+
+  describe("production approval proof", () => {
+    const proofOptions = {
+      ...BASE_OPTIONS,
+      approvalProof: {
+        approvalId: "deployment-smoke-approved-uuid",
+        createdAfter: "2026-08-13T11:30:00Z",
+        maxAgeSeconds: 3600,
+      },
+    };
+
+    beforeEach(() => jest.useFakeTimers().setSystemTime(new Date("2026-08-13T12:00:20Z")));
+    afterEach(() => jest.useRealTimers());
+
+    it("accepts only the exact recent approval from the trusted smoke report", async () => {
+      const sql = createSqlMock({ approval: { createdAt: new Date("2026-08-13T11:45:00Z") } });
+      mockedPostgres.mockReturnValueOnce(sql as never);
+      const report = await runActivationCheck(proofOptions);
+      expect(report.approved).toBe(true);
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "exact-approval-id", status: "pass" }),
+        expect.objectContaining({ id: "fresh-approval", status: "pass" }),
+      ]));
+    });
+
+    it("rejects a copied valid signature in a newly dated journal row", async () => {
+      const sql = createSqlMock({ approval: {
+        id: "copied-approval-with-the-same-valid-signature",
+        createdAt: new Date("2026-08-13T11:45:00Z"),
+      } });
+      mockedPostgres.mockReturnValueOnce(sql as never);
+      const report = await runActivationCheck(proofOptions);
+      expect(report.approved).toBe(false);
+      expect(report.checks).toContainEqual(expect.objectContaining({ id: "approval-signature-valid", status: "pass" }));
+      expect(report.checks).toContainEqual(expect.objectContaining({ id: "exact-approval-id", status: "block" }));
+    });
+
+    it.each([
+      "2026-08-13T10:59:59Z", "2026-08-13T11:29:59Z", "2026-08-13T12:00:21Z",
+    ])("rejects an approval outside its current evidence window: %s", async (date) => {
+      mockedPostgres.mockReturnValueOnce(createSqlMock({ approval: { createdAt: new Date(date) } }) as never);
+      const report = await runActivationCheck(proofOptions);
+      expect(report.approved).toBe(false);
+      expect(report.checks).toContainEqual(expect.objectContaining({ id: "fresh-approval", status: "block" }));
+    });
+
+    it.each([
+      { approvalId: "" }, { createdAfter: "2026-02-30T00:00:00Z" },
+      { createdAfter: "2026-08-13" }, { maxAgeSeconds: 0 }, { maxAgeSeconds: 3601 },
+    ])("rejects invalid proof inputs before reading the database: %j", async (overrides) => {
+      await expect(runActivationCheck({
+        ...proofOptions, approvalProof: { ...proofOptions.approvalProof, ...overrides },
+      })).rejects.toThrow("Approval proof");
+      expect(mockedPostgres).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(["0e-300", "0.0000000000000000001", " ", "", "-0.000000000000000001"])(
+    "does not round or coerce an invalid/nonzero ETH balance %s into flat state",
+    async (ethBalance) => {
+      mockedPostgres.mockReturnValueOnce(createSqlMock({ agentState: { ethBalance } }) as never);
+      const report = await runActivationCheck(BASE_OPTIONS);
+      expect(report.approved).toBe(false);
+      expect(report.checks).toContainEqual(expect.objectContaining({ id: "no-open-paper-position", status: "block" }));
+    },
+  );
 
   it("rejects an unreleased cutover fence without treating expiry as release", async () => {
     const sql = createSqlMock({ deploymentFenced: true });

@@ -219,6 +219,99 @@ try {
   rmdirSync(admissionDirectory);
 }
 
+const productionDirectory = mkdtempSync(path.join(tmpdir(), "production-report-test-"));
+try {
+  const hour = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+  const enabled = hour / 1000 - 20;
+  const generation = enabled - 60;
+  const start = new Date(hour).toISOString();
+  const scheduledKey = `cron:${DIGEST_1}-${generation}:${start.slice(0, 13)}`;
+  const commonChecks = [
+    "production-accounting-reconciled", "production-balances-valid",
+    "production-stops-inactive", "production-lease-released", "production-fence-released",
+  ];
+  const readyChecks = [
+    ...commonChecks, "production-shadow-approval", "production-shadow-terminal-safe",
+    "exact-approval-id", "fresh-approval",
+  ];
+  const scheduledChecks = [
+    ...commonChecks, "scheduled-run-binding", "scheduled-run-terminal",
+    "scheduled-run-journal", "scheduled-run-fills",
+  ];
+  const base = {
+    schemaVersion: "1.0.0", operation: "production-verification", phase: "ready",
+    intendedMode: "paper", generatedAt: new Date().toISOString(),
+    releaseSha: RELEASE_SHA_A, imageDigest: DIGEST_1, targetOrigin: "https://krypto.example.com",
+    authorizationId: "d".repeat(64), scheduleGeneration: generation, approved: true,
+    checks: readyChecks.map((id) => ({ id, status: "pass", summary: "verified" })), blockers: [],
+    approvalId: "approval-1",
+    shadowRun: {
+      id: "shadow-run-1", idempotencyKey: "manual-shadow:run-1", outcome: "SHADOW",
+      startedAt: start, completedAt: start, tradeCount: 0, errorType: null,
+    },
+    scheduledRun: null,
+    posthog: { host: "https://us.i.posthog.com", environment: "prod", keySha256: "a".repeat(64) },
+    environmentName: "prod", jobExecutionId: "run1-a1-ready", azureExecutionName: "execution-1",
+  };
+  const scheduled = {
+    ...base, phase: "scheduled", approvalId: null, shadowRun: null,
+    checks: scheduledChecks.map((id) => ({ id, status: "pass", summary: "verified" })),
+    scheduledRun: {
+      id: "paper-run-1", idempotencyKey: scheduledKey, outcome: "HOLD",
+      startedAt: start, completedAt: start, tradeCount: 0, journalCount: 1, tradeJournalCount: 0,
+    },
+  };
+  const args = [
+    "--operation", "production-verification", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1,
+    "--authorization-id", base.authorizationId, "--schedule-generation", String(generation),
+    "--target-origin", base.targetOrigin, "--job-execution-id", base.jobExecutionId,
+    "--azure-execution-name", base.azureExecutionName, "--approval-id", base.approvalId,
+    "--expected-shadow-idempotency-key", base.shadowRun.idempotencyKey,
+    "--expected-shadow-started-after", start,
+    "--expected-scheduled-idempotency-key", scheduledKey,
+    "--schedule-enabled-at", String(enabled), "--scheduled-execution-started-at", start,
+  ];
+  for (const [report, overrides, expectedStatus] of [
+    [base, {}, 0], [scheduled, {}, 0],
+    [scheduled, { scheduledRun: { ...scheduled.scheduledRun, outcome: "EXECUTED", tradeCount: 1, tradeJournalCount: 1 } }, 0],
+    ...[base, scheduled].flatMap((report) => [
+      [report, { approved: false }, 1],
+      [report, { checks: [] }, 1],
+      [report, { checks: [...report.checks, report.checks[0]] }, 1],
+      [report, { blockers: ["denied"] }, 1],
+      [report, { authorizationId: "c".repeat(64) }, 1],
+      [report, { scheduleGeneration: generation + 1 }, 1],
+      [report, { environmentName: "dev" }, 1],
+      [report, { azureExecutionName: "different-execution" }, 1],
+      [report, { intendedMode: "live" }, 1],
+      [report, { generatedAt: new Date(Date.now() - 601_000).toISOString() }, 1],
+      [report, { generatedAt: new Date(Date.now() + 600_000).toISOString() }, 1],
+    ]),
+    [base, { approvalId: "copied-approval" }, 1],
+    [base, { shadowRun: { ...base.shadowRun, outcome: "LOCKED" } }, 1],
+    [base, { shadowRun: { ...base.shadowRun, tradeCount: 1 } }, 1],
+    [base, { shadowRun: { ...base.shadowRun, errorType: "journal-failed" } }, 1],
+    [base, { shadowRun: { ...base.shadowRun, completedAt: null } }, 1],
+    [scheduled, { scheduledRun: { ...scheduled.scheduledRun, outcome: "RUNNING" } }, 1],
+    [scheduled, { scheduledRun: { ...scheduled.scheduledRun, journalCount: 0 } }, 1],
+    [scheduled, { scheduledRun: { ...scheduled.scheduledRun, tradeCount: 1 } }, 1],
+    [scheduled, { scheduledRun: { ...scheduled.scheduledRun, outcome: "EXECUTED", tradeCount: 1 } }, 1],
+    [scheduled, { scheduledRun: { ...scheduled.scheduledRun, completedAt: null } }, 1],
+    [scheduled, { scheduledRun: { ...scheduled.scheduledRun, idempotencyKey: scheduledKey.replace("sha256:", "old:") } }, 1],
+  ]) {
+    const reportPath = path.join(productionDirectory, "report.json");
+    writeFileSync(reportPath, JSON.stringify({ ...report, ...overrides }));
+    const result = spawnSync(process.execPath, [
+      scriptPath, "--report", reportPath, ...args, "--production-phase", report.phase,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, expectedStatus, `${report.phase}/${JSON.stringify(overrides)}: ${result.stderr}`);
+    passCount += 1;
+  }
+} finally {
+  rmSync(path.join(productionDirectory, "report.json"), { force: true });
+  rmdirSync(productionDirectory);
+}
+
 const expectedImage = `registry.azurecr.io/krypto-web@${DIGEST_1}`;
 function disabledSnapshot() {
   const template = { containers: [{ image: expectedImage, env: [{ name: "ROLLOUT_MODE", value: "disabled" }] }] };

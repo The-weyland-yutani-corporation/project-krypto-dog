@@ -15,6 +15,7 @@
 #     [--scheduled-idempotency-key <manual-shadow:key>] \
 #     [--expected-shadow-idempotency-key <manual-shadow:key>] \
 #     [--expected-shadow-started-after <UTC timestamp>] \
+#     [--production-verification-config <phase-specific-nonsecret-json>] \
 #     [--poll-interval-seconds <n>]
 #
 # Azure replaces the execution template when any start override is supplied.
@@ -47,6 +48,8 @@ deployment_fence_owner=""
 deployment_source_release_sha=""
 deployment_candidate_release_sha=""
 deployment_source_image_digest=""
+production_config=""
+production_overrides="[]"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -106,6 +109,10 @@ while [ $# -gt 0 ]; do
       deployment_source_image_digest="${2:?--deployment-source-image-digest requires a value}"
       shift 2
       ;;
+    --production-verification-config)
+      production_config="${2:?--production-verification-config requires a value}"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -144,6 +151,7 @@ if [ -n "${deployment_fence_action}${deployment_fence_owner}${deployment_source_
     echo "Deployment fence action must be acquire, verify, or release." >&2
     exit 1
   fi
+
   deployment_fence_owner="$(azure_validate_fence_owner "${deployment_fence_owner}")"
   deployment_source_release_sha="$(azure_validate_release_sha "${deployment_source_release_sha}")"
   deployment_candidate_release_sha="$(azure_validate_release_sha "${deployment_candidate_release_sha}")"
@@ -152,6 +160,14 @@ if [ -n "${deployment_fence_action}${deployment_fence_owner}${deployment_source_
     echo "Deployment admission cannot be combined with shadow-run overrides." >&2
     exit 1
   fi
+fi
+
+if [ -n "${production_config}" ]; then
+  if [ -n "${deployment_fence_action}${scheduled_idempotency_key}${expected_shadow_idempotency_key}${expected_shadow_started_after}" ]; then
+    echo "Production verification cannot be combined with admission or separate shadow overrides." >&2
+    exit 1
+  fi
+  production_overrides="$(node "${script_dir}/production-evidence.cjs" verification-overrides "${production_config}")"
 fi
 
 echo "Starting Container Apps Job '${job_name}' in resource group '${resource_group}' (JOB_EXECUTION_ID=${job_execution_id})."
@@ -187,6 +203,24 @@ if [ -n "${deployment_fence_action}" ]; then
   }
 fi
 
+if [ -n "${production_config}" ]; then
+  jq -e '
+    (.properties.configuration.triggerType == "Manual")
+    and (.properties.configuration.replicaRetryLimit == 0)
+    and (.properties.configuration.manualTriggerConfig.parallelism == 1)
+    and (.properties.configuration.manualTriggerConfig.replicaCompletionCount == 1)
+    and ([.properties.template.containers[0].env[]?
+          | select(.name == "CONTAINER_APP_JOB_EXECUTION_NAME")] | length == 0)
+    and ([.properties.template.containers[0].env[]? | select(.name == "OPERATION")]
+          | length == 1 and .[0].value == "target-smoke")
+    and ([.properties.template.containers[0].env[]? | select(.name == "ENVIRONMENT_NAME")]
+          | length == 1 and .[0].value == "prod")
+  ' "${job_definition_file}" >/dev/null || {
+    echo "Production verification requires the single, no-retry manual production target-smoke job." >&2
+    exit 1
+  }
+fi
+
 if ! jq -e '
   ((.properties.template.volumes // []) | length) == 0
   and all(.properties.template.containers[]?; ((.volumeMounts // []) | length) == 0)
@@ -205,7 +239,8 @@ jq \
   --arg deployment_fence_owner "${deployment_fence_owner}" \
   --arg deployment_source_release_sha "${deployment_source_release_sha}" \
   --arg deployment_candidate_release_sha "${deployment_candidate_release_sha}" \
-  --arg deployment_source_image_digest "${deployment_source_image_digest}" '
+  --arg deployment_source_image_digest "${deployment_source_image_digest}" \
+  --argjson production_overrides "${production_overrides}" '
   .properties.template
   | if ((.containers // []) | type) != "array"
       or ((.containers // []) | length) != 1
@@ -231,7 +266,7 @@ jq \
          {name: "DEPLOYMENT_CANDIDATE_RELEASE_SHA", value: $deployment_candidate_release_sha},
          {name: "DEPLOYMENT_SOURCE_IMAGE_DIGEST", value: $deployment_source_image_digest}
        else empty end)
-    ]) as $overrides
+    ] + $production_overrides) as $overrides
   | ($overrides | map(.name)) as $override_names
   | .containers[0].env = (
       ((.containers[0].env // [])
