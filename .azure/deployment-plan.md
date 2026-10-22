@@ -223,8 +223,20 @@ completion must eventually include exact-release production evidence.
 The read-only activation verifier now rejects operator pause, drawdown lock,
 and missing or invalid values for either control. This safeguard neither
 clears those controls nor implements or authorizes production promotion.
-The production orchestration, cutover fence, and completion path are still
-pending. MonitorOps' separately denied pinned-tool verification remains
+The next source checkpoint implements an ops-owned cutover fence, runtime and
+paper-executor enforcement, migration/backup coverage, exact Azure execution
+binding, and production workflow admission before forced disable. Healthy
+position/lease deferral is mutation-free; an expired or failed fence remains
+held for owned recovery. Existing-release infrastructure updates omit the
+PostgreSQL administrator password so source ops jobs retain database access.
+Fresh provisioning remains explicit, and foundation/full production admission
+requires successful exact-SHA main push CI.
+
+These changes are implementation work, not deployment proof. The larger
+cutover checkpoint still requires current-head hosted migration/concurrency/
+restore checks and specialist review before merge. Evidence-bound paper
+promotion, production-aware lifecycle completion, and actual commissioning
+remain pending. MonitorOps' separately denied pinned-tool verification remains
 blocked and must not be retried through an alternate path.
 
 Exact Environment protection changes, production activation, external

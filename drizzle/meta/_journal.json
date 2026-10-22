@@ -57,6 +57,13 @@
       "when": 1786579433481,
       "tag": "0007_azure_retire_supabase_http_functions",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792612861659,
+      "tag": "0008_deployment_cutover_fence",
+      "breakpoints": true
     }
   ]
 }

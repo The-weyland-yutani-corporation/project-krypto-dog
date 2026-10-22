@@ -31,6 +31,7 @@ const OPERATIONS = new Set([
   "verified-backup",
   "target-smoke",
   "activation-check",
+  "deployment-admission",
 ]);
 
 function fail(message) {
@@ -124,6 +125,78 @@ function requireMatch(object, field, expected, context) {
 }
 
 switch (operation) {
+  case "deployment-admission": {
+    const action = args["admission-action"];
+    const owner = args["fence-owner"];
+    const sourceSha = args["source-release-sha"];
+    const candidateSha = args["candidate-release-sha"];
+    const targetOrigin = args["target-origin"];
+    const executionId = args["job-execution-id"];
+    const azureExecutionName = args["azure-execution-name"];
+    if (!["acquire", "verify", "release"].includes(action)) fail("--admission-action must be acquire, verify, or release.");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(owner ?? "")) {
+      fail("--fence-owner must be a lowercase random UUID.");
+    }
+    if (!RELEASE_SHA_PATTERN.test(sourceSha ?? "") || !RELEASE_SHA_PATTERN.test(candidateSha ?? "")) {
+      fail("Both source and candidate release SHAs are required.");
+    }
+    if (!expectedImageDigest) fail("--image-digest is required for admission.");
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(executionId ?? "")) {
+      fail("--job-execution-id is required for admission.");
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(azureExecutionName ?? "")) {
+      fail("--azure-execution-name is required for admission.");
+    }
+    let origin;
+    try {
+      origin = new URL(targetOrigin);
+    } catch {
+      fail("--target-origin must be a bare HTTPS origin.");
+    }
+    if (origin.protocol !== "https:" || origin.origin !== targetOrigin) {
+      fail("--target-origin must be a bare HTTPS origin.");
+    }
+    for (const [field, expected] of Object.entries({
+      schemaVersion: "1.0.0",
+      operation,
+      action,
+      owner,
+      sourceReleaseSha: sourceSha,
+      candidateReleaseSha: candidateSha,
+      releaseSha: expectedReleaseSha,
+      imageDigest: expectedImageDigest,
+      targetOrigin,
+      environmentName: "prod",
+      jobExecutionId: executionId,
+      azureExecutionName,
+    })) {
+      requireMatch(report, field, expected, "deployment-admission report");
+    }
+    const now = Date.now();
+    const generatedAt = Date.parse(requireField(report, "generatedAt", "string"));
+    if (!Number.isFinite(generatedAt) || generatedAt > now + 120_000 || now - generatedAt > 30 * 60_000) {
+      fail("Admission evidence is invalid, future-dated, or older than 30 minutes.");
+    }
+    if (report.status === "deferred" && args["allow-deferred"] === "true" && action === "acquire") {
+      if (
+        !["open-position", "run-lease", "database-busy"].includes(report.reason) ||
+        report.expiresAt !== null
+      ) {
+        fail("Deferred admission has an invalid reason or claims an acquired fence.");
+      }
+      process.stdout.write("validate-report: deployment DEFERRED; the source release was not changed.\n");
+      process.exit(75);
+    }
+    requireMatch(report, "status", { acquire: "admitted", verify: "held", release: "released" }[action], "deployment-admission report");
+    const expiresAt = Date.parse(requireField(report, "expiresAt", "string"));
+    if (
+      !Number.isFinite(expiresAt) ||
+      (action !== "release" && (expiresAt <= now || expiresAt - generatedAt > 6 * 60 * 60_000 + 120_000))
+    ) {
+      fail("The admission fence deadline is invalid or expired.");
+    }
+    break;
+  }
   case "migrate-init": {
     requireTrue(report, "success", "migrate-init report");
     requireTrue(report, "migrated", "migrate-init report");

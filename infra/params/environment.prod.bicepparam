@@ -44,6 +44,9 @@ param postgresSubnetPrefix = '10.20.1.32/27'
 
 param postgresAdministratorLogin = 'krypto_owner'
 param postgresAdministratorLoginPassword = readEnvironmentVariable('POSTGRES_ADMIN_PASSWORD_PROD')
+// Only the deployment workflow's proven-fresh path selects initialize.
+// Existing releases must keep their versioned source ops credentials valid.
+param postgresCredentialMode = 'preserve'
 // Production sizing should be reviewed and raised from the dev-equivalent
 // Burstable default before go-live; ADR 0008 item 8 accepts single-zone
 // only with 35-day PITR as the interim posture.

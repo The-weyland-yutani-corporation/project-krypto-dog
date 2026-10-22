@@ -15,6 +15,7 @@ import {
   type AzureOperation,
 } from "./lib/report-path";
 import * as activationCheck from "./operations/activation-check";
+import * as deploymentAdmission from "./operations/deployment-admission";
 import * as migrateInit from "./operations/migrate-init";
 import * as preflight from "./operations/preflight";
 import type {
@@ -45,6 +46,8 @@ async function dispatch(
       return targetSmoke.run(context);
     case "activation-check":
       return activationCheck.run(context);
+    case "deployment-admission":
+      return deploymentAdmission.run(context);
     /* istanbul ignore next -- exhaustiveness guard, unreachable after validateOperation */
     default: {
       const exhaustive: never = operation;

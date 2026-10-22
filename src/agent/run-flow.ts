@@ -13,6 +13,7 @@ import {
   agentJournal,
   agentRun,
   agentState,
+  deploymentFence,
   tradeExecution,
   type AgentRun,
   type AgentState,
@@ -229,7 +230,24 @@ async function acquireInvocation(
       });
     }
 
-    const [leasedState] = await tx
+    // Admission uses this same row lock before changing the deployment fence.
+    await tx
+      .select({ id: agentState.id })
+      .from(agentState)
+      .where(eq(agentState.id, ACCOUNT_ID))
+      .for("update");
+    const [fence] = await tx
+      .select({ owner: deploymentFence.owner })
+      .from(deploymentFence)
+      .where(
+        and(
+          eq(deploymentFence.id, ACCOUNT_ID),
+          isNull(deploymentFence.releasedAt),
+        ),
+      )
+      .limit(1);
+
+    const [leasedState] = fence ? [] : await tx
       .update(agentState)
       .set({
         leaseOwner,
@@ -249,13 +267,17 @@ async function acquireInvocation(
       .returning();
 
     if (!leasedState) {
+      const errorType = fence ? "deployment-fence" : "lease-conflict";
+      const message = fence
+        ? "Deployment cutover blocks new agent invocations"
+        : "Another invocation owns the run lease";
       if (!existing) {
         await tx
           .update(agentRun)
           .set({
             outcome: "CONFLICT",
-            errorType: "lease-conflict",
-            errorMessage: "Another invocation owns the run lease",
+            errorType,
+            errorMessage: message,
             latencyMs: 0,
             completedAt: now,
           })
@@ -264,7 +286,7 @@ async function acquireInvocation(
       return {
         kind: "conflict",
         runId,
-        message: "Agent is already running",
+        message: fence ? message : "Agent is already running",
       };
     }
 

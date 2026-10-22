@@ -2,6 +2,7 @@ import {
   text,
   doublePrecision,
   boolean,
+  check,
   timestamp,
   jsonb,
   index,
@@ -127,6 +128,35 @@ export const agentState = kryptoSchema.table("AgentState", {
     .notNull()
     .$onUpdate(() => new Date()),
 });
+
+export const deploymentFence = kryptoSchema.table(
+  "DeploymentFence",
+  {
+    id: text("id").primaryKey().default("singleton"),
+    owner: text("owner").notNull(),
+    sourceReleaseSha: text("sourceReleaseSha").notNull(),
+    candidateReleaseSha: text("candidateReleaseSha").notNull(),
+    imageDigest: text("imageDigest").notNull(),
+    targetOrigin: text("targetOrigin").notNull(),
+    createdAt: timestamp("createdAt", {
+      precision: 3,
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expiresAt", {
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+    releasedAt: timestamp("releasedAt", {
+      precision: 3,
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    check("DeploymentFence_singleton", sql`${table.id} = 'singleton'`),
+  ],
+);
 
 export const agentRun = kryptoSchema.table(
   "AgentRun",

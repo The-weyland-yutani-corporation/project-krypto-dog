@@ -127,6 +127,7 @@ function createSqlMock(options: {
   bindingExists?: boolean;
   agentState?: AgentStateOverrides | null;
   shadowRun?: ShadowRunOverrides | null;
+  deploymentFenced?: boolean;
 }) {
   const calls: string[] = [];
   const {
@@ -184,6 +185,9 @@ function createSqlMock(options: {
           },
         ];
       }
+      if (query.includes('FROM "krypto"."DeploymentFence"')) {
+        return options.deploymentFenced ? [{ owner: "owned-cutover" }] : [];
+      }
       if (query.includes('FROM "krypto"."AgentRun"')) {
         if (shadowRun === null) return [];
         return [
@@ -215,6 +219,20 @@ function createSqlMock(options: {
 describe("schedule-activation verifier", () => {
   beforeEach(() => {
     mockedPostgres.mockReset();
+  });
+
+  it("rejects an unreleased cutover fence without treating expiry as release", async () => {
+    const sql = createSqlMock({ deploymentFenced: true });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+    const report = await runActivationCheck(BASE_OPTIONS);
+    expect(report.approved).toBe(false);
+    expect(report.checks).toContainEqual(expect.objectContaining({
+      id: "no-deployment-fence",
+      status: "block",
+    }));
+    const query = sql.__calls.find((statement) => statement.includes("DeploymentFence"));
+    expect(query).toContain('"releasedAt" IS NULL');
+    expect(query).not.toContain("expiresAt");
   });
 
   it("approves activation when every binding matches, the approval signature is valid, and state is safe", async () => {

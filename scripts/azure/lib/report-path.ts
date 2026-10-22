@@ -11,6 +11,7 @@ export const AZURE_OPERATIONS = [
   "verified-backup",
   "target-smoke",
   "activation-check",
+  "deployment-admission",
 ] as const;
 
 export type AzureOperation = (typeof AZURE_OPERATIONS)[number];

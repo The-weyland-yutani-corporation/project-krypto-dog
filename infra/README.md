@@ -306,6 +306,12 @@ Environment, not the legacy `development-promotion` Environment; inspect the
 protections actually referenced by each workflow. Any approved dispatch must
 use the configured branch, exact CI-passed SHA, and existing CI gate.
 
+Both production stages require dispatch from protected `main` and successful
+main push CI for the exact candidate SHA. Production `foundation` is only for
+an environment without an application release; it rejects a complete existing
+release and partial release inventory. Existing releases use `full` and the
+owned cutover protocol below.
+
 ## Release secrets and Azure-generated values
 
 `release.bicep` accepts these protected deploy-time values:
@@ -322,6 +328,22 @@ DEPLOYMENT_APPROVAL_SECRET
 ```
 
 `environment.bicep` separately accepts `POSTGRES_ADMIN_PASSWORD`.
+
+For an existing production release, `postgresCredentialMode=preserve` uses
+the PostgreSQL resource's
+[update-only mode](https://learn.microsoft.com/azure/templates/microsoft.dbforpostgresql/2024-08-01/flexibleservers)
+and omits `administratorLoginPassword` from the resource update. Infrastructure
+remains managed, but its deployment cannot invalidate the versioned `DIRECT_URL`
+used by source-image ops jobs between cutover checks. The committed production
+parameters default to `preserve`; only the workflow's explicit fresh-release
+path selects `initialize`. Missing or malformed inventory fails closed.
+
+Database credential rotation is not part of a normal production upgrade.
+Protected database secrets must still match the database when the new release
+is installed. `azure-rotate-secrets.yml` redeploys Key Vault/release bindings;
+it does not rotate the PostgreSQL administrator password or database-side
+runtime role password. Such rotation needs a separately coordinated procedure,
+not an incidental password update halfway through an owned cutover.
 
 Dev and prod use independent safety/auth values. The temporary PostHog
 shared-key fallback is allowed only because `POSTHOG_ENVIRONMENT` is mandatory
@@ -488,16 +510,40 @@ with boundary `0`.
 - Failure from dev shadow staging onward triggers automatic rollback to
   disabled/manual, verifies both jobs are Manual, and only then disables
   monitoring.
-- Prod detects and force-disables a complete current release and takes a
-  verified backup **before** `environment.bicep` can rotate credentials or
-  mutate infrastructure. That current-release backup uses a
+- Prod acquires an ops-owned, signed-source-bound database fence **before**
+  forced disable or any infrastructure mutation. An open paper position or
+  valid active lease defers without changing the healthy release. Stops,
+  unreconciled accounting, malformed/expired leases, stale ownership, or an
+  expired fence block the cutover. Source release lineage, digest, origin,
+  candidate SHA, owner, and actual Azure execution identity are checked.
+- Admission has no automatic replica retries. Deferral requires a terminal
+  failed Azure execution and its exact immutable deferred report; timeouts,
+  unknown submissions, or another execution's report are failures, not deferral.
+- After admission, prod proves disabled/Manual and quiescence, then takes a
+  verified backup **before** `environment.bicep` mutates infrastructure.
+  Existing-release updates preserve the PostgreSQL administrator password.
+  The current-release backup uses a
   `JOB_EXECUTION_ID` ending `-current`, preventing a same-SHA collision with
   new-release baseline evidence. Its forced-disable path verifies Manual jobs
   before disabling monitoring.
+- The runtime and paper executor can read but cannot mutate the fence.
+  Every mutation stage revalidates the actual owner and six-hour deadline.
+  Expiry never resumes execution or permits ownership theft; seed/reset do
+  not clear the fence. A failure leaves the fence held for owned recovery.
+- After migrations and a restore-verified baseline backup, prod verifies the
+  new disabled release and all inactive revisions are quiescent before the
+  exact owner releases the fence and target-smoke runs. Release preserves
+  operator/drawdown stops and a replay-resistant ownership tombstone.
 - Prod full deployment and secret rotation end disabled/manual. No executable
   production promotion workflow is shipped or approved.
 - Prod deploy and rotation share concurrency group
   `azure-production-mutation`.
+
+Fence ownership is a database safety control, not a substitute for Azure
+readback. Quiescence requires the desired ready revision, exact images,
+zero replicas on every inactive revision, disabled/Manual jobs without event
+or schedule configuration, and only known-terminal scheduler executions.
+Missing state is never interpreted as zero replicas or successful shutdown.
 
 ## Evidence storage
 

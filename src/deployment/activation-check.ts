@@ -1,8 +1,12 @@
 import postgres from "postgres";
 
 import {
-  canonicalApprovalPayload,
-  computeApprovalSignature,
+  approvalSignatureIsValid,
+  bindingRowExists,
+  loadLatestApproval,
+  type LatestApprovalRow,
+} from "@/deployment/approval";
+import {
   constantTimeEqual,
   cronSecretBinding,
   readOnly,
@@ -83,18 +87,6 @@ export type ActivationCheckReport = {
   };
 };
 
-type LatestApprovalRow = {
-  id: string;
-  createdAt: Date;
-  bindingId: string | null;
-  targetOrigin: string | null;
-  cronSecretBinding: string | null;
-  releaseSha: string | null;
-  imageDigest: string | null;
-  rolloutMode: string | null;
-  approvalSignature: string | null;
-};
-
 type AgentStateRow = {
   accountingStatus: string;
   ethBalance: string | null;
@@ -151,41 +143,6 @@ function sanitizedOrigin(value: string): string {
     );
   }
   return url.origin;
-}
-
-async function loadLatestApproval(
-  sql: postgres.Sql,
-): Promise<LatestApprovalRow | undefined> {
-  const [row] = await sql<LatestApprovalRow[]>`
-    SELECT
-      id,
-      "createdAt",
-      "marketConditions" ->> 'bindingId' AS "bindingId",
-      "marketConditions" ->> 'targetOrigin' AS "targetOrigin",
-      "marketConditions" ->> 'cronSecretBinding' AS "cronSecretBinding",
-      "marketConditions" ->> 'releaseSha' AS "releaseSha",
-      "marketConditions" ->> 'imageDigest' AS "imageDigest",
-      "marketConditions" ->> 'rolloutMode' AS "rolloutMode",
-      "marketConditions" ->> 'approvalSignature' AS "approvalSignature"
-    FROM "krypto"."AgentJournal"
-    WHERE "marketConditions" ->> 'event' = 'deployment-smoke-approved'
-    ORDER BY "createdAt" DESC, id DESC
-    LIMIT 1
-  `;
-  return row;
-}
-
-async function bindingRowExists(
-  sql: postgres.Sql,
-  bindingId: string,
-): Promise<boolean> {
-  const [row] = await sql<Array<{ event: string | null }>>`
-    SELECT "marketConditions" ->> 'event' AS event
-    FROM "krypto"."AgentJournal"
-    WHERE id = ${bindingId}
-    LIMIT 1
-  `;
-  return row?.event === "deployment-smoke-binding";
 }
 
 async function loadAgentState(
@@ -309,6 +266,7 @@ export async function runActivationCheck(
   let bindingExists = false;
   let state: AgentStateRow | undefined;
   let shadowRun: ShadowRunRow | undefined;
+  let deploymentFenced = true;
 
   try {
     await readOnly(options.databaseUrl, async (sql) => {
@@ -317,6 +275,12 @@ export async function runActivationCheck(
         bindingExists = await bindingRowExists(sql, approval.bindingId);
       }
       state = await loadAgentState(sql);
+      const [fence] = await sql<Array<{ owner: string }>>`
+        SELECT owner FROM "krypto"."DeploymentFence"
+        WHERE id = 'singleton' AND "releasedAt" IS NULL
+        LIMIT 1
+      `;
+      deploymentFenced = fence !== undefined;
       if (options.expectedShadowIdempotencyKey) {
         shadowRun = await loadShadowRun(
           sql,
@@ -425,31 +389,10 @@ export async function runActivationCheck(
       : "Persisted cron-secret binding does not match this activation.",
   );
 
-  const approvalSignatureFieldsPresent =
-    approval !== undefined &&
-    approval.bindingId !== null &&
-    approval.targetOrigin !== null &&
-    approval.releaseSha !== null &&
-    approval.imageDigest !== null &&
-    approval.rolloutMode !== null &&
-    approval.cronSecretBinding !== null;
-
-  const expectedApprovalSignature = approvalSignatureFieldsPresent
-    ? computeApprovalSignature(
-        canonicalApprovalPayload({
-          bindingId: approval!.bindingId!,
-          targetOrigin: approval!.targetOrigin!,
-          releaseSha: approval!.releaseSha!,
-          imageDigest: approval!.imageDigest!,
-          rolloutMode: approval!.rolloutMode!,
-          cronSecretBinding: approval!.cronSecretBinding!,
-        }),
-        approvalSecret,
-      )
-    : null;
-  const approvalSignatureValid =
-    expectedApprovalSignature !== null &&
-    constantTimeEqual(expectedApprovalSignature, approval?.approvalSignature);
+  const approvalSignatureValid = approvalSignatureIsValid(
+    approval,
+    approvalSecret,
+  );
 
   record(
     "approval-signature-valid",
@@ -484,6 +427,13 @@ export async function runActivationCheck(
   );
 
   const operatorNotPaused = state?.isOperatorPaused === false;
+  record(
+    "no-deployment-fence",
+    !deploymentFenced,
+    deploymentFenced
+      ? "An unreleased deployment cutover fence blocks activation."
+      : "No unreleased deployment cutover fence is present.",
+  );
   record(
     "operator-not-paused",
     operatorNotPaused,

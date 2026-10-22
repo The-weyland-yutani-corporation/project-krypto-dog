@@ -49,6 +49,7 @@ upgrade_url="$url_prefix/upgrade"
 quarantine_url="$url_prefix/quarantine"
 executor_url="$url_prefix/executor"
 orchestration_url="$url_prefix/orchestration"
+deployment_admission_url="$url_prefix/deployment_admission"
 operations_url="$url_prefix/operations"
 migration_only_url="$url_prefix/migration_only"
 rollout_upgrade_url="$url_prefix/rollout_upgrade"
@@ -135,6 +136,7 @@ NODE
 # only from the conspicuously labeled test fixtures above and is run exclusively
 # against disposable databases pinned before migration 0007.
 through_0006_config="$(build_through_config 6 0006)"
+through_0007_config="$(build_through_config 7 0007)"
 
 psql "$admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 DO $$
@@ -670,7 +672,7 @@ fi
 
 # --- Azure PostgreSQL safety transition (drizzle/0007): fresh install ---
 #
-# A clean target migrated to the current (default, full) migration set must
+# A clean target migrated specifically through 0007 must
 # have both obsolete hosted HTTP cron functions absent and the
 # least-privilege krypto_runtime group role established with the exact,
 # fail-closed per-table privilege matrix (no more, no less): AgentState
@@ -682,7 +684,8 @@ fi
 azure_0007_hash="fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71"
 
 create_database azure_target
-DIRECT_URL="$azure_target_url" npx drizzle-kit migrate >/dev/null
+DIRECT_URL="$azure_target_url" \
+  npx drizzle-kit migrate --config "$through_0007_config" >/dev/null
 DIRECT_URL="$azure_target_url" npx tsx scripts/seed.ts >/dev/null
 
 azure_fresh_result="$(psql "$azure_target_url" -Atc \
@@ -776,7 +779,8 @@ INSERT INTO "krypto"."AgentJournal" (
 );
 SQL
 
-DIRECT_URL="$azure_upgrade_url" npx drizzle-kit migrate >/dev/null
+DIRECT_URL="$azure_upgrade_url" \
+  npx drizzle-kit migrate --config "$through_0007_config" >/dev/null
 
 azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
   'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
@@ -796,6 +800,32 @@ azure_upgrade_result="$(psql "$azure_upgrade_url" -Atc \
           has_table_privilege('\''krypto_runtime'\'', '\''krypto."AgentRun"'\'', '\''UPDATE'\'')::text;')"
 if [[ "$azure_upgrade_result" != "8|1|1|1|1|0.123456789012345678|true|true|true|false|false|false|true" ]]; then
   echo "0006-to-0007 upgrade did not preserve rows, retire cron functions, or establish the exact krypto_runtime privilege matrix: $azure_upgrade_result" >&2
+  exit 1
+fi
+
+# Advance the Azure targets only after the pinned 0007 contracts above.
+DIRECT_URL="$azure_target_url" npx drizzle-kit migrate >/dev/null
+DIRECT_URL="$azure_upgrade_url" npx drizzle-kit migrate >/dev/null
+
+deployment_fence_result="$(psql "$azure_upgrade_url" -Atc \
+  'SELECT (SELECT count(*) FROM drizzle.__drizzle_migrations) || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentState") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentRun") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."TradeExecution") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."AgentJournal") || '\''|'\'' ||
+          (SELECT count(*) FROM "krypto"."DeploymentFence") || '\''|'\'' ||
+          (SELECT "currentPositionETHDecimal"::text FROM "krypto"."AgentState"
+            WHERE id = '\''singleton'\'') || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."DeploymentFence"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."DeploymentFence"'\'', '\''INSERT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."DeploymentFence"'\'', '\''UPDATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."DeploymentFence"'\'', '\''DELETE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''krypto_runtime'\'', '\''krypto."DeploymentFence"'\'', '\''TRUNCATE'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''public'\'', '\''krypto."DeploymentFence"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''anon'\'', '\''krypto."DeploymentFence"'\'', '\''SELECT'\'')::text || '\''|'\'' ||
+          has_table_privilege('\''authenticated'\'', '\''krypto."DeploymentFence"'\'', '\''SELECT'\'')::text;')"
+if [[ "$deployment_fence_result" != "9|1|1|1|1|0|0.123456789012345678|true|false|false|false|false|false|false|false" ]]; then
+  echo "Deployment fence migration changed history, initialized a fence, or granted excess privileges: $deployment_fence_result" >&2
   exit 1
 fi
 
@@ -1096,6 +1126,11 @@ DIRECT_URL="$orchestration_url" npx drizzle-kit migrate >/dev/null
 DIRECT_URL="$orchestration_url" npx tsx scripts/seed.ts >/dev/null
 DATABASE_URL="$orchestration_url" npx tsx scripts/test-run-flow.ts
 
+create_database deployment_admission
+DIRECT_URL="$deployment_admission_url" npx drizzle-kit migrate >/dev/null
+DIRECT_URL="$deployment_admission_url" npx tsx scripts/seed.ts >/dev/null
+DATABASE_URL="$deployment_admission_url" npx tsx scripts/test-deployment-admission.ts
+
 create_database operations
 # Pinned to 0006 (see through_0006_config above): this database exercises
 # the retired hosted pg_cron/pg_net SQL fixtures and their integrity guards.
@@ -1232,6 +1267,16 @@ if [[ "$disabled_result" != "0|0" ]]; then
 fi
 
 backup_dir="$TEMP_DIR/verified-backup"
+psql "$azure_target_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+INSERT INTO "krypto"."DeploymentFence" (
+  owner, "sourceReleaseSha", "candidateReleaseSha", "imageDigest",
+  "targetOrigin", "expiresAt"
+) VALUES (
+  '11111111-1111-4111-8111-111111111111', repeat('a', 40), repeat('b', 40),
+  'sha256:' || repeat('c', 64), 'https://backup-fixture.example.com',
+  clock_timestamp() + INTERVAL '1 hour'
+);
+SQL
 DIRECT_URL="$azure_target_url" DATABASE_URL="$azure_runtime_url_current" \
   npx tsx scripts/create-verified-backup.ts \
   --out "$backup_dir" \
@@ -1246,7 +1291,9 @@ if (
   !manifest.source?.runtimeTarget ||
   !manifest.source?.directTarget ||
   manifest.archives.length === 0 ||
-  manifest.restoreVerification?.matched !== true
+  manifest.restoreVerification?.matched !== true ||
+  manifest.restoreVerification.sourceRowCounts["krypto.DeploymentFence"] !== 1 ||
+  manifest.restoreVerification.restoredRowCounts["krypto.DeploymentFence"] !== 1
 ) {
   throw new Error("Verified backup manifest is incomplete.");
 }

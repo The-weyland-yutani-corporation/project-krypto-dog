@@ -13,7 +13,7 @@
 #     --container-url <bare-https-evidence-container-url> \
 #     --environment-name <name> \
 #     --release-sha <40-hex> \
-#     --operation <one-of-the-five-allowlisted-operations> \
+#     --operation <allowlisted-operation> \
 #     --job-execution-id <validated-id> \
 #     --destination <local-directory>
 #
