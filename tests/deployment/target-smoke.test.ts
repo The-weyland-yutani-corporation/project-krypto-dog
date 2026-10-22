@@ -171,7 +171,21 @@ describe("target deployment smoke", () => {
     );
   });
 
-  it("proves disabled HTTP, auth, provider, and database behavior", async () => {
+  it.each([
+    { name: "exact provider and audit", responseId: "email-id", auditId: "email-id", count: 1, approved: true },
+    { name: "minimum ID length", responseId: "x", auditId: "x", count: 1, approved: true },
+    { name: "maximum ID length", responseId: "x".repeat(128), auditId: "x".repeat(128), count: 1, approved: true },
+    { name: "missing response ID", responseId: undefined, auditId: "email-id", count: 1, approved: false },
+    { name: "empty response ID", responseId: "", auditId: "email-id", count: 1, approved: false },
+    { name: "non-string response ID", responseId: 123, auditId: "123", count: 1, approved: false },
+    { name: "unsafe response ID", responseId: "email-id\n", auditId: "email-id", count: 1, approved: false },
+    { name: "overlong response ID", responseId: "x".repeat(129), auditId: "email-id", count: 1, approved: false },
+    { name: "unrelated audit", responseId: "email-id", auditId: "different-message", count: 1, approved: false },
+    { name: "missing audit", responseId: "email-id", auditId: null, count: 0, approved: false },
+    { name: "duplicate audits", responseId: "email-id", auditId: "email-id", count: 2, approved: false },
+  ])("proves disabled HTTP, auth, provider, and database behavior: $name", async ({
+    responseId, auditId, count, approved,
+  }) => {
     const uuids = [
       "123e4567-e89b-42d3-a456-426614174000",
       "123e4567-e89b-42d3-a456-426614174001",
@@ -192,7 +206,18 @@ describe("target deployment smoke", () => {
         approvalSecret: TEST_APPROVAL_SECRET,
       },
       {
-        fetchImpl: successfulFetch,
+        fetchImpl: async (input, init) => {
+          const response = await successfulFetch(input, init);
+          const url = new URL(input instanceof Request ? input.url : input);
+          if (url.pathname === "/api/agent/daily-summary" && response.status === 200) {
+            return Response.json({
+              generated: true,
+              delivery: { status: "sent", id: responseId },
+              alertAuditRecorded: true,
+            });
+          }
+          return response;
+        },
         randomUuid: () => uuids.shift()!,
         now: () => new Date("2026-07-14T22:00:00.000Z"),
         inspectBefore: async () => ({
@@ -206,15 +231,19 @@ describe("target deployment smoke", () => {
             activeLease: false,
           },
         }),
-        inspectAfter: async ({ idempotencyKeys }) =>
-          idempotencyKeys.length === 1 &&
-          idempotencyKeys[0]?.includes("mode-mismatch")
+        inspectAfter: async ({ idempotencyKeys, providerMessageId }) => {
+          const beforeDelivery = idempotencyKeys.length === 1 &&
+            idempotencyKeys[0]?.includes("mode-mismatch");
+          expect(providerMessageId).toBe(beforeDelivery ? undefined : responseId);
+          return beforeDelivery
             ? {
                 runCount: 0,
                 disabledRunCount: 0,
                 tradeCount: 4,
                 leaseReleased: true,
                 deliveryStatus: null,
+                providerMessageId: null,
+                deliveryAuditCount: 0,
               }
             : {
                 runCount: 2,
@@ -222,7 +251,10 @@ describe("target deployment smoke", () => {
                 tradeCount: 4,
                 leaseReleased: true,
                 deliveryStatus: "sent",
-              },
+                providerMessageId: auditId,
+                deliveryAuditCount: count,
+              };
+        },
         createBinding: async () => undefined,
         createApproval,
         runProviders: async () => ({
@@ -252,7 +284,17 @@ describe("target deployment smoke", () => {
       },
     );
 
-    expect(report.passed).toBe(true);
+    expect(report.passed).toBe(approved);
+    if (!approved) {
+      expect(report.binding).toBeNull();
+      expect(createApproval).not.toHaveBeenCalled();
+      expect(report.checks.some((check) => check.id === "provider-connectivity")).toBe(false);
+      return;
+    }
+    expect(report.checks.find((check) => check.id === "daily-summary-delivery")?.evidence)
+      .toMatchObject({ providerMessageId: responseId, deliveryStatus: "sent" });
+    expect(report.checks.find((check) => check.id === "database-postconditions")?.evidence)
+      .toMatchObject({ providerMessageId: responseId, deliveryAuditCount: 1 });
     expect(report.checks).toHaveLength(15);
     expect(report.checks.every((check) => check.status === "pass")).toBe(
       true,
@@ -419,6 +461,8 @@ describe("target deployment smoke", () => {
                 tradeCount: 4,
                 leaseReleased: true,
                 deliveryStatus: null,
+                providerMessageId: null,
+                deliveryAuditCount: 0,
               }
             : {
                 runCount: 2,
@@ -426,6 +470,8 @@ describe("target deployment smoke", () => {
                 tradeCount: 4,
                 leaseReleased: true,
                 deliveryStatus: "sent",
+                providerMessageId: "email-id",
+                deliveryAuditCount: 1,
               },
         createBinding: async () => undefined,
         createApproval,
@@ -654,6 +700,8 @@ describe("target deployment smoke", () => {
                 tradeCount: 4,
                 leaseReleased: true,
                 deliveryStatus: null,
+                providerMessageId: null,
+                deliveryAuditCount: 0,
               }
             : {
                 runCount: 1,
@@ -661,6 +709,8 @@ describe("target deployment smoke", () => {
                 tradeCount: 4,
                 leaseReleased: true,
                 deliveryStatus: "sent",
+                providerMessageId: "email-id",
+                deliveryAuditCount: 1,
               },
         runProviders,
       },

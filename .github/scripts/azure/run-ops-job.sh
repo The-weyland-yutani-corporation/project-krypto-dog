@@ -10,10 +10,12 @@
 #     --job-name <container-apps-job-name> \
 #     --resource-group <resource-group> \
 #     --job-execution-id <validated-job-execution-id> \
+#     [--execution-name-output <new-private-file>] \
 #     --timeout-seconds <n> \
 #     [--scheduled-idempotency-key <manual-shadow:key>] \
 #     [--expected-shadow-idempotency-key <manual-shadow:key>] \
 #     [--expected-shadow-started-after <UTC timestamp>] \
+#     [--production-verification-config <phase-specific-nonsecret-json>] \
 #     [--poll-interval-seconds <n>]
 #
 # Azure replaces the execution template when any start override is supplied.
@@ -35,11 +37,19 @@ source "${script_dir}/lib/common.sh"
 job_name=""
 resource_group=""
 job_execution_id=""
+execution_name_output=""
 timeout_seconds=""
 poll_interval_seconds=15
 scheduled_idempotency_key=""
 expected_shadow_idempotency_key=""
 expected_shadow_started_after=""
+deployment_fence_action=""
+deployment_fence_owner=""
+deployment_source_release_sha=""
+deployment_candidate_release_sha=""
+deployment_source_image_digest=""
+production_config=""
+production_overrides="[]"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -53,6 +63,10 @@ while [ $# -gt 0 ]; do
       ;;
     --job-execution-id)
       job_execution_id="${2:?--job-execution-id requires a value}"
+      shift 2
+      ;;
+    --execution-name-output)
+      execution_name_output="${2:?--execution-name-output requires a value}"
       shift 2
       ;;
     --timeout-seconds)
@@ -73,6 +87,30 @@ while [ $# -gt 0 ]; do
       ;;
     --expected-shadow-started-after)
       expected_shadow_started_after="${2:?--expected-shadow-started-after requires a value}"
+      shift 2
+      ;;
+    --deployment-fence-action)
+      deployment_fence_action="${2:?--deployment-fence-action requires a value}"
+      shift 2
+      ;;
+    --deployment-fence-owner)
+      deployment_fence_owner="${2:?--deployment-fence-owner requires a value}"
+      shift 2
+      ;;
+    --deployment-source-release-sha)
+      deployment_source_release_sha="${2:?--deployment-source-release-sha requires a value}"
+      shift 2
+      ;;
+    --deployment-candidate-release-sha)
+      deployment_candidate_release_sha="${2:?--deployment-candidate-release-sha requires a value}"
+      shift 2
+      ;;
+    --deployment-source-image-digest)
+      deployment_source_image_digest="${2:?--deployment-source-image-digest requires a value}"
+      shift 2
+      ;;
+    --production-verification-config)
+      production_config="${2:?--production-verification-config requires a value}"
       shift 2
       ;;
     *)
@@ -106,6 +144,32 @@ if [ -n "${expected_shadow_started_after}" ] \
   exit 1
 fi
 
+if [ -n "${deployment_fence_action}${deployment_fence_owner}${deployment_source_release_sha}${deployment_candidate_release_sha}${deployment_source_image_digest}" ]; then
+  if [ "${deployment_fence_action}" != "acquire" ] && \
+     [ "${deployment_fence_action}" != "verify" ] && \
+     [ "${deployment_fence_action}" != "release" ]; then
+    echo "Deployment fence action must be acquire, verify, or release." >&2
+    exit 1
+  fi
+
+  deployment_fence_owner="$(azure_validate_fence_owner "${deployment_fence_owner}")"
+  deployment_source_release_sha="$(azure_validate_release_sha "${deployment_source_release_sha}")"
+  deployment_candidate_release_sha="$(azure_validate_release_sha "${deployment_candidate_release_sha}")"
+  deployment_source_image_digest="$(azure_validate_image_digest "${deployment_source_image_digest}")"
+  if [ -n "${scheduled_idempotency_key}${expected_shadow_idempotency_key}${expected_shadow_started_after}" ]; then
+    echo "Deployment admission cannot be combined with shadow-run overrides." >&2
+    exit 1
+  fi
+fi
+
+if [ -n "${production_config}" ]; then
+  if [ -n "${deployment_fence_action}${scheduled_idempotency_key}${expected_shadow_idempotency_key}${expected_shadow_started_after}" ]; then
+    echo "Production verification cannot be combined with admission or separate shadow overrides." >&2
+    exit 1
+  fi
+  production_overrides="$(node "${script_dir}/production-evidence.cjs" verification-overrides "${production_config}")"
+fi
+
 echo "Starting Container Apps Job '${job_name}' in resource group '${resource_group}' (JOB_EXECUTION_ID=${job_execution_id})."
 
 job_definition_file="$(mktemp "${TMPDIR:-/tmp}/krypto-job-definition.XXXXXX")"
@@ -121,6 +185,42 @@ az containerapp job show \
   --resource-group "${resource_group}" \
   --output json > "${job_definition_file}"
 
+if [ -n "${deployment_fence_action}" ]; then
+  jq -e '
+    (.properties.configuration.triggerType == "Manual")
+    and (.properties.configuration.replicaRetryLimit == 0)
+    and (.properties.configuration.manualTriggerConfig.parallelism == 1)
+    and (.properties.configuration.manualTriggerConfig.replicaCompletionCount == 1)
+    and ([.properties.template.containers[0].env[]?
+          | select(.name == "CONTAINER_APP_JOB_EXECUTION_NAME")] | length == 0)
+    and ([.properties.template.containers[0].env[]? | select(.name == "OPERATION")]
+          | length == 1 and .[0].value == "activation-check")
+    and ([.properties.template.containers[0].env[]? | select(.name == "ENVIRONMENT_NAME")]
+          | length == 1 and .[0].value == "prod")
+  ' "${job_definition_file}" >/dev/null || {
+    echo "Deployment admission requires one manual production activation-check replica with no automatic retry." >&2
+    exit 1
+  }
+fi
+
+if [ -n "${production_config}" ]; then
+  jq -e '
+    (.properties.configuration.triggerType == "Manual")
+    and (.properties.configuration.replicaRetryLimit == 0)
+    and (.properties.configuration.manualTriggerConfig.parallelism == 1)
+    and (.properties.configuration.manualTriggerConfig.replicaCompletionCount == 1)
+    and ([.properties.template.containers[0].env[]?
+          | select(.name == "CONTAINER_APP_JOB_EXECUTION_NAME")] | length == 0)
+    and ([.properties.template.containers[0].env[]? | select(.name == "OPERATION")]
+          | length == 1 and .[0].value == "target-smoke")
+    and ([.properties.template.containers[0].env[]? | select(.name == "ENVIRONMENT_NAME")]
+          | length == 1 and .[0].value == "prod")
+  ' "${job_definition_file}" >/dev/null || {
+    echo "Production verification requires the single, no-retry manual production target-smoke job." >&2
+    exit 1
+  }
+fi
+
 if ! jq -e '
   ((.properties.template.volumes // []) | length) == 0
   and all(.properties.template.containers[]?; ((.volumeMounts // []) | length) == 0)
@@ -134,7 +234,13 @@ jq \
   --arg job_execution_id "${job_execution_id}" \
   --arg scheduled_idempotency_key "${scheduled_idempotency_key}" \
   --arg expected_shadow_idempotency_key "${expected_shadow_idempotency_key}" \
-  --arg expected_shadow_started_after "${expected_shadow_started_after}" '
+  --arg expected_shadow_started_after "${expected_shadow_started_after}" \
+  --arg deployment_fence_action "${deployment_fence_action}" \
+  --arg deployment_fence_owner "${deployment_fence_owner}" \
+  --arg deployment_source_release_sha "${deployment_source_release_sha}" \
+  --arg deployment_candidate_release_sha "${deployment_candidate_release_sha}" \
+  --arg deployment_source_image_digest "${deployment_source_image_digest}" \
+  --argjson production_overrides "${production_overrides}" '
   .properties.template
   | if ((.containers // []) | type) != "array"
       or ((.containers // []) | length) != 1
@@ -151,8 +257,16 @@ jq \
        else empty end),
       (if $expected_shadow_started_after != "" then
          {name: "EXPECTED_SHADOW_STARTED_AFTER", value: $expected_shadow_started_after}
+       else empty end),
+      (if $deployment_fence_action != "" then
+         {name: "OPERATION", value: "deployment-admission"},
+         {name: "DEPLOYMENT_FENCE_ACTION", value: $deployment_fence_action},
+         {name: "DEPLOYMENT_FENCE_OWNER", value: $deployment_fence_owner},
+         {name: "DEPLOYMENT_SOURCE_RELEASE_SHA", value: $deployment_source_release_sha},
+         {name: "DEPLOYMENT_CANDIDATE_RELEASE_SHA", value: $deployment_candidate_release_sha},
+         {name: "DEPLOYMENT_SOURCE_IMAGE_DIGEST", value: $deployment_source_image_digest}
        else empty end)
-    ]) as $overrides
+    ] + $production_overrides) as $overrides
   | ($overrides | map(.name)) as $override_names
   | .containers[0].env = (
       ((.containers[0].env // [])
@@ -177,6 +291,10 @@ execution_name="$(printf '%s' "${start_output}" | jq -r '.name // empty')"
 if [ -z "${execution_name}" ]; then
   echo "az containerapp job start did not return an execution name." >&2
   exit 1
+fi
+execution_name="$(azure_validate_job_execution_id "${execution_name}")"
+if [ -n "${execution_name_output}" ]; then
+  (set -o noclobber; printf '%s\n' "${execution_name}" > "${execution_name_output}")
 fi
 
 echo "Job execution '${execution_name}' started. Polling for a terminal status (timeout ${timeout_seconds}s)."
@@ -206,7 +324,7 @@ while true; do
     exit 0
   elif [ "${status}" = "Failed" ]; then
     echo "Job execution '${execution_name}' failed (status=Failed)." >&2
-    exit 1
+    exit 2
   else
     echo "Job execution '${execution_name}' status='${status}'; waiting."
   fi

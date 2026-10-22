@@ -31,6 +31,8 @@ const OPERATIONS = new Set([
   "verified-backup",
   "target-smoke",
   "activation-check",
+  "deployment-admission",
+  "production-verification",
 ]);
 
 function fail(message) {
@@ -124,6 +126,191 @@ function requireMatch(object, field, expected, context) {
 }
 
 switch (operation) {
+  case "production-verification": {
+    const phase = args["production-phase"];
+    const authorizationId = args["authorization-id"];
+    const targetOrigin = args["target-origin"];
+    const executionId = args["job-execution-id"];
+    const azureExecutionName = args["azure-execution-name"];
+    const generation = args["schedule-generation"];
+    if (!["ready", "scheduled"].includes(phase)) fail("--production-phase must be ready or scheduled.");
+    if (!/^[0-9a-f]{64}$/.test(authorizationId ?? "")) fail("--authorization-id must be the readiness authorization SHA256.");
+    if (!/^[1-9][0-9]{0,9}$/.test(generation ?? "") || Number(generation) > Math.floor(Date.now() / 1000)) {
+      fail("--schedule-generation must be a positive, nonfuture epoch-second value.");
+    }
+    if (!expectedImageDigest) fail("--image-digest is required for production verification.");
+    for (const value of [executionId, azureExecutionName]) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(value ?? "")) {
+        fail("Both exact logical and Azure execution IDs are required for production verification.");
+      }
+    }
+    let origin;
+    try {
+      origin = new URL(targetOrigin);
+    } catch {
+      fail("--target-origin must be a bare HTTPS origin.");
+    }
+    if (origin.protocol !== "https:" || origin.origin !== targetOrigin) fail("--target-origin must be a bare HTTPS origin.");
+    for (const [field, expected] of Object.entries({
+      schemaVersion: "1.2.0", operation, phase, intendedMode: "paper",
+      authorizationId, releaseSha: expectedReleaseSha, imageDigest: expectedImageDigest,
+      targetOrigin, environmentName: "prod", jobExecutionId: executionId, azureExecutionName,
+    })) requireMatch(report, field, expected, "production-verification report");
+    if (report.scheduleGeneration !== Number(generation)) fail("Production schedule generation does not match.");
+    requireTrue(report, "approved", "production-verification report");
+    if (!Array.isArray(report.checks) || report.checks.length === 0 ||
+        !report.checks.every((check) => check !== null && typeof check === "object" && check.status === "pass") ||
+        !Array.isArray(report.blockers) || report.blockers.length !== 0) {
+      fail("Production evidence must contain passing checks and no blockers.");
+    }
+    const requiredChecks = [
+      "production-accounting-reconciled", "production-balances-valid",
+      "production-stops-inactive", "production-lease-released", "production-fence-released",
+      ...(phase === "ready" ? [
+        "production-shadow-approval", "production-shadow-terminal-safe",
+        "exact-approval-id", "fresh-approval",
+      ] : [
+        "scheduled-run-binding", "scheduled-run-terminal", "scheduled-run-journal", "scheduled-run-fills",
+      ]),
+    ];
+    for (const id of requiredChecks) {
+      if (report.checks.filter((check) => check.id === id && check.status === "pass").length !== 1) {
+        fail(`Production evidence is missing the unique passing '${id}' check.`);
+      }
+    }
+    const generatedAt = Date.parse(requireField(report, "generatedAt", "string"));
+    if (!Number.isFinite(generatedAt) || generatedAt > Date.now() + 120_000 || Date.now() - generatedAt > 600_000) {
+      fail("Production verification evidence is invalid, future-dated, or older than ten minutes.");
+    }
+    const telemetry = requireField(report, "posthog", "object");
+    if (!["https://us.i.posthog.com", "https://eu.i.posthog.com"].includes(telemetry.host) ||
+        telemetry.environment !== "prod" || typeof telemetry.keyBinding !== "string" ||
+        !/^[0-9a-f]{64}$/.test(telemetry.keyBinding)) {
+      fail("Production telemetry identity is malformed.");
+    }
+    if (phase === "ready") {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(args["approval-id"] ?? "") ||
+          !/^manual-shadow:[A-Za-z0-9_.-]{1,64}$/.test(args["expected-shadow-idempotency-key"] ?? "")) {
+        fail("Ready evidence requires the exact smoke approval ID and manual shadow key.");
+      }
+      requireMatch(report, "approvalId", args["approval-id"], "ready approval");
+      const shadow = requireField(report, "shadowRun", "object");
+      requireMatch(shadow, "idempotencyKey", args["expected-shadow-idempotency-key"], "ready shadow run");
+      const boundary = Date.parse(args["expected-shadow-started-after"]);
+      const started = Date.parse(shadow.startedAt);
+      const completed = Date.parse(shadow.completedAt);
+      if (report.scheduledRun !== null || shadow.tradeCount !== 0 || shadow.errorType !== null ||
+          !["SHADOW", "HOLD", "REJECTED"].includes(shadow.outcome) ||
+          !Number.isFinite(boundary) || !Number.isFinite(started) || !Number.isFinite(completed) ||
+          started < boundary || completed < started || completed > generatedAt) {
+        fail("Ready proof must have a zero-fill safe shadow outcome and no scheduled run.");
+      }
+    } else {
+      const expectedKey = args["expected-scheduled-idempotency-key"];
+      if (!expectedKey || !expectedKey.startsWith(`cron:${expectedImageDigest}-${generation}:`) ||
+          !/:\d{4}-\d{2}-\d{2}T\d{2}$/.test(expectedKey)) {
+        fail("Scheduled evidence requires the exact image/generation/hour idempotency key.");
+      }
+      const scheduled = requireField(report, "scheduledRun", "object");
+      requireMatch(scheduled, "idempotencyKey", expectedKey, "scheduled run");
+      const enabled = Number(args["schedule-enabled-at"]);
+      const executionStarted = Date.parse(args["scheduled-execution-started-at"]);
+      const firstWindow = (Math.floor(enabled / 3600) + 1) * 3600;
+      if (!/^[1-9][0-9]{0,9}$/.test(args["schedule-enabled-at"] ?? "") ||
+          enabled < Number(generation) || enabled > Date.now() / 1000 ||
+          !Number.isFinite(executionStarted) || executionStarted > generatedAt ||
+          Math.floor(executionStarted / 3_600_000) * 3600 !== firstWindow ||
+          expectedKey !== `cron:${expectedImageDigest}-${generation}:${new Date(executionStarted).toISOString().slice(0, 13)}`) {
+        fail("Scheduled proof must bind the actual first full UTC-hour execution after enablement.");
+      }
+      const started = Date.parse(scheduled.startedAt);
+      const completed = Date.parse(scheduled.completedAt);
+      if (!/^[A-Za-z0-9-]{1,64}$/.test(scheduled.id ?? "") ||
+          !["HOLD", "REJECTED", "EXECUTED"].includes(scheduled.outcome) ||
+          !Number.isSafeInteger(scheduled.journalCount) || scheduled.journalCount < 1 ||
+          scheduled.tradeCount !== (scheduled.outcome === "EXECUTED" ? 1 : 0) ||
+          !Number.isSafeInteger(scheduled.tradeJournalCount) ||
+          (scheduled.outcome === "EXECUTED" ? scheduled.tradeJournalCount < 1 : scheduled.tradeJournalCount !== 0) ||
+          !Number.isFinite(started) || !Number.isFinite(completed) ||
+          started < executionStarted || completed < started || completed > generatedAt ||
+          report.shadowRun !== null || report.approvalId !== null) {
+        fail("Scheduled evidence has an invalid run, outcome, fills or journal.");
+      }
+    }
+    break;
+  }
+  case "deployment-admission": {
+    const action = args["admission-action"];
+    const owner = args["fence-owner"];
+    const sourceSha = args["source-release-sha"];
+    const candidateSha = args["candidate-release-sha"];
+    const targetOrigin = args["target-origin"];
+    const executionId = args["job-execution-id"];
+    const azureExecutionName = args["azure-execution-name"];
+    if (!["acquire", "verify", "release"].includes(action)) fail("--admission-action must be acquire, verify, or release.");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(owner ?? "")) {
+      fail("--fence-owner must be a lowercase UUID v4 or v5.");
+    }
+    if (!RELEASE_SHA_PATTERN.test(sourceSha ?? "") || !RELEASE_SHA_PATTERN.test(candidateSha ?? "")) {
+      fail("Both source and candidate release SHAs are required.");
+    }
+    if (!expectedImageDigest) fail("--image-digest is required for admission.");
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(executionId ?? "")) {
+      fail("--job-execution-id is required for admission.");
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(azureExecutionName ?? "")) {
+      fail("--azure-execution-name is required for admission.");
+    }
+    let origin;
+    try {
+      origin = new URL(targetOrigin);
+    } catch {
+      fail("--target-origin must be a bare HTTPS origin.");
+    }
+    if (origin.protocol !== "https:" || origin.origin !== targetOrigin) {
+      fail("--target-origin must be a bare HTTPS origin.");
+    }
+    for (const [field, expected] of Object.entries({
+      schemaVersion: "1.0.0",
+      operation,
+      action,
+      owner,
+      sourceReleaseSha: sourceSha,
+      candidateReleaseSha: candidateSha,
+      releaseSha: expectedReleaseSha,
+      imageDigest: expectedImageDigest,
+      targetOrigin,
+      environmentName: "prod",
+      jobExecutionId: executionId,
+      azureExecutionName,
+    })) {
+      requireMatch(report, field, expected, "deployment-admission report");
+    }
+    const now = Date.now();
+    const generatedAt = Date.parse(requireField(report, "generatedAt", "string"));
+    if (!Number.isFinite(generatedAt) || generatedAt > now + 120_000 || now - generatedAt > 30 * 60_000) {
+      fail("Admission evidence is invalid, future-dated, or older than 30 minutes.");
+    }
+    if (report.status === "deferred" && args["allow-deferred"] === "true" && action === "acquire") {
+      if (
+        !["open-position", "run-lease", "database-busy"].includes(report.reason) ||
+        report.expiresAt !== null
+      ) {
+        fail("Deferred admission has an invalid reason or claims an acquired fence.");
+      }
+      process.stdout.write("validate-report: deployment DEFERRED; the source release was not changed.\n");
+      process.exit(75);
+    }
+    requireMatch(report, "status", { acquire: "admitted", verify: "held", release: "released" }[action], "deployment-admission report");
+    const expiresAt = Date.parse(requireField(report, "expiresAt", "string"));
+    if (
+      !Number.isFinite(expiresAt) ||
+      (action !== "release" && (expiresAt <= now || expiresAt - generatedAt > 6 * 60 * 60_000 + 120_000))
+    ) {
+      fail("The admission fence deadline is invalid or expired.");
+    }
+    break;
+  }
   case "migrate-init": {
     requireTrue(report, "success", "migrate-init report");
     requireTrue(report, "migrated", "migrate-init report");

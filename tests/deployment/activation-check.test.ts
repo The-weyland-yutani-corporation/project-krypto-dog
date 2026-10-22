@@ -38,6 +38,8 @@ const BASE_OPTIONS: ActivationCheckOptions = {
 };
 
 type ApprovalRowOverrides = Partial<{
+  id: string;
+  createdAt: Date;
   bindingId: string | null;
   targetOrigin: string | null;
   cronSecretBinding: string | null;
@@ -50,6 +52,8 @@ type ApprovalRowOverrides = Partial<{
 type AgentStateOverrides = Partial<{
   accountingStatus: string;
   ethBalance: string | null;
+  isOperatorPaused: unknown;
+  isLocked: unknown;
   isRunning: boolean;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
@@ -64,6 +68,7 @@ type ShadowRunOverrides = Partial<{
   startedAt: Date;
   completedAt: Date | null;
   tradeCount: number;
+  errorType: string | null;
 }>;
 
 /**
@@ -108,8 +113,8 @@ function buildApprovalRow(
       : overrides.approvalSignature;
 
   return {
-    id: "deployment-smoke-approved-uuid",
-    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    id: overrides.id ?? "deployment-smoke-approved-uuid",
+    createdAt: overrides.createdAt ?? new Date("2026-08-01T00:00:00.000Z"),
     bindingId,
     targetOrigin,
     cronSecretBinding: cronSecretBindingValue,
@@ -125,6 +130,7 @@ function createSqlMock(options: {
   bindingExists?: boolean;
   agentState?: AgentStateOverrides | null;
   shadowRun?: ShadowRunOverrides | null;
+  deploymentFenced?: boolean;
 }) {
   const calls: string[] = [];
   const {
@@ -165,6 +171,11 @@ function createSqlMock(options: {
               agentState.ethBalance === undefined
                 ? "0"
                 : agentState.ethBalance,
+            isOperatorPaused:
+              "isOperatorPaused" in agentState
+                ? agentState.isOperatorPaused
+                : false,
+            isLocked: "isLocked" in agentState ? agentState.isLocked : false,
             isRunning: agentState.isRunning ?? false,
             leaseOwner:
               agentState.leaseOwner === undefined
@@ -176,6 +187,9 @@ function createSqlMock(options: {
                 : agentState.leaseExpiresAt,
           },
         ];
+      }
+      if (query.includes('FROM "krypto"."DeploymentFence"')) {
+        return options.deploymentFenced ? [{ owner: "owned-cutover" }] : [];
       }
       if (query.includes('FROM "krypto"."AgentRun"')) {
         if (shadowRun === null) return [];
@@ -194,6 +208,7 @@ function createSqlMock(options: {
                 ? new Date("2026-08-13T12:00:10.000Z")
                 : shadowRun.completedAt,
             tradeCount: shadowRun.tradeCount ?? 0,
+            errorType: shadowRun.errorType ?? null,
           },
         ];
       }
@@ -208,6 +223,86 @@ function createSqlMock(options: {
 describe("schedule-activation verifier", () => {
   beforeEach(() => {
     mockedPostgres.mockReset();
+  });
+
+  describe("production approval proof", () => {
+    const proofOptions = {
+      ...BASE_OPTIONS,
+      approvalProof: {
+        approvalId: "deployment-smoke-approved-uuid",
+        createdAfter: "2026-08-13T11:30:00Z",
+        maxAgeSeconds: 3600,
+      },
+    };
+
+    beforeEach(() => jest.useFakeTimers().setSystemTime(new Date("2026-08-13T12:00:20Z")));
+    afterEach(() => jest.useRealTimers());
+
+    it("accepts only the exact recent approval from the trusted smoke report", async () => {
+      const sql = createSqlMock({ approval: { createdAt: new Date("2026-08-13T11:45:00Z") } });
+      mockedPostgres.mockReturnValueOnce(sql as never);
+      const report = await runActivationCheck(proofOptions);
+      expect(report.approved).toBe(true);
+      expect(report.checks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "exact-approval-id", status: "pass" }),
+        expect.objectContaining({ id: "fresh-approval", status: "pass" }),
+      ]));
+    });
+
+    it("rejects a copied valid signature in a newly dated journal row", async () => {
+      const sql = createSqlMock({ approval: {
+        id: "copied-approval-with-the-same-valid-signature",
+        createdAt: new Date("2026-08-13T11:45:00Z"),
+      } });
+      mockedPostgres.mockReturnValueOnce(sql as never);
+      const report = await runActivationCheck(proofOptions);
+      expect(report.approved).toBe(false);
+      expect(report.checks).toContainEqual(expect.objectContaining({ id: "approval-signature-valid", status: "pass" }));
+      expect(report.checks).toContainEqual(expect.objectContaining({ id: "exact-approval-id", status: "block" }));
+    });
+
+    it.each([
+      "2026-08-13T10:59:59Z", "2026-08-13T11:29:59Z", "2026-08-13T12:00:21Z",
+    ])("rejects an approval outside its current evidence window: %s", async (date) => {
+      mockedPostgres.mockReturnValueOnce(createSqlMock({ approval: { createdAt: new Date(date) } }) as never);
+      const report = await runActivationCheck(proofOptions);
+      expect(report.approved).toBe(false);
+      expect(report.checks).toContainEqual(expect.objectContaining({ id: "fresh-approval", status: "block" }));
+    });
+
+    it.each([
+      { approvalId: "" }, { createdAfter: "2026-02-30T00:00:00Z" },
+      { createdAfter: "2026-08-13" }, { maxAgeSeconds: 0 }, { maxAgeSeconds: 3601 },
+    ])("rejects invalid proof inputs before reading the database: %j", async (overrides) => {
+      await expect(runActivationCheck({
+        ...proofOptions, approvalProof: { ...proofOptions.approvalProof, ...overrides },
+      })).rejects.toThrow("Approval proof");
+      expect(mockedPostgres).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(["0e-300", "0.0000000000000000001", " ", "", "-0.000000000000000001"])(
+    "does not round or coerce an invalid/nonzero ETH balance %s into flat state",
+    async (ethBalance) => {
+      mockedPostgres.mockReturnValueOnce(createSqlMock({ agentState: { ethBalance } }) as never);
+      const report = await runActivationCheck(BASE_OPTIONS);
+      expect(report.approved).toBe(false);
+      expect(report.checks).toContainEqual(expect.objectContaining({ id: "no-open-paper-position", status: "block" }));
+    },
+  );
+
+  it("rejects an unreleased cutover fence without treating expiry as release", async () => {
+    const sql = createSqlMock({ deploymentFenced: true });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+    const report = await runActivationCheck(BASE_OPTIONS);
+    expect(report.approved).toBe(false);
+    expect(report.checks).toContainEqual(expect.objectContaining({
+      id: "no-deployment-fence",
+      status: "block",
+    }));
+    const query = sql.__calls.find((statement) => statement.includes("DeploymentFence"));
+    expect(query).toContain('"releasedAt" IS NULL');
+    expect(query).not.toContain("expiresAt");
   });
 
   it("approves activation when every binding matches, the approval signature is valid, and state is safe", async () => {
@@ -226,6 +321,11 @@ describe("schedule-activation verifier", () => {
       report.checks.find((check) => check.id === "approval-signature-valid"),
     ).toEqual(expect.objectContaining({ status: "pass" }));
     expect(sql.__calls[0]).toBe("BEGIN READ ONLY");
+    const stateQuery = sql.__calls.find((query) =>
+      query.includes('FROM "krypto"."AgentState"'),
+    );
+    expect(stateQuery).toContain('"isOperatorPaused"');
+    expect(stateQuery).toContain('"isLocked"');
     expect(sql.__calls).not.toContain("COMMIT");
     expect(sql.__calls[sql.__calls.length - 1]).toBe("ROLLBACK");
   });
@@ -387,6 +487,45 @@ describe("schedule-activation verifier", () => {
         (check) => check.id === "smoke-rollout-mode-disabled",
       ),
     ).toEqual(expect.objectContaining({ status: "block" }));
+  });
+
+  describe.each([
+    { field: "isOperatorPaused", checkId: "operator-not-paused" },
+    { field: "isLocked", checkId: "drawdown-not-locked" },
+  ])("$field control", ({ field, checkId }) => {
+    it.each([true, null, undefined, 0, "", "false"])(
+      "rejects activation when the control is %p rather than explicitly false",
+      async (value) => {
+        const sql = createSqlMock({ agentState: { [field]: value } });
+        mockedPostgres.mockReturnValueOnce(sql as never);
+
+        const report = await runActivationCheck(BASE_OPTIONS);
+
+        expect(report.approved).toBe(false);
+        expect(report.checks.find((check) => check.id === checkId)).toEqual(
+          expect.objectContaining({ status: "block" }),
+        );
+        expect(report.blockers).not.toEqual([]);
+        expect(
+          sql.__calls.some((query) => /^(UPDATE|INSERT|DELETE)\b/.test(query)),
+        ).toBe(false);
+      },
+    );
+  });
+
+  it("rejects both stop controls when agent state is missing", async () => {
+    const sql = createSqlMock({ agentState: null });
+    mockedPostgres.mockReturnValueOnce(sql as never);
+
+    const report = await runActivationCheck(BASE_OPTIONS);
+
+    expect(report.approved).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "operator-not-paused", status: "block" }),
+        expect.objectContaining({ id: "drawdown-not-locked", status: "block" }),
+      ]),
+    );
   });
 
   it("rejects an active run lease", async () => {

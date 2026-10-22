@@ -22,6 +22,9 @@ param administratorLogin string
 @secure()
 param administratorLoginPassword string
 
+@description('Preserve the existing administrator password using update-only mode. Database credential rotation is a separate coordinated operation.')
+param preserveAdministratorPassword bool = false
+
 @description('Compute SKU name, e.g. Standard_B1ms (Burstable) or Standard_D2ds_v5 (General Purpose).')
 param skuName string = 'Standard_B1ms'
 
@@ -57,10 +60,10 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
     name: skuName
     tier: skuTier
   }
-  properties: {
+  properties: union({
+    createMode: preserveAdministratorPassword ? 'Update' : 'Default'
     version: '17'
     administratorLogin: administratorLogin
-    administratorLoginPassword: administratorLoginPassword
     network: {
       delegatedSubnetResourceId: delegatedSubnetId
       privateDnsZoneArmResourceId: privateDnsZoneId
@@ -77,7 +80,9 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
     highAvailability: {
       mode: highAvailabilityEnabled ? 'ZoneRedundant' : 'Disabled'
     }
-  }
+  }, preserveAdministratorPassword ? {} : {
+    administratorLoginPassword: administratorLoginPassword
+  })
 }
 
 resource deleteLock 'Microsoft.Authorization/locks@2020-05-01' = if (enableDeleteLock) {

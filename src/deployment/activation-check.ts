@@ -1,8 +1,14 @@
 import postgres from "postgres";
+import { ETH_SCALE, parseDecimal } from "@/trading/accounting";
+import { AccountingError } from "@/trading/errors";
 
 import {
-  canonicalApprovalPayload,
-  computeApprovalSignature,
+  approvalSignatureIsValid,
+  bindingRowExists,
+  loadLatestApproval,
+  type LatestApprovalRow,
+} from "@/deployment/approval";
+import {
   constantTimeEqual,
   cronSecretBinding,
   readOnly,
@@ -19,13 +25,13 @@ import {
  * target-smoke approval, persisted by `runTargetSmoke`, still exactly match
  * this activation's release SHA, image digest, target origin, and cron
  * secret -- and is the underlying database currently safe (reconciled,
- * position-free, lease-free)?"
+ * position-free, lease-free, neither operator-paused nor drawdown-locked)?"
  *
  * Every comparison is exact and fails closed: a missing approval row, a
  * missing binding row, any field mismatch, a non-"disabled" persisted
  * rollout mode, an active lease, an unreconciled/quarantined accounting
- * status, or an open paper position all reject activation. There is no
- * partial-credit or best-effort path.
+ * status, an open paper position, or either stop control not explicitly
+ * false all reject activation. There is no partial-credit or best-effort path.
  *
  * The cron-secret binding and approval signature are both keyed
  * HMAC-SHA256 values over DEPLOYMENT_APPROVAL_SECRET -- a secret that is
@@ -56,6 +62,11 @@ export type ActivationCheckOptions = {
   approvalSecret: string;
   expectedShadowIdempotencyKey: string;
   expectedShadowStartedAfter: string;
+  approvalProof?: {
+    approvalId: string;
+    createdAfter: string;
+    maxAgeSeconds: number;
+  };
 };
 
 export type ActivationCheckResult = {
@@ -80,24 +91,15 @@ export type ActivationCheckReport = {
     startedAt: string;
     completedAt: string | null;
     tradeCount: number;
+    errorType?: string | null;
   };
-};
-
-type LatestApprovalRow = {
-  id: string;
-  createdAt: Date;
-  bindingId: string | null;
-  targetOrigin: string | null;
-  cronSecretBinding: string | null;
-  releaseSha: string | null;
-  imageDigest: string | null;
-  rolloutMode: string | null;
-  approvalSignature: string | null;
 };
 
 type AgentStateRow = {
   accountingStatus: string;
   ethBalance: string | null;
+  isOperatorPaused: boolean;
+  isLocked: boolean;
   isRunning: boolean;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
@@ -112,6 +114,7 @@ type ShadowRunRow = {
   startedAt: Date;
   completedAt: Date | null;
   tradeCount: number;
+  errorType: string | null;
 };
 
 function errorCode(error: unknown): string {
@@ -151,41 +154,6 @@ function sanitizedOrigin(value: string): string {
   return url.origin;
 }
 
-async function loadLatestApproval(
-  sql: postgres.Sql,
-): Promise<LatestApprovalRow | undefined> {
-  const [row] = await sql<LatestApprovalRow[]>`
-    SELECT
-      id,
-      "createdAt",
-      "marketConditions" ->> 'bindingId' AS "bindingId",
-      "marketConditions" ->> 'targetOrigin' AS "targetOrigin",
-      "marketConditions" ->> 'cronSecretBinding' AS "cronSecretBinding",
-      "marketConditions" ->> 'releaseSha' AS "releaseSha",
-      "marketConditions" ->> 'imageDigest' AS "imageDigest",
-      "marketConditions" ->> 'rolloutMode' AS "rolloutMode",
-      "marketConditions" ->> 'approvalSignature' AS "approvalSignature"
-    FROM "krypto"."AgentJournal"
-    WHERE "marketConditions" ->> 'event' = 'deployment-smoke-approved'
-    ORDER BY "createdAt" DESC, id DESC
-    LIMIT 1
-  `;
-  return row;
-}
-
-async function bindingRowExists(
-  sql: postgres.Sql,
-  bindingId: string,
-): Promise<boolean> {
-  const [row] = await sql<Array<{ event: string | null }>>`
-    SELECT "marketConditions" ->> 'event' AS event
-    FROM "krypto"."AgentJournal"
-    WHERE id = ${bindingId}
-    LIMIT 1
-  `;
-  return row?.event === "deployment-smoke-binding";
-}
-
 async function loadAgentState(
   sql: postgres.Sql,
 ): Promise<AgentStateRow | undefined> {
@@ -196,6 +164,8 @@ async function loadAgentState(
         "currentPositionETHDecimal",
         "currentPositionETH"::numeric
       )::text AS "ethBalance",
+      "isOperatorPaused",
+      "isLocked",
       "isRunning",
       "leaseOwner",
       "leaseExpiresAt"
@@ -219,6 +189,7 @@ async function loadShadowRun(
       agent_run.outcome::text AS outcome,
       agent_run."startedAt",
       agent_run."completedAt",
+      agent_run."errorType",
       COUNT(execution.id)::int AS "tradeCount"
     FROM "krypto"."AgentRun" agent_run
     LEFT JOIN "krypto"."TradeExecution" execution
@@ -231,7 +202,8 @@ async function loadShadowRun(
       agent_run."tradingMode",
       agent_run.outcome,
       agent_run."startedAt",
-      agent_run."completedAt"
+      agent_run."completedAt",
+      agent_run."errorType"
     LIMIT 1
   `;
   return row;
@@ -265,6 +237,19 @@ export async function runActivationCheck(
     approvalSecret,
   );
   const expectsShadowProof = true;
+  const approvalProof = options.approvalProof;
+  if (approvalProof) {
+    const boundary = new Date(approvalProof.createdAfter);
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(approvalProof.approvalId) ||
+      !Number.isFinite(boundary.getTime()) ||
+      boundary.toISOString().replace(".000Z", "Z") !== approvalProof.createdAfter.replace(".000Z", "Z") ||
+      !Number.isSafeInteger(approvalProof.maxAgeSeconds) ||
+      approvalProof.maxAgeSeconds <= 0 || approvalProof.maxAgeSeconds > 3600
+    ) {
+      throw new Error("Approval proof requires an exact approval ID, UTC time boundary, and age of at most one hour.");
+    }
+  }
   if (
     expectsShadowProof &&
     (!options.expectedShadowIdempotencyKey ||
@@ -305,6 +290,7 @@ export async function runActivationCheck(
   let bindingExists = false;
   let state: AgentStateRow | undefined;
   let shadowRun: ShadowRunRow | undefined;
+  let deploymentFenced = true;
 
   try {
     await readOnly(options.databaseUrl, async (sql) => {
@@ -313,6 +299,12 @@ export async function runActivationCheck(
         bindingExists = await bindingRowExists(sql, approval.bindingId);
       }
       state = await loadAgentState(sql);
+      const [fence] = await sql<Array<{ owner: string }>>`
+        SELECT owner FROM "krypto"."DeploymentFence"
+        WHERE id = 'singleton' AND "releasedAt" IS NULL
+        LIMIT 1
+      `;
+      deploymentFenced = fence !== undefined;
       if (options.expectedShadowIdempotencyKey) {
         shadowRun = await loadShadowRun(
           sql,
@@ -405,6 +397,28 @@ export async function runActivationCheck(
         : "The approval's referenced database-binding row is missing.",
   );
 
+  if (approvalProof) {
+    record(
+      "exact-approval-id",
+      approval?.id === approvalProof.approvalId,
+      approval?.id === approvalProof.approvalId
+        ? "The latest signed approval is the exact selected smoke approval."
+        : "The selected smoke approval is no longer the latest approval.",
+    );
+    const createdAt = approval?.createdAt?.getTime();
+    const now = Date.now();
+    const recent = createdAt !== undefined && Number.isFinite(createdAt) &&
+      createdAt >= Date.parse(approvalProof.createdAfter) &&
+      createdAt <= now && now - createdAt <= approvalProof.maxAgeSeconds * 1000;
+    record(
+      "fresh-approval",
+      recent,
+      recent
+        ? "The selected approval is inside this release's bounded evidence window."
+        : "The selected approval is stale, future-dated, or outside this release's evidence window.",
+    );
+  }
+
   record(
     "target-origin-match",
     approval?.targetOrigin === targetOrigin,
@@ -421,31 +435,10 @@ export async function runActivationCheck(
       : "Persisted cron-secret binding does not match this activation.",
   );
 
-  const approvalSignatureFieldsPresent =
-    approval !== undefined &&
-    approval.bindingId !== null &&
-    approval.targetOrigin !== null &&
-    approval.releaseSha !== null &&
-    approval.imageDigest !== null &&
-    approval.rolloutMode !== null &&
-    approval.cronSecretBinding !== null;
-
-  const expectedApprovalSignature = approvalSignatureFieldsPresent
-    ? computeApprovalSignature(
-        canonicalApprovalPayload({
-          bindingId: approval!.bindingId!,
-          targetOrigin: approval!.targetOrigin!,
-          releaseSha: approval!.releaseSha!,
-          imageDigest: approval!.imageDigest!,
-          rolloutMode: approval!.rolloutMode!,
-          cronSecretBinding: approval!.cronSecretBinding!,
-        }),
-        approvalSecret,
-      )
-    : null;
-  const approvalSignatureValid =
-    expectedApprovalSignature !== null &&
-    constantTimeEqual(expectedApprovalSignature, approval?.approvalSignature);
+  const approvalSignatureValid = approvalSignatureIsValid(
+    approval,
+    approvalSecret,
+  );
 
   record(
     "approval-signature-valid",
@@ -479,6 +472,31 @@ export async function runActivationCheck(
       : "The approved smoke run was not recorded with rollout mode disabled.",
   );
 
+  const operatorNotPaused = state?.isOperatorPaused === false;
+  record(
+    "no-deployment-fence",
+    !deploymentFenced,
+    deploymentFenced
+      ? "An unreleased deployment cutover fence blocks activation."
+      : "No unreleased deployment cutover fence is present.",
+  );
+  record(
+    "operator-not-paused",
+    operatorNotPaused,
+    operatorNotPaused
+      ? "Operator pause is explicitly inactive."
+      : "Operator pause is active or its state cannot be verified.",
+  );
+
+  const drawdownNotLocked = state?.isLocked === false;
+  record(
+    "drawdown-not-locked",
+    drawdownNotLocked,
+    drawdownNotLocked
+      ? "Drawdown lock is explicitly inactive."
+      : "Drawdown lock is active or its state cannot be verified.",
+  );
+
   const activeLease =
     state === undefined ||
     state.isRunning === true ||
@@ -501,20 +519,23 @@ export async function runActivationCheck(
       : `Accounting status is not RECONCILED (${state?.accountingStatus ?? "missing"}).`,
   );
 
-  const ethBalance =
-    state?.ethBalance === null || state?.ethBalance === undefined
-      ? null
-      : Number(state.ethBalance);
-  const openPosition =
-    ethBalance === null || !Number.isFinite(ethBalance)
-      ? true
-      : ethBalance !== 0;
+  let ethBalance: bigint | null = null;
+  if (typeof state?.ethBalance === "string") {
+    try {
+      ethBalance = parseDecimal(state.ethBalance, ETH_SCALE);
+    } catch (error) {
+      if (!(error instanceof AccountingError)) throw error;
+    }
+  }
+  const openPosition = ethBalance === null || ethBalance !== 0n;
   record(
     "no-open-paper-position",
     !openPosition,
     !openPosition
       ? "No open paper position is held."
-      : "An open paper position is held.",
+      : ethBalance === null
+        ? "An exact 18-decimal paper position could not be verified."
+        : "An open paper position is held.",
   );
 
   const approved = checks.every((entry) => entry.status === "pass");
@@ -536,6 +557,7 @@ export async function runActivationCheck(
           startedAt: shadowRun.startedAt.toISOString(),
           completedAt: shadowRun.completedAt?.toISOString() ?? null,
           tradeCount: shadowRun.tradeCount,
+          errorType: shadowRun.errorType,
         }
       : undefined,
   };

@@ -306,6 +306,15 @@ Environment, not the legacy `development-promotion` Environment; inspect the
 protections actually referenced by each workflow. Any approved dispatch must
 use the configured branch, exact CI-passed SHA, and existing CI gate.
 
+Both production stages require dispatch from protected `main` and successful
+main push CI for the exact candidate SHA. The verifier refreshes the exact
+remote-tracking branch and independently checks each returned run's SHA,
+branch, event, terminal status, and successful conclusion; another branch's
+success does not authorize production. Production `foundation` is only for
+an environment without an application release; it rejects a complete existing
+release and partial release inventory. Existing releases use `full` and the
+owned cutover protocol below.
+
 ## Release secrets and Azure-generated values
 
 `release.bicep` accepts these protected deploy-time values:
@@ -322,6 +331,22 @@ DEPLOYMENT_APPROVAL_SECRET
 ```
 
 `environment.bicep` separately accepts `POSTGRES_ADMIN_PASSWORD`.
+
+For an existing production release, `postgresCredentialMode=preserve` uses
+the PostgreSQL resource's
+[update-only mode](https://learn.microsoft.com/azure/templates/microsoft.dbforpostgresql/2024-08-01/flexibleservers)
+and omits `administratorLoginPassword` from the resource update. Infrastructure
+remains managed, but its deployment cannot invalidate the versioned `DIRECT_URL`
+used by source-image ops jobs between cutover checks. The committed production
+parameters default to `preserve`; only the workflow's explicit fresh-release
+path selects `initialize`. Missing or malformed inventory fails closed.
+
+Database credential rotation is not part of a normal production upgrade.
+Protected database secrets must still match the database when the new release
+is installed. `azure-rotate-secrets.yml` redeploys Key Vault/release bindings;
+it does not rotate the PostgreSQL administrator password or database-side
+runtime role password. Such rotation needs a separately coordinated procedure,
+not an incidental password update halfway through an owned cutover.
 
 Dev and prod use independent safety/auth values. The temporary PostHog
 shared-key fallback is allowed only because `POSTHOG_ENVIRONMENT` is mandatory
@@ -361,6 +386,13 @@ The ops identity never receives the ACS connection string or admin session
 secret. Target smoke validates ACS by asking the running app to send and
 persist a daily-summary delivery; the runtime, not the ops process, holds the
 ACS secret.
+
+Target-smoke evidence retains the response's opaque provider message ID and
+requires exactly one matching `daily-summary-delivery` journal row created
+during the smoke run. Unrelated, stale, future-dated, malformed or duplicate
+audits cannot substitute for that correlation. This proves provider acceptance
+and local audit persistence, **not** final recipient delivery; the latter
+remains a separate readiness gate.
 
 ## Web/runtime configuration
 
@@ -406,6 +438,52 @@ All five also receive `ENVIRONMENT_NAME`, `RELEASE_SHA`,
 `AZURE_CLIENT_ID` selects the ops identity for Foundry; no model credential is
 mounted.
 
+### Read-only production proof
+
+The `production-verification` operation reuses the existing production
+`target-smoke` job; it does not add a sixth job, another identity, or secret
+grants. `run-ops-job.sh --production-verification-config <file>` accepts a
+closed, phase-specific nonsecret JSON configuration only when that live job
+is Manual with one completion, one replica, and zero retries. It preserves
+the complete template and secrets and never overrides Azure's builtin
+`CONTAINER_APP_JOB_EXECUTION_NAME`.
+
+The `ready` phase repeats signed activation verification with the exact
+approval row ID from the trusted smoke report, its lower time boundary, and
+a one-hour maximum approval age. Matching the ID matters: the approval
+signature does not cover its row ID or creation time, so copying a valid
+signature into a newly dated journal row must not refresh old evidence.
+The exact manual shadow run must be terminal, zero-fill and error-free.
+Balances use canonical decimals, not floating-point comparisons.
+
+The `scheduled` phase observes, but never starts, a paper trade. It binds the
+AgentRun to the exact image/generation/hour key and the selected Azure
+execution's start time. The observation window starts at the first full UTC
+hour after **verified schedule enablement**, not after generation allocation;
+an ARM operation can cross an hour boundary. HOLD and policy rejection are
+valid no-fill outcomes; EXECUTED needs exactly one correlated, journaled fill.
+An otherwise reconciled open position after that run is allowed. Both phases
+require released leases/fences and explicitly inactive operator/drawdown stops.
+
+Reports are bound to the release, image, target, authorization digest, and
+logical/Azure execution identities. The native validator rejects incomplete,
+wrong-phase, wrong-generation, or older-than-ten-minute proof. Version 1.2
+reports derive the PostHog key binding with memory-hard scrypt (N=131072,
+r=8, p=1, capped at 256 MiB). Its domain-separated salt contains the host
+and the existing ops-only `DEPLOYMENT_APPROVAL_SECRET`.
+Both phases require that mounted secret; neither it nor an unkeyed
+credential hash is exposed in the report. Older 1.0/1.1 reports are rejected.
+The reported host and keyed binding identify the mounted telemetry settings; they do
+**not** prove separate projects or backend event visibility. This read-only
+operation is not an activation authority or an executable promotion workflow.
+Independent readiness authorization and backend delivery evidence remain
+required before production can leave disabled/Manual.
+
+`npm run test:integration` exercises the real verification queries through
+`scripts/test-production-verification.ts` against a freshly migrated, seeded
+loopback database. Its fixtures cover approval replay, run/journal/fill
+correlation, stop/lease/fence controls, and unchanged database snapshots.
+
 ## Safe per-execution full-template override
 
 `JOB_EXECUTION_ID` has no static Bicep value.
@@ -417,7 +495,7 @@ mounted.
    `volumeMounts`;
 4. requires exactly one container;
 5. always replaces/adds the validated `JOB_EXECUTION_ID`;
-6. for attended dev proof only, may additionally replace/add the allowlisted
+6. for attended shadow proof, may additionally replace/add the allowlisted
    validated `SCHEDULED_IDEMPOTENCY_KEY`,
    `EXPECTED_SHADOW_IDEMPOTENCY_KEY`, and
    `EXPECTED_SHADOW_STARTED_AFTER`;
@@ -477,7 +555,9 @@ with boundary `0`.
   activation-check with that key and the pre-run timestamp. The report must
   prove the exact new SHADOW `AgentRun` started after the boundary, reached a
   safe terminal outcome, created zero `TradeExecution`, and released the
-  lease.
+  lease. Activation also requires operator pause and drawdown lock to be
+  explicitly false; missing or invalid control state blocks activation.
+  This read-only check never clears either stop control.
 - Schedule activation binds hourly idempotency to the exact image digest and
   current activation generation before observing scheduled success. Run
   acquisition rejects cross-mode replay of an existing key.
@@ -486,16 +566,63 @@ with boundary `0`.
 - Failure from dev shadow staging onward triggers automatic rollback to
   disabled/manual, verifies both jobs are Manual, and only then disables
   monitoring.
-- Prod detects and force-disables a complete current release and takes a
-  verified backup **before** `environment.bicep` can rotate credentials or
-  mutate infrastructure. That current-release backup uses a
+- Prod acquires an ops-owned, signed-source-bound database fence **before**
+  forced disable or any infrastructure mutation. An open paper position or
+  valid active lease defers without changing the healthy release. Stops,
+  unreconciled accounting, malformed/expired leases, stale ownership, or an
+  expired fence block the cutover. Source release lineage, digest, origin,
+  candidate SHA, owner, and actual Azure execution identity are checked.
+- Admission has no automatic replica retries. Deferral requires a terminal
+  failed Azure execution and its exact immutable deferred report; timeouts,
+  unknown submissions, or another execution's report are failures, not deferral.
+- The immutable repository ID and workflow run ID derive a stable UUID v5
+  cutover owner, unchanged on failed-job retries. Execution/evidence IDs still
+  include the attempt. Completed owners retain their own database rows; a
+  partial unique index permits only one unreleased fence. An active foreign
+  owner takes precedence over any older completed record.
+- After admission, prod proves disabled/Manual and quiescence, then takes a
+  verified backup **before** `environment.bicep` mutates infrastructure.
+  Existing-release updates preserve the PostgreSQL administrator password.
+  The current-release backup uses a
   `JOB_EXECUTION_ID` ending `-current`, preventing a same-SHA collision with
   new-release baseline evidence. Its forced-disable path verifies Manual jobs
   before disabling monitoring.
+- The runtime and paper executor can read but cannot mutate the fence.
+  Every mutation stage, including forced disable and its monitoring change,
+  revalidates the actual owner and six-hour deadline.
+  Expiry never resumes execution or permits ownership theft; seed/reset do
+  not clear active or completed owners. A pre-release failure leaves the fence
+  held for owned recovery.
+- After migrations and a restore-verified baseline backup, prod verifies the
+  new disabled release and all inactive revisions are quiescent before the
+  exact owner releases the fence and target-smoke runs. Release preserves
+  operator/drawdown stops and every completed owner's replay protection.
+- Migration/backup, release, and target-smoke are separate jobs. After an
+  ambiguous release response, retrying the failed release job rechecks live
+  quiescence and uses exact-owner idempotent release, not held-fence verification.
+  A smoke failure before approval persistence retries only smoke and its live
+  quiescence barrier. It does not repeat migrations or reacquire a released
+  owner. Use failed-job recovery, not a new dispatch or an all-jobs rerun that
+  attempts to replay the old source binding.
+- After release, disabled/Manual remains the runtime guard while smoke is
+  pending or failed. This ordering lets the disabled cron smoke execute after
+  the fence is released without enabling trading or schedules. Neither fence
+  release nor a passing disabled smoke is evidence of production promotion.
 - Prod full deployment and secret rotation end disabled/manual. No executable
   production promotion workflow is shipped or approved.
 - Prod deploy and rotation share concurrency group
   `azure-production-mutation`.
+
+Fence ownership is a database safety control, not a substitute for Azure
+readback. Quiescence requires the desired ready revision, exact images,
+zero replicas on every inactive revision, disabled/Manual jobs without event
+or schedule configuration, and only known-terminal scheduler executions.
+Missing state is never interpreted as zero replicas or successful shutdown.
+
+Existing-source ops images and databases must already support cutover admission.
+A pre-fence source cannot be adopted by skipping its handshake. The selected
+new target uses the explicit fresh disabled-release path; adopting a legacy
+source requires a separately reviewed compatibility/migration procedure.
 
 ## Evidence storage
 

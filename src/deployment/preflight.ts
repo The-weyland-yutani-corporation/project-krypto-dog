@@ -127,6 +127,7 @@ const APPLICATION_TABLES = [
   "AgentRun",
   "TradeExecution",
   "AgentJournal",
+  "DeploymentFence",
 ] as const;
 const LEGACY_APPLICATION_TABLES = [
   "AgentState",
@@ -166,6 +167,14 @@ const EXPECTED_DRIZZLE_MIGRATIONS = [
     createdAt: "1786579433481",
     hash: "fdd400ff67a047a8a590be86c462bf1347a7cb36f65045d7625e89c51b5d5e71",
   },
+  {
+    createdAt: "1792612861659",
+    hash: "bcaae32474a014dd66bc752571d13dc74c29a99b242bc53eca87d4bc4149c63b",
+  },
+  {
+    createdAt: "1792629857081",
+    hash: "2d7e0b464bbe39c9bf0202e5529f295fa8378bc5307b1318c56027dddf71d3e2",
+  },
 ] as const;
 const RUNTIME_ROLE_NAME = "krypto_runtime";
 /**
@@ -176,7 +185,7 @@ const RUNTIME_ROLE_NAME = "krypto_runtime";
  * table, view, materialized view, or foreign table, or a future sequence —
  * is reported as an excess/blocking privilege rather than silently
  * accepted; future migrations must grant new relations' privileges
- * explicitly rather than relying on a default. Only the four named base
+ * explicitly rather than relying on a default. Only the named base
  * tables below are ever allowed any privilege at all; every other current
  * or future relation kind the scan inspects (see
  * {@link RUNTIME_SCANNED_TABLE_RELKINDS}) has an implicit empty allow-list,
@@ -187,6 +196,7 @@ const RUNTIME_TABLE_PRIVILEGE_MATRIX: Readonly<Record<string, readonly string[]>
   AgentRun: ["SELECT", "INSERT", "UPDATE"],
   TradeExecution: ["SELECT", "INSERT"],
   AgentJournal: ["SELECT", "INSERT"],
+  DeploymentFence: ["SELECT"],
 };
 /**
  * Sequences currently have no entries in the matrix because the krypto
@@ -214,7 +224,7 @@ const RUNTIME_SEQUENCE_PRIVILEGE_KINDS = ["USAGE", "SELECT", "UPDATE"] as const;
  * ordinary tables (`r`), partitioned tables (`p`), views (`v`), materialized
  * views (`m`), and foreign tables (`f`). All of these support table-style
  * ACLs (`has_table_privilege` never errors on any of them, unlike
- * sequences), and — because none of them except the four named base tables
+ * sequences), and — because none of them except the named base tables
  * appear in {@link RUNTIME_TABLE_PRIVILEGE_MATRIX} — any krypto_runtime
  * privilege found on any of them is reported as excess. This closes the gap
  * where a future partitioned table, view, materialized view, or foreign

@@ -98,17 +98,15 @@ type PostSmokeEvidence = {
   tradeCount: number;
   leaseReleased: boolean;
   deliveryStatus: string | null;
+  providerMessageId: string | null;
+  deliveryAuditCount: number;
 };
 
 export type TargetSmokeDependencies = {
   fetchImpl?: typeof fetch;
   runProviders?: () => Promise<ProviderSmokeResult>;
   inspectBefore?: (databaseUrl: string) => Promise<PreSmokeEvidence>;
-  inspectAfter?: (input: {
-    databaseUrl: string;
-    idempotencyKeys: string[];
-    startedAt: Date;
-  }) => Promise<PostSmokeEvidence>;
+  inspectAfter?: typeof inspectTargetAfter;
   createBinding?: (input: {
     databaseUrl: string;
     bindingId: string;
@@ -131,6 +129,13 @@ type CheckResult<T> = {
   passed: boolean;
   value?: T;
 };
+
+function validateProviderMessageId(value: unknown): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) {
+    throw new Error("Email acceptance requires an opaque provider message ID of 1-128 safe characters.");
+  }
+  return value;
+}
 
 function errorCode(error: unknown): string {
   if (
@@ -454,7 +459,11 @@ export async function inspectTargetAfter(input: {
   databaseUrl: string;
   idempotencyKeys: string[];
   startedAt: Date;
+  providerMessageId?: string;
 }): Promise<PostSmokeEvidence> {
+  const providerMessageId = input.providerMessageId === undefined
+    ? undefined
+    : validateProviderMessageId(input.providerMessageId);
   return readOnly(input.databaseUrl, async (sql) => {
     const runs = await sql<
       Array<{
@@ -489,13 +498,18 @@ export async function inspectTargetAfter(input: {
       WHERE id = 'singleton'
       LIMIT 1
     `;
-    const [delivery] = await sql<Array<{ status: string | null }>>`
-      SELECT "marketConditions" ->> 'status' AS status
+    const [delivery] = providerMessageId === undefined ? [] : await sql<
+      Array<{ status: string | null; providerMessageId: string | null; count: number }>
+    >`
+      SELECT COUNT(*)::int AS count,
+        MIN("marketConditions" ->> 'status') AS status,
+        MIN("marketConditions" ->> 'detail') AS "providerMessageId"
       FROM "krypto"."AgentJournal"
       WHERE "createdAt" >= ${input.startedAt}
+        AND "createdAt" <= clock_timestamp()
         AND "marketConditions" ->> 'event' = 'daily-summary-delivery'
-      ORDER BY "createdAt" DESC
-      LIMIT 1
+        AND jsonb_typeof("marketConditions" -> 'detail') = 'string'
+        AND "marketConditions" ->> 'detail' = ${providerMessageId}
     `;
     return {
       runCount: runs.length,
@@ -512,6 +526,8 @@ export async function inspectTargetAfter(input: {
         state.leaseOwner === null &&
         state.leaseExpiresAt === null,
       deliveryStatus: delivery?.status ?? null,
+      providerMessageId: delivery?.providerMessageId ?? null,
+      deliveryAuditCount: delivery?.count ?? 0,
     };
   });
 }
@@ -1109,7 +1125,7 @@ export async function runTargetSmoke(
 
   const dailyDelivery = await check(
     "daily-summary-delivery",
-    "Daily summary is sent and its delivery audit is persisted",
+    "Daily summary is accepted by the email provider with an exact message ID",
     async () => {
       const response = await request(
         fetchImpl,
@@ -1137,19 +1153,24 @@ export async function runTargetSmoke(
       ) {
         throw new Error("Daily summary was not sent and audited.");
       }
-      return { status: response.status, deliveryStatus: delivery.status };
+      return {
+        status: response.status,
+        deliveryStatus: delivery.status,
+        providerMessageId: validateProviderMessageId(delivery.id),
+      };
     },
     (value) => value,
   );
-  if (!dailyDelivery.passed) {
+  if (!dailyDelivery.passed || !dailyDelivery.value) {
     return blockedReport(
       "Resolve and audit daily-summary delivery before provider checks.",
     );
   }
+  const providerMessageId = dailyDelivery.value.providerMessageId;
 
   const databasePostconditions = await check(
     "database-postconditions",
-    "Disabled runs, unchanged trades, released lease, and sent-email audit are persisted",
+    "Disabled runs, unchanged trades, released lease, and the exact email acceptance audit are persisted",
     async () => {
       const value = await inspectAfter({
         databaseUrl: options.databaseUrl,
@@ -1159,13 +1180,16 @@ export async function runTargetSmoke(
           evidenceIds.admin,
         ],
         startedAt,
+        providerMessageId,
       });
       if (
         value.runCount !== 2 ||
         value.disabledRunCount !== 2 ||
         value.tradeCount !== before.value!.tradeCount ||
         !value.leaseReleased ||
-        value.deliveryStatus !== "sent"
+        value.deliveryStatus !== "sent" ||
+        value.providerMessageId !== providerMessageId ||
+        value.deliveryAuditCount !== 1
       ) {
         throw new Error("Target database postconditions are incomplete.");
       }

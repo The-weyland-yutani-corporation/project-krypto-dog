@@ -20,6 +20,8 @@ on:
   pull_request:
     paths:
       - "infra/**"
+      - ".github/scripts/azure/**"
+      - ".github/workflows/azure-deploy-prod.yml"
       - ".github/workflows/azure-infra-validate.yml"
   workflow_dispatch:
 
@@ -85,6 +87,9 @@ jobs:
             az bicep build --file "${f}"
             echo "::endgroup::"
           done
+
+      - name: Verify the compiled PostgreSQL credential-preservation contract
+        run: node .github/scripts/azure/tests/test-postgres-credentials.mjs
 
   bicepparam-build:
     name: Build every .bicepparam file

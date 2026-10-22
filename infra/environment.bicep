@@ -60,6 +60,13 @@ param postgresAdministratorLogin string = 'krypto_owner'
 @secure()
 param postgresAdministratorLoginPassword string
 
+@description('Initialize credentials for a fresh environment, or preserve them during an existing-release cutover so source ops jobs retain database access.')
+@allowed([
+  'initialize'
+  'preserve'
+])
+param postgresCredentialMode string = 'initialize'
+
 @description('PostgreSQL compute SKU name.')
 param postgresSkuName string = 'Standard_B1ms'
 
@@ -165,6 +172,7 @@ module postgres 'modules/postgresql.bicep' = {
     privateDnsZoneId: network.outputs.postgresPrivateDnsZoneId
     administratorLogin: postgresAdministratorLogin
     administratorLoginPassword: postgresAdministratorLoginPassword
+    preserveAdministratorPassword: postgresCredentialMode == 'preserve'
     skuName: postgresSkuName
     skuTier: postgresSkuTier
     storageSizeGB: postgresStorageSizeGB

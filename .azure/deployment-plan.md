@@ -202,11 +202,62 @@ report queued. The cancellation retry is exhausted; do not retry indefinitely,
 delete its audit history, or treat the contradictory response as a verified
 cancellation.
 
-Protected credential rebinding and the recovery merge remain on hold until
-that stale-run state is resolved. No Azure bindings or database secrets were
-changed. Read-only validation of later stages may proceed, but it does not
-remove this stop. Other platform, workload-access, production, and rotation
-workflows had no active runs when checked.
+The owner subsequently merged
+[PR #374](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/pull/374)
+at `104c39197b41db396bb86c3c2c669ca950a3b07a`; its exact-SHA push CI
+[passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39639335132).
+The source-merge hold is superseded, but protected credential rebinding
+remains on hold until the stale-run state is resolved. No Azure bindings or
+database secrets were changed. Read-only validation of later stages may
+proceed, but it does not remove this stop.
+
+## Full-factory implementation follow-up
+
+The owner approved a native GitHub Actions design for unattended delivery
+through monitored paper production in
+[issue #375](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/375).
+For a healthy release with an open paper position or active lease, upgrades
+must defer without forcing a trade or changing balances. Full factory
+completion must eventually include exact-release production evidence.
+
+The read-only activation verifier now rejects operator pause, drawdown lock,
+and missing or invalid values for either control. This safeguard neither
+clears those controls nor implements or authorizes production promotion.
+Published source checkpoint `f0ffff8dee5547b970434d3cecd64e0a435c1653`
+implements an ops-owned cutover fence, runtime and
+paper-executor enforcement, migration/backup coverage, exact Azure execution
+binding, and production workflow admission before forced disable. Healthy
+position/lease deferral is mutation-free; an expired or failed fence remains
+held for owned recovery. Existing-release infrastructure updates omit the
+PostgreSQL administrator password so source ops jobs retain database access.
+Fresh provisioning remains explicit, and foundation/full production admission
+requires successful exact-SHA main push CI.
+
+Its exact-head
+[CI](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39699485807)
+and
+[infrastructure validation](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39699485790)
+passed, including real PostgreSQL migration/execution and strict harness checks.
+Required review is not complete: the code-review agent ended with a Copilot
+request HTTP 403, and the trading review reported missing Jest for its own
+targeted execution. Workflow success alone does not replace a complete review.
+
+The corrective checkpoint adds forward migration 0009 to retain completed
+owners, stable per-run ownership, independently retryable migration/backup,
+release and smoke jobs, exact returned main-push CI provenance, and fresh
+fence checks before forced disable and its monitoring change. The corrected
+head still requires hosted migration/concurrency/restore checks and complete
+current-head review before merge.
+
+These changes are implementation work, not deployment proof. Evidence-bound paper
+promotion, production-aware lifecycle completion, and actual commissioning
+remain pending. MonitorOps' separately denied pinned-tool verification remains
+blocked and must not be retried through an alternate path.
+
+Exact Environment protection changes, production activation, external
+telemetry effects, and the irreversible evidence-policy lock still require
+their separate approvals. Factory control and the deployment workflows remain
+paused/disabled; the bootstrap remains the only completed provisioning stage.
 
 ## Verified preparation evidence
 
@@ -438,7 +489,9 @@ bypass those protections under this plan.
   Its separate repair session also remains blocked by the tool-approval layer,
   including after the owner's fresh approval for scoped local validation tools;
   no source fix or permission workaround was attempted.
-- Production software-delivery scope, which remains manual and disabled.
+- The approved unattended paper-production design still requires
+  implementation, verification, and its separate external-effects approvals.
+  Production remains manual and disabled.
 
 ## Validation and activation
 
