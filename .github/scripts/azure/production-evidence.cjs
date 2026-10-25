@@ -1,8 +1,10 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 const { loadRunArchive } = require("../agentic-receipt.cjs");
+const { validateProductionReport } = require("./lib/production-report.cjs");
 
 const RELEASE_WORKFLOW = "azure-deploy-prod.yml";
 const DEVELOPMENT_WORKFLOW = "azure-deploy-dev.yml";
@@ -30,6 +32,28 @@ const RELEASE_JOBS = Object.freeze([
   "target-smoke", "verify-final-state",
 ]);
 const POST_ADMISSION_JOBS = RELEASE_JOBS.slice(2);
+const PRODUCTION_STATUS_CONTEXT = "Production deployment evidence";
+const PRODUCTION_ENVIRONMENT = "production";
+const PRODUCTION_JOB_NAMES = Object.freeze({
+  gate: "Determine and validate the commit to deploy",
+  "force-disable-rollout": "Admit current release before any disabled/Manual cutover",
+  "backup-current-release": "Preflight + verified-backup current release before environment.bicep",
+  "deploy-environment": "Deploy infra/environment.bicep (prod, after current-release safety)",
+  "build-images": "Build web/ops images and resolve digests (prod)",
+  "deploy-release": "Deploy infra/release.bicep (prod, disabled/Manual)",
+  "migrate-backup": "Migrate and restore-verify the candidate while its fence is held",
+  "release-cutover-fence": "Persist the quiescent cutover release checkpoint",
+  "target-smoke": "Verify and approve the released disabled candidate",
+  "verify-final-state": "Verify live prod disabled/Manual, no schedule, and exact SHA/digests",
+  "publish-release-receipt": "Publish an immutable full-release or deferral receipt",
+  "prepare-paper": "Prepare a fresh zero-fill production shadow proof",
+  "promote-paper": "Activate paper and verify the actual scheduled PAPER run",
+  "publish-promotion-receipt": "Publish immutable paper-production evidence",
+  "publish-production-delivery": "Publish exact-SHA paper-production delivery",
+  "recover-paper": "Recover production to verified disabled/Manual",
+  "publish-production-failure": "Publish a durable production failure",
+});
+const PROMOTION_MODES = Object.freeze(["disabled", "operator", "continuous"]);
 
 function object(value, name) {
   assert(value && typeof value === "object" && !Array.isArray(value), `${name} must be an object.`);
@@ -64,11 +88,12 @@ function containerUrl(value) {
 }
 
 function receiptName(stage, sha, runId, attempt) {
-  assert(["release", "development"].includes(stage), "Only disabled-release or development receipts are implemented.");
+  assert(["release", "development", "promotion"].includes(stage), "Unknown deployment receipt stage.");
   matching(sha, SHA, "Release SHA");
   integer(runId, "Run ID");
   integer(attempt, "Run attempt");
-  const prefix = stage === "development" ? "development-release" : "production-release";
+  const prefix = stage === "development" ? "development-release" :
+    stage === "promotion" ? "production-promotion" : "production-release";
   return `${prefix}-${sha}-${runId}-${attempt}`;
 }
 
@@ -92,11 +117,16 @@ function resolveProductionInvocation(env, event) {
     `${repository}/.github/workflows/${RELEASE_WORKFLOW}@refs/heads/main`, "Wrong production workflow source.");
   let sha;
   let deploymentStage;
+  let promotionMode;
   const triggeringDevelopment = {};
   if (env.GITHUB_EVENT_NAME === "workflow_dispatch") {
     sha = matching(env.INPUT_COMMIT_SHA, SHA, "Manual release SHA");
     deploymentStage = env.INPUT_DEPLOYMENT_STAGE;
     assert(["foundation", "full"].includes(deploymentStage), "Production stage must be foundation or full.");
+    promotionMode = env.INPUT_PROMOTION_MODE || "disabled";
+    assert(PROMOTION_MODES.includes(promotionMode), "Unknown production promotion mode.");
+    assert(deploymentStage === "full" || promotionMode === "disabled",
+      "Foundation commissioning cannot activate paper.");
   } else {
     assert.equal(env.GITHUB_EVENT_NAME, "workflow_run", "Unsupported production trigger.");
     assert.equal(event.action, "completed", "Development completion is required.");
@@ -108,16 +138,18 @@ function resolveProductionInvocation(env, event) {
     triggeringDevelopment.development_run_id = integer(run.id, "Triggering development run ID");
     triggeringDevelopment.development_run_attempt = integer(run.run_attempt, "Triggering development attempt");
     deploymentStage = "full";
+    promotionMode = "continuous";
   }
   assert.equal(sha, matching(env.GITHUB_SHA, SHA, "Workflow SHA"), "Production must deploy its exact workflow source.");
   assert.equal(sha, matching(env.GITHUB_WORKFLOW_SHA, SHA, "Workflow definition SHA"),
     "Production must execute its exact release source.");
-  return { sha, deployment_stage: deploymentStage, ...triggeringDevelopment };
+  return { sha, deployment_stage: deploymentStage, promotion_mode: promotionMode, ...triggeringDevelopment };
 }
 
-async function assertProductionFactoryMode({ github, core, owner, repo, eventName }) {
+async function assertProductionFactoryMode({ github, core, owner, repo, eventName, promotionMode = "disabled" }) {
   assert(["workflow_dispatch", "workflow_run"].includes(eventName), "Unsupported production trigger.");
-  if (eventName === "workflow_dispatch") return;
+  assert(PROMOTION_MODES.includes(promotionMode), "Unknown production promotion mode.");
+  if (eventName === "workflow_dispatch" && promotionMode !== "continuous") return;
   const { resolveHumanAttestedFactoryMode } = require("../agentic-automerge-sweeper.cjs");
   assert.equal(await resolveHumanAttestedFactoryMode({ github, core, owner, repo }), "active",
     "Automatic production admission requires a human-activated factory; paused, shadow or unreadable control blocks it.");
@@ -160,14 +192,14 @@ function productionVerificationOverrides(config) {
 }
 
 function baseReceipt(env, stage) {
-  assert(["release", "development"].includes(stage), "Only disabled-release or development receipts are implemented.");
+  assert(["release", "development", "promotion"].includes(stage), "Unknown deployment receipt stage.");
   matching(env.GITHUB_REPOSITORY, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "Repository");
   assert.equal(env.GITHUB_REF, "refs/heads/main", "Deployment evidence requires protected main.");
   for (const key of ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_REPOSITORY_ID"]) {
     matching(env[key], /^[1-9][0-9]*$/, key);
   }
   return {
-    schemaVersion: stage === "development" ? 1 : 2,
+    schemaVersion: stage === "release" ? 2 : 1,
     stage,
     repository: env.GITHUB_REPOSITORY,
     repositoryId: integer(Number(env.GITHUB_REPOSITORY_ID), "Repository ID"),
@@ -343,7 +375,7 @@ function createReleaseReceipt(env, needs) {
 
 function validateWorkflowRun(run, { repository, repositoryId, stage, releaseSha }) {
   object(run, "Workflow run");
-  assert(["release", "development"].includes(stage), "Only disabled-release or development receipts are implemented.");
+  assert(["release", "development", "promotion"].includes(stage), "Unknown deployment receipt stage.");
   integer(run.id, "Run ID");
   integer(run.run_attempt, "Run attempt");
   integer(run.repository?.id, "Repository ID");
@@ -354,7 +386,7 @@ function validateWorkflowRun(run, { repository, repositoryId, stage, releaseSha 
   if (releaseSha !== undefined) matching(releaseSha, SHA, "Expected release SHA");
   const workflow = stage === "development" ? DEVELOPMENT_WORKFLOW : RELEASE_WORKFLOW;
   assert.equal(run.path, `.github/workflows/${workflow}`, "Wrong deployment workflow.");
-  if (stage === "development") {
+  if (stage !== "release") {
     assert.equal(run.repository.id, integer(repositoryId, "Expected repository ID"), "Wrong immutable repository.");
     assert.equal(run.head_sha, matching(releaseSha, SHA, "Expected release SHA"), "Wrong development source.");
     assert(["workflow_run", "workflow_dispatch"].includes(run.event), "Wrong development event.");
@@ -369,6 +401,7 @@ function validateWorkflowRun(run, { repository, repositoryId, stage, releaseSha 
 }
 
 function validateReceipt(receipt, run, expected) {
+  if (expected.stage === "promotion") return validatePromotionReceipt(receipt, run, expected);
   validateWorkflowRun(run, expected);
   object(receipt, "Production receipt");
   for (const [field, value] of Object.entries({
@@ -449,6 +482,80 @@ async function assertCurrentMain({ github, owner, repo, releaseSha }) {
   assert.equal(response.data.object?.sha, releaseSha, "The release was superseded on main.");
 }
 
+async function latestNativeRunId({ github, owner, repo, workflowId, releaseSha }) {
+  const { data } = await github.rest.actions.listWorkflowRuns({
+    owner, repo, workflow_id: workflowId, head_sha: releaseSha, per_page: 100,
+  });
+  assert(Array.isArray(data.workflow_runs) && Number.isSafeInteger(data.total_count) &&
+    data.total_count >= 0 && data.total_count <= 100 && data.workflow_runs.length === data.total_count,
+  "A complete bounded inventory of deployment runs is required.");
+  const ids = data.workflow_runs.map((entry) => {
+    assert.equal(entry.head_sha, releaseSha, "Unrelated source in deployment inventory.");
+    return integer(entry.id, "Deployment run ID");
+  });
+  assert.equal(new Set(ids).size, ids.length, "Deployment inventory is ambiguous.");
+  return ids.length ? Math.max(...ids) : null;
+}
+
+async function verifyNativeJobs({ github, owner, repo, run, conclusions, exact = false }) {
+  const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
+    owner, repo, run_id: run.id, attempt_number: run.run_attempt, per_page: 100,
+  });
+  assert(Array.isArray(jobs) && jobs.length <= 100, "Deployment job inventory is missing or unbounded.");
+  if (exact) assert.equal(jobs.length, Object.keys(conclusions).length, "Unexpected native production jobs.");
+  const matched = {};
+  for (const [name, conclusion] of Object.entries(conclusions)) {
+    const entries = jobs.filter((job) => job.name === name);
+    assert(entries.length === 1 && entries[0].status === "completed" && entries[0].conclusion === conclusion,
+      `The actual ${run.path === `.github/workflows/${DEVELOPMENT_WORKFLOW}` ? "development" : "production"} attempt is missing its required result: ${name}.`);
+    matched[name] = entries[0];
+  }
+  return matched;
+}
+
+async function assertUnchangedNativeRun({ github, owner, repo, run, expected }) {
+  const { data: fresh } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: run.id });
+  validateWorkflowRun(fresh, expected);
+  for (const field of ["id", "run_attempt", "workflow_id", "status", "conclusion", "updated_at"]) {
+    assert.equal(fresh[field], run[field], "Deployment changed during evidence verification.");
+  }
+  assert.equal(fresh.actor?.id, run.actor?.id, "Deployment actor changed during verification.");
+  assert.equal(fresh.triggering_actor?.id, run.triggering_actor?.id, "Deployment rerun actor changed during verification.");
+}
+
+async function verifyDevelopmentRunReceipt({ github, owner, repo, repositoryId, releaseSha, run }) {
+  const expected = { repository: `${owner}/${repo}`, repositoryId, stage: "development", releaseSha };
+  validateWorkflowRun(run, expected);
+  assert.equal(run.status, "completed", "The latest development run is not terminal.");
+  assert.equal(run.conclusion, "success", "The latest development run did not succeed.");
+  const receipt = validateReceipt(await loadRunArchive({
+    github, owner, repo, run, name: receiptName("development", releaseSha, run.id, run.run_attempt),
+  }), run, expected);
+  assert.equal(receipt.status, "shadow", "A green development wrapper is not a verified deployment.");
+  await verifyNativeJobs({
+    github, owner, repo, run, conclusions: Object.fromEntries([
+      ...Object.values(DEVELOPMENT_JOBS), DEVELOPMENT_RECEIPT_PUBLISHER, DEVELOPMENT_PUBLISHER, DEVELOPMENT_ROLLBACK,
+    ].map((name) => [name, name === DEVELOPMENT_ROLLBACK ? "skipped" : "success"])),
+  });
+  await assertUnchangedNativeRun({ github, owner, repo, run, expected });
+  return receipt;
+}
+
+async function loadExactDevelopmentReceipt({ github, owner, repo, repositoryId, releaseSha, reference }) {
+  object(reference, "Development admission reference");
+  for (const field of ["runId", "runAttempt", "workflowId"]) integer(reference[field], `Development ${field}`);
+  const { data: workflow } = await github.rest.actions.getWorkflow({
+    owner, repo, workflow_id: DEVELOPMENT_WORKFLOW,
+  });
+  assert.equal(workflow.path, `.github/workflows/${DEVELOPMENT_WORKFLOW}`);
+  assert.equal(integer(workflow.id, "Development workflow ID"), reference.workflowId);
+  const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: reference.runId });
+  assert.equal(run.id, reference.runId);
+  assert.equal(run.workflow_id, reference.workflowId);
+  assert.equal(run.run_attempt, reference.runAttempt, "The admitted development attempt was superseded.");
+  return verifyDevelopmentRunReceipt({ github, owner, repo, repositoryId, releaseSha, run });
+}
+
 async function loadLatestDevelopmentReceipt({
   github, owner, repo, repositoryId, releaseSha, expectedRunId, expectedRunAttempt,
 }) {
@@ -464,21 +571,9 @@ async function loadLatestDevelopmentReceipt({
   });
   integer(workflow.id, "Trusted development workflow ID");
   assert.equal(workflow.path, `.github/workflows/${DEVELOPMENT_WORKFLOW}`, "Wrong development workflow definition.");
-  const latestRunId = async () => {
-    const { data } = await github.rest.actions.listWorkflowRuns({
-      owner, repo, workflow_id: workflow.id, head_sha: releaseSha, per_page: 100,
-    });
-    assert(Array.isArray(data.workflow_runs) && Number.isSafeInteger(data.total_count) &&
-      data.total_count > 0 && data.total_count <= 100 && data.workflow_runs.length === data.total_count,
-    "A complete bounded inventory of development runs is required.");
-    const ids = data.workflow_runs.map((entry) => {
-      assert.equal(entry.head_sha, releaseSha, "Unrelated source in development inventory.");
-      return integer(entry.id, "Development run ID");
-    });
-    assert.equal(new Set(ids).size, ids.length, "Development inventory is ambiguous.");
-    return Math.max(...ids);
-  };
+  const latestRunId = () => latestNativeRunId({ ...context, workflowId: workflow.id });
   const runId = await latestRunId();
+  integer(runId, "Latest development run ID");
   if (expectedRunId !== undefined) assert.equal(runId, expectedRunId, "The admitted development run was superseded.");
   const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
   const expected = { repository: `${owner}/${repo}`, repositoryId, stage: "development", releaseSha };
@@ -488,34 +583,438 @@ async function loadLatestDevelopmentReceipt({
   if (expectedRunAttempt !== undefined) {
     assert.equal(run.run_attempt, expectedRunAttempt, "The admitted development attempt was superseded.");
   }
-  assert.equal(run.status, "completed", "The latest development run is not terminal.");
-  assert.equal(run.conclusion, "success", "The latest development run did not succeed.");
-  const receipt = validateReceipt(await loadRunArchive({
-    github, owner, repo, run, name: receiptName("development", releaseSha, run.id, run.run_attempt),
-  }), run, expected);
-  assert.equal(receipt.status, "shadow", "A green development wrapper is not a verified deployment.");
-  const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
-    owner, repo, run_id: run.id, attempt_number: run.run_attempt, per_page: 100,
-  });
-  assert(Array.isArray(jobs) && jobs.length <= 100, "Development job inventory is missing or unbounded.");
-  for (const name of [
-    ...Object.values(DEVELOPMENT_JOBS), DEVELOPMENT_RECEIPT_PUBLISHER, DEVELOPMENT_PUBLISHER, DEVELOPMENT_ROLLBACK,
-  ]) {
-    const matchingJobs = jobs.filter((job) => job.name === name);
-    assert(matchingJobs.length === 1 && matchingJobs[0].status === "completed" &&
-      matchingJobs[0].conclusion === (name === DEVELOPMENT_ROLLBACK ? "skipped" : "success"),
-    `The actual development attempt is missing its required result: ${name}.`);
-  }
-  const { data: fresh } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: run.id });
-  validateWorkflowRun(fresh, expected);
-  for (const field of ["id", "run_attempt", "workflow_id", "status", "conclusion", "updated_at"]) {
-    assert.equal(fresh[field], run[field], "Development changed during evidence verification.");
-  }
-  assert.equal(fresh.actor.id, run.actor.id, "Development actor changed during verification.");
-  assert.equal(fresh.triggering_actor.id, run.triggering_actor.id, "Development rerun actor changed during verification.");
+  const receipt = await verifyDevelopmentRunReceipt({ ...context, repositoryId, run });
   assert.equal(await latestRunId(), run.id, "A newer development run superseded the evidence.");
   await assertCurrentMain(context);
   return receipt;
+}
+
+function promotionReference(receipt) {
+  assert.equal(receipt.stage, "promotion", "A paper-production receipt is required.");
+  assert.equal(receipt.status, "paper", "Only verified paper delivery can authorize continuation.");
+  return {
+    schemaVersion: 1, kind: "production-promotion",
+    repositoryId: receipt.repositoryId, releaseSha: receipt.releaseSha,
+    runId: receipt.runId, runAttempt: receipt.runAttempt, workflowId: receipt.workflowId,
+    scheduleGeneration: receipt.evidence.scheduleGeneration,
+    authorizationId: receipt.evidence.authorizationId,
+  };
+}
+
+function validatePromotionReference(reference) {
+  object(reference, "Production reference");
+  assert.deepEqual(Object.keys(reference).sort(), [
+    "schemaVersion", "kind", "repositoryId", "releaseSha", "runId", "runAttempt",
+    "workflowId", "scheduleGeneration", "authorizationId",
+  ].sort(), "Production reference must use its closed nonsecret shape.");
+  assert.equal(reference.schemaVersion, 1);
+  assert.equal(reference.kind, "production-promotion");
+  for (const field of ["repositoryId", "runId", "runAttempt", "workflowId", "scheduleGeneration"]) {
+    integer(reference[field], `Production reference ${field}`);
+  }
+  matching(reference.releaseSha, SHA, "Previous production source");
+  matching(reference.authorizationId, /^[0-9a-f]{64}$/, "Previous production authorization");
+  return reference;
+}
+
+async function assertPromotionActor({ github, owner, repo, env, mode }) {
+  assert(PROMOTION_MODES.includes(mode), "Unknown production promotion mode.");
+  const { data: run } = await github.rest.actions.getWorkflowRun({
+    owner, repo, run_id: integer(Number(env.GITHUB_RUN_ID), "Producer run ID"),
+  });
+  validateWorkflowRun(run, {
+    repository: `${owner}/${repo}`, repositoryId: Number(env.GITHUB_REPOSITORY_ID),
+    releaseSha: env.RESOLVED_SHA, stage: "promotion",
+  });
+  assert.equal(run.run_attempt, Number(env.GITHUB_RUN_ATTEMPT), "Wrong producer attempt.");
+  assert.equal(run.status, "in_progress", "Promotion must belong to the current running workflow.");
+  assert(Number.isFinite(Date.parse(run.run_started_at)), "The native production start time is missing.");
+  assert.equal(env.GITHUB_WORKFLOW_SHA, run.head_sha, "Wrong producer workflow source.");
+  assert.equal(env.GITHUB_WORKFLOW_REF,
+    `${owner}/${repo}/.github/workflows/${RELEASE_WORKFLOW}@refs/heads/main`, "Wrong producer workflow ref.");
+  assert.equal(env.GITHUB_ACTOR_ID, String(run.actor.id), "Wrong producer actor.");
+  assert.equal(env.GITHUB_TRIGGERING_ACTOR, run.triggering_actor.login, "Wrong producer rerun actor.");
+  assert.equal(env.GITHUB_EVENT_NAME, run.event, "Wrong producer event.");
+  if (mode === "operator") {
+    assert.equal(run.event, "workflow_dispatch", "First activation requires explicit operator dispatch.");
+    for (const actor of [run.actor, run.triggering_actor]) {
+      assert.equal(actor.type, "User", "A bot cannot authorize first paper activation or recovery.");
+      const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+        owner, repo, username: actor.login,
+      });
+      assert(["admin", "maintain", "write"].includes(data.permission),
+        "Paper activation requires an authenticated repository operator with write permission.");
+    }
+  }
+  return run;
+}
+
+function productionAuthorization({ env, binding, authority, scheduleGeneration }) {
+  validateBinding(binding);
+  matching(env.GITHUB_REPOSITORY, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "Production repository");
+  for (const key of ["GITHUB_REPOSITORY_ID", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"]) {
+    integer(Number(matching(env[key], /^[1-9][0-9]*$/, key)), key);
+  }
+  object(authority, "Production authority");
+  assert.deepEqual(Object.keys(authority).sort(), ["mode", "actorId", "triggeringActorId", "previous"].sort(),
+    "Production authority must use its closed nonsecret shape.");
+  integer(authority.actorId, "Production actor");
+  integer(authority.triggeringActorId, "Production rerun actor");
+  integer(scheduleGeneration, "Schedule generation");
+  assert(scheduleGeneration <= Math.floor(Date.now() / 1000), "Schedule generation is in the future.");
+  assert(["operator", "continuous"].includes(authority.mode), "Paper authority is missing.");
+  if (authority.mode === "continuous") {
+    validatePromotionReference(authority.previous);
+    assert.equal(authority.previous.repositoryId, Number(env.GITHUB_REPOSITORY_ID), "Continuation belongs to another repository.");
+    assert(authority.previous.runId < Number(env.GITHUB_RUN_ID), "Continuation requires an earlier production run.");
+  }
+  else assert.equal(authority.previous, null, "Operator activation must not impersonate receipt continuation.");
+  return createHash("sha256").update(JSON.stringify([
+    "production-paper-v1", env.GITHUB_REPOSITORY, Number(env.GITHUB_REPOSITORY_ID),
+    Number(env.GITHUB_RUN_ID), Number(env.GITHUB_RUN_ATTEMPT),
+    binding.releaseSha, binding.webImageDigest, binding.opsImageDigest,
+    binding.registryLoginServer, binding.targetOrigin, binding.evidenceContainerUrl,
+    authority.mode, authority.actorId, authority.triggeringActorId,
+    authority.previous === null ? null : [
+      authority.previous.repositoryId, authority.previous.releaseSha, authority.previous.runId,
+      authority.previous.runAttempt, authority.previous.workflowId, authority.previous.scheduleGeneration,
+      authority.previous.authorizationId,
+    ],
+    scheduleGeneration,
+  ])).digest("hex");
+}
+
+function productionReportExpectations(binding, evidence, phase) {
+  const report = object(evidence[phase], `${phase} production report`);
+  const expected = {
+    "production-phase": phase, "authorization-id": evidence.authorizationId,
+    "target-origin": binding.targetOrigin, "image-digest": binding.webImageDigest,
+    "release-sha": binding.releaseSha, "schedule-generation": String(evidence.scheduleGeneration),
+    "job-execution-id": report.jobExecutionId, "azure-execution-name": report.azureExecutionName,
+  };
+  if (phase === "ready") return {
+    ...expected, "approval-id": evidence.approvalId,
+    "expected-shadow-idempotency-key": evidence.manualShadow.idempotencyKey,
+    "expected-shadow-started-after": evidence.manualShadow.startedAfter,
+  };
+  const execution = object(report.scheduledExecution, "Scheduled execution");
+  return {
+    ...expected, "workflow-observation-digest": report.workflowObservation?.observationDigest,
+    "expected-scheduled-idempotency-key": report.scheduledRun?.idempotencyKey,
+    "scheduled-execution-resource-id": execution.id, "scheduled-execution-name": execution.name,
+    "scheduled-execution-template-digest": execution.templateDigest,
+    "scheduled-execution-started-at": execution.startedAt,
+    "scheduled-execution-completed-at": execution.completedAt,
+    "schedule-enabled-at": execution.scheduleEnabledAt,
+  };
+}
+
+function validateHistoricalPromotionEvidence(receipt, run) {
+  const evidence = object(receipt.evidence, "Paper-production evidence");
+  assert.deepEqual(Object.keys(evidence).sort(), [
+    "authorizationId", "scheduleGeneration", "approvalId", "approvalCreatedAfter", "manualShadow", "ready", "scheduled",
+  ].sort(), "Paper-production evidence must contain only its closed nonsecret fields.");
+  const binding = validateBinding(receipt.release.binding);
+  const authority = object(receipt.authority, "Paper-production authority");
+  assert(["operator", "continuous"].includes(authority.mode), "Unknown paper authority.");
+  assert.equal(authority.actorId, run.actor.id, "Paper authority belongs to another actor.");
+  assert.equal(authority.triggeringActorId, run.triggering_actor.id, "Paper authority belongs to another rerun actor.");
+  if (authority.mode === "operator") {
+    assert.equal(run.event, "workflow_dispatch", "A scheduled workflow cannot authorize first activation.");
+    assert.equal(run.actor.type, "User", "First activation was not operator initiated.");
+    assert.equal(run.triggering_actor.type, "User", "First activation was not operator rerun.");
+  }
+  assert.equal(evidence.authorizationId, productionAuthorization({
+    env: {
+      GITHUB_REPOSITORY: receipt.repository, GITHUB_REPOSITORY_ID: String(receipt.repositoryId),
+      GITHUB_RUN_ID: String(receipt.runId), GITHUB_RUN_ATTEMPT: String(receipt.runAttempt),
+    },
+    binding, authority, scheduleGeneration: evidence.scheduleGeneration,
+  }), "Production authority does not bind this exact attempt, release and generation.");
+  const start = Date.parse(run.run_started_at);
+  const end = Date.parse(receipt.generatedAt);
+  const manual = object(evidence.manualShadow, "Production manual shadow");
+  matching(manual.executionName, EXECUTION, "Production manual execution");
+  assert.equal(manual.idempotencyKey, `manual-shadow:run${run.id}-a${run.run_attempt}-prod-shadow`);
+  for (const boundary of [manual.startedAfter, evidence.approvalCreatedAfter]) {
+    assert(Number.isFinite(Date.parse(boundary)) && Date.parse(boundary) >= start &&
+      Date.parse(boundary) <= end, "Production preparation belongs to another workflow attempt.");
+  }
+  assert(evidence.scheduleGeneration * 1000 >= start - 1000 &&
+    evidence.scheduleGeneration * 1000 <= Date.parse(manual.startedAfter),
+  "Production generation is not bound to this preparation.");
+  for (const phase of ["ready", "scheduled"]) {
+    const report = object(evidence[phase], `${phase} production evidence`);
+    const generated = Date.parse(report.generatedAt);
+    assert(Number.isFinite(generated) && generated >= start && generated <= end,
+      "Production report is outside its native attempt.");
+    // Historical audit only. Native job windows are checked by the loader;
+    // actuation always uses validateProductionReport with the real current clock.
+    validateProductionReport(report, productionReportExpectations(binding, evidence, phase), generated);
+    assert.equal(report.jobExecutionId,
+      `run${run.id}-a${run.run_attempt}-prod-${phase}`, "Production report belongs to another invocation.");
+  }
+  assert(Date.parse(evidence.ready.generatedAt) <= Date.parse(evidence.scheduled.scheduledExecution.scheduleEnabledAt),
+    "Ready evidence was generated after schedule enablement.");
+  assert.notEqual(manual.executionName, evidence.scheduled.scheduledExecution.name,
+    "Manual shadow cannot stand in for an actual scheduled execution.");
+  assert.equal(evidence.ready.posthog.host, evidence.scheduled.posthog.host, "Production telemetry host changed.");
+  assert.equal(evidence.ready.posthog.keyBinding, evidence.scheduled.posthog.keyBinding,
+    "Production telemetry identity changed.");
+  const observation = evidence.scheduled.workflowObservation;
+  for (const [field, expected] of Object.entries({
+    repositoryId: String(receipt.repositoryId), repositoryOwnerId: String(receipt.repositoryOwnerId),
+    workflowRef: `${receipt.repository}/.github/workflows/${RELEASE_WORKFLOW}@refs/heads/main`,
+    workflowSha: receipt.releaseSha, runId: String(run.id), runAttempt: run.run_attempt,
+  })) assert.equal(observation[field], expected, `Scheduled observation ${field} changed.`);
+}
+
+function createPromotionReceipt(env, needs, run) {
+  const base = baseReceipt(env, "promotion");
+  validateWorkflowRun(run, {
+    repository: base.repository, repositoryId: base.repositoryId,
+    stage: "promotion", releaseSha: base.releaseSha,
+  });
+  assert.equal(run.id, base.runId);
+  assert.equal(run.run_attempt, base.runAttempt);
+  assert.equal(base.workflowSha, base.releaseSha);
+  assert.equal(env.GITHUB_WORKFLOW_SHA, base.releaseSha);
+  assert.equal(env.GITHUB_WORKFLOW_REF,
+    `${base.repository}/.github/workflows/${RELEASE_WORKFLOW}@refs/heads/main`, "Wrong producer workflow.");
+  assert.equal(env.GITHUB_EVENT_NAME, run.event, "Wrong producer event.");
+  assert.equal(env.GITHUB_ACTOR_ID, String(run.actor.id), "Wrong producer actor.");
+  assert.equal(env.GITHUB_TRIGGERING_ACTOR, run.triggering_actor.login, "Wrong rerun actor.");
+  assert.equal(Number(env.GITHUB_REPOSITORY_OWNER_ID), run.repository.owner?.id, "Wrong producer repository owner.");
+  const release = object(JSON.parse(needs["publish-release-receipt"].outputs.receipt), "Disabled release receipt");
+  const authority = object(JSON.parse(needs["force-disable-rollout"].outputs.promotion_authority), "Promotion authority");
+  const results = {};
+  for (const id of [...RELEASE_JOBS, "publish-release-receipt", "prepare-paper", "promote-paper"]) {
+    const result = needs[id]?.result;
+    assert(["success", "failure", "cancelled", "skipped"].includes(result), `Missing promotion predecessor ${id}.`);
+    results[id] = result;
+  }
+  const status = results["publish-release-receipt"] !== "success" ? "failed" : release.status === "disabled" ?
+    (authority.mode === "disabled" && results["prepare-paper"] === "skipped" && results["promote-paper"] === "skipped" ?
+      "disabled" : results["prepare-paper"] === "success" && results["promote-paper"] === "success" ? "paper" : "failed") :
+    release.status === "deferred" ? "deferred" : "failed";
+  const receipt = {
+    ...base, workflowId: run.workflow_id,
+    repositoryOwnerId: integer(Number(env.GITHUB_REPOSITORY_OWNER_ID), "Repository owner ID"),
+    actorId: run.actor.id, triggeringActorId: run.triggering_actor.id,
+    status, results, release, authority,
+    existingRelease: needs["force-disable-rollout"].outputs.existing_release === "true",
+    evidence: status === "paper" ? JSON.parse(needs["promote-paper"].outputs.evidence) : null,
+  };
+  assert.equal(release.runId, receipt.runId);
+  assert.equal(release.runAttempt, receipt.runAttempt);
+  assert.equal(release.releaseSha, receipt.releaseSha);
+  if (status === "paper") validateHistoricalPromotionEvidence(receipt, run);
+  assert(Buffer.byteLength(JSON.stringify(receipt), "utf8") <= 60_000, "Production receipt exceeds its bounded size.");
+  return receipt;
+}
+
+function validatePromotionReceipt(receipt, run, expected) {
+  validateWorkflowRun(run, { ...expected, stage: "promotion" });
+  object(receipt, "Promotion receipt");
+  for (const [field, value] of Object.entries({
+    schemaVersion: 1, stage: "promotion", repository: expected.repository,
+    repositoryId: run.repository.id, repositoryOwnerId: run.repository.owner?.id,
+    runId: run.id, runAttempt: run.run_attempt, workflowId: run.workflow_id,
+    actorId: run.actor.id, triggeringActorId: run.triggering_actor.id,
+    workflowSha: run.head_sha, releaseSha: run.head_sha,
+  })) assert.equal(receipt[field], value, `Promotion receipt ${field} does not match its native run.`);
+  integer(receipt.repositoryOwnerId, "Repository owner ID");
+  assert.equal(run.status, "completed", "Promotion evidence is not terminal.");
+  const start = Date.parse(run.run_started_at);
+  const end = Date.parse(run.updated_at);
+  const generated = Date.parse(receipt.generatedAt);
+  assert(Number.isFinite(start) && Number.isFinite(end) && Number.isFinite(generated) &&
+    start <= generated && generated <= end + 120_000, "Promotion receipt is outside its native attempt.");
+  assert(["paper", "disabled", "deferred", "failed"].includes(receipt.status), "Unknown paper-production outcome.");
+  if (receipt.status === "failed") {
+    assert.equal(receipt.evidence, null, "A failed promotion cannot contain a successful paper proof.");
+    return receipt;
+  }
+  assert.equal(run.conclusion, "success", "A failed native workflow cannot authorize paper delivery.");
+  validateReceipt(receipt.release, run, { ...expected, stage: "release" });
+  assert.equal(receipt.release.status, receipt.status === "deferred" ? "deferred" : "disabled");
+  if (receipt.status !== "paper") {
+    assert.equal(receipt.evidence, null, "Disabled or deferred releases cannot contain a paper proof.");
+    assert.equal(receipt.results?.["prepare-paper"], "skipped");
+    assert.equal(receipt.results?.["promote-paper"], "skipped");
+    return receipt;
+  }
+  assert([...RELEASE_JOBS, "publish-release-receipt", "prepare-paper", "promote-paper"]
+    .every((id) => receipt.results?.[id] === "success"), "Paper production is missing a required successful predecessor.");
+  assert.equal(typeof receipt.existingRelease, "boolean");
+  validateHistoricalPromotionEvidence(receipt, run);
+  return receipt;
+}
+
+async function loadVerifiedPromotionReceipt({ github, owner, repo, repositoryId, reference }) {
+  validatePromotionReference(reference);
+  assert.equal(reference.repositoryId, integer(repositoryId, "Expected repository ID"));
+  const expected = { repository: `${owner}/${repo}`, repositoryId, stage: "promotion", releaseSha: reference.releaseSha };
+  const { data: workflow } = await github.rest.actions.getWorkflow({
+    owner, repo, workflow_id: RELEASE_WORKFLOW,
+  });
+  assert.equal(workflow.path, `.github/workflows/${RELEASE_WORKFLOW}`);
+  assert.equal(integer(workflow.id, "Production workflow ID"), reference.workflowId);
+  const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: reference.runId });
+  validateWorkflowRun(run, expected);
+  assert.equal(run.id, reference.runId);
+  assert.equal(run.workflow_id, reference.workflowId);
+  assert.equal(run.run_attempt, reference.runAttempt, "The referenced production attempt was superseded.");
+  assert.equal(run.status, "completed", "Promotion evidence is not terminal.");
+  assert.equal(run.conclusion, "success", "A failed native workflow cannot authorize paper delivery.");
+  const receipt = validatePromotionReceipt(await loadRunArchive({
+    github, owner, repo, run, name: receiptName("promotion", reference.releaseSha, run.id, run.run_attempt),
+  }), run, expected);
+  assert.deepEqual(promotionReference(receipt), reference, "Production reference does not match its native evidence.");
+  const conclusions = Object.fromEntries(Object.entries(PRODUCTION_JOB_NAMES).map(([id, name]) => [
+    name, ["recover-paper", "publish-production-failure"].includes(id) ||
+      (id === "backup-current-release" && !receipt.existingRelease) ? "skipped" : "success",
+  ]));
+  const jobs = await verifyNativeJobs({ github, owner, repo, run, conclusions, exact: true });
+  for (const [id, values] of [
+    ["publish-release-receipt", [receipt.release.generatedAt]],
+    ["publish-promotion-receipt", [receipt.generatedAt]],
+    ["prepare-paper", [receipt.evidence.approvalCreatedAfter, receipt.evidence.manualShadow.startedAfter]],
+    ["promote-paper", [receipt.evidence.ready.generatedAt, receipt.evidence.scheduled.generatedAt]],
+  ]) {
+    const job = jobs[PRODUCTION_JOB_NAMES[id]];
+    const start = Date.parse(job.started_at);
+    const end = Date.parse(job.completed_at);
+    assert(Number.isFinite(start) && Number.isFinite(end) && start <= end, "Native production job times are invalid.");
+    assert(values.every((value) => Number.isFinite(Date.parse(value)) &&
+      Date.parse(value) >= start - 1000 && Date.parse(value) <= end + 120_000),
+    "Historical production evidence is outside the actual producer job.");
+  }
+  assert(Date.parse(receipt.release.generatedAt) <= Date.parse(receipt.evidence.approvalCreatedAfter),
+    "Promotion preparation predates its disabled-release proof.");
+  const development = await loadExactDevelopmentReceipt({
+    github, owner, repo, repositoryId, releaseSha: receipt.releaseSha, reference: receipt.release.development,
+  });
+  assert(Date.parse(development.generatedAt) <= Date.parse(run.run_started_at) + 120_000,
+    "Production admission predates its development evidence.");
+  await assertUnchangedNativeRun({ github, owner, repo, run, expected });
+  return receipt;
+}
+
+async function latestProductionDeployment({ github, owner, repo, releaseSha }) {
+  const { data: deployments } = await github.rest.repos.listDeployments({
+    owner, repo, sha: releaseSha, environment: PRODUCTION_ENVIRONMENT, per_page: 100,
+  });
+  assert(Array.isArray(deployments) && deployments.length > 0 && deployments.length < 100,
+    "An unambiguous bounded production deployment inventory is required.");
+  for (const deployment of deployments) {
+    integer(deployment.id, "Production deployment ID");
+    assert.equal(deployment.sha, releaseSha, "Unrelated production deployment source.");
+    assert.equal(deployment.environment, PRODUCTION_ENVIRONMENT, "Wrong deployment environment.");
+  }
+  assert.equal(new Set(deployments.map((entry) => entry.id)).size, deployments.length, "Duplicate deployment IDs.");
+  const deployment = deployments.reduce((latest, entry) => entry.id > latest.id ? entry : latest);
+  const { data: statuses } = await github.rest.repos.listDeploymentStatuses({
+    owner, repo, deployment_id: deployment.id, per_page: 100,
+  });
+  assert(Array.isArray(statuses) && statuses.length > 0 && statuses.length < 100, "Production status inventory is missing or unbounded.");
+  for (const status of statuses) integer(status.id, "Production deployment status ID");
+  assert.equal(new Set(statuses.map((entry) => entry.id)).size, statuses.length, "Duplicate deployment status IDs.");
+  const status = statuses.reduce((latest, entry) => entry.id > latest.id ? entry : latest);
+  assert.equal(status.state, "success", "The latest production deployment is not successful.");
+  const payload = typeof deployment.payload === "string" ? JSON.parse(deployment.payload) : deployment.payload;
+  return { deploymentId: deployment.id, statusId: status.id, reference: validatePromotionReference(payload) };
+}
+
+async function loadDeployedProductionReceipt({ github, owner, repo, repositoryId, binding, scheduleGeneration }) {
+  validateBinding(binding);
+  const context = { github, owner, repo, releaseSha: binding.releaseSha };
+  const pointer = await latestProductionDeployment(context);
+  const receipt = await loadVerifiedPromotionReceipt({ github, owner, repo, repositoryId, reference: pointer.reference });
+  assert.deepEqual(receipt.release.binding, binding, "The receipt does not match the actual deployed release.");
+  assert.equal(receipt.evidence.scheduleGeneration, scheduleGeneration, "The deployed schedule generation changed.");
+  assert.deepEqual(await latestProductionDeployment(context), pointer, "Production delivery changed during admission.");
+  return receipt;
+}
+
+async function inspectProductionDelivery({ github, owner, repo, repositoryId, releaseSha }) {
+  const context = { github, owner, repo, releaseSha };
+  const { data: workflow } = await github.rest.actions.getWorkflow({ owner, repo, workflow_id: RELEASE_WORKFLOW });
+  assert.equal(workflow.path, `.github/workflows/${RELEASE_WORKFLOW}`);
+  const runId = await latestNativeRunId({ ...context, workflowId: integer(workflow.id, "Production workflow ID") });
+  if (runId === null) return { state: "pending", reason: "production-not-started" };
+  const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+  const expected = { repository: `${owner}/${repo}`, repositoryId, stage: "promotion", releaseSha };
+  validateWorkflowRun(run, expected);
+  assert.equal(run.id, runId);
+  assert.equal(run.workflow_id, workflow.id);
+  if (run.status !== "completed") {
+    assert(["queued", "in_progress", "waiting", "pending", "requested"].includes(run.status), "Unknown production workflow state.");
+    return { state: "pending", reason: "production-in-progress", runId };
+  }
+  if (run.conclusion !== "success") return { state: "failure", reason: "production-workflow-failed", runId };
+  const receipt = validatePromotionReceipt(await loadRunArchive({
+    github, owner, repo, run, name: receiptName("promotion", releaseSha, run.id, run.run_attempt),
+  }), run, expected);
+  if (receipt.status === "deferred" && receipt.authority?.mode === "continuous") {
+    assert.deepEqual(Object.keys(receipt.authority).sort(), ["actorId", "mode", "previous", "triggeringActorId"]);
+    assert.equal(receipt.authority.actorId, run.actor.id);
+    assert.equal(receipt.authority.triggeringActorId, run.triggering_actor.id);
+    const previous = validatePromotionReference(receipt.authority.previous);
+    assert.equal(previous.repositoryId, repositoryId);
+    assert(previous.runId < run.id, "A deferred release needs earlier paper-production authority.");
+    const successful = ["gate", "force-disable-rollout", "publish-release-receipt", "publish-promotion-receipt"];
+    await verifyNativeJobs({
+      github, owner, repo, run, exact: true,
+      conclusions: Object.fromEntries(Object.entries(PRODUCTION_JOB_NAMES).map(([id, name]) => [
+        name, successful.includes(id) ? "success" : "skipped",
+      ])),
+    });
+    await loadExactDevelopmentReceipt({
+      github, owner, repo, repositoryId, releaseSha, reference: receipt.release.development,
+    });
+    await loadVerifiedPromotionReceipt({ github, owner, repo, repositoryId, reference: previous });
+    await assertUnchangedNativeRun({ github, owner, repo, run, expected });
+    assert.equal(await latestNativeRunId({ ...context, workflowId: workflow.id }), runId,
+      "A newer production run superseded the deferral.");
+    return {
+      state: "pending", reason: "production-deferred", retryable: true,
+      runId, runAttempt: run.run_attempt, completedAt: run.updated_at,
+    };
+  }
+  if (receipt.status !== "paper") return {
+    state: receipt.status === "failed" ? "failure" : "pending",
+    reason: `production-${receipt.status}`, runId, runAttempt: run.run_attempt,
+  };
+  const verified = await loadVerifiedPromotionReceipt({
+    github, owner, repo, repositoryId, reference: promotionReference(receipt),
+  });
+  assert.equal(await latestNativeRunId({ ...context, workflowId: workflow.id }), runId,
+    "A newer production run superseded the evidence.");
+  const deployment = await latestProductionDeployment(context);
+  assert.deepEqual(deployment.reference, promotionReference(verified), "Delivery does not identify the verified production attempt.");
+  return { state: "success", reason: "verified-paper-production", receipt: verified };
+}
+
+async function inspectDevelopmentDelivery({ github, owner, repo, repositoryId, releaseSha }) {
+  const context = { github, owner, repo, repositoryId, releaseSha };
+  const { data: workflow } = await github.rest.actions.getWorkflow({ owner, repo, workflow_id: DEVELOPMENT_WORKFLOW });
+  assert.equal(workflow.path, `.github/workflows/${DEVELOPMENT_WORKFLOW}`);
+  const workflowId = integer(workflow.id, "Development workflow ID");
+  const runId = await latestNativeRunId({ ...context, workflowId });
+  if (runId === null) return { state: "pending", reason: "development-not-started" };
+  const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+  validateWorkflowRun(run, { repository: `${owner}/${repo}`, repositoryId, stage: "development", releaseSha });
+  assert.equal(run.id, runId);
+  assert.equal(run.workflow_id, workflowId);
+  if (run.status !== "completed") {
+    assert(["queued", "in_progress", "waiting", "pending", "requested"].includes(run.status), "Unknown development state.");
+    return { state: "pending", reason: "development-in-progress" };
+  }
+  if (run.conclusion !== "success") return { state: "failure", reason: "development-workflow-failed" };
+  const receipt = await verifyDevelopmentRunReceipt({ ...context, run });
+  assert.equal(await latestNativeRunId({ ...context, workflowId }), runId, "New development evidence superseded this run.");
+  return { state: "success", receipt };
 }
 
 module.exports = {
@@ -524,6 +1023,11 @@ module.exports = {
   receiptName, validateBinding, baseReceipt, createReleaseReceipt, createDevelopmentReceipt,
   validateWorkflowRun, validateReceipt, loadProductionReceipt, productionVerificationOverrides,
   assertCurrentMain, loadLatestDevelopmentReceipt, resolveProductionInvocation, assertProductionFactoryMode,
+  PRODUCTION_STATUS_CONTEXT, PRODUCTION_ENVIRONMENT, PRODUCTION_JOB_NAMES, PROMOTION_MODES,
+  promotionReference, validatePromotionReference, assertPromotionActor, productionAuthorization,
+  productionReportExpectations, createPromotionReceipt, validatePromotionReceipt,
+  loadVerifiedPromotionReceipt, loadDeployedProductionReceipt, inspectProductionDelivery,
+  loadExactDevelopmentReceipt, inspectDevelopmentDelivery,
 };
 
 if (require.main === module) {

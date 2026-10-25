@@ -35,7 +35,8 @@ safe-outputs:
       marker `<!-- factory-claim:${{ github.event.inputs.claim_nonce }} -->` and
       `Refs #${{ github.event.inputs.issue }}` in the PR body. Do not use an
       issue-closing keyword; the lifecycle reconciler closes the issue only
-      after exact-SHA dev evidence passes. Preserve all Project Krypto safety
+      after exact-SHA development and scheduled paper-production evidence,
+      plus renewed claim/PR/scope provenance, pass. Preserve all Project Krypto safety
       boundaries. Author paper-production automation only within the issue's
       allowed paths; deployment mutations belong to trusted native workflows,
       not the coding agent. Every environment is permanently paper-only.

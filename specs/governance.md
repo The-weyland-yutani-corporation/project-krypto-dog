@@ -29,7 +29,12 @@ remain gates. Separate analytics projects/private backend queries, final
 mailbox-delivery proof, formal response sign-off, and irreversible retention
 locking are optional enhancements, not POC activation prerequisites.
 
-This decision does not assert that promotion is implemented or commissioned.
+Native source now implements disabled/operator/continuous admission,
+evidence-bound paper promotion, bounded deferral recovery and production-aware
+lifecycle completion. Only an explicit, protected human operator action may
+establish first paper activation; routine continuation needs verified deployed
+paper authority and an active factory. Source implementation does not assert
+that it is reviewed, commissioned or operating successfully.
 The current factory/deployment holds, specific tool denials, and separate
 approvals for exact external settings and first activation remain effective.
 Evidence repair must use existing workflow identities without additional

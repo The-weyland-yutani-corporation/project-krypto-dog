@@ -146,6 +146,11 @@
       "success"
     ]
   },
+  "productionDelivery": {
+    "maxDeferredRetries": 1,
+    "retryDelayMinutes": 15,
+    "evidenceTimeoutMinutes": 360
+  },
   "wip": {
     "maxOpenActionableOpportunities": 20
   },

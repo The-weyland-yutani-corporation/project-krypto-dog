@@ -128,7 +128,7 @@ Foundry workload access exists; releases are not.
 | `id-github-oidc-platform` | `platform` | `rg-krypto-platform`: Contributor, Role Based Access Control Administrator, Locks Contributor | **Project Krypto Provider Registration Reader**; **Cognitive Services Usages Reader** | `platform-account.bicep`, `platform.bicep`, `platform-access.bicep` |
 | `id-github-oidc-dev` | `development` | `rg-krypto-dev`: Contributor, Role Based Access Control Administrator | **Project Krypto Provider Registration Reader** | `environment.bicep`, `release.bicep`, `rollout.bicep`, `schedule-monitoring.bicep` |
 | `id-github-oidc-prod-deploy` | `production-deploy` | `rg-krypto-prod`: Contributor, Role Based Access Control Administrator, Locks Contributor | **Project Krypto Provider Registration Reader** | `environment.bicep`, `release.bicep` |
-| `id-github-oidc-prod-promotion` | `production-promotion` | `rg-krypto-prod`: Contributor | none | Forced-disable jobs in prod deploy/rotation only: `rollout.bicep`, then `schedule-monitoring.bicep` |
+| `id-github-oidc-prod-promotion` | `production-promotion` | `rg-krypto-prod`: Contributor | none | Native paper promotion, owned recovery and forced disable: `rollout.bicep`, `schedule-monitoring.bicep` |
 
 The custom **Project Krypto Provider Registration Reader** contains exactly
 `Microsoft.Resources/subscriptions/providers/read`. It is assigned at
@@ -149,12 +149,13 @@ successful deployment attestation. Preserve those protections; a chat
 approval or a green local build does not bypass them. Fully unattended
 production delivery still needs an explicitly approved protection design.
 
-No executable production promotion workflow is shipped yet; its approved
-native design is still being implemented. The
-`production-promotion` name denotes the separately reviewed forced-disable
-boundary used only by `azure-deploy-prod.yml` and
-`azure-rotate-secrets.yml`; it is not an available activation path. Any
-future production promotion requires a new evidence-bound design and review.
+`azure-deploy-prod.yml` now implements native disabled/operator/continuous
+admission and evidence-bound paper promotion through that same identity;
+`azure-rotate-secrets.yml` remains a forced-disable path. Source implementation
+does not commission this path or change its protected Environment. First
+activation still requires an explicit native operator action and successful
+readiness; continuous releases require verified already-deployed paper
+authority. No new identity or readback grant is introduced.
 
 The platform, dev, and prod-deploy identities can create their reviewed role
 assignments and therefore have Role Based Access Control Administrator at
@@ -624,7 +625,9 @@ Both phases require that mounted secret; neither it nor an unkeyed
 credential hash is exposed in the report. Older 1.0/1.1 reports are rejected.
 The reported host and keyed binding identify the mounted telemetry settings; they do
 **not** prove separate projects or backend event visibility. This read-only
-operation is not an activation authority or an executable promotion workflow.
+operation is not an activation authority. The separate native orchestration in
+`azure-deploy-prod.yml` obtains and verifies its evidence before enabling paper,
+then uses the authenticated observer for actual scheduled execution.
 The approved lean readiness contract in `specs/operations.md` still requires
 trusted release admission and deployment/accounting evidence; separate
 analytics projects, backend queries and final mailbox proof are not gates.
@@ -764,8 +767,10 @@ with boundary `0`.
   pending or failed. This ordering lets the disabled cron smoke execute after
   the fence is released without enabling trading or schedules. Neither fence
   release nor a passing disabled smoke is evidence of production promotion.
-- Prod full deployment and secret rotation end disabled/manual. The approved
-  automatic paper-promotion design is not yet an executable, commissioned path.
+- The release stage and secret rotation end disabled/Manual. The production
+  workflow may then enter its separate native promotion phases only with
+  `operator` or verified `continuous` authority; the default manual
+  `disabled` mode and all foundation deployments never activate paper.
 - Prod deploy and rotation share concurrency group
   `azure-production-mutation`.
 
@@ -779,6 +784,45 @@ Existing-source ops images and databases must already support cutover admission.
 A pre-fence source cannot be adopted by skipping its handshake. The selected
 new target uses the explicit fresh disabled-release path; adopting a legacy
 source requires a separately reviewed compatibility/migration procedure.
+
+## Native paper-production completion
+
+Automatic development-completion events select full continuous delivery and
+require a human-activated factory. Continuous admission loads the latest
+receipt-bound native production Deployment and checks it against the actual
+runtime image, target and schedule generation. Fresh, disabled or shadow
+production downgrades to disabled; a caller cannot use continuous mode to
+create first activation. Explicit operator activation verifies both original
+and rerun human actors and repository write permission.
+
+After the owned disabled release, `prepare-paper` obtains fresh target-smoke
+approval, previews the shadow rollout, runs exactly one marked Manual shadow,
+and validates zero-fill read-only readiness. `promote-paper` arms the existing
+independent missing-success monitor, previews paper/Schedule, obtains fresh
+final readiness and repeats runtime/source/authority checks before applying.
+The existing authenticated observer then waits for the actual first full UTC-
+hour execution and supplies private proof to the fixed target-smoke job. HOLD
+or policy rejection is a valid zero-fill result; this path never forces a fill.
+
+The promotion artifact contains only closed nonsecret evidence. A successful
+native workflow, all expected job conclusions, exact development receipt and
+receipt-bound production Deployment are required for lifecycle completion.
+Archived receipts expire after the existing 90-day retention period; missing
+or expired authority blocks continuity rather than falling back. The lifecycle
+controller's canonical bounded retry policy applies only to a verified
+mutation-free continuous deferral. Claim/source-bound intent is consumed
+before dispatch; pending/newer attempts suppress duplicates and uncertain
+submissions are not replayed.
+
+Promotion or publication failures attempt owned disabled/Manual recovery,
+preserving balances, positions, stops, journals and leases. Candidate binding
+is repeated after the rollout preview; cloud quiescence is repeated immediately
+before disabling monitoring. Failure status, known Deployment failure and
+factory pause are attempted independently. A hard runner loss or force
+cancellation may prevent recovery code from running: retain independent alerts
+and explicit uncertainty until actual readback, not a claimed recovery from
+workflow conditions. See `specs/operations.md` and `specs/factory.md`; this
+source path has not established that the selected target is commissioned.
 
 ## Evidence storage
 

@@ -20,11 +20,14 @@ The owner-approved permanent paper-only POC plan is being implemented in draft
 The signed cutover and scheduled-execution proof components are published.
 Published production admission binds immutable exact-source development
 evidence, actual native job results, and repeated current-main and run-attempt
-readback. The current source increment replaces missing-workload freshness with
-read-only database inspection before production mutation. Receipt-publication
-failures use the existing development disabled/Manual recovery. Automatic production promotion and production-aware
-lifecycle completion remain unfinished; these source changes do not enable
-either deployment workflow or resume the factory.
+readback. Missing workloads now require read-only database inspection before
+production mutation. Receipt-publication failures use the existing development
+disabled/Manual recovery. The current source increment implements native
+paper promotion, bounded deferral recovery and production-aware lifecycle/full
+canary completion. Local component verification is complete, with the aggregate
+Windows harness limitations recorded below. Current-head native checks and
+reviews remain required; these source changes do not enable either deployment
+workflow or resume the factory.
 
 Keep exact-head reviews, healthy deployment/smoke, restore verification,
 zero-fill shadow, actual scheduled paper execution, reconciled accounting,
@@ -55,6 +58,16 @@ infrastructure and substantive Trading Safety. Its Code Review `40185637618`
 again stopped before agent execution at 6511.781075 / 5000 rolling credits,
 so it provides no measurement of the changed review prompt's cost.
 
+The later published disabled-release source `bf028a0` passed native CI
+`40187525179` and infrastructure `40187525167`. Code Review `40187525148`
+again failed activation at 6511.781075 / 5000 rolling credits. Trading Safety
+`40187525157` failed during agent execution after recording 1607.598 credits
+against the unchanged 1500-credit run cap, followed by provider HTTP 403
+responses classified as authentication failures. Its check publisher was
+skipped. Neither classification nor source tests establish a completed native
+verdict, an expired credential, or permission to change budgets/models or rerun
+around these guards.
+
 The four review prompts now require exact committed revisions and complete
 merge-base-to-head diffs rather than temporary checkout changes. Trading Safety
 explicitly reviewed that committed range at `e57982a`; general Code Review
@@ -72,22 +85,79 @@ the existing MonitorOps execution-denial hold and stale deployment run
 The completed stage-specific checks below are historical receipts, not evidence
 that the current application source is approved or the factory is commissioned.
 
-### Automatic disabled-release source wiring
+### Historical automatic disabled-release increment
 
-Source wiring now admits development-completion events to the existing
+The published `bf028a0` increment admitted development-completion events to the existing
 production workflow only when the factory has a human-attested active state.
-It binds the exact triggering development run/attempt to the latest verified
-receipt and repeats source, development and factory checks before Azure access.
-Automatic events use the full disabled/Manual release; manual foundation/full
-commissioning remains separate. No workflow is enabled or dispatched by this
-source change, and no first paper activation or schedule is introduced.
+It bound the exact triggering development run/attempt to the latest verified
+receipt and repeated source, development and factory checks before Azure access.
+That increment selected full disabled/Manual releases for automatic events;
+manual foundation/full commissioning remained separate. It enabled or
+dispatched no workflow and introduced no first paper activation or schedule.
 Local source checks passed: 845 factory tests, 277 production evidence/workflow
 tests, lint, script typecheck, build and strict pinned compilation. These are
 not hosted production execution or Azure commissioning evidence.
 
-The activation-design question received no explicit user choice. This increment
-therefore does not introduce a new first-activation authorization mechanism or
-claim that paper-promotion/lifecycle integration is complete.
+At that checkpoint the activation-design question had received no explicit
+user choice, so first-activation authorization and paper-promotion/lifecycle
+integration were not introduced until the subsequent source integration below.
+
+### Native paper-promotion and lifecycle source integration
+
+The subsequent instruction to continue autonomously and make implementation
+decisions selects an explicit operator paper-activation action for first
+activation or deliberate recovery. Continuous activation must instead verify
+an immutable native promotion receipt matching the currently deployed paper
+release. Neither route clears account stops or relaxes smoke, shadow,
+accounting, exact-source, schedule-observation or failure-recovery requirements.
+Manual foundation/full commissioning still defaults to disabled/Manual.
+This is an implementation decision, not approval to dispatch, enable workflows,
+alter protected settings, commission Azure, retry a denied operation or resume
+the factory.
+
+The source now has native prepare/activate/recover jobs, immutable closed
+promotion receipts, receipt-bound Deployment/failure publishers, and
+production-aware lifecycle/canary consumers. Preparation obtains fresh smoke,
+exactly one zero-fill Manual shadow and read-only readiness. Activation arms
+independent monitoring before schedules and requires fresh authenticated proof
+of an actual scheduled PAPER run. Recovery repeats owned binding and quiescence
+before disabling monitoring; it does not reset account state. Hard runner loss
+or force cancellation is not assumed recovered.
+
+The lifecycle rechecks native development/production, claim, assignment,
+unique PR, scope and exact merge before atomically closing with `factory:done`.
+The canonical production-delivery policy allows one mutation-free continuous
+deferral retry after 15 minutes, with a six-hour missing-evidence deadline.
+Native comment intent consumes retry budget before dispatch; uncertain
+responses are not replayed, and newer/pending attempts suppress duplicates.
+Queued runs still require ordinary continuous admission; a ledger does not
+grant first-activation authority. Full-canary acceptance independently checks
+the merged heartbeat and renewed provenance, not a green label alone.
+
+Local source evidence for the integrated increment:
+
+- 916 factory tests and 397 production evidence/orchestration/workflow tests
+  passed, including native archive consumers, executable workflow scripts,
+  mutation-boundary drift, retry uncertainty and independent failure reporting.
+- The real report-validator CLI passed 232 assertions. Canonical policy,
+  deterministic evaluations (26 fixtures, all 15 critical cases), the 15
+  instruction-contract tests, generated documentation and Markdown links passed.
+- Application build, script typecheck and lint passed; lint retains the existing
+  `postcss.config.mjs` anonymous-default-export warning.
+- Approved GH-AW v0.81.6 strict source compilation passed for all 18 workflows.
+  Repeated compilation was byte-identical for all 20 generated artifacts.
+  Generated locks were not edited manually.
+
+The aggregate local harness did not pass: Windows wrappers directly spawning
+`jest.cmd` or `npx` failed, and the global GH-AW version is not the repository's
+pinned version. The corresponding component checks and the separately approved
+pinned source compiler passed; this does not convert a wrapper failure into an
+aggregate pass. Native Linux harness/current-head review evidence is still
+required. No global tool replacement or MonitorOps verification retry was used.
+
+Source integration and verification do not establish Azure commissioning,
+current-head native reviews, live monitoring, first paper activation, an
+unpaused factory or a completed full canary. All external holds remain.
 
 ### Fresh-database admission repair
 
@@ -384,10 +454,11 @@ fence checks before forced disable and its monitoring change. The corrected
 head still requires hosted migration/concurrency/restore checks and complete
 current-head review before merge.
 
-These changes are implementation work, not deployment proof. Evidence-bound paper
-promotion, production-aware lifecycle completion, and actual commissioning
-remain pending. MonitorOps' separately denied pinned-tool verification remains
-blocked and must not be retried through an alternate path.
+These historical checkpoints are implementation work, not deployment proof.
+Evidence-bound paper promotion and production-aware lifecycle completion are
+now integrated in source as described above; native current-head review and
+actual commissioning remain pending. MonitorOps' separately denied pinned-tool
+verification remains blocked and must not be retried through an alternate path.
 
 Exact Environment protection changes, first production activation and any
 new external telemetry/account effects still require their separate approvals.
@@ -591,9 +662,10 @@ are `main` and `develop/azure`. Development does not reference the legacy
 `development-promotion` Environment.
 
 Consequently, this infrastructure recovery alone cannot truthfully deliver
-100% unattended production delivery. A separate, explicitly approved
-production-protection/promotion design is still required. Do not remove or
-bypass those protections under this plan.
+100% unattended production delivery. The native paper-promotion source design
+does not change those external settings. Exact protection changes and first
+activation still require their separately scoped approvals; do not remove or
+bypass protections under the source implementation authorization.
 
 ## Proposed repair surfaces
 
@@ -607,8 +679,8 @@ bypass those protections under this plan.
 - Do not reuse the old cross-tenant Foundry endpoint or database URLs.
 - Use the owner-selected full footprint: three resource groups, four OIDC
   identities, two model deployments, and both dev and prod workload
-  identities. There is no new dev-only abstraction or automatic production
-  activation path.
+  identities. There is no new dev-only abstraction. Automatic continuation
+  requires verified prior paper operation and cannot authorize first activation.
 - Disclose each identity, role grant, protected-setting change, and secret
   prerequisite in the final approval request. No secret values are to be
   displayed or committed.
@@ -625,9 +697,9 @@ bypass those protections under this plan.
   Its separate repair session also remains blocked by the tool-approval layer,
   including after the owner's fresh approval for scoped local validation tools;
   no source fix or permission workaround was attempted.
-- The approved unattended paper-production design still requires
-  implementation, verification, and its separate external-effects approvals.
-  Production remains manual and disabled.
+- The implemented unattended paper-production source still requires native
+  current-head review, actual commissioning and its separate external-effects
+  approvals. The production workflow remains disabled.
 
 ## Validation and activation
 

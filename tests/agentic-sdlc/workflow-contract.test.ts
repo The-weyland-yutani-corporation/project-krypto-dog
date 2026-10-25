@@ -375,7 +375,7 @@ describe("agentic SDLC workflow contracts", () => {
     expect(prodDeploy).not.toMatch(/--set-string-param rolloutMode=(paper|shadow)/);
   });
 
-  it("keeps the full-cycle canary goal-authorized and dev-only", () => {
+  it("requires owned native paper production for the goal-authorized full canary", () => {
     expect(fullE2e).toContain("factory:goal-approved");
     expect(fullE2e).toContain("factory-mode:active");
     expect(fullE2e).toContain("isAutonomousGoal");
@@ -383,8 +383,13 @@ describe("agentic SDLC workflow contracts", () => {
     expect(fullE2e).not.toContain("FACTORY_CANARY_GOAL");
     expect(fullE2e).toContain("factory-queue-controller.yml");
     expect(fullE2e).toContain("factory:done");
-    expect(fullE2e).toContain("Dev deployment evidence");
-    expect(fullE2e).toContain('environment: "development"');
+    expect(fullE2e).toContain("inspectProductionDelivery");
+    expect(fullE2e).toContain("verifyPersistedAssignmentProvenance");
+    expect(fullE2e).toContain("correlatePullRequests");
+    expect(fullE2e).toContain("resolveFactoryMode");
+    expect(fullE2e).toContain("releaseSha: pull.merge_commit_sha");
+    expect(fullE2e).not.toContain("search.issuesAndPullRequests");
+    expect(fullE2e).not.toContain("listCommitStatusesForRef");
     expect(fullE2e).toContain("factory-full-heartbeat.md");
     expect(fullE2e).toContain("REQUESTED_AT");
     expect(fullE2e).not.toContain("azure-deploy-prod");

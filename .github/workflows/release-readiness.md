@@ -51,8 +51,12 @@ Produce a release readiness checklist and operator handoff.
 ## Task
 
 - Inspect the target release scope, related PRs/issues, CI status, migrations, docs, and deployment runbook.
-- For factory-delivered work, require a successful `Dev deployment evidence`
-  status and successful `development` Deployment on the exact merge SHA.
+- For factory-delivered work, require exact-merge native development and
+  paper-production receipts, actual scheduled PAPER evidence and receipt-bound
+  production Deployment. Confirm the latest workflow attempts and required
+  jobs; green statuses, disabled releases, deferrals and `factory:done` labels
+  alone are not completed delivery. Apply `specs/factory.md` for ownership,
+  artifact expiry and bounded recovery.
 - Identify required secrets, environment changes, migrations, smoke tests, rollback steps, and operator actions.
 - Block release readiness for unresolved high-risk issues.
 - Apply the lean paper-production gate contract in `specs/operations.md`.

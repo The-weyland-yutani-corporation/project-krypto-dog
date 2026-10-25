@@ -30,6 +30,7 @@ const {
   resolveProductionInvocation: (env: Record<string, string | undefined>, event: unknown) => Record<string, string | number>;
   assertProductionFactoryMode: (options: {
     github: unknown; core: unknown; owner: string; repo: string; eventName: string;
+    promotionMode?: string;
   }) => Promise<void>;
 }>("../../../.github/scripts/azure/production-evidence.cjs");
 
@@ -94,12 +95,13 @@ describe("production trigger admission", () => {
 
   it.each(["foundation", "full"])("keeps exact-source manual %s commissioning separate", (stage) => {
     expect(resolveProductionInvocation({ ...manualEnv, INPUT_DEPLOYMENT_STAGE: stage }, {}))
-      .toEqual({ sha: SHA, deployment_stage: stage });
+      .toEqual({ sha: SHA, deployment_stage: stage, promotion_mode: "disabled" });
   });
 
   it("pins automatic full release to the triggering development run and attempt", () => {
     expect(resolveProductionInvocation(automaticEnv, event)).toEqual({
-      sha: SHA, deployment_stage: "full", development_run_id: 900, development_run_attempt: 2,
+      sha: SHA, deployment_stage: "full", promotion_mode: "continuous",
+      development_run_id: 900, development_run_attempt: 2,
     });
     expect(resolveProductionInvocation({
       ...automaticEnv, INPUT_COMMIT_SHA: "b".repeat(40), INPUT_DEPLOYMENT_STAGE: "foundation",
@@ -205,6 +207,21 @@ describe("production trigger admission", () => {
     await expect(assertProductionFactoryMode({
       ...fixture.options, eventName: "push",
     })).rejects.toThrow("Unsupported production trigger");
+  });
+
+  it("does not let a manual continuous dispatch bypass active-factory attestation", async () => {
+    const fixture = factory("paused");
+    await expect(assertProductionFactoryMode({
+      ...fixture.options, eventName: "workflow_dispatch", promotionMode: "continuous",
+    })).rejects.toThrow("human-activated factory");
+  });
+
+  it.each(["operator", "continuous"])("requires full release for explicit %s promotion", (mode) => {
+    expect(resolveProductionInvocation({ ...manualEnv, INPUT_PROMOTION_MODE: mode }, {}))
+      .toMatchObject({ promotion_mode: mode, deployment_stage: "full" });
+    expect(() => resolveProductionInvocation({
+      ...manualEnv, INPUT_PROMOTION_MODE: mode, INPUT_DEPLOYMENT_STAGE: "foundation",
+    }, {})).toThrow("Foundation");
   });
 });
 
@@ -389,12 +406,12 @@ describe("immutable production release evidence", () => {
       .toThrow("failed workflow");
   });
 
-  it("does not ship a provisional paper-promotion authorization contract", () => {
-    expect(() => receiptName("promotion", SHA, 1001, 2)).toThrow("Only disabled-release");
+  it("does not relabel disabled-release evidence as paper-promotion proof", () => {
+    expect(receiptName("promotion", SHA, 1001, 2)).toBe(`production-promotion-${SHA}-1001-2`);
     expect(() => validateReceipt(
       { ...createReleaseReceipt(env, jobs()), status: "promoted", rolloutMode: "paper" },
       run, { ...expected, stage: "promotion" },
-    )).toThrow("Only disabled-release");
+    )).toThrow();
   });
 });
 

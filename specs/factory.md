@@ -50,7 +50,33 @@
   unsafe work is reported rather than deleting tests or weakening checks.
 - Exact-SHA development/deployment evidence is separate from a successful
   merge. Production rollout is not proven by local tests or a merged PR.
-  Development and production are permanently paper-only. The approved full
-  delivery contract requires exact-merge paper-production and scheduled-run
-  evidence before completion; development-only lifecycle behavior must not be
-  presented as that full result while its production integration is pending.
+  Development and production are permanently paper-only. The lifecycle
+  reconciler requires immutable native development evidence before
+  `factory:deployed-dev`, then exact-merge paper-production and actual
+  scheduled-run evidence before completion. Green commit statuses,
+  disabled releases, mutation-free deferrals and labels alone cannot close
+  an issue.
+- Production delivery verifies the latest native run/attempt, all required
+  jobs, bounded immutable receipt archives, the admitted development attempt
+  and the receipt-bound native production Deployment. Missing, expired,
+  ambiguous or superseded evidence fails closed; an older successful run
+  cannot substitute for the latest attempt.
+- A verified mutation-free continuous-production deferral may use the bounded
+  retry policy in `.github/agentic-policy.json`. The controller consumes a
+  native, claim/PR/SHA-bound comment ledger before dispatching the existing
+  production workflow in `continuous` mode. It rechecks ownership, scope,
+  main, native production and active factory state. Changed or pending
+  attempts suppress duplicate dispatch. An uncertain write/dispatch is not
+  replayed; failed, disabled and first-activation outcomes are not automatic
+  retry authority. Exhaustion, unsafe evidence and the configured missing-
+  production deadline block the issue and pause the factory.
+- Completion rechecks the current claim, assignment, unique PR, allowed
+  paths, exact merge and native delivery evidence, including after its audit
+  comment. One native issue update applies `closed/completed` and
+  `factory:done` together; the audit comment is intent, not completion.
+  GitHub reads and the final mutation are not a distributed transaction.
+- The bounded full canary changes only its heartbeat, requires the exact
+  run link/time in the merged file, and independently verifies the same
+  native production proof and final ownership before accepting closure.
+  It does not dispatch production or activate a paused factory. These
+  source controls do not assert that commissioning or the canary has run.

@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   full-cycle:
-    name: Exercise issue through exact-SHA dev evidence
+    name: Exercise issue through exact-SHA paper-production evidence
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
@@ -107,6 +107,12 @@ jobs:
                 !isAutonomousGoal(goal)) {
               throw new Error("Canary requires unambiguous active mode and the unchanged standing mission.");
             }
+            const { resolveFactoryMode } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-lifecycle-reconciler.cjs"),
+            );
+            if (await resolveFactoryMode({ github, core, owner, repo }) !== "active") {
+              throw new Error("Canary requires the human-attested active factory.");
+            }
 
             const runUrl =
               `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}` +
@@ -145,7 +151,7 @@ jobs:
               "",
               `- The heartbeat names [run ${process.env.GITHUB_RUN_ID}](${runUrl}).`,
               `- The heartbeat records requested time \`${requestedAt}\`.`,
-              "- Exactly one PR is opened and the issue is closed only after dev evidence.",
+              "- Exactly one owned PR is merged; closure requires same-SHA native development and paper-production receipts, including an actual scheduled PAPER run.",
               "",
               "### Validation plan",
               "",
@@ -208,19 +214,86 @@ jobs:
               ref: context.payload.repository.default_branch,
             });
 
-      - name: Wait for terminal dev-evidence state
+      - name: Wait for verified terminal paper-production state
         uses: actions/github-script@v9
         env:
           CANARY_ISSUE: ${{ steps.create.outputs.issue }}
           REQUESTED_AT: ${{ steps.create.outputs.requested_at }}
+          FACTORY_ASSIGNMENT_ACTOR_NODE_ID: ${{ vars.FACTORY_ASSIGNMENT_ACTOR_NODE_ID }}
         with:
           script: |
             const { owner, repo } = context.repo;
+            const path = require("node:path");
+            const reconciler = require(path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-lifecycle-reconciler.cjs"));
+            const { LIFECYCLE_STATES } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-factory-policy.cjs"),
+            );
+            const { inspectProductionDelivery } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const { resolveRepositoryCopilotIdentity, normalizeConfiguredUserNodeId } = require(
+              path.join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-identity.cjs"),
+            );
+            const { data: repository } = await github.rest.repos.get({ owner, repo });
+            const copilotIdentity = await resolveRepositoryCopilotIdentity({
+              github, owner, repo, verifyPinnedIdentity: true,
+            });
+            const assignmentActorNodeId = normalizeConfiguredUserNodeId(process.env.FACTORY_ASSIGNMENT_ACTOR_NODE_ID);
             const issueNumber = Number(process.env.CANARY_ISSUE);
+            const lifecycle = new Set(Object.values(LIFECYCLE_STATES));
+            const readCompletionProvenance = async (issue) => {
+              const labels = reconciler.labelNames(issue).sort();
+              if (issue.number !== issueNumber || issue.state !== "closed" || issue.state_reason !== "completed" ||
+                  labels.filter((label) => lifecycle.has(label)).join() !== LIFECYCLE_STATES.DONE) {
+                throw new Error("Canary terminal state is not an unambiguous completed issue.");
+              }
+              const [comments, pulls] = await Promise.all([
+                github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 }),
+                github.paginate(github.rest.pulls.list, { owner, repo, state: "all", per_page: 100 }),
+              ]);
+              const now = new Date().toISOString();
+              const claim = reconciler.resolveLatestIssueClaim(comments, issueNumber, now);
+              if (claim.state !== "valid") throw new Error("Canary lost its authoritative claim.");
+              const correlation = reconciler.correlatePullRequests({
+                pullRequests: pulls, issueNumber, nonce: claim.claim.nonce,
+                repository: `${owner}/${repo}`, defaultBranch: repository.default_branch, copilotIdentity,
+              });
+              if (correlation.candidates.length !== 1 || correlation.valid.length !== 1 ||
+                  correlation.malformed.length !== 0) {
+                throw new Error("Canary does not have exactly one claim-owned pull request.");
+              }
+              const pull = correlation.valid[0];
+              if (pull.state !== "closed" || !Number.isFinite(Date.parse(pull.merged_at)) ||
+                  !/^[0-9a-f]{40}$/.test(pull.merge_commit_sha || "")) {
+                throw new Error(`Canary PR #${pull.number} did not produce an exact merge SHA.`);
+              }
+              const assignment = await reconciler.verifyPersistedAssignmentProvenance({
+                github, owner, repo, issue, comments, claim: claim.claim, now,
+                copilotIdentity, assignmentActorNodeId,
+              });
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner, repo, pull_number: pull.number, per_page: 100,
+              });
+              if (!assignment.valid || files.length !== 1 ||
+                  files[0].filename !== "docs/e2e/factory-full-heartbeat.md" || files[0].previous_filename) {
+                throw new Error("Canary assignment or exact single-file scope is not valid.");
+              }
+              return {
+                pull,
+                fingerprint: JSON.stringify([
+                  issue.number, issue.state, issue.state_reason, issue.body, labels, claim.claim,
+                  pull.number, pull.title, pull.body, pull.state, pull.draft,
+                  pull.head?.sha, pull.merged_at, pull.merge_commit_sha, files,
+                ]),
+              };
+            };
             const deadline = Date.now() + 330 * 60 * 1000;
             let previous = "";
 
             while (Date.now() < deadline) {
+              if (await reconciler.resolveFactoryMode({ github, core, owner, repo }) !== "active") {
+                throw new Error("Factory stopped before the full canary completed.");
+              }
               const { data: issue } = await github.rest.issues.get({
                 owner,
                 repo,
@@ -248,33 +321,8 @@ jobs:
                 issue.state === "closed" &&
                 labels.includes("factory:done")
               ) {
-                const query =
-                  `repo:${owner}/${repo} is:pr "Refs #${issueNumber}"`;
-                const { data: search } =
-                  await github.rest.search.issuesAndPullRequests({
-                    q: query,
-                    per_page: 20,
-                  });
-                const exact = search.items.filter((item) =>
-                  new RegExp(`Refs #${issueNumber}(?!\\d)`).test(
-                    item.body || "",
-                  ),
-                );
-                if (exact.length !== 1) {
-                  throw new Error(
-                    `Expected one canary PR for issue #${issueNumber}; found ${exact.length}.`,
-                  );
-                }
-                const { data: pull } = await github.rest.pulls.get({
-                  owner,
-                  repo,
-                  pull_number: exact[0].number,
-                });
-                if (!pull.merged_at || !pull.merge_commit_sha) {
-                  throw new Error(
-                    `Canary PR #${pull.number} did not produce a merge SHA.`,
-                  );
-                }
+                const provenance = await readCompletionProvenance(issue);
+                const { pull } = provenance;
                 const { data: heartbeat } =
                   await github.rest.repos.getContent({
                     owner,
@@ -296,7 +344,7 @@ jobs:
                 ).toString("utf8");
                 if (
                   !heartbeatContent.includes(
-                    `run ${process.env.GITHUB_RUN_ID}`,
+                    `[run ${process.env.GITHUB_RUN_ID}](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`,
                   ) ||
                   !heartbeatContent.includes(process.env.REQUESTED_AT)
                 ) {
@@ -304,60 +352,22 @@ jobs:
                     "Full-cycle heartbeat does not contain this run's exact evidence.",
                   );
                 }
-                const [statuses, deployments] = await Promise.all([
-                  github.paginate(
-                    github.rest.repos.listCommitStatusesForRef,
-                    {
-                      owner,
-                      repo,
-                      ref: pull.merge_commit_sha,
-                      per_page: 100,
-                    },
-                  ),
-                  github.paginate(github.rest.repos.listDeployments, {
-                    owner,
-                    repo,
-                    sha: pull.merge_commit_sha,
-                    environment: "development",
-                    per_page: 100,
-                  }),
-                ]);
-                const devStatus = statuses.find(
-                  (status) =>
-                    status.context === "Dev deployment evidence",
-                );
-                if (devStatus?.state !== "success") {
-                  throw new Error(
-                    `Merge ${pull.merge_commit_sha} lacks successful dev evidence status.`,
-                  );
+                const delivery = await inspectProductionDelivery({
+                  github, owner, repo, repositoryId: repository.id, releaseSha: pull.merge_commit_sha,
+                });
+                if (delivery.state !== "success" ||
+                    Date.parse(delivery.receipt.release.generatedAt) < Date.parse(pull.merged_at)) {
+                  throw new Error(`Merge ${pull.merge_commit_sha} lacks native paper-production delivery (${delivery.reason}).`);
                 }
-                let successfulDeployment = false;
-                for (const deployment of deployments) {
-                  const deploymentStatuses = await github.paginate(
-                    github.rest.repos.listDeploymentStatuses,
-                    {
-                      owner,
-                      repo,
-                      deployment_id: deployment.id,
-                      per_page: 100,
-                    },
-                  );
-                  if (
-                    deploymentStatuses.some(
-                      (status) => status.state === "success",
-                    )
-                  ) {
-                    successfulDeployment = true;
-                    break;
-                  }
+                const { data: finalIssue } = await github.rest.issues.get({ owner, repo, issue_number: issueNumber });
+                if ((await readCompletionProvenance(finalIssue)).fingerprint !== provenance.fingerprint) {
+                  throw new Error("Canary completion provenance changed during native production verification.");
                 }
-                if (!successfulDeployment) {
-                  throw new Error(
-                    `Merge ${pull.merge_commit_sha} lacks a successful development Deployment.`,
-                  );
+                if (await reconciler.resolveFactoryMode({ github, core, owner, repo }) !== "active") {
+                  throw new Error("Factory stopped during final canary verification.");
                 }
                 core.info(
-                  `Canary issue #${issueNumber} completed through exact-SHA dev evidence.`,
+                  `Canary issue #${issueNumber} completed through exact-SHA development and scheduled paper-production evidence.`,
                 );
                 return;
               }

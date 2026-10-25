@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Deterministic issue/session/PR/dev lifecycle reconciler for the
+ * Deterministic issue/session/PR/deployment lifecycle reconciler for the
  * safety-bounded autonomous SDLC factory (specs/factory.md
  * sections 5, 9, 10, 13, 15).
  *
@@ -9,7 +9,7 @@
  * issue/PR/check/deployment state through the GitHub API and applies
  * deterministic lifecycle-label transitions, exactly-one-risk-label PR
  * enrollment, native squash auto-merge enablement (only when already
- * enrolled via `agentic-automerge`), and exact-SHA dev-evidence-gated
+ * enrolled via `agentic-automerge`), and exact-SHA paper-production-gated
  * issue closure. It never merges a PR itself and never bypasses reviews or
  * required checks.
  *
@@ -30,6 +30,7 @@ const policy = require("./agentic-factory-policy.cjs");
 const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const queueController = require("./agentic-queue-controller.cjs");
 const queueRuntime = require("./agentic-queue-runtime.cjs");
+const productionEvidence = require("./azure/production-evidence.cjs");
 const {
   AgenticIdentityError,
   actorNodeId,
@@ -49,7 +50,7 @@ const { LIFECYCLE_STATES } = policy;
 // The exact six post-queue lifecycle labels this reconciler processes.
 // `factory:claimed` and `factory:implementing` progress toward an open PR;
 // `factory:pr-open`/`factory:repairing` track the open PR; `factory:merged`
-// and `factory:deployed-dev` track post-merge dev evidence.
+// and `factory:deployed-dev` track development and full paper-production evidence.
 const TARGET_LIFECYCLE_LABELS = Object.freeze([
   LIFECYCLE_STATES.CLAIMED,
   LIFECYCLE_STATES.IMPLEMENTING,
@@ -89,6 +90,8 @@ const SELF_HEAL_COMMIT_MARKER = "[self-heal]";
 const DEV_EVIDENCE_STATUS_CONTEXT = "Dev deployment evidence";
 const DEV_ENVIRONMENT = "development";
 const DEV_EVIDENCE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const PRODUCTION_EVIDENCE_TIMEOUT_MS = AGENTIC_POLICY.productionDelivery.evidenceTimeoutMinutes * 60 * 1000;
+const PRODUCTION_RETRY_PREFIX = "<!-- factory-production-retry:v1 ";
 
 const AUDIT_COMMENT_MARKER_PREFIX = "<!-- agentic-lifecycle-reconciler:v1 issue=";
 const CONTROL_COMMENT_MARKER = "<!-- agentic-lifecycle-reconciler:v1 factory-control-pause -->";
@@ -875,6 +878,8 @@ function buildAuditCommentBody({
   headSha,
   mergeSha,
   candidatePulls,
+  productionRunId,
+  productionRunAttempt,
 }) {
   const lines = [
     buildAuditCommentMarker(issueNumber),
@@ -894,6 +899,9 @@ function buildAuditCommentBody({
   }
   if (mergeSha) {
     lines.push(`- Merge SHA: \`${mergeSha}\``);
+  }
+  if (Number.isSafeInteger(productionRunId) && Number.isSafeInteger(productionRunAttempt)) {
+    lines.push(`- Verified paper-production run/attempt: \`${productionRunId}/${productionRunAttempt}\``);
   }
   if (Array.isArray(candidatePulls) && candidatePulls.length > 0) {
     lines.push(`- Candidate pull requests: ${candidatePulls.map((number) => `#${number}`).join(", ")}`);
@@ -1059,7 +1067,7 @@ function blockIssue({ github, owner, repo, issue, comments, from, reason, ...evi
 }
 
 /**
- * Validates that a correlated, still-open PR's exact changed-file scope
+ * Validates that a correlated PR's exact changed-file scope
  * (both current and previous/renamed-from filenames) stays entirely within
  * the issue's own `### Allowed paths` section -- an exact repo-relative
  * file, or a terminal `path/**` glob, per file/pattern; nothing fuzzier.
@@ -1190,13 +1198,22 @@ async function ensureAutoMergeEnabled({ github, core, pullRequest, expectedHeadO
 }
 
 async function closeIssueAsCompleted({ github, owner, repo, issue }) {
-  await github.rest.issues.update({
+  const names = labelNames(issue);
+  if (names.filter((name) => LIFECYCLE_STATE_SET.has(name)).join() !== LIFECYCLE_STATES.DEPLOYED_DEV) {
+    throw new Error("Only a verified deployed-dev issue can complete paper-production delivery.");
+  }
+  const { data } = await github.rest.issues.update({
     owner,
     repo,
     issue_number: issue.number,
     state: "closed",
     state_reason: "completed",
+    labels: [...names.filter((name) => !LIFECYCLE_STATE_SET.has(name)), LIFECYCLE_STATES.DONE],
   });
+  if (data?.state !== "closed" || data.state_reason !== "completed" ||
+      labelNames(data).filter((name) => LIFECYCLE_STATE_SET.has(name)).join() !== LIFECYCLE_STATES.DONE) {
+    throw new Error("GitHub did not confirm atomic paper-production issue completion.");
+  }
 }
 
 /**
@@ -1567,6 +1584,7 @@ async function handleMergedEvidence({
   core,
   owner,
   repo,
+  repositoryId,
   issue,
   comments,
   claim,
@@ -1614,7 +1632,20 @@ async function handleMergedEvidence({
     );
   }
 
-  const outcome = evaluateDevEvidence({ statuses, deployments, deploymentStatusesByDeployment });
+  let outcome = evaluateDevEvidence({ statuses, deployments, deploymentStatusesByDeployment });
+  let failureReason = "dev-evidence-failed";
+  if (outcome === "success") {
+    try {
+      const native = await productionEvidence.inspectDevelopmentDelivery({
+        github, owner, repo, repositoryId, releaseSha: sha,
+      });
+      outcome = native.state;
+    } catch (error) {
+      core.warning(`Native development evidence for issue #${issue.number} is unreadable: ${getErrorMessage(error)}`);
+      outcome = "failure";
+      failureReason = "dev-native-evidence-unreadable";
+    }
+  }
 
   if (outcome === "pending") {
     const mergedAt = Date.parse(pullRequest.merged_at || "");
@@ -1656,7 +1687,7 @@ async function handleMergedEvidence({
       issue,
       comments,
       from: LIFECYCLE_STATES.MERGED,
-      reason: "dev-evidence-failed",
+      reason: failureReason,
       nonce: claim.nonce,
       prNumber: pullRequest.number,
       prUrl: pullRequest.html_url,
@@ -1700,6 +1731,7 @@ async function handlePullRequestState({
   owner,
   repo,
   repository,
+  repositoryId,
   defaultBranch,
   issue,
   comments,
@@ -1707,6 +1739,7 @@ async function handlePullRequestState({
   currentState,
   now,
   copilotIdentity,
+  assignmentActorNodeId,
 }) {
   const pullRequests = await github.paginate(github.rest.pulls.list, {
     owner,
@@ -1775,7 +1808,28 @@ async function handlePullRequestState({
 
   let pullRequest = valid[0];
 
+  const scopeCheck = await validateAllowedPathsScope({ github, owner, repo, issue, pullRequest });
+  if (!scopeCheck.ok) {
+    await blockIssue({
+      github, owner, repo, issue, comments, from: currentState,
+      reason: scopeCheck.reason, nonce: claim.nonce,
+      prNumber: pullRequest.number, prUrl: pullRequest.html_url,
+    });
+    await pauseFactoryControl({
+      github, core, owner, repo,
+      reason: `Issue #${issue.number}'s correlated pull request #${pullRequest.number} violates its declared "Allowed paths" scope (${scopeCheck.reason}).`,
+    });
+    return;
+  }
+
   if (pullRequest.merged_at) {
+    if (currentState === LIFECYCLE_STATES.DEPLOYED_DEV) {
+      await handleDeployedDevState({
+        github, core, owner, repo, repository, repositoryId, defaultBranch,
+        issue, comments, claim, pullRequest, now, copilotIdentity, assignmentActorNodeId,
+      });
+      return;
+    }
     if (currentState !== LIFECYCLE_STATES.MERGED) {
       const result = await transitionOrBlock({
         github,
@@ -1800,6 +1854,7 @@ async function handlePullRequestState({
       core,
       owner,
       repo,
+      repositoryId,
       issue,
       comments,
       claim,
@@ -1822,37 +1877,6 @@ async function handlePullRequestState({
       nonce: claim.nonce,
       prNumber: pullRequest.number,
       prUrl: pullRequest.html_url,
-    });
-    return;
-  }
-
-  // From here on the PR is genuinely still open, so enrollment and/or
-  // auto-merge enablement are both in play this pass. Both require the
-  // PR's full changed-file scope (current AND previous/renamed-from
-  // filenames) to stay entirely within the issue's own `### Allowed paths`
-  // section -- a hard provenance/scope invariant, checked on every pass
-  // (not just at first enrollment) so a later commit can't silently widen
-  // scope past what the issue declared.
-  const scopeCheck = await validateAllowedPathsScope({ github, owner, repo, issue, pullRequest });
-  if (!scopeCheck.ok) {
-    await blockIssue({
-      github,
-      owner,
-      repo,
-      issue,
-      comments,
-      from: currentState,
-      reason: scopeCheck.reason,
-      nonce: claim.nonce,
-      prNumber: pullRequest.number,
-      prUrl: pullRequest.html_url,
-    });
-    await pauseFactoryControl({
-      github,
-      core,
-      owner,
-      repo,
-      reason: `Issue #${issue.number}'s correlated pull request #${pullRequest.number} has changed files outside its declared "Allowed paths" scope (${scopeCheck.reason}); this is a provenance/scope invariant violation, not an ordinary item failure.`,
     });
     return;
   }
@@ -1943,21 +1967,263 @@ async function handlePullRequestState({
 
 }
 
-async function handleDeployedDevState({ github, owner, repo, issue, comments, claim, currentState }) {
-  const result = await transitionOrBlock({
-    github,
-    owner,
-    repo,
-    issue,
-    comments,
-    from: currentState,
-    to: LIFECYCLE_STATES.DONE,
-    reason: "dev-evidence-previously-verified",
-    nonce: claim.nonce,
-  });
-  if (result.allowed) {
-    await closeIssueAsCompleted({ github, owner, repo, issue });
+function planDeferredProductionRetry({ issue, comments, claim, pullRequest, delivery, now }) {
+  if (delivery.retryable !== true || delivery.reason !== "production-deferred") {
+    throw new Error("Only a natively verified mutation-free continuous deferral can retry.");
   }
+  const records = [];
+  for (const comment of comments) {
+    if (!isGitHubActionsBot(comment.user) || !comment.body?.startsWith(PRODUCTION_RETRY_PREFIX)) continue;
+    const match = /^<!-- factory-production-retry:v1 (\{[^\r\n]+\}) -->/.exec(comment.body);
+    if (!match) throw new Error("Malformed production retry ledger.");
+    const entry = JSON.parse(match[1]);
+    const fields = ["issueNumber", "nonce", "pullNumber", "releaseSha", "previousRunId", "previousRunAttempt", "attempt", "requestedAt"];
+    if (Object.keys(entry).sort().join() !== fields.sort().join() ||
+        entry.issueNumber !== issue.number || typeof entry.nonce !== "string" ||
+        !Number.isSafeInteger(comment.id) || comment.id <= 0 ||
+        !["pullNumber", "previousRunId", "previousRunAttempt", "attempt"].every((key) =>
+          Number.isSafeInteger(entry[key]) && entry[key] > 0) ||
+        typeof entry.releaseSha !== "string" || !/^[0-9a-f]{40}$/.test(entry.releaseSha) ||
+        typeof entry.requestedAt !== "string" ||
+        !Number.isFinite(Date.parse(entry.requestedAt)) || !Number.isFinite(Date.parse(comment.created_at)) ||
+        Math.abs(Date.parse(entry.requestedAt) - Date.parse(comment.created_at)) > 120_000 ||
+        Date.parse(entry.requestedAt) > Date.parse(now)) {
+      throw new Error("Production retry ledger is not bound to its native comment.");
+    }
+    if (entry.nonce === claim.nonce) records.push(entry);
+  }
+  records.sort((left, right) => left.attempt - right.attempt);
+  if (records.some((entry, index) => entry.attempt !== index + 1 ||
+      entry.pullNumber !== pullRequest.number || entry.releaseSha !== pullRequest.merge_commit_sha)) {
+    throw new Error("Production retry ledger has duplicate attempts or changed source provenance.");
+  }
+  const previous = records.at(-1);
+  if (previous?.previousRunId === delivery.runId && previous.previousRunAttempt === delivery.runAttempt) {
+    return { state: "waiting", reason: "production-retry-already-requested" };
+  }
+  if (records.length >= AGENTIC_POLICY.productionDelivery.maxDeferredRetries) {
+    return { state: "exhausted", reason: "production-retry-budget-exhausted" };
+  }
+  const elapsed = Date.parse(now) - Date.parse(delivery.completedAt);
+  if (!Number.isFinite(elapsed) || elapsed < -120_000) throw new Error("Production deferral has invalid native completion timing.");
+  if (elapsed < AGENTIC_POLICY.productionDelivery.retryDelayMinutes * 60_000) {
+    return { state: "waiting", reason: "production-retry-delay" };
+  }
+  return {
+    state: "ready",
+    record: {
+      issueNumber: issue.number, nonce: claim.nonce, pullNumber: pullRequest.number,
+      releaseSha: pullRequest.merge_commit_sha, previousRunId: delivery.runId,
+      previousRunAttempt: delivery.runAttempt, attempt: records.length + 1, requestedAt: now,
+    },
+  };
+}
+
+async function handleDeployedDevState({
+  github, core, owner, repo, repository, repositoryId, defaultBranch,
+  issue, comments, claim, pullRequest, now, copilotIdentity, assignmentActorNodeId,
+}) {
+  const sha = pullRequest.merge_commit_sha;
+  const sourceIssueBody = issue.body;
+  const sourceLabels = labelNames(issue).sort().join("\n");
+  const fingerprint = (pull) => JSON.stringify([
+    pull.number, pull.title, pull.body, pull.state, pull.draft,
+    pull.head?.sha, pull.merged_at, pull.merge_commit_sha,
+  ]);
+  const sourcePull = fingerprint(pullRequest);
+  const fail = async (reason) => {
+    const outcomes = await Promise.allSettled([blockIssue({
+      github, owner, repo, issue, comments, from: LIFECYCLE_STATES.DEPLOYED_DEV,
+      reason, nonce: claim.nonce, prNumber: pullRequest.number,
+      prUrl: pullRequest.html_url, mergeSha: sha,
+    }), pauseFactoryControl({
+      github, core, owner, repo,
+      reason: `Paper-production delivery for issue #${issue.number} failed (${reason}).`,
+    })]);
+    if (outcomes.some((outcome) => outcome.status === "rejected")) {
+      throw new Error(`Production failure (${reason}) could not be fully persisted; issue blocking and factory pause were both attempted.`);
+    }
+  };
+  const revalidateOwnership = async () => {
+    const [{ data: freshIssue }, freshComments, freshPulls] = await Promise.all([
+      github.rest.issues.get({ owner, repo, issue_number: issue.number }),
+      github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: issue.number, per_page: 100 }),
+      github.paginate(github.rest.pulls.list, { owner, repo, state: "all", per_page: 100 }),
+    ]);
+    const freshClaim = resolveLatestIssueClaim(freshComments, issue.number, now);
+    const correlation = correlatePullRequests({
+      pullRequests: freshPulls, issueNumber: issue.number, nonce: claim.nonce,
+      repository, defaultBranch, copilotIdentity,
+    });
+    if (freshIssue.state !== "open" || freshIssue.body !== sourceIssueBody ||
+        labelNames(freshIssue).sort().join("\n") !== sourceLabels ||
+        freshClaim.state !== "valid" || JSON.stringify(freshClaim.claim) !== JSON.stringify(claim) ||
+        correlation.candidates.length !== 1 || correlation.valid.length !== 1 ||
+        correlation.malformed.length !== 0 || fingerprint(correlation.valid[0]) !== sourcePull) {
+      await fail("production-completion-provenance-drift");
+      return null;
+    }
+    const assignment = await verifyPersistedAssignmentProvenance({
+      github, owner, repo, issue: freshIssue, comments: freshComments, claim,
+      now, copilotIdentity, assignmentActorNodeId,
+    });
+    const scope = await validateAllowedPathsScope({
+      github, owner, repo, issue: freshIssue, pullRequest: correlation.valid[0],
+    });
+    if (!assignment.valid || !scope.ok) {
+      await fail(assignment.reason || scope.reason || "production-completion-provenance-invalid");
+      return null;
+    }
+    return { issue: freshIssue, comments: freshComments };
+  };
+  if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha) ||
+      pullRequest.state !== "closed" || !Number.isFinite(Date.parse(pullRequest.merged_at))) {
+    await fail("invalid-production-merge-provenance");
+    return;
+  }
+  let delivery;
+  try {
+    delivery = await productionEvidence.inspectProductionDelivery({
+      github, owner, repo, repositoryId, releaseSha: sha,
+    });
+  } catch (error) {
+    core.warning(`Production evidence for issue #${issue.number} could not be verified: ${getErrorMessage(error)}`);
+    await fail("production-evidence-unreadable");
+    return;
+  }
+  if (delivery.state === "pending") {
+    const currentTime = Date.parse(now);
+    const mergedAt = Date.parse(pullRequest.merged_at);
+    if (!Number.isFinite(currentTime) || mergedAt > currentTime ||
+        currentTime - mergedAt >= PRODUCTION_EVIDENCE_TIMEOUT_MS) {
+      await fail("production-evidence-timeout");
+    } else if (delivery.retryable === true) {
+      const fresh = await revalidateOwnership();
+      if (!fresh) return;
+      let retry;
+      try {
+        retry = planDeferredProductionRetry({
+          issue, comments: fresh.comments, claim, pullRequest, delivery, now,
+        });
+      } catch (error) {
+        core.warning(`Production retry provenance failed: ${getErrorMessage(error)}`);
+        await fail("production-retry-provenance-invalid");
+        return;
+      }
+      if (retry.state === "exhausted") {
+        await fail(retry.reason);
+        return;
+      }
+      if (retry.state === "ready") {
+        if (await resolveFactoryMode({ github, core, owner, repo }) !== policy.FACTORY_MODES.ACTIVE) return;
+        try {
+          const stillDeferred = async () => {
+            const current = await productionEvidence.inspectProductionDelivery({
+              github, owner, repo, repositoryId, releaseSha: sha,
+            });
+            if (current.state === "pending" && current.retryable === true &&
+                current.runId === delivery.runId && current.runAttempt === delivery.runAttempt &&
+                current.completedAt === delivery.completedAt) return true;
+            core.info("Production delivery changed before its retry; no duplicate dispatch was attempted.");
+            return false;
+          };
+          await productionEvidence.assertCurrentMain({ github, owner, repo, releaseSha: sha });
+          if (!(await stillDeferred())) return;
+          const owned = await revalidateOwnership();
+          if (!owned) return;
+          const priorComments = [...owned.comments];
+          retry = planDeferredProductionRetry({
+            issue, comments: priorComments, claim, pullRequest, delivery, now: new Date().toISOString(),
+          });
+          if (retry.state !== "ready") {
+            if (retry.state === "exhausted") await fail(retry.reason);
+            else core.info(`Production retry was already consumed or delayed (${retry.reason}).`);
+            return;
+          }
+          const { data: intent } = await github.rest.issues.createComment({
+            owner, repo, issue_number: issue.number,
+            body: `${PRODUCTION_RETRY_PREFIX}${JSON.stringify(retry.record)} -->\n` +
+              "Production retry budget consumed before dispatch. This records intent, not proof that a new run started.",
+          });
+          const recorded = planDeferredProductionRetry({
+            issue, comments: [...priorComments, intent], claim, pullRequest, delivery, now: new Date().toISOString(),
+          });
+          if (recorded.state !== "waiting" || recorded.reason !== "production-retry-already-requested") {
+            throw new Error("The native production retry intent was not confirmed.");
+          }
+          await productionEvidence.assertCurrentMain({ github, owner, repo, releaseSha: sha });
+          if (!(await stillDeferred()) || !(await revalidateOwnership())) return;
+          if (await resolveFactoryMode({ github, core, owner, repo }) !== policy.FACTORY_MODES.ACTIVE) {
+            core.info("Factory stopped after recording production retry intent; no dispatch was attempted.");
+            return;
+          }
+          await github.rest.actions.createWorkflowDispatch({
+            owner, repo, workflow_id: productionEvidence.RELEASE_WORKFLOW, ref: "main",
+            inputs: { commit_sha: sha, deployment_stage: "full", promotion_mode: "continuous" },
+          });
+          core.info(`Requested the bounded exact-source production retry for issue #${issue.number}.`);
+        } catch (error) {
+          core.warning(`Production retry dispatch is not confirmed: ${getErrorMessage(error)}`);
+          await fail("production-retry-dispatch-unconfirmed");
+        }
+      } else {
+        core.info(`Issue #${issue.number} is waiting (${retry.reason}).`);
+      }
+    } else {
+      core.info(`Issue #${issue.number} is waiting for exact-SHA paper production (${delivery.reason}).`);
+    }
+    return;
+  }
+  if (delivery.state !== "success") {
+    await fail(delivery.reason || "production-evidence-failed");
+    return;
+  }
+  if (Date.parse(delivery.receipt.release.generatedAt) < Date.parse(pullRequest.merged_at)) {
+    await fail("production-evidence-predates-merge");
+    return;
+  }
+
+  const fresh = await revalidateOwnership();
+  if (!fresh) return;
+  let latest;
+  try {
+    latest = await productionEvidence.inspectProductionDelivery({
+      github, owner, repo, repositoryId, releaseSha: sha,
+    });
+  } catch (error) {
+    core.warning(`Final production evidence for issue #${issue.number} changed: ${getErrorMessage(error)}`);
+    await fail("production-evidence-changed-before-completion");
+    return;
+  }
+  if (latest.state !== "success" ||
+      JSON.stringify(productionEvidence.promotionReference(latest.receipt)) !==
+        JSON.stringify(productionEvidence.promotionReference(delivery.receipt))) {
+    await fail("production-evidence-changed-before-completion");
+    return;
+  }
+  if (await resolveFactoryMode({ github, core, owner, repo }) !== policy.FACTORY_MODES.ACTIVE) {
+    core.info(`Factory stopped before issue #${issue.number} could complete; no completion mutation was made.`);
+    return;
+  }
+  const receipt = delivery.receipt;
+  const body = buildAuditCommentBody({
+    issueNumber: issue.number, nonce: claim.nonce,
+    transition: `${LIFECYCLE_STATES.DEPLOYED_DEV} -> ${LIFECYCLE_STATES.DONE}`,
+    reason: "paper-production-evidence-verified",
+    prNumber: pullRequest.number, prUrl: pullRequest.html_url, mergeSha: sha,
+    productionRunId: receipt.runId, productionRunAttempt: receipt.runAttempt,
+  });
+  await upsertAuditComment({
+    github, owner, repo, issue: fresh.issue, comments: fresh.comments,
+    body: `${body}\n- Completion applies atomically with the issue's closed state and \`factory:done\` label.`,
+  });
+  const final = await revalidateOwnership();
+  if (!final) return;
+  if (await resolveFactoryMode({ github, core, owner, repo }) !== policy.FACTORY_MODES.ACTIVE) {
+    core.info(`Factory stopped before issue #${issue.number} could complete; no completion mutation was made.`);
+    return;
+  }
+  await closeIssueAsCompleted({ github, owner, repo, issue: final.issue });
 }
 
 async function reconcileIssue({
@@ -1966,6 +2232,7 @@ async function reconcileIssue({
   owner,
   repo,
   repository,
+  repositoryId,
   defaultBranch,
   issue,
   now,
@@ -2085,25 +2352,13 @@ async function reconcileIssue({
     }
   }
 
-  if (currentState === LIFECYCLE_STATES.DEPLOYED_DEV) {
-    await handleDeployedDevState({
-      github,
-      owner,
-      repo,
-      issue,
-      comments,
-      claim,
-      currentState,
-    });
-    return;
-  }
-
   await handlePullRequestState({
     github,
     core,
     owner,
     repo,
     repository,
+    repositoryId,
     defaultBranch,
     issue,
     comments,
@@ -2111,6 +2366,7 @@ async function reconcileIssue({
     currentState,
     now,
     copilotIdentity,
+    assignmentActorNodeId,
   });
 }
 
@@ -2262,9 +2518,11 @@ async function reconcileFactoryLifecycle({
   }
 
   let defaultBranch;
+  let repositoryId;
   try {
     const repoInfo = await github.rest.repos.get({ owner, repo });
     defaultBranch = repoInfo.data.default_branch;
+    repositoryId = repoInfo.data.id;
   } catch (error) {
     core.warning(
       `Could not resolve the default branch; no lifecycle reconciliation will be attempted this run: ${getErrorMessage(error)}`,
@@ -2323,12 +2581,16 @@ async function reconcileFactoryLifecycle({
         owner,
         repo,
         repository,
+        repositoryId,
         defaultBranch,
         issue,
         now: resolvedNow,
         copilotIdentity,
         assignmentActorNodeId: configuredAssignmentActorNodeId,
       });
+      if (await resolveFactoryMode({ github, core, owner, repo }) !== policy.FACTORY_MODES.ACTIVE) {
+        return;
+      }
     } catch (error) {
       if (error instanceof FactoryTrustSourceError) {
         await pauseFactoryControl({
@@ -2363,6 +2625,7 @@ module.exports = {
   DEV_EVIDENCE_STATUS_CONTEXT,
   DEV_ENVIRONMENT,
   DEV_EVIDENCE_TIMEOUT_MS,
+  PRODUCTION_EVIDENCE_TIMEOUT_MS,
   CLAIM_MARKER_PATTERN,
   ASSIGNMENT_MARKER_PATTERN,
   // Pure parsers/classifiers/resolvers
@@ -2407,4 +2670,5 @@ module.exports = {
   pauseFactoryControl,
   resolveFactoryMode,
   reconcileIssue,
+  planDeferredProductionRetry,
 };

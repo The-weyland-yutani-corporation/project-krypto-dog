@@ -2,8 +2,10 @@ name: Azure deploy prod
 
 # Production releases follow verified development completion only while the
 # factory has a human-attested active state. Manual foundation/full commissioning
-# remains available with an exact CI-passed workflow commit SHA. Both paths end
-# disabled/Manual; neither authorizes first paper activation. Existing releases pass the
+# remains available with an exact CI-passed workflow commit SHA and defaults to
+# disabled/Manual. First paper activation requires explicit operator dispatch;
+# continuous promotion requires a receipt matching the actually deployed paper
+# release. Existing releases pass the
 # `production-promotion` approval
 # before forced disable, then the separate `production-deploy` approval for
 # current-release safety and infrastructure/release work.
@@ -33,9 +35,10 @@ name: Azure deploy prod
 #   5. Full runs build digest-pinned images, deploy release.bicep
 #      disabled/Manual, then run migrate-init, baseline verified-backup,
 #      and target-smoke.
-#   6. Live final-state verification proves disabled/Manual, no schedule,
-#      exact release SHA, and exact web/ops digests. This workflow never
-#      promotes shadow/paper or enables a schedule.
+#   6. A verified disabled release is the immutable handoff to optional
+#      paper promotion: fresh smoke, one Manual zero-fill shadow, fresh
+#      readiness, monitoring, Schedule, and authenticated scheduled PAPER proof.
+#      Failure recovery verifies disabled/Manual before disabling monitoring.
 on:
   workflow_run:
     workflows: ["Azure deploy dev"]
@@ -55,6 +58,15 @@ on:
         options:
           - foundation
           - full
+      promotion_mode:
+        description: "disabled commissions only; operator explicitly activates paper; continuous preserves previously verified paper operation."
+        required: true
+        default: disabled
+        type: choice
+        options:
+          - disabled
+          - operator
+          - continuous
 
 concurrency:
   group: azure-production-mutation
@@ -103,10 +115,12 @@ jobs:
     env:
       INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
       INPUT_DEPLOYMENT_STAGE: ${{ inputs.deployment_stage }}
+      INPUT_PROMOTION_MODE: ${{ inputs.promotion_mode }}
       GH_TOKEN: ${{ github.token }}
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       deployment_stage: ${{ steps.resolve.outputs.deployment_stage }}
+      promotion_mode: ${{ steps.resolve.outputs.promotion_mode }}
       development_run_id: ${{ steps.development.outputs.run_id }}
       development_run_attempt: ${{ steps.development.outputs.run_attempt }}
       development_workflow_id: ${{ steps.development.outputs.workflow_id }}
@@ -125,10 +139,16 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const { resolveProductionInvocation } = require(
+            const { resolveProductionInvocation, assertPromotionActor } = require(
               require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
             );
             const invocation = resolveProductionInvocation(process.env, context.payload);
+            if (invocation.promotion_mode === "operator") {
+              await assertPromotionActor({
+                github, ...context.repo, mode: "operator",
+                env: { ...process.env, RESOLVED_SHA: invocation.sha },
+              });
+            }
             for (const [name, value] of Object.entries(invocation)) core.setOutput(name, value);
 
       - name: Verify exact main SHA has successful push CI
@@ -150,6 +170,7 @@ jobs:
         env:
           RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
           DEPLOYMENT_STAGE: ${{ steps.resolve.outputs.deployment_stage }}
+          PROMOTION_MODE: ${{ steps.resolve.outputs.promotion_mode }}
           TRIGGERED_DEVELOPMENT_RUN_ID: ${{ steps.resolve.outputs.development_run_id }}
           TRIGGERED_DEVELOPMENT_RUN_ATTEMPT: ${{ steps.resolve.outputs.development_run_attempt }}
         with:
@@ -163,6 +184,7 @@ jobs:
             };
             await assertProductionFactoryMode({
               ...options, core, eventName: process.env.GITHUB_EVENT_NAME,
+              promotionMode: process.env.PROMOTION_MODE,
             });
             if (process.env.DEPLOYMENT_STAGE === "full") {
               const receipt = await loadLatestDevelopmentReceipt({
@@ -201,11 +223,14 @@ jobs:
     permissions:
       contents: read
       actions: read
+      deployments: read
       issues: read
       id-token: write
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       DEPLOYMENT_STAGE: ${{ needs.gate.outputs.deployment_stage }}
+      PROMOTION_MODE: ${{ needs.gate.outputs.promotion_mode }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       DEVELOPMENT_RUN_ID: ${{ needs.gate.outputs.development_run_id }}
       DEVELOPMENT_RUN_ATTEMPT: ${{ needs.gate.outputs.development_run_attempt }}
     outputs:
@@ -219,6 +244,8 @@ jobs:
       target_origin: ${{ steps.live.outputs.target_origin }}
       admission_status: ${{ steps.admission.outputs.status }}
       fence_owner: ${{ steps.admission.outputs.owner }}
+      promotion_authority: ${{ steps.promotion.outputs.authority }}
+      promotion_mode: ${{ steps.promotion.outputs.mode }}
     steps:
       - name: Checkout ${{ needs.gate.outputs.sha }}
         uses: actions/checkout@v4
@@ -247,6 +274,7 @@ jobs:
             }
             await assertProductionFactoryMode({
               ...options, core, eventName: process.env.GITHUB_EVENT_NAME,
+              promotionMode: process.env.PROMOTION_MODE,
             });
 
       - name: Azure login (OIDC)
@@ -388,6 +416,24 @@ jobs:
           echo "communication_email_sender=${communication_email_sender}" >> "$GITHUB_OUTPUT"
           echo "evidence_container_url=${evidence_container_url}" >> "$GITHUB_OUTPUT"
           echo "target_origin=${target_origin}" >> "$GITHUB_OUTPUT"
+
+      - name: Bind optional paper promotion before any healthy-release mutation
+        id: promotion
+        uses: actions/github-script@v9
+        env:
+          EXISTING_RELEASE: ${{ steps.detect.outputs.existing_release }}
+          EVIDENCE_CONTAINER_URL: ${{ steps.live.outputs.evidence_container_url }}
+        with:
+          script: |
+            const { resolvePromotionAuthority } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const authority = await resolvePromotionAuthority({
+              github, core, ...context.repo, env: process.env,
+            });
+            core.setOutput("authority", authority);
+            core.setOutput("mode", authority.mode);
+            core.notice(`Production promotion admission: ${authority.mode}.`);
 
       - name: Render rollout.prod.bicepparam from live state (disabled/Manual)
         if: steps.detect.outputs.existing_release == 'true'
@@ -1589,7 +1635,7 @@ jobs:
             echo "- image digest: \`sha256:${WEB_DIGEST_HEX}\`"
             echo "- target_smoke_execution_id: \`${TARGET_SMOKE_EXECUTION_ID}\`"
             echo ""
-            echo "No production promotion workflow is shipped or approved. Preserve this exact evidence ID for any future independently reviewed promotion design."
+            echo "This proves the disabled release only. Paper promotion requires its separate authority, fresh readiness and scheduled PAPER evidence."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish downloaded evidence
@@ -1601,10 +1647,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
-      - name: Confirm this workflow ends disabled/Manual
+      - name: Confirm the release stage ends disabled/Manual
         run: |
           echo "release.bicep hardcodes ROLLOUT_MODE=disabled and triggerType=Manual regardless of parameters."
-          echo "No executable production shadow/paper promotion workflow is shipped."
+          echo "A separate, authority-checked phase is required before any paper schedule can be enabled."
 
   verify-final-state:
     name: Verify live prod disabled/Manual, no schedule, and exact SHA/digests
@@ -1761,6 +1807,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      receipt: ${{ steps.receipt.outputs.receipt }}
+      status: ${{ steps.receipt.outputs.status }}
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       RELEASE_JOB_RESULTS: ${{ toJSON(needs) }}
@@ -1784,6 +1833,8 @@ jobs:
             fs.mkdirSync("production-receipt", { recursive: true });
             fs.writeFileSync("production-receipt/receipt.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
             core.setOutput("name", receiptName("release", receipt.releaseSha, receipt.runId, receipt.runAttempt));
+            core.setOutput("receipt", receipt);
+            core.setOutput("status", receipt.status);
             core.notice(`Production release outcome: ${receipt.status}. This is not paper-promotion evidence.`);
       - name: Retain the immutable production receipt
         uses: actions/upload-artifact@v4
@@ -1792,3 +1843,355 @@ jobs:
           path: production-receipt/receipt.json
           if-no-files-found: error
           retention-days: 90
+
+  prepare-paper:
+    name: Prepare a fresh zero-fill production shadow proof
+    needs: [gate, force-disable-rollout, deploy-environment, publish-release-receipt]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.force-disable-rollout.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.publish-release-receipt.result == 'success' &&
+      needs.publish-release-receipt.outputs.status == 'disabled' &&
+      (needs.force-disable-rollout.outputs.promotion_mode == 'operator' ||
+       needs.force-disable-rollout.outputs.promotion_mode == 'continuous')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production-promotion
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+      issues: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_RELEASE: ${{ needs.publish-release-receipt.outputs.receipt }}
+      PROMOTION_AUTHORITY: ${{ needs.force-disable-rollout.outputs.promotion_authority }}
+      ROLLOUT_VALUES: ${{ toJSON(needs.deploy-environment.outputs) }}
+    outputs:
+      preparation: ${{ steps.prepare.outputs.preparation }}
+    steps:
+      - name: Check out the exact admitted release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify fresh smoke, one Manual shadow and read-only readiness
+        id: prepare
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { runProductionPromotion } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const preparation = await runProductionPromotion({
+              phase: "prepare", github, core, ...context.repo, env: process.env,
+            });
+            core.setOutput("preparation", preparation);
+
+  promote-paper:
+    name: Activate paper and verify the actual scheduled PAPER run
+    needs: [gate, force-disable-rollout, deploy-environment, publish-release-receipt, prepare-paper]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.force-disable-rollout.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.publish-release-receipt.result == 'success' &&
+      needs.prepare-paper.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    environment: production-promotion
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+      issues: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_RELEASE: ${{ needs.publish-release-receipt.outputs.receipt }}
+      PROMOTION_AUTHORITY: ${{ needs.force-disable-rollout.outputs.promotion_authority }}
+      PRODUCTION_PREPARATION: ${{ needs.prepare-paper.outputs.preparation }}
+      ROLLOUT_VALUES: ${{ toJSON(needs.deploy-environment.outputs) }}
+    outputs:
+      evidence: ${{ steps.promote.outputs.evidence }}
+    steps:
+      - name: Check out the exact admitted release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Set up the supported observation runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - name: Install locked observation dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Revalidate authority, enable monitoring and observe scheduled paper execution
+        id: promote
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { runProductionPromotion } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const evidence = await runProductionPromotion({
+              phase: "activate", github, core, ...context.repo, env: process.env,
+            });
+            core.setOutput("evidence", evidence);
+
+  publish-promotion-receipt:
+    name: Publish immutable paper-production evidence
+    needs:
+      [gate, force-disable-rollout, deploy-environment, build-images, deploy-release,
+       migrate-backup, release-cutover-fence, target-smoke, verify-final-state,
+       publish-release-receipt, prepare-paper, promote-paper]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full' &&
+      needs.publish-release-receipt.outputs.receipt != '' &&
+      needs.force-disable-rollout.outputs.promotion_authority != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_JOB_RESULTS: ${{ toJSON(needs) }}
+    outputs:
+      receipt: ${{ steps.receipt.outputs.receipt }}
+      status: ${{ steps.receipt.outputs.status }}
+    steps:
+      - name: Check out the trusted receipt publisher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Create exact-attempt paper-production evidence
+        id: receipt
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { createPromotionReceipt, receiptName } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const { data: run } = await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: Number(process.env.GITHUB_RUN_ID),
+            });
+            const receipt = createPromotionReceipt(process.env, JSON.parse(process.env.PRODUCTION_JOB_RESULTS), run);
+            fs.mkdirSync("paper-production-receipt", { recursive: true });
+            fs.writeFileSync("paper-production-receipt/receipt.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("name", receiptName("promotion", receipt.releaseSha, receipt.runId, receipt.runAttempt));
+            core.setOutput("receipt", receipt);
+            core.setOutput("status", receipt.status);
+            core.notice(`Paper-production outcome: ${receipt.status}. Native workflow completion remains required.`);
+      - name: Retain only the nonsecret immutable receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.receipt.outputs.name }}
+          path: paper-production-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-production-delivery:
+    name: Publish exact-SHA paper-production delivery
+    needs: [gate, publish-promotion-receipt]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.publish-promotion-receipt.result == 'success' &&
+      needs.publish-promotion-receipt.outputs.status == 'paper'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: write
+      statuses: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_RECEIPT: ${{ needs.publish-promotion-receipt.outputs.receipt }}
+    outputs:
+      deployment_id: ${{ steps.delivery.outputs.deployment_id }}
+    steps:
+      - name: Check out the trusted delivery publisher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Publish receipt-bound production delivery
+        id: delivery
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const assert = require("node:assert/strict");
+            const { promotionReference, PRODUCTION_ENVIRONMENT, PRODUCTION_STATUS_CONTEXT } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const receipt = JSON.parse(process.env.PRODUCTION_RECEIPT);
+            assert.equal(receipt.repository, process.env.GITHUB_REPOSITORY);
+            assert.equal(receipt.repositoryId, Number(process.env.GITHUB_REPOSITORY_ID));
+            assert.equal(receipt.repositoryOwnerId, Number(process.env.GITHUB_REPOSITORY_OWNER_ID));
+            assert.equal(receipt.workflowSha, process.env.GITHUB_WORKFLOW_SHA);
+            assert.equal(receipt.releaseSha, process.env.RESOLVED_SHA);
+            assert.equal(receipt.runId, Number(process.env.GITHUB_RUN_ID));
+            assert.equal(receipt.runAttempt, Number(process.env.GITHUB_RUN_ATTEMPT));
+            const url = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${receipt.runId}`;
+            const { data: deployment } = await github.rest.repos.createDeployment({
+              ...context.repo, ref: receipt.releaseSha, environment: PRODUCTION_ENVIRONMENT,
+              auto_merge: false, required_contexts: [], transient_environment: false,
+              production_environment: true, payload: promotionReference(receipt),
+              description: "Verified paper deployment and authenticated scheduled PAPER execution.",
+            });
+            assert(Number.isSafeInteger(deployment.id) && deployment.id > 0 &&
+              deployment.sha === receipt.releaseSha && deployment.environment === PRODUCTION_ENVIRONMENT &&
+              deployment.production_environment === true,
+            "No exact-SHA native production Deployment was created.");
+            core.setOutput("deployment_id", deployment.id);
+            await github.rest.repos.createDeploymentStatus({
+              ...context.repo, deployment_id: deployment.id, state: "success",
+              environment: PRODUCTION_ENVIRONMENT, environment_url: receipt.release.binding.targetOrigin,
+              log_url: url, auto_inactive: false,
+              description: "Receipt published; consumers also require this native attempt to finish successfully.",
+            });
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha: receipt.releaseSha, state: "success",
+              context: PRODUCTION_STATUS_CONTEXT, target_url: url,
+              description: "Paper and scheduled execution verified; native completion remains required.",
+            });
+
+  recover-paper:
+    name: Recover production to verified disabled/Manual
+    needs:
+      [gate, force-disable-rollout, deploy-environment, publish-release-receipt,
+       prepare-paper, promote-paper, publish-promotion-receipt, publish-production-delivery]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.publish-release-receipt.outputs.status == 'disabled' &&
+      (needs.force-disable-rollout.outputs.promotion_mode == 'operator' ||
+       needs.force-disable-rollout.outputs.promotion_mode == 'continuous') &&
+      needs.prepare-paper.result != 'skipped' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production-promotion
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_RELEASE: ${{ needs.publish-release-receipt.outputs.receipt }}
+      PROMOTION_AUTHORITY: ${{ needs.force-disable-rollout.outputs.promotion_authority }}
+      ROLLOUT_VALUES: ${{ toJSON(needs.deploy-environment.outputs) }}
+    steps:
+      - name: Check out the exact failed release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Preserve balances and prove disabled/Manual before disabling schedule monitoring
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { runProductionPromotion } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            await runProductionPromotion({
+              phase: "recover", github, core, ...context.repo, env: process.env,
+            });
+            core.notice("Production is disabled/Manual with cloud execution quiescence verified; account state was not reset.");
+
+  publish-production-failure:
+    name: Publish a durable production failure
+    needs:
+      [gate, force-disable-rollout, deploy-environment, build-images, deploy-release,
+       migrate-backup, release-cutover-fence, target-smoke, verify-final-state,
+       publish-release-receipt, prepare-paper, promote-paper, publish-promotion-receipt,
+       publish-production-delivery, recover-paper]
+    if: >-
+      always() &&
+      needs.gate.outputs.sha != '' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: write
+      statuses: write
+      issues: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      RECOVERY_RESULT: ${{ needs.recover-paper.result }}
+      PRODUCTION_DEPLOYMENT_ID: ${{ needs.publish-production-delivery.outputs.deployment_id }}
+    steps:
+      - name: Check out trusted failure reporting
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/agentic-policy.json
+      - name: Record exact-SHA failure without claiming recovery succeeded
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { PRODUCTION_STATUS_CONTEXT, PRODUCTION_ENVIRONMENT } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const { pauseFactoryControl } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-lifecycle-reconciler.cjs"),
+            );
+            const url = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const reporting = [() => github.rest.repos.createCommitStatus({
+              ...context.repo, sha: process.env.RESOLVED_SHA, state: "failure",
+              context: PRODUCTION_STATUS_CONTEXT, target_url: url,
+              description: process.env.RECOVERY_RESULT === "success" ?
+                "Delivery failed; disabled/Manual recovery verified." :
+                "Delivery failed; production activation/recovery is not verified.",
+            }), () => pauseFactoryControl({
+              github, core, ...context.repo,
+              reason: `Production delivery failed for ${process.env.RESOLVED_SHA} (${url}); recovery: ${process.env.RECOVERY_RESULT}.`,
+            })];
+            if (/^[1-9][0-9]*$/.test(process.env.PRODUCTION_DEPLOYMENT_ID || "")) {
+              reporting.push(() => github.rest.repos.createDeploymentStatus({
+                ...context.repo, deployment_id: Number(process.env.PRODUCTION_DEPLOYMENT_ID),
+                state: "failure", environment: PRODUCTION_ENVIRONMENT, log_url: url,
+                description: "The owning production workflow failed; this is not completed paper delivery.",
+              }));
+            }
+            const outcomes = await Promise.allSettled(reporting.map((action) => Promise.resolve().then(action)));
+            outcomes.forEach((outcome, index) => {
+              if (outcome.status === "rejected") core.error(`Production failure reporting action ${index + 1} failed; it was not retried.`);
+            });
+            core.setFailed(`Production delivery failed (${url}); recovery result: ${process.env.RECOVERY_RESULT}.`);

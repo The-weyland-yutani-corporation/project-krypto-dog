@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
 import { z } from "zod";
+import { productionPromotionFixture } from "./production-promotion-fixture";
 
 const root = path.resolve(__dirname, "../../..");
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8");
@@ -415,8 +416,10 @@ describe("production cutover workflow", () => {
       const context = { payload: JSON.parse(process.env.TEST_EVENT) };
       const outputs = {};
       const core = { setOutput: (name, value) => { outputs[name] = value; } };
-      ${script}
-      console.log(JSON.stringify(outputs));
+      (async () => {
+        ${script}
+        console.log(JSON.stringify(outputs));
+      })().catch(error => { console.error(error.message); process.exitCode = 1; });
     `], {
       cwd: root, encoding: "utf8",
       env: {
@@ -431,8 +434,9 @@ describe("production cutover workflow", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual(eventName === "workflow_run" ? {
-      sha, deployment_stage: "full", development_run_id: 900, development_run_attempt: 2,
-    } : { sha, deployment_stage: "foundation" });
+      sha, deployment_stage: "full", promotion_mode: "continuous",
+      development_run_id: 900, development_run_attempt: 2,
+    } : { sha, deployment_stage: "foundation", promotion_mode: "disabled" });
     const wrongSource = execute("b".repeat(40));
     expect(wrongSource.status).not.toBe(0);
     expect(wrongSource.stdout).toBe("");
@@ -1009,5 +1013,191 @@ bash .github/scripts/azure/revalidate-deployment-fence.sh source test-binding
     expect(result.error).toBeUndefined();
     expect(result.status === 0 ? 0 : 1).toBe(expected);
     expect(result.stderr).not.toContain("FORBIDDEN_LIVE_AZURE_CALL");
+  });
+});
+
+describe("native paper-promotion job contract", () => {
+  const evidence = jest.requireActual<{ PRODUCTION_JOB_NAMES: Record<string, string> }>(
+    "../../../.github/scripts/azure/production-evidence.cjs",
+  );
+
+  it("binds the exact native job inventory and all promotion/compensation dependencies", () => {
+    expect(Object.keys(workflow.jobs).sort()).toEqual(Object.keys(evidence.PRODUCTION_JOB_NAMES).sort());
+    for (const [id, name] of Object.entries(evidence.PRODUCTION_JOB_NAMES)) expect(job(id).name).toBe(name);
+    expect(job("prepare-paper").needs).toEqual(["gate", "force-disable-rollout", "deploy-environment", "publish-release-receipt"]);
+    expect(job("prepare-paper").if).toContain("needs.publish-release-receipt.outputs.status == 'disabled'");
+    expect(job("prepare-paper").if).toContain("needs.force-disable-rollout.outputs.promotion_mode == 'operator'");
+    expect(job("prepare-paper").if).toContain("needs.force-disable-rollout.outputs.promotion_mode == 'continuous'");
+    expect(job("promote-paper").needs).toContain("prepare-paper");
+    expect(job("promote-paper").if).toContain("needs.prepare-paper.result == 'success'");
+    expect(job("publish-production-delivery").if).toContain("needs.publish-promotion-receipt.outputs.status == 'paper'");
+    const recovery = job("recover-paper");
+    expect(recovery.needs).toEqual(expect.arrayContaining(["prepare-paper", "promote-paper", "publish-promotion-receipt", "publish-production-delivery"]));
+    expect(recovery.if).toContain("always()");
+    expect(recovery.if).toContain("contains(needs.*.result, 'cancelled')");
+    expect(recovery.if).toContain("contains(needs.*.result, 'failure')");
+    expect(recovery.if).toContain("needs.prepare-paper.result != 'skipped'");
+    expect(job("publish-production-failure").needs).toContain("recover-paper");
+  });
+
+  it("separates Azure promotion from GitHub publication with exact-source checkout and private proofs", () => {
+    for (const id of ["prepare-paper", "promote-paper", "recover-paper"]) {
+      expect(job(id).environment).toBe("production-promotion");
+      expect(job(id).permissions?.["id-token"]).toBe("write");
+      expect(job(id).steps[0].with).toMatchObject({ ref: "${{ needs.gate.outputs.sha }}", "persist-credentials": false });
+      expect(job(id).steps.some((entry) => entry.uses?.startsWith("actions/upload-artifact"))).toBe(false);
+    }
+    expect(job("recover-paper").permissions).toEqual({ contents: "read", "id-token": "write" });
+    expect(job("publish-promotion-receipt").permissions).toEqual({ contents: "read", actions: "read" });
+    expect(job("publish-production-delivery").permissions).toEqual({ contents: "read", deployments: "write", statuses: "write" });
+    for (const id of ["publish-promotion-receipt", "publish-production-delivery", "publish-production-failure"]) {
+      expect(job(id).environment).toBeUndefined();
+      expect(job(id).steps[0].with).toMatchObject({ ref: "${{ github.workflow_sha }}", "persist-credentials": false });
+    }
+    expect(step("promote-paper", "Set up the supported observation runtime").with?.["node-version"]).toBe("22.13.0");
+    expect(step("publish-promotion-receipt", "Retain only the nonsecret immutable receipt").with).toMatchObject({
+      path: "paper-production-receipt/receipt.json", "if-no-files-found": "error", "retention-days": 90,
+    });
+    const lifecycle = z.object({
+      on: z.object({ workflow_run: z.object({ workflows: z.array(z.string()) }) }),
+      permissions: strings, concurrency: z.object({ "cancel-in-progress": z.boolean() }),
+    }).parse(parse(read(".github/workflows/agentic-lifecycle-reconciler.yml")));
+    expect(lifecycle.on.workflow_run.workflows).toEqual(["Azure deploy dev", "Azure deploy prod"]);
+    expect(lifecycle.permissions.actions).toBe("write");
+    expect(lifecycle.permissions["id-token"]).toBeUndefined();
+    expect(lifecycle.concurrency["cancel-in-progress"]).toBe(false);
+  });
+});
+
+describe("executable paper-production publishers", () => {
+  const owned: string[] = [];
+  const evidence = jest.requireActual<Record<string, unknown>>("../../../.github/scripts/azure/production-evidence.cjs");
+  beforeEach(() => jest.useFakeTimers({ now: new Date("2026-10-22T01:03:00Z") }));
+  afterEach(() => {
+    jest.useRealTimers();
+    for (const directory of owned.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  function publisher() {
+    const f = productionPromotionFixture();
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "krypto-production-publisher-"));
+    owned.push(directory);
+    const core = { setOutput: jest.fn(), notice: jest.fn(), error: jest.fn(), setFailed: jest.fn() };
+    const pause = jest.fn(async () => {});
+    const repos = {
+      createDeployment: jest.fn(async (args: { ref: string }) => ({ data: {
+        id: 301, sha: args.ref, environment: "production", production_environment: true,
+      } })),
+      createDeploymentStatus: jest.fn(async () => ({})),
+      createCommitStatus: jest.fn(async () => ({})),
+    };
+    const fileSystem = {
+      mkdirSync: (name: string) => {
+        expect(name).toBe("paper-production-receipt");
+        fs.mkdirSync(path.join(directory, name), { recursive: true });
+      },
+      writeFileSync: jest.fn((name: string, body: string, options: fs.WriteFileOptions) => {
+        expect(name).toBe("paper-production-receipt/receipt.json");
+        fs.writeFileSync(path.join(directory, name), body, options);
+      }),
+    };
+    const modules = (name: string) => {
+      if (name === "node:fs") return fileSystem;
+      if (name === "node:path") return path;
+      if (name === "node:assert/strict") return jest.requireActual("node:assert/strict");
+      if (name.endsWith("production-evidence.cjs")) return evidence;
+      if (name.endsWith("agentic-lifecycle-reconciler.cjs")) return { pauseFactoryControl: pause };
+      throw new Error(`Unexpected publisher dependency ${name}`);
+    };
+    const env: Record<string, string> = {
+      ...f.env, GITHUB_WORKSPACE: root, GITHUB_SERVER_URL: "https://github.com",
+      PRODUCTION_JOB_RESULTS: JSON.stringify(f.needs), PRODUCTION_RECEIPT: JSON.stringify(f.receipt),
+      RECOVERY_RESULT: "success", PRODUCTION_DEPLOYMENT_ID: "301",
+    };
+    const github = { ...f.github, rest: { ...f.github.rest, repos } };
+    const execute = async (id: string, name: string) => {
+      const script = z.string().parse(step(id, name).with?.script);
+      const runScript = new Function("github", "context", "core", "require", "process", `return (async () => { ${script} })();`);
+      await runScript(github, { repo: { owner: "owner", repo: "project" } }, core, modules, { env });
+    };
+    return { f, directory, core, pause, repos, env, execute, fileSystem };
+  }
+
+  it("creates the real closed nonsecret promotion receipt with exclusive persistence", async () => {
+    const h = publisher();
+    await h.execute("publish-promotion-receipt", "Create exact-attempt paper-production evidence");
+    const receipt: unknown = JSON.parse(fs.readFileSync(path.join(h.directory, "paper-production-receipt", "receipt.json"), "utf8"));
+    expect(receipt).toEqual(h.f.receipt);
+    expect(h.fileSystem.writeFileSync).toHaveBeenCalledWith("paper-production-receipt/receipt.json", expect.any(String), { flag: "wx" });
+    expect(h.core.setOutput).toHaveBeenCalledWith("status", "paper");
+    await expect(h.execute("publish-promotion-receipt", "Create exact-attempt paper-production evidence")).rejects.toThrow("EEXIST");
+  });
+
+  it("publishes a native exact-SHA Deployment before its status and the commit signal", async () => {
+    const h = publisher();
+    await h.execute("publish-production-delivery", "Publish receipt-bound production delivery");
+    expect(h.repos.createDeployment).toHaveBeenCalledWith(expect.objectContaining({
+      ref: h.f.sha, environment: "production", production_environment: true,
+      payload: h.f.reference, auto_merge: false, required_contexts: [],
+    }));
+    expect(h.core.setOutput).toHaveBeenCalledWith("deployment_id", 301);
+    expect(h.repos.createDeploymentStatus).toHaveBeenCalledWith(expect.objectContaining({
+      deployment_id: 301, state: "success", environment_url: h.f.binding.targetOrigin, auto_inactive: false,
+    }));
+    expect(h.repos.createCommitStatus).toHaveBeenCalledWith(expect.objectContaining({ sha: h.f.sha, state: "success" }));
+    expect(h.repos.createDeploymentStatus.mock.invocationCallOrder[0]).toBeLessThan(h.repos.createCommitStatus.mock.invocationCallOrder[0]);
+  });
+
+  it.each(["repository", "repositoryId", "repositoryOwnerId", "workflowSha", "releaseSha", "runId", "runAttempt", "status"])(
+    "never publishes another %s as successful delivery",
+    async (field) => {
+      const h = publisher();
+      h.env.PRODUCTION_RECEIPT = JSON.stringify({ ...h.f.receipt, [field]: "different" });
+      await expect(h.execute("publish-production-delivery", "Publish receipt-bound production delivery")).rejects.toThrow();
+      expect(h.repos.createDeployment).not.toHaveBeenCalled();
+      expect(h.repos.createCommitStatus).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not publish success when native Deployment creation resolves to another SHA", async () => {
+    const h = publisher();
+    h.repos.createDeployment.mockResolvedValue({ data: {
+      id: 301, sha: "f".repeat(40), environment: "production", production_environment: true,
+    } });
+    await expect(h.execute("publish-production-delivery", "Publish receipt-bound production delivery")).rejects.toThrow("exact-SHA");
+    expect(h.repos.createCommitStatus).not.toHaveBeenCalled();
+    expect(h.repos.createDeploymentStatus).not.toHaveBeenCalled();
+  });
+
+  it.each(["commit-status", "pause", "deployment-status", "synchronous-error"])(
+    "attempts every failure publication even if %s fails, without logging private errors",
+    async (failure) => {
+      const h = publisher();
+      const error = new Error("private-service-error-do-not-publish");
+      if (failure === "commit-status") h.repos.createCommitStatus.mockRejectedValue(error);
+      if (failure === "pause") h.pause.mockRejectedValue(error);
+      if (failure === "deployment-status") h.repos.createDeploymentStatus.mockRejectedValue(error);
+      if (failure === "synchronous-error") h.repos.createCommitStatus.mockImplementation(() => { throw error; });
+      await h.execute("publish-production-failure", "Record exact-SHA failure without claiming recovery succeeded");
+      expect(h.pause).toHaveBeenCalledTimes(1);
+      expect(h.repos.createCommitStatus).toHaveBeenCalledTimes(1);
+      expect(h.repos.createDeploymentStatus).toHaveBeenCalledWith(expect.objectContaining({ deployment_id: 301, state: "failure" }));
+      expect(h.core.setFailed).toHaveBeenCalledTimes(1);
+      expect(h.core.error).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(h.core.error.mock.calls)).not.toContain(error.message);
+    },
+  );
+
+  it("does not guess a missing Deployment or turn failed recovery into success", async () => {
+    const h = publisher();
+    h.env.PRODUCTION_DEPLOYMENT_ID = "";
+    h.env.RECOVERY_RESULT = "failure";
+    await h.execute("publish-production-failure", "Record exact-SHA failure without claiming recovery succeeded");
+    expect(h.repos.createDeploymentStatus).not.toHaveBeenCalled();
+    expect(h.repos.createCommitStatus).toHaveBeenCalledWith(expect.objectContaining({
+      state: "failure", description: "Delivery failed; production activation/recovery is not verified.",
+    }));
+    expect(h.pause).toHaveBeenCalledTimes(1);
+    expect(h.core.setFailed).toHaveBeenCalledWith(expect.stringContaining("recovery result: failure"));
   });
 });

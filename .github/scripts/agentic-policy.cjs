@@ -101,6 +101,7 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
       "lowRiskDocs",
       "specialistRouting",
       "selfHeal",
+      "productionDelivery",
       "wip",
       "authority",
     ],
@@ -233,6 +234,14 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
     "selfHeal",
   );
   const wip = object(root.wip, "wip");
+  const production = object(root.productionDelivery, "productionDelivery");
+  exactKeys(production, ["maxDeferredRetries", "retryDelayMinutes", "evidenceTimeoutMinutes"], "productionDelivery");
+  for (const key of Object.keys(production)) positiveInteger(production[key], `productionDelivery.${key}`);
+  if (production.maxDeferredRetries > 2 || production.retryDelayMinutes < 15 ||
+      production.retryDelayMinutes > 60 || production.evidenceTimeoutMinutes > 360 ||
+      production.evidenceTimeoutMinutes <= production.retryDelayMinutes) {
+    invalid("productionDelivery must retain bounded retries, a 15-60 minute delay and at most six hours of evidence waiting");
+  }
   exactKeys(wip, ["maxOpenActionableOpportunities"], "wip");
   const authority = object(root.authority, "authority");
   exactKeys(
@@ -276,6 +285,7 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
   return Object.freeze({
     schemaVersion: 1,
     autonomy: autonomousDelivery,
+    productionDelivery: Object.freeze({ ...production }),
     policyPath,
     requiredContexts: strings(
       merge.requiredContexts,
