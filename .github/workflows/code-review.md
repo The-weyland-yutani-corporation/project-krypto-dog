@@ -184,8 +184,8 @@ safe-outputs:
     deduplicate-by-title: 1
   noop:
     report-as-issue: false
-max-ai-credits: 1500
-max-daily-ai-credits: 5000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 pre-agent-steps:
   - name: Materialize the exact dispatched review head
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
@@ -249,6 +249,41 @@ Review the PR for real defects only.
 - For manual dispatch, verify the checked-out PR head matches the `head_sha` input and include the PR number as `item_number` in comments or labels.
 - Agent instruction files in the workspace are restored from the trusted base;
   inspect proposed `AGENTS.md` changes through the PR diff.
+- For a PR, obtain its base SHA and exact reviewed head SHA from GitHub REST
+  metadata via `gh api`, matching the head to the trigger or dispatched SHA.
+  Do not substitute the checkout's synthetic merge commit or a branch guess.
+- Review the complete committed merge-base-to-head diff. Resolve the merge base
+  from those verified commits or GitHub's compare API, then use
+  `git diff <merge_base_sha> <head_sha> --` and
+  `git show <head_sha>:<path>` for relevant committed content. REST file lists
+  must be fully paginated; detect omitted/truncated patches and retrieve the
+  committed contents needed to finish the review.
+- Unqualified `git diff`, `git status`, restored instructions, and on-disk file
+  modes are workspace diagnostics, not PR evidence. Before reporting a committed
+  mode change, compare `git ls-tree <merge_base_sha> -- <path>` with
+  `git ls-tree <head_sha> -- <path>`.
+- If the exact revisions or complete authoritative diff cannot be established,
+  report an incomplete review and a failing check identifying the missing
+  evidence. Missing local history is not an empty diff; do not invent a source
+  defect or approve from workspace changes.
+- Keep this run a general code review. Do not launch overlapping security,
+  trading-safety, or QA subreviews: their existing required workflows own those
+  deep reviews. Still report material defects you encounter and retain the
+  specialist escalation labels and independently required checks.
+- If delegation is necessary, partition concrete files or questions into
+  non-overlapping scopes. Do not give multiple agents the entire PR or repeat
+  a delegated investigation in the parent. The parent still owns complete
+  committed-diff coverage and the final verdict.
+- Retain one compact changed-file inventory and exact-head CI summary. Read
+  focused committed diffs and file ranges as needed, rather than repeatedly
+  dumping the full patch, repository, or check history into context.
+- Reuse completed exact-head CI and retained test evidence. Do not reinstall
+  toolchains or repeat full suites already covered by that CI. Run only the
+  smallest additional reproduction needed to resolve a specific uncertainty;
+  passing CI never substitutes for reviewing the changed behavior.
+- Do not sacrifice coverage or verdict quality to fit a budget. An incomplete
+  review still fails; do not request alternate runs or a higher limit to evade
+  the existing guardrail.
 - Treat the exact marker `<!-- agentic-e2e:self-heal -->` in `docs/e2e/factory-heartbeat.md` as a deterministic required fix: create a failing `Agentic code review` check, ask for that marker to be removed, and do not add a specialist label for this known canary. After the marker is absent, review the file normally.
 - Report only correctness, reliability, maintainability, or product-behavior issues that matter.
 - For frontend/admin/chart changes, check that the PR follows root `DESIGN.md`, uses shadcn/ui + Tailwind primitives, and avoids default unstyled chart output.

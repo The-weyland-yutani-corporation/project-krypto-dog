@@ -25,6 +25,7 @@ const APPLICATION_TABLES = [
   "AgentRun",
   "TradeExecution",
   "AgentJournal",
+  "DeploymentFence",
 ] as const;
 const PRIVATE_SCHEMAS = ["krypto", "drizzle"] as const;
 const FORBIDDEN_CONNECTION_PARAMETERS = new Set([

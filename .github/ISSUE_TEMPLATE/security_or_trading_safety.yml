@@ -22,7 +22,7 @@ body:
         - dependency or supply-chain risk
         - trading guardrail
         - portfolio or balance invariant
-        - paper/live trading boundary
+        - paper execution or model-tool boundary
         - deployment or workflow permission
         - other
     validations:

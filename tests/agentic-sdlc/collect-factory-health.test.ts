@@ -477,8 +477,29 @@ describe("MonitorOps collector — threshold evaluation", () => {
     expect(breachIds()).toContain("repeated_workflow_failure");
   });
 
-  it("flags AI credits over a workflow's configured per-run cap", () => {
-    expect(breachIds()).toContain("ai_credits_over_run_cap");
+  it.each([
+    { credits: 3000, breached: false },
+    { credits: 5000, breached: false },
+    { credits: 5001, breached: true },
+  ])("compares $credits AIC against the configured per-run cap", ({ credits, breached }) => {
+    const { snapshot: current } = collector.collect({
+      mode: "governance",
+      now: new Date(fixtures.now),
+      repoRoot: root,
+      runner: fakeRunner({
+        logs: {
+          runs: [{
+            workflow_path: ".github/workflows/pm-triage.lock.yml",
+            created_at: "2026-08-05T10:00:00Z",
+            conclusion: "success",
+            aic: credits,
+          }],
+        },
+      }),
+      policy,
+    });
+    const thresholds = current.thresholds as { breaches: Array<{ id: string }> };
+    expect(thresholds.breaches.some(({ id }) => id === "ai_credits_over_run_cap")).toBe(breached);
   });
 
   it("flags WIP at or above the configured cap", () => {

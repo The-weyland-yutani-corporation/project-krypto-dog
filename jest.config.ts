@@ -9,13 +9,14 @@ const config: Config = {
     "^(\\.{1,2}/.*)\\.js$": "$1",
   },
   transform: {
-    "^.+\\.tsx?$": [
+    "^.+\\.[tj]sx?$": [
       "ts-jest",
       {
         tsconfig: "tsconfig.json",
       },
     ],
   },
+  transformIgnorePatterns: ["node_modules/(?!jose/)"],
   setupFiles: ["<rootDir>/tests/setup.ts"],
   collectCoverageFrom: [
     "src/agent/decision.ts",

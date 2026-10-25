@@ -1,31 +1,49 @@
 name: Azure deploy prod
 
-# Production deployment is manual-only. An operator supplies an exact
-# CI-passed commit SHA through workflow_dispatch. Existing releases pass the
+# Production releases follow verified development completion only while the
+# factory has a human-attested active state. Manual foundation/full commissioning
+# remains available with an exact CI-passed workflow commit SHA and defaults to
+# disabled/Manual. First paper activation requires explicit operator dispatch;
+# continuous promotion requires a receipt matching the actually deployed paper
+# release. Existing releases pass the
 # `production-promotion` approval
 # before forced disable, then the separate `production-deploy` approval for
 # current-release safety and infrastructure/release work.
+# Full releases also require the latest exact-source development receipt and
+# its actual successful workflow jobs. Admission is rechecked before Azure access.
 #
 # Safety ordering (specs/governance.md and infra/README.md):
 #   1. Detect the complete current release from deterministic resource
 #      names. If it exists, resolve the rollout/evidence inputs from live
-#      Azure state and force rollout.bicep to disabled/Manual under the
+#      Azure state, then acquire an owned database cutover fence BEFORE
+#      changing the healthy release. An open position or run lease defers
+#      without changing mode, schedules, credentials, images, or balances.
+#      Only admitted cutovers force rollout.bicep to disabled/Manual under the
 #      separately protected `production-promotion` identity.
 #   2. Run and evidence-validate the CURRENT release's preflight and
 #      verified backup under `production-deploy`.
-#   3. Only after those controls pass may environment.bicep rotate the
-#      PostgreSQL administrator credential or mutate infrastructure. A
-#      genuinely fresh environment skips the current-release backup.
+#   3. Only after those controls pass may environment.bicep mutate
+#      infrastructure. Existing-release updates preserve the PostgreSQL
+#      administrator password so source ops jobs retain database access.
+#      A genuinely fresh environment skips the current-release backup.
+#      Missing workloads never establish database freshness: surviving
+#      foundations require a native read-only catalog probe, repeated before
+#      release and migration. Only new foundations initialize database bindings.
 #   4. Manual `foundation` runs stop successfully after environment.bicep
 #      and publish the nonsecret identity/ACS/evidence handoff. Automatic
 #      runs always use `full`.
 #   5. Full runs build digest-pinned images, deploy release.bicep
 #      disabled/Manual, then run migrate-init, baseline verified-backup,
 #      and target-smoke.
-#   6. Live final-state verification proves disabled/Manual, no schedule,
-#      exact release SHA, and exact web/ops digests. This workflow never
-#      promotes shadow/paper or enables a schedule.
+#   6. A verified disabled release is the immutable handoff to optional
+#      paper promotion: fresh smoke, one Manual zero-fill shadow, fresh
+#      readiness, monitoring, Schedule, and authenticated scheduled PAPER proof.
+#      Failure recovery verifies disabled/Manual before disabling monitoring.
 on:
+  workflow_run:
+    workflows: ["Azure deploy dev"]
+    branches: [main]
+    types: [completed]
   workflow_dispatch:
     inputs:
       commit_sha:
@@ -40,6 +58,15 @@ on:
         options:
           - foundation
           - full
+      promotion_mode:
+        description: "disabled commissions only; operator explicitly activates paper; continuous preserves previously verified paper operation."
+        required: true
+        default: disabled
+        type: choice
+        options:
+          - disabled
+          - operator
+          - continuous
 
 concurrency:
   group: azure-production-mutation
@@ -68,69 +95,114 @@ env:
   RUNTIME_IDENTITY_NAME: id-krypto-prod02-runtime
   SCHEDULER_IDENTITY_NAME: id-krypto-prod02-scheduler
   EVIDENCE_STORAGE_ACCOUNT_NAME: stkryptoprod02evid
+  POSTGRES_SERVER_NAME: psql-krypto-prod02
+  KEY_VAULT_NAME: kv-krypto-prod02
+  OPS_IDENTITY_NAME: id-krypto-prod02-ops
+  POSTGRES_DATABASE_NAME: postgres
+  RUNTIME_DATABASE_LOGIN_ROLE: krypto_app
+  PROD_DEPLOY_IDENTITY_NAME: ${{ vars.PROD_DEPLOY_IDENTITY_NAME }}
+  PROD_PROMOTION_IDENTITY_NAME: ${{ vars.PROD_PROMOTION_IDENTITY_NAME }}
 
 jobs:
   gate:
     name: Determine and validate the commit to deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
+      issues: read
     env:
-      EVENT_NAME: ${{ github.event_name }}
       INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
       INPUT_DEPLOYMENT_STAGE: ${{ inputs.deployment_stage }}
+      INPUT_PROMOTION_MODE: ${{ inputs.promotion_mode }}
       GH_TOKEN: ${{ github.token }}
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       deployment_stage: ${{ steps.resolve.outputs.deployment_stage }}
+      promotion_mode: ${{ steps.resolve.outputs.promotion_mode }}
+      development_run_id: ${{ steps.development.outputs.run_id }}
+      development_run_attempt: ${{ steps.development.outputs.run_attempt }}
+      development_workflow_id: ${{ steps.development.outputs.workflow_id }}
     steps:
-      # fetch-depth: 0 is required so verify-deploy-sha.sh's
-      # `git merge-base --is-ancestor` (manual-dispatch path only) can
-      # walk the FULL commit history, not just a shallow tip.
+      # Full history and read-only checkout credentials are required by
+      # verify-deploy-sha.sh's authenticated main refresh and ancestry check.
       - name: Checkout (full history, for lib/common.sh and SHA verification)
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: true
           fetch-depth: 0
 
       - name: Resolve and format-validate the exact commit SHA to deploy
         id: resolve
-        run: |
-          set -euo pipefail
-          candidate="${INPUT_COMMIT_SHA}"
-          source .github/scripts/azure/lib/common.sh
-          validated="$(azure_validate_release_sha "${candidate}")"
-          deployment_stage="${INPUT_DEPLOYMENT_STAGE}"
-          if [ "${deployment_stage}" != "foundation" ] && [ "${deployment_stage}" != "full" ]; then
-            echo "deployment_stage must be exactly 'foundation' or 'full'." >&2
-            exit 1
-          fi
-          echo "sha=${validated}" >> "$GITHUB_OUTPUT"
-          echo "deployment_stage=${deployment_stage}" >> "$GITHUB_OUTPUT"
-          echo "Resolved candidate commit ${validated} (event=${EVENT_NAME}, deployment_stage=${deployment_stage})."
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { resolveProductionInvocation, assertPromotionActor } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const invocation = resolveProductionInvocation(process.env, context.payload);
+            if (invocation.promotion_mode === "operator") {
+              await assertPromotionActor({
+                github, ...context.repo, mode: "operator",
+                env: { ...process.env, RESOLVED_SHA: invocation.sha },
+              });
+            }
+            for (const [name, value] of Object.entries(invocation)) core.setOutput(name, value);
 
-      # A manually dispatched SHA is arbitrary operator input and must have
-      # successful push CI and be on the branch authorized for its stage:
-      # foundation may come from protected develop/azure; full requires main.
-      - name: Verify manually-dispatched SHA branch and successful push CI
+      - name: Verify exact main SHA has successful push CI
         env:
           RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
           DEPLOYMENT_STAGE: ${{ steps.resolve.outputs.deployment_stage }}
           TARGET_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          target_branch=main
-          if [ "${DEPLOYMENT_STAGE}" = "foundation" ]; then
-            target_branch=develop/azure
-          fi
           .github/scripts/azure/verify-deploy-sha.sh \
             --sha "${RESOLVED_SHA}" \
-            --branch "${target_branch}" \
+            --branch main \
             --repo "${TARGET_REPO}" \
             --ci-workflow ci.yml
 
+      - name: Admit current main and verified full development evidence
+        id: development
+        uses: actions/github-script@v9
+        env:
+          RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
+          DEPLOYMENT_STAGE: ${{ steps.resolve.outputs.deployment_stage }}
+          PROMOTION_MODE: ${{ steps.resolve.outputs.promotion_mode }}
+          TRIGGERED_DEVELOPMENT_RUN_ID: ${{ steps.resolve.outputs.development_run_id }}
+          TRIGGERED_DEVELOPMENT_RUN_ATTEMPT: ${{ steps.resolve.outputs.development_run_attempt }}
+        with:
+          script: |
+            const { assertCurrentMain, loadLatestDevelopmentReceipt, assertProductionFactoryMode } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const options = {
+              github, ...context.repo, repositoryId: Number(process.env.GITHUB_REPOSITORY_ID),
+              releaseSha: process.env.RESOLVED_SHA,
+            };
+            await assertProductionFactoryMode({
+              ...options, core, eventName: process.env.GITHUB_EVENT_NAME,
+              promotionMode: process.env.PROMOTION_MODE,
+            });
+            if (process.env.DEPLOYMENT_STAGE === "full") {
+              const receipt = await loadLatestDevelopmentReceipt({
+                ...options,
+                ...(process.env.GITHUB_EVENT_NAME === "workflow_run" ? {
+                  expectedRunId: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ID),
+                  expectedRunAttempt: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ATTEMPT),
+                } : {}),
+              });
+              core.setOutput("run_id", receipt.runId);
+              core.setOutput("run_attempt", receipt.runAttempt);
+              core.setOutput("workflow_id", receipt.workflowId);
+            } else {
+              await assertCurrentMain(options);
+            }
+
   force-disable-rollout:
-    name: Detect current release and force disabled/Manual before infrastructure mutation
+    name: Admit current release before any disabled/Manual cutover
     # Uses the `production-promotion` Environment/identity -- NOT
     # `production-deploy` -- for the rollout.bicep deploy specifically.
     # infra/README.md's GitHub Environments table documents this as a
@@ -146,23 +218,65 @@ jobs:
     # Environment approval gate."
     needs: gate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     environment: production-promotion
     permissions:
       contents: read
+      actions: read
+      deployments: read
+      issues: read
       id-token: write
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      DEPLOYMENT_STAGE: ${{ needs.gate.outputs.deployment_stage }}
+      PROMOTION_MODE: ${{ needs.gate.outputs.promotion_mode }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      DEVELOPMENT_RUN_ID: ${{ needs.gate.outputs.development_run_id }}
+      DEVELOPMENT_RUN_ATTEMPT: ${{ needs.gate.outputs.development_run_attempt }}
     outputs:
       existing_release: ${{ steps.detect.outputs.existing_release }}
+      postgres_exists: ${{ steps.detect.outputs.postgres_exists }}
+      foundation_kind: ${{ steps.detect.outputs.foundation_kind }}
+      candidate_sha: ${{ needs.gate.outputs.sha }}
       current_sha: ${{ steps.current.outputs.sha }}
       current_digest: ${{ steps.current.outputs.digest }}
       evidence_container_url: ${{ steps.live.outputs.evidence_container_url }}
+      target_origin: ${{ steps.live.outputs.target_origin }}
+      admission_status: ${{ steps.admission.outputs.status }}
+      fence_owner: ${{ steps.admission.outputs.owner }}
+      promotion_authority: ${{ steps.promotion.outputs.authority }}
+      promotion_mode: ${{ steps.promotion.outputs.mode }}
+      recovery_context: ${{ steps.recovery.outputs.context }}
     steps:
       - name: Checkout ${{ needs.gate.outputs.sha }}
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Revalidate development admission before Azure access
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { assertCurrentMain, loadLatestDevelopmentReceipt, assertProductionFactoryMode } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const options = {
+              github, ...context.repo, repositoryId: Number(process.env.GITHUB_REPOSITORY_ID),
+              releaseSha: process.env.RESOLVED_SHA,
+            };
+            if (process.env.DEPLOYMENT_STAGE === "full") {
+              await loadLatestDevelopmentReceipt({
+                ...options, expectedRunId: Number(process.env.DEVELOPMENT_RUN_ID),
+                expectedRunAttempt: Number(process.env.DEVELOPMENT_RUN_ATTEMPT),
+              });
+            } else {
+              await assertCurrentMain(options);
+            }
+            await assertProductionFactoryMode({
+              ...options, core, eventName: process.env.GITHUB_EVENT_NAME,
+              promotionMode: process.env.PROMOTION_MODE,
+            });
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -175,41 +289,16 @@ jobs:
         id: detect
         run: |
           set -euo pipefail
-          jobs_json="$(az containerapp job list \
-            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
-            --output json)"
-          apps_json="$(az containerapp list \
-            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
-            --output json)"
-          required_jobs=(
-            "${PROD_HOURLY_JOB_NAME}"
-            "${PROD_DAILY_JOB_NAME}"
-            "${MIGRATE_INIT_JOB_NAME}"
-            "${PREFLIGHT_JOB_NAME}"
-            "${VERIFIED_BACKUP_JOB_NAME}"
-            "${TARGET_SMOKE_JOB_NAME}"
-            "${ACTIVATION_CHECK_JOB_NAME}"
-          )
-          present=0
-          for job_name in "${required_jobs[@]}"; do
-            if printf '%s' "${jobs_json}" | jq -e --arg name "${job_name}" 'any(.[]; .name == $name)' >/dev/null; then
-              present=$((present + 1))
-            fi
-          done
-          if printf '%s' "${apps_json}" | jq -e --arg name "${WEB_APP_NAME}" 'any(.[]; .name == $name)' >/dev/null; then
-            present=$((present + 1))
-          fi
-
-          if [ "${present}" -eq 8 ]; then
-            echo "existing_release=true" >> "$GITHUB_OUTPUT"
-            echo "A complete existing release was detected."
-          elif [ "${present}" -eq 0 ]; then
-            echo "existing_release=false" >> "$GITHUB_OUTPUT"
-            echo "No release resources were found -- using the explicit fresh-deploy path."
-          else
-            echo "Found ${present}/8 deterministic release resources. Partial state is neither a safe current release nor a proven-fresh environment." >&2
+          inventory="$(bash .github/scripts/azure/read-production-inventory.sh)"
+          existing="$(printf '%s' "${inventory}" | jq -er '.existingRelease | tostring')"
+          if [ "${existing}" = true ] && [ "${DEPLOYMENT_STAGE}" = foundation ]; then
+            echo "Foundation is for a fresh environment only; existing releases require a full owned cutover." >&2
             exit 1
           fi
+          echo "existing_release=${existing}" >> "$GITHUB_OUTPUT"
+          echo "postgres_exists=$(printf '%s' "${inventory}" | jq -er '.postgresExists | tostring')" >> "$GITHUB_OUTPUT"
+          echo "foundation_kind=$(printf '%s' "${inventory}" | jq -er '.kind')" >> "$GITHUB_OUTPUT"
+          echo "Resource inventory classified; missing workloads do not authorize database initialization."
 
       - name: Resolve the currently-deployed release SHA and image digest
         id: current
@@ -223,6 +312,10 @@ jobs:
             --query "properties.template.containers[0].env[?name=='RELEASE_SHA'].value | [0]" \
             --output tsv)"
           current_sha="$(azure_validate_release_sha "${current_sha}")"
+          if ! git merge-base --is-ancestor "${current_sha}" "${RESOLVED_SHA}"; then
+            echo "The requested production release would replace a newer or unrelated source release." >&2
+            exit 1
+          fi
           echo "sha=${current_sha}" >> "$GITHUB_OUTPUT"
 
           current_image="$(az containerapp show \
@@ -285,6 +378,18 @@ jobs:
            --query primaryEndpoints.blob \
            --output tsv)"
           evidence_container_url="$(azure_validate_container_url "${blob_endpoint%/}/evidence")"
+          target_origin="$(az containerapp show \
+           --name "${WEB_APP_NAME}" \
+           --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+           --query "properties.template.containers[0].env[?name=='APP_ORIGIN'].value | [0]" \
+           --output tsv)"
+          node -e '
+            const value = process.argv[1];
+            const url = new URL(value);
+            if (url.protocol !== "https:" || url.origin !== value) {
+              throw new Error("The current APP_ORIGIN must be a bare HTTPS origin.");
+            }
+          ' "${target_origin}"
 
           for pair in \
            "container_apps_environment_id=${cae_id}" \
@@ -311,6 +416,55 @@ jobs:
           echo "scheduler_identity_id=${scheduler_identity_id}" >> "$GITHUB_OUTPUT"
           echo "communication_email_sender=${communication_email_sender}" >> "$GITHUB_OUTPUT"
           echo "evidence_container_url=${evidence_container_url}" >> "$GITHUB_OUTPUT"
+          echo "target_origin=${target_origin}" >> "$GITHUB_OUTPUT"
+
+      - name: Bind optional paper promotion before any healthy-release mutation
+        id: promotion
+        uses: actions/github-script@v9
+        env:
+          EXISTING_RELEASE: ${{ steps.detect.outputs.existing_release }}
+          EVIDENCE_CONTAINER_URL: ${{ steps.live.outputs.evidence_container_url }}
+        with:
+          script: |
+            const { resolvePromotionAuthority } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const authority = await resolvePromotionAuthority({
+              github, core, ...context.repo, env: process.env,
+            });
+            core.setOutput("authority", authority);
+            core.setOutput("mode", authority.mode);
+            core.notice(`Production promotion admission: ${authority.mode}.`);
+
+      - name: Capture the exact source recovery binding before fence acquisition
+        id: recovery
+        if: steps.detect.outputs.existing_release == 'true'
+        uses: actions/github-script@v9
+        env:
+          CURRENT_SHA: ${{ steps.current.outputs.sha }}
+          CURRENT_WEB_DIGEST_HEX: ${{ steps.current.outputs.digest }}
+          TARGET_ORIGIN: ${{ steps.live.outputs.target_origin }}
+          EVIDENCE_CONTAINER_URL: ${{ steps.live.outputs.evidence_container_url }}
+          ROLLOUT_VALUES: ${{ toJSON(steps.live.outputs) }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { captureProductionRecovery } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const recovery = await captureProductionRecovery({ env: process.env });
+            fs.mkdirSync("production-cutover-context", { recursive: true });
+            fs.writeFileSync("production-cutover-context/context.json", JSON.stringify(recovery) + "\n", { flag: "wx" });
+            core.setOutput("context", recovery);
+
+      - name: Retain the nonsecret source binding before any cutover mutation
+        if: steps.detect.outputs.existing_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-cutover-context-${{ github.run_id }}-${{ github.run_attempt }}
+          path: production-cutover-context/context.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Render rollout.prod.bicepparam from live state (disabled/Manual)
         if: steps.detect.outputs.existing_release == 'true'
@@ -345,13 +499,71 @@ jobs:
            --output json > /tmp/whatif-rollout-force-disabled.json
           node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-rollout-force-disabled.json
 
-      - name: Force rollout.bicep to disabled/Manual before touching infrastructure
+      - name: Acquire the exact source release's owned cutover fence
+        id: admission
         if: steps.detect.outputs.existing_release == 'true'
         env:
+          CURRENT_SHA: ${{ steps.current.outputs.sha }}
+          CURRENT_WEB_DIGEST_HEX: ${{ steps.current.outputs.digest }}
+          TARGET_ORIGIN: ${{ steps.live.outputs.target_origin }}
+          EVIDENCE_CONTAINER_URL: ${{ steps.live.outputs.evidence_container_url }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          owner="$(azure_deployment_fence_owner)"
+          echo "owner=${owner}" >> "$GITHUB_OUTPUT"
+          execution_id="$(azure_new_job_execution_id deployment-admission acquire)"
+          status=0
+          bash .github/scripts/azure/run-deployment-admission.sh \
+            --action acquire --owner "${owner}" \
+            --source-release-sha "${CURRENT_SHA}" \
+            --candidate-release-sha "${RESOLVED_SHA}" \
+            --source-image-digest "sha256:${CURRENT_WEB_DIGEST_HEX}" \
+            --job-release-sha "${CURRENT_SHA}" \
+            --target-origin "${TARGET_ORIGIN}" \
+            --job-name "${ACTIVATION_CHECK_JOB_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --job-execution-id "${execution_id}" \
+            --destination evidence-admission \
+            --timeout-seconds 600 || status=$?
+          if [ "${status}" -eq 75 ]; then
+            echo "status=deferred" >> "$GITHUB_OUTPUT"
+            echo "Production deployment DEFERRED. The source release, schedules, credentials, and balances were not changed." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${status}" -eq 0 ]; then
+            binding="$(jq -cn \
+              --arg owner "${owner}" \
+              --arg source "${CURRENT_SHA}" \
+              --arg candidate "${RESOLVED_SHA}" \
+              --arg digest "${CURRENT_WEB_DIGEST_HEX}" \
+              --arg origin "${TARGET_ORIGIN}" \
+              --arg evidence "${EVIDENCE_CONTAINER_URL}" \
+              '{existing_release:"true", admission_status:"admitted",
+                fence_owner:$owner, current_sha:$source, candidate_sha:$candidate,
+                current_digest:$digest, target_origin:$origin, evidence_container_url:$evidence}')"
+            echo "binding=${binding}" >> "$GITHUB_OUTPUT"
+            echo "status=admitted" >> "$GITHUB_OUTPUT"
+          else
+            echo "Production admission failed; no cutover is authorized." >&2
+            exit 1
+          fi
+
+      - name: Force rollout.bicep to disabled/Manual before touching infrastructure
+        if: steps.admission.outputs.status == 'admitted'
+        env:
+          CUTOVER_BINDING_JSON: ${{ steps.admission.outputs.binding }}
           CURRENT_WEB_DIGEST_HEX: ${{ steps.current.outputs.digest }}
           LIVE_ACR_LOGIN_SERVER: ${{ steps.live.outputs.acr_login_server }}
         run: |
           set -euo pipefail
+          current_image="$(az containerapp show \
+           --name "${WEB_APP_NAME}" --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+           --query "properties.template.containers[0].image" --output tsv)"
+          if [ "${current_image}" != "${LIVE_ACR_LOGIN_SERVER}/krypto-web@sha256:${CURRENT_WEB_DIGEST_HEX}" ]; then
+            echo "The source image changed after admission; refusing a stale cutover." >&2
+            exit 1
+          fi
+          bash .github/scripts/azure/revalidate-deployment-fence.sh source check-disable
           az deployment group create \
            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
            --name "roll-prod-force-disable-${RESOLVED_SHA}" \
@@ -393,9 +605,12 @@ jobs:
           done
 
       - name: Disable missing-success monitoring after prod jobs are Manual
-        if: steps.detect.outputs.existing_release == 'true'
+        if: steps.admission.outputs.status == 'admitted'
+        env:
+          CUTOVER_BINDING_JSON: ${{ steps.admission.outputs.binding }}
         run: |
           set -euo pipefail
+          bash .github/scripts/azure/revalidate-deployment-fence.sh source check-monitor
           az deployment group create \
             --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
             --name "mon-pfd-${RESOLVED_SHA:0:12}-${GITHUB_RUN_ID}" \
@@ -410,6 +625,31 @@ jobs:
             exit 1
           fi
 
+      - name: Verify old execution paths are quiescent while the fence is held
+        if: steps.admission.outputs.status == 'admitted'
+        env:
+          CURRENT_WEB_DIGEST_HEX: ${{ steps.current.outputs.digest }}
+          LIVE_ACR_LOGIN_SERVER: ${{ steps.live.outputs.acr_login_server }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/azure/verify-disabled-rollout.sh \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --web-app "${WEB_APP_NAME}" \
+            --hourly-job "${PROD_HOURLY_JOB_NAME}" \
+            --daily-job "${PROD_DAILY_JOB_NAME}" \
+            --image "${LIVE_ACR_LOGIN_SERVER}/krypto-web@sha256:${CURRENT_WEB_DIGEST_HEX}"
+
+      - name: Publish admitted, deferred, or blocked cutover evidence
+        if: always() && steps.detect.outputs.existing_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            evidence-admission/
+            evidence-cutover/
+          if-no-files-found: warn
+          retention-days: 90
+
   backup-current-release:
     name: Preflight + verified-backup current release before environment.bicep
     needs: [gate, force-disable-rollout]
@@ -417,6 +657,7 @@ jobs:
       always() &&
       needs.gate.result == 'success' &&
       needs.force-disable-rollout.result == 'success' &&
+      needs.force-disable-rollout.outputs.admission_status == 'admitted' &&
       needs.force-disable-rollout.outputs.existing_release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -425,6 +666,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      CUTOVER_BINDING_JSON: ${{ toJSON(needs.force-disable-rollout.outputs) }}
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       CURRENT_SHA: ${{ needs.force-disable-rollout.outputs.current_sha }}
       EVIDENCE_CONTAINER_URL: ${{ needs.force-disable-rollout.outputs.evidence_container_url }}
@@ -449,6 +691,9 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Revalidate cutover ownership before current-release backup
+        run: bash .github/scripts/azure/revalidate-deployment-fence.sh source check-backup
 
       - name: Run preflight on the current release
         run: |
@@ -508,7 +753,8 @@ jobs:
     needs: [gate, force-disable-rollout, backup-current-release]
     # A skipped backup is accepted only for the explicitly proven-fresh
     # path. Any partial/failed current-release safety path blocks all
-    # infrastructure mutation, including PostgreSQL credential rotation.
+    # infrastructure mutation. Existing-release updates never rotate the
+    # PostgreSQL administrator password beneath the source ops jobs.
     if: >-
       always() &&
       needs.gate.result == 'success' &&
@@ -524,6 +770,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      CUTOVER_BINDING_JSON: ${{ toJSON(needs.force-disable-rollout.outputs) }}
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
     outputs:
       acr_name: ${{ steps.outputs.outputs.acr_name }}
@@ -595,17 +842,30 @@ jobs:
           echo "principal_id=${principal_id}" >> "$GITHUB_OUTPUT"
 
       - name: Render environment.prod.bicepparam
+        env:
+          FOUNDATION_KIND: ${{ needs.force-disable-rollout.outputs.foundation_kind }}
         run: |
           set -euo pipefail
+          case "${FOUNDATION_KIND}" in
+            new) credential_mode=initialize; access_mode=initialize ;;
+            existing|inspect) credential_mode=preserve; access_mode=none ;;
+            *)
+              echo "PostgreSQL credentials require an explicit database/foundation inventory result." >&2
+              exit 1
+              ;;
+          esac
           node .github/scripts/azure/render-bicepparam.mjs \
             --template infra/params/environment.prod.bicepparam \
             --out /tmp/environment.prod.resolved.bicepparam \
             --set REPLACE_WITH_BOOTSTRAP_PROD_DEPLOY_IDENTITY_PRINCIPAL_ID="${{ steps.identity.outputs.principal_id }}" \
-            --set REPLACE_WITH_BOOTSTRAP_PROD_PROMOTION_IDENTITY_PRINCIPAL_ID="${{ steps.identity_promotion.outputs.principal_id }}"
+            --set REPLACE_WITH_BOOTSTRAP_PROD_PROMOTION_IDENTITY_PRINCIPAL_ID="${{ steps.identity_promotion.outputs.principal_id }}" \
+            --set-string-param postgresCredentialMode="${credential_mode}" \
+            --set-string-param bootstrapDatabaseAccessMode="${access_mode}"
 
       - name: What-if infra/environment.bicep
         env:
           POSTGRES_ADMIN_PASSWORD_PROD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
         run: |
           set -euo pipefail
           az deployment group what-if \
@@ -657,9 +917,32 @@ jobs:
                (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "disabled"))' >/dev/null
           done
 
+      - name: Build the inspection-only image for an existing empty foundation
+        if: needs.force-disable-rollout.outputs.foundation_kind == 'inspect'
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          out="$(.github/scripts/azure/build-and-resolve-digest.sh \
+            --registry "${ACR_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --repository krypto-bootstrap-ops \
+            --target ops \
+            --tag "${RESOLVED_SHA}")"
+          digest="$(printf '%s' "${out}" | grep '^digest=' | cut -d= -f2)"
+          digest="$(azure_validate_image_digest "${digest}")"
+          echo "FRESH_INSPECTION_OPS_DIGEST=${digest}" >> "$GITHUB_ENV"
+          echo "FRESH_INSPECTION_IMAGE_REPOSITORY=krypto-bootstrap-ops" >> "$GITHUB_ENV"
+
+      - name: Revalidate cutover ownership before foundation mutation
+        env:
+          POSTGRES_ADMIN_PASSWORD_PROD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
+        run: bash .github/scripts/azure/revalidate-deployment-fence.sh source check-env
+
       - name: Deploy infra/environment.bicep
         env:
           POSTGRES_ADMIN_PASSWORD_PROD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
         run: |
           set -euo pipefail
           az deployment group create \
@@ -790,9 +1073,18 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      - name: Publish foundation database inspection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-bootstrap-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence-bootstrap/
+          if-no-files-found: warn
+          retention-days: 90
+
   build-images:
     name: Build web/ops images and resolve digests (prod)
-    needs: [gate, deploy-environment]
+    needs: [gate, force-disable-rollout, deploy-environment]
     if: >-
       always() &&
       needs.gate.result == 'success' &&
@@ -805,6 +1097,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      CUTOVER_BINDING_JSON: ${{ toJSON(needs.force-disable-rollout.outputs) }}
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       ACR_NAME: ${{ needs.deploy-environment.outputs.acr_name }}
     outputs:
@@ -822,6 +1115,9 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Revalidate cutover ownership before publishing images
+        run: bash .github/scripts/azure/revalidate-deployment-fence.sh source check-images
 
       - name: Build web image and resolve digest
         id: web
@@ -882,6 +1178,7 @@ jobs:
       contents: read
       id-token: write
     env:
+      CUTOVER_BINDING_JSON: ${{ toJSON(needs.force-disable-rollout.outputs) }}
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
     outputs:
       migrate_init_job_name: ${{ steps.outputs.outputs.migrate_init_job_name }}
@@ -904,6 +1201,7 @@ jobs:
 
       - name: Render release.prod.bicepparam
         env:
+          EXISTING_RELEASE: ${{ needs.force-disable-rollout.outputs.existing_release }}
           ENV_CONTAINER_APPS_ENVIRONMENT_ID: ${{ needs.deploy-environment.outputs.container_apps_environment_id }}
           ENV_ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
           ENV_RUNTIME_IDENTITY_ID: ${{ needs.deploy-environment.outputs.runtime_identity_id }}
@@ -921,6 +1219,11 @@ jobs:
           BUILD_OPS_DIGEST_HEX: ${{ needs.build-images.outputs.ops_digest_hex }}
         run: |
           set -euo pipefail
+          case "${EXISTING_RELEASE}" in
+            true) direct_url_mode=update ;;
+            false) direct_url_mode=preserve ;;
+            *) echo "Direct database binding mode requires explicit release inventory." >&2; exit 1 ;;
+          esac
           node .github/scripts/azure/render-bicepparam.mjs \
             --template infra/params/release.prod.bicepparam \
             --out /tmp/release.prod.resolved.bicepparam \
@@ -939,7 +1242,8 @@ jobs:
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${ENV_COMMUNICATION_EMAIL_SENDER}" \
             --set REPLACE_WITH_PUSHED_WEB_DIGEST="${BUILD_WEB_DIGEST_HEX}" \
             --set REPLACE_WITH_PUSHED_OPS_DIGEST="${BUILD_OPS_DIGEST_HEX}" \
-            --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${RESOLVED_SHA}"
+            --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${RESOLVED_SHA}" \
+            --set-string-param directUrlBindingMode="${direct_url_mode}"
 
       - name: What-if infra/release.bicep
         env:
@@ -963,6 +1267,13 @@ jobs:
 
       - name: Reject unsafe what-if deletes
         run: node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-release.json
+
+      - name: Revalidate cutover ownership before release mutation
+        env:
+          FRESH_INSPECTION_OPS_DIGEST: sha256:${{ needs.build-images.outputs.ops_digest_hex }}
+          DATABASE_URL_PROD: ${{ secrets.DATABASE_URL }}
+          RUNTIME_DATABASE_PASSWORD_PROD: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
+        run: bash .github/scripts/azure/revalidate-deployment-fence.sh source check-release
 
       - name: Deploy infra/release.bicep
         env:
@@ -999,9 +1310,18 @@ jobs:
             echo "${snake}=${value}" >> "$GITHUB_OUTPUT"
           done
 
-  migrate-backup-smoke:
-    name: migrate-init -> baseline verified-backup -> target-smoke (new release)
-    needs: [gate, deploy-environment, deploy-release, build-images]
+      - name: Publish pre-release database inspection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-bootstrap-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence-bootstrap/
+          if-no-files-found: warn
+          retention-days: 90
+
+  migrate-backup:
+    name: Migrate and restore-verify the candidate while its fence is held
+    needs: [gate, force-disable-rollout, deploy-environment, deploy-release, build-images]
     if: >-
       always() &&
       needs.gate.result == 'success' &&
@@ -1015,13 +1335,14 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      job_execution_id: ${{ steps.baseline_backup.outputs.job_execution_id }}
     env:
+      CUTOVER_BINDING_JSON: ${{ toJSON(needs.force-disable-rollout.outputs) }}
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
       MIGRATE_INIT_JOB_NAME: ${{ needs.deploy-release.outputs.migrate_init_job_name }}
       VERIFIED_BACKUP_JOB_NAME_NEW: ${{ needs.deploy-release.outputs.verified_backup_job_name }}
-      TARGET_SMOKE_JOB_NAME_NEW: ${{ needs.deploy-release.outputs.target_smoke_job_name }}
-      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
     steps:
       - name: Checkout ${{ needs.gate.outputs.sha }}
         uses: actions/checkout@v4
@@ -1044,16 +1365,33 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Revalidate cutover ownership before migration
+        env:
+          FRESH_INSPECTION_OPS_DIGEST: sha256:${{ needs.build-images.outputs.ops_digest_hex }}
+          FRESH_DATABASE_CONFIG_OUTPUT: /tmp/fresh-migration-config.json
+        run: bash .github/scripts/azure/revalidate-deployment-fence.sh candidate check-migrate
+
       - name: Run migrate-init (new release)
+        env:
+          EXISTING_RELEASE: ${{ needs.force-disable-rollout.outputs.existing_release }}
         run: |
           set -euo pipefail
           source .github/scripts/azure/lib/common.sh
           job_execution_id="$(azure_new_job_execution_id migrate-init)"
+          migration_args=()
+          case "${EXISTING_RELEASE}" in
+            false)
+              migration_args=(--fresh-migration-config "$(cat /tmp/fresh-migration-config.json)")
+              ;;
+            true) ;;
+            *) echo "Migration requires explicit fresh or owned-existing admission." >&2; exit 1 ;;
+          esac
           .github/scripts/azure/run-ops-job.sh \
             --job-name "${MIGRATE_INIT_JOB_NAME}" \
             --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
             --job-execution-id "${job_execution_id}" \
-            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}" \
+            "${migration_args[@]}"
           .github/scripts/azure/download-evidence.sh \
             --container-url "${EVIDENCE_CONTAINER_URL}" \
             --environment-name prod \
@@ -1067,6 +1405,7 @@ jobs:
             --release-sha "${RESOLVED_SHA}"
 
       - name: Create and restore-verify a fresh baseline backup (new release)
+        id: baseline_backup
         run: |
           set -euo pipefail
           source .github/scripts/azure/lib/common.sh
@@ -1087,6 +1426,208 @@ jobs:
             --report "evidence/prod/${RESOLVED_SHA}/verified-backup/${job_execution_id}/report.json" \
             --operation verified-backup \
             --release-sha "${RESOLVED_SHA}"
+          echo "job_execution_id=${job_execution_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish migration and baseline backup evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-prod-migration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Publish pre-migration database inspection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-bootstrap-migration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence-bootstrap/
+          if-no-files-found: warn
+          retention-days: 90
+
+  release-cutover-fence:
+    name: Persist the quiescent cutover release checkpoint
+    needs: [gate, force-disable-rollout, deploy-environment, deploy-release, build-images, migrate-backup]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.force-disable-rollout.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.deploy-release.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.migrate-backup.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      status: ${{ steps.release.outputs.status }}
+    env:
+      EXISTING_RELEASE: ${{ needs.force-disable-rollout.outputs.existing_release }}
+      ADMISSION_STATUS: ${{ needs.force-disable-rollout.outputs.admission_status }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+      CURRENT_SHA: ${{ needs.force-disable-rollout.outputs.current_sha }}
+      CURRENT_WEB_DIGEST_HEX: ${{ needs.force-disable-rollout.outputs.current_digest }}
+      FENCE_OWNER: ${{ needs.force-disable-rollout.outputs.fence_owner }}
+      TARGET_ORIGIN: ${{ needs.force-disable-rollout.outputs.target_origin }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up the supported Node runtime for cutover attestation
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked attestation dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify the new disabled release before releasing its cutover fence
+        id: release
+        run: |
+          set -euo pipefail
+          case "${EXISTING_RELEASE}" in
+            false) ;;
+            true)
+              if [ "${ADMISSION_STATUS}" != "admitted" ]; then
+                echo "An existing release requires its original admitted cutover binding." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Cutover release requires an explicit release inventory result." >&2
+              exit 1
+              ;;
+          esac
+          bash .github/scripts/azure/verify-disabled-rollout.sh \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --web-app "${WEB_APP_NAME}" \
+            --hourly-job "${PROD_HOURLY_JOB_NAME}" \
+            --daily-job "${PROD_DAILY_JOB_NAME}" \
+            --image "${ACR_LOGIN_SERVER}/krypto-web@sha256:${WEB_DIGEST_HEX}"
+          if [ "${EXISTING_RELEASE}" = "false" ]; then
+            echo "status=fresh" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          source .github/scripts/azure/lib/common.sh
+          execution_id="$(azure_new_job_execution_id deployment-admission release)"
+          umask 077
+          proof_dir="$(mktemp -d "${RUNNER_TEMP}/krypto-cutover-proof.XXXXXX")"
+          cleanup() {
+            rm -f "${proof_dir}/proof.json" "${proof_dir}/receipt.json"
+            rmdir "${proof_dir}"
+          }
+          trap cleanup EXIT
+          node --import tsx scripts/azure/attest-cutover-state.ts \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --web-app "${WEB_APP_NAME}" \
+            --hourly-job "${PROD_HOURLY_JOB_NAME}" \
+            --daily-job "${PROD_DAILY_JOB_NAME}" \
+            --ops-job "${ACTIVATION_CHECK_JOB_NAME}" \
+            --expected-image "${ACR_LOGIN_SERVER}/krypto-web@sha256:${WEB_DIGEST_HEX}" \
+            --owner "${FENCE_OWNER}" \
+            --source-release-sha "${CURRENT_SHA}" \
+            --source-image-digest "sha256:${CURRENT_WEB_DIGEST_HEX}" \
+            --candidate-release-sha "${RESOLVED_SHA}" \
+            --runtime-release-sha "${RESOLVED_SHA}" \
+            --job-execution-id "${execution_id}" \
+            --proof-output "${proof_dir}/proof.json" \
+            --receipt-output "${proof_dir}/receipt.json"
+          observation_digest="$(jq -er '.observationDigest | select(test("^[0-9a-f]{64}$"))' "${proof_dir}/receipt.json")"
+          bash .github/scripts/azure/run-deployment-admission.sh \
+            --action release --owner "${FENCE_OWNER}" \
+            --source-release-sha "${CURRENT_SHA}" \
+            --candidate-release-sha "${RESOLVED_SHA}" \
+            --source-image-digest "sha256:${CURRENT_WEB_DIGEST_HEX}" \
+            --job-release-sha "${RESOLVED_SHA}" \
+            --target-origin "${TARGET_ORIGIN}" \
+            --job-name "${ACTIVATION_CHECK_JOB_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --container-url "${EVIDENCE_CONTAINER_URL}" \
+            --job-execution-id "${execution_id}" \
+            --workflow-observation-proof "${proof_dir}/proof.json" \
+            --workflow-observation-digest "${observation_digest}" \
+            --destination evidence \
+            --timeout-seconds 600
+          echo "status=released" >> "$GITHUB_OUTPUT"
+
+      - name: Publish cutover release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-deploy-prod-cutover-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 90
+
+  target-smoke:
+    name: Verify and approve the released disabled candidate
+    needs: [gate, deploy-environment, deploy-release, build-images, release-cutover-fence]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.deploy-release.result == 'success' &&
+      needs.build-images.result == 'success' &&
+      needs.release-cutover-fence.result == 'success' &&
+      (needs.release-cutover-fence.outputs.status == 'released' ||
+       needs.release-cutover-fence.outputs.status == 'fresh') &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      job_execution_id: ${{ steps.target_smoke.outputs.job_execution_id }}
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      EVIDENCE_CONTAINER_URL: ${{ needs.deploy-environment.outputs.evidence_container_url }}
+      TARGET_SMOKE_JOB_NAME_NEW: ${{ needs.deploy-release.outputs.target_smoke_job_name }}
+      WEB_DIGEST_HEX: ${{ needs.build-images.outputs.web_digest_hex }}
+      ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
+    steps:
+      - name: Checkout ${{ needs.gate.outputs.sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Recheck the disabled candidate before every smoke attempt
+        run: |
+          set -euo pipefail
+          bash .github/scripts/azure/verify-disabled-rollout.sh \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --web-app "${WEB_APP_NAME}" \
+            --hourly-job "${PROD_HOURLY_JOB_NAME}" \
+            --daily-job "${PROD_DAILY_JOB_NAME}" \
+            --image "${ACR_LOGIN_SERVER}/krypto-web@sha256:${WEB_DIGEST_HEX}"
 
       - name: Run target-smoke (new release)
         id: target_smoke
@@ -1125,7 +1666,7 @@ jobs:
             echo "- image digest: \`sha256:${WEB_DIGEST_HEX}\`"
             echo "- target_smoke_execution_id: \`${TARGET_SMOKE_EXECUTION_ID}\`"
             echo ""
-            echo "No production promotion workflow is shipped or approved. Preserve this exact evidence ID for any future independently reviewed promotion design."
+            echo "This proves the disabled release only. Paper promotion requires its separate authority, fresh readiness and scheduled PAPER evidence."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish downloaded evidence
@@ -1137,10 +1678,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
-      - name: Confirm this workflow ends disabled/Manual
+      - name: Confirm the release stage ends disabled/Manual
         run: |
           echo "release.bicep hardcodes ROLLOUT_MODE=disabled and triggerType=Manual regardless of parameters."
-          echo "No executable production shadow/paper promotion workflow is shipped."
+          echo "A separate, authority-checked phase is required before any paper schedule can be enabled."
 
   verify-final-state:
     name: Verify live prod disabled/Manual, no schedule, and exact SHA/digests
@@ -1150,7 +1691,7 @@ jobs:
         deploy-environment,
         deploy-release,
         build-images,
-        migrate-backup-smoke,
+        target-smoke,
       ]
     if: >-
       always() &&
@@ -1158,7 +1699,7 @@ jobs:
       needs.deploy-environment.result == 'success' &&
       needs.deploy-release.result == 'success' &&
       needs.build-images.result == 'success' &&
-      needs.migrate-backup-smoke.result == 'success' &&
+      needs.target-smoke.result == 'success' &&
       needs.gate.outputs.deployment_stage == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1166,6 +1707,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      target_origin: ${{ steps.verify.outputs.target_origin }}
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       ACR_NAME_DEPLOYED: ${{ needs.deploy-environment.outputs.acr_name }}
@@ -1193,6 +1736,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Verify the live disabled release and immutable image binding
+        id: verify
         run: |
           set -euo pipefail
           source .github/scripts/azure/lib/common.sh
@@ -1272,4 +1816,565 @@ jobs:
             echo "The commit-SHA image tags no longer resolve to the exact deployed immutable digests." >&2
             exit 1
           fi
+          target_origin="$(printf '%s' "${web_json}" | jq -er '
+            .properties as $web
+            | [$web.template.containers[0].env[] | select(.name == "APP_ORIGIN")] as $origins
+            | if ($origins | length) == 1 and
+                 ($web.configuration.ingress.fqdn | type) == "string" and
+                 $origins[0].value == ("https://" + $web.configuration.ingress.fqdn)
+              then $origins[0].value else error("The live target origin is not exact") end')"
+          echo "target_origin=${target_origin}" >> "$GITHUB_OUTPUT"
           echo "Verified live prod state: disabled, both scheduler jobs Manual with no schedule, release ${release_sha}, web ${web_digest}, ops ${ops_digest}."
+
+  publish-release-receipt:
+    name: Publish an immutable full-release or deferral receipt
+    needs:
+      [gate, force-disable-rollout, deploy-environment, build-images, deploy-release,
+       migrate-backup, release-cutover-fence, target-smoke, verify-final-state]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      receipt: ${{ steps.receipt.outputs.receipt }}
+      status: ${{ steps.receipt.outputs.status }}
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      RELEASE_JOB_RESULTS: ${{ toJSON(needs) }}
+    steps:
+      - name: Check out the trusted workflow implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Create the attempt-bound production receipt
+        id: receipt
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { createReleaseReceipt, receiptName } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const receipt = createReleaseReceipt(process.env, JSON.parse(process.env.RELEASE_JOB_RESULTS));
+            fs.mkdirSync("production-receipt", { recursive: true });
+            fs.writeFileSync("production-receipt/receipt.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("name", receiptName("release", receipt.releaseSha, receipt.runId, receipt.runAttempt));
+            core.setOutput("receipt", receipt);
+            core.setOutput("status", receipt.status);
+            core.notice(`Production release outcome: ${receipt.status}. This is not paper-promotion evidence.`);
+      - name: Retain the immutable production receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.receipt.outputs.name }}
+          path: production-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+  prepare-paper:
+    name: Prepare a fresh zero-fill production shadow proof
+    needs: [gate, force-disable-rollout, deploy-environment, publish-release-receipt]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.force-disable-rollout.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.publish-release-receipt.result == 'success' &&
+      needs.publish-release-receipt.outputs.status == 'disabled' &&
+      (needs.force-disable-rollout.outputs.promotion_mode == 'operator' ||
+       needs.force-disable-rollout.outputs.promotion_mode == 'continuous')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production-promotion
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+      issues: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_RELEASE: ${{ needs.publish-release-receipt.outputs.receipt }}
+      PROMOTION_AUTHORITY: ${{ needs.force-disable-rollout.outputs.promotion_authority }}
+      ROLLOUT_VALUES: ${{ toJSON(needs.deploy-environment.outputs) }}
+    outputs:
+      preparation: ${{ steps.prepare.outputs.preparation }}
+    steps:
+      - name: Check out the exact admitted release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify fresh smoke, one Manual shadow and read-only readiness
+        id: prepare
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { runProductionPromotion } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const preparation = await runProductionPromotion({
+              phase: "prepare", github, core, ...context.repo, env: process.env,
+            });
+            core.setOutput("preparation", preparation);
+
+  promote-paper:
+    name: Activate paper and verify the actual scheduled PAPER run
+    needs: [gate, force-disable-rollout, deploy-environment, publish-release-receipt, prepare-paper]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.force-disable-rollout.result == 'success' &&
+      needs.deploy-environment.result == 'success' &&
+      needs.publish-release-receipt.result == 'success' &&
+      needs.prepare-paper.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    environment: production-promotion
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+      issues: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_RELEASE: ${{ needs.publish-release-receipt.outputs.receipt }}
+      PROMOTION_AUTHORITY: ${{ needs.force-disable-rollout.outputs.promotion_authority }}
+      PRODUCTION_PREPARATION: ${{ needs.prepare-paper.outputs.preparation }}
+      ROLLOUT_VALUES: ${{ toJSON(needs.deploy-environment.outputs) }}
+    outputs:
+      evidence: ${{ steps.promote.outputs.evidence }}
+    steps:
+      - name: Check out the exact admitted release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Set up the supported observation runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - name: Install locked observation dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Revalidate authority, enable monitoring and observe scheduled paper execution
+        id: promote
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { runProductionPromotion } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const evidence = await runProductionPromotion({
+              phase: "activate", github, core, ...context.repo, env: process.env,
+            });
+            core.setOutput("evidence", evidence);
+
+  publish-promotion-receipt:
+    name: Publish immutable paper-production evidence
+    needs:
+      [gate, force-disable-rollout, deploy-environment, build-images, deploy-release,
+       migrate-backup, release-cutover-fence, target-smoke, verify-final-state,
+       publish-release-receipt, prepare-paper, promote-paper]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full' &&
+      needs.publish-release-receipt.outputs.receipt != '' &&
+      needs.force-disable-rollout.outputs.promotion_authority != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_JOB_RESULTS: ${{ toJSON(needs) }}
+    outputs:
+      receipt: ${{ steps.receipt.outputs.receipt }}
+      status: ${{ steps.receipt.outputs.status }}
+    steps:
+      - name: Check out the trusted receipt publisher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Create exact-attempt paper-production evidence
+        id: receipt
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { createPromotionReceipt, receiptName } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const { data: run } = await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: Number(process.env.GITHUB_RUN_ID),
+            });
+            const receipt = createPromotionReceipt(process.env, JSON.parse(process.env.PRODUCTION_JOB_RESULTS), run);
+            fs.mkdirSync("paper-production-receipt", { recursive: true });
+            fs.writeFileSync("paper-production-receipt/receipt.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("name", receiptName("promotion", receipt.releaseSha, receipt.runId, receipt.runAttempt));
+            core.setOutput("receipt", receipt);
+            core.setOutput("status", receipt.status);
+            core.notice(`Paper-production outcome: ${receipt.status}. Native workflow completion remains required.`);
+      - name: Retain only the nonsecret immutable receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.receipt.outputs.name }}
+          path: paper-production-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-production-delivery:
+    name: Publish exact-SHA paper-production delivery
+    needs: [gate, publish-promotion-receipt]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.publish-promotion-receipt.result == 'success' &&
+      needs.publish-promotion-receipt.outputs.status == 'paper'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: write
+      statuses: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_RECEIPT: ${{ needs.publish-promotion-receipt.outputs.receipt }}
+    outputs:
+      deployment_id: ${{ steps.delivery.outputs.deployment_id }}
+    steps:
+      - name: Check out the trusted delivery publisher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Publish receipt-bound production delivery
+        id: delivery
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const assert = require("node:assert/strict");
+            const { promotionReference, PRODUCTION_ENVIRONMENT, PRODUCTION_STATUS_CONTEXT } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const receipt = JSON.parse(process.env.PRODUCTION_RECEIPT);
+            assert.equal(receipt.repository, process.env.GITHUB_REPOSITORY);
+            assert.equal(receipt.repositoryId, Number(process.env.GITHUB_REPOSITORY_ID));
+            assert.equal(receipt.repositoryOwnerId, Number(process.env.GITHUB_REPOSITORY_OWNER_ID));
+            assert.equal(receipt.workflowSha, process.env.GITHUB_WORKFLOW_SHA);
+            assert.equal(receipt.releaseSha, process.env.RESOLVED_SHA);
+            assert.equal(receipt.runId, Number(process.env.GITHUB_RUN_ID));
+            assert.equal(receipt.runAttempt, Number(process.env.GITHUB_RUN_ATTEMPT));
+            const url = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${receipt.runId}`;
+            const { data: deployment } = await github.rest.repos.createDeployment({
+              ...context.repo, ref: receipt.releaseSha, environment: PRODUCTION_ENVIRONMENT,
+              auto_merge: false, required_contexts: [], transient_environment: false,
+              production_environment: true, payload: promotionReference(receipt),
+              description: "Verified paper deployment and authenticated scheduled PAPER execution.",
+            });
+            assert(Number.isSafeInteger(deployment.id) && deployment.id > 0 &&
+              deployment.sha === receipt.releaseSha && deployment.environment === PRODUCTION_ENVIRONMENT &&
+              deployment.production_environment === true,
+            "No exact-SHA native production Deployment was created.");
+            core.setOutput("deployment_id", deployment.id);
+            await github.rest.repos.createDeploymentStatus({
+              ...context.repo, deployment_id: deployment.id, state: "success",
+              environment: PRODUCTION_ENVIRONMENT, environment_url: receipt.release.binding.targetOrigin,
+              log_url: url, auto_inactive: false,
+              description: "Receipt published; consumers also require this native attempt to finish successfully.",
+            });
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha: receipt.releaseSha, state: "success",
+              context: PRODUCTION_STATUS_CONTEXT, target_url: url,
+              description: "Paper and scheduled execution verified; native completion remains required.",
+            });
+
+  recover-paper:
+    name: Recover production to verified disabled/Manual
+    needs:
+      [gate, force-disable-rollout, backup-current-release, deploy-environment,
+       build-images, deploy-release, migrate-backup, release-cutover-fence,
+       target-smoke, verify-final-state, publish-release-receipt, prepare-paper,
+       promote-paper, publish-promotion-receipt, publish-production-delivery]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production-promotion
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_JOB_RESULTS: ${{ toJSON(needs) }}
+    outputs:
+      status: ${{ steps.recovery.outputs.status || 'retained' }}
+      fence: ${{ steps.recovery.outputs.fence || 'unknown' }}
+      receipt: ${{ steps.recovery.outputs.receipt || steps.intent.outputs.receipt }}
+    steps:
+      - name: Check out the exact failed release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Record bounded retained recovery before Azure access
+        id: intent
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { createRecoveryIntent } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const receipt = createRecoveryIntent(process.env, JSON.parse(process.env.PRODUCTION_JOB_RESULTS));
+            fs.mkdirSync("production-recovery", { recursive: true });
+            fs.writeFileSync("production-recovery/intent.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("receipt", receipt);
+      - name: Preserve recovery intent before any compensating mutation
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-recovery-intent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: production-recovery/intent.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Preserve balances and prove disabled/Manual before disabling schedule monitoring
+        id: recovery
+        uses: actions/github-script@v9
+        env:
+          PRODUCTION_RECOVERY_INTENT: ${{ steps.intent.outputs.receipt }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { runProductionRecovery, validateRecoveryReceipt } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const intent = validateRecoveryReceipt(JSON.parse(process.env.PRODUCTION_RECOVERY_INTENT), process.env);
+            let receipt;
+            try {
+              receipt = await runProductionRecovery({ github, core, ...context.repo, env: process.env });
+            } catch (error) {
+              receipt = { ...intent, ...error.recovery, status: "retained" };
+              core.setFailed("Production recovery is retained and unverified; no balances, stops or ownership were cleared.");
+            }
+            validateRecoveryReceipt(receipt, process.env);
+            if (receipt.fence === "retained") {
+              core.setFailed("Disabled/Manual was verified, but the candidate baseline is unverified; its fence remains retained.");
+            }
+            fs.writeFileSync("production-recovery/result.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("receipt", receipt);
+            core.setOutput("status", receipt.status);
+            core.setOutput("fence", receipt.fence);
+            core.notice(`Production recovery: ${receipt.status}; fence completion: ${receipt.fence}.`);
+      - name: Retain only bounded nonsecret recovery results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-recovery-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            production-recovery/intent.json
+            production-recovery/result.json
+          if-no-files-found: error
+          retention-days: 90
+
+  release-recovered-fence:
+    name: Release the recovered source or candidate fence with fresh proof
+    needs: [gate, recover-paper]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.recover-paper.result == 'success' &&
+      needs.recover-paper.outputs.status == 'disabled' &&
+      needs.recover-paper.outputs.fence == 'required'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_RECOVERY_RECEIPT: ${{ needs.recover-paper.outputs.receipt }}
+    outputs:
+      receipt: ${{ steps.release.outputs.receipt }}
+    steps:
+      - name: Check out the exact recovery implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Set up the supported cutover observation runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install locked attestation dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Release only the original owner after fresh disabled readback
+        id: release
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { releaseRecoveredProductionFence, validateRecoveryReceipt } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const initial = validateRecoveryReceipt(JSON.parse(process.env.PRODUCTION_RECOVERY_RECEIPT), process.env);
+            let receipt;
+            try {
+              receipt = await releaseRecoveredProductionFence({ core, env: process.env });
+            } catch (error) {
+              receipt = { ...initial, ...error.recovery, status: "retained" };
+              core.setFailed("The recovery fence remains unverified; no retry or completed recovery is inferred.");
+            }
+            validateRecoveryReceipt(receipt, process.env);
+            fs.mkdirSync("production-recovered-fence", { recursive: true });
+            fs.writeFileSync("production-recovered-fence/receipt.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("receipt", receipt);
+      - name: Retain only the nonsecret fence completion result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-recovered-fence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: production-recovered-fence/receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-production-failure:
+    name: Publish a durable production failure
+    needs:
+      [gate, force-disable-rollout, backup-current-release, deploy-environment, build-images, deploy-release,
+       migrate-backup, release-cutover-fence, target-smoke, verify-final-state,
+       publish-release-receipt, prepare-paper, promote-paper, publish-promotion-receipt,
+       publish-production-delivery, recover-paper, release-recovered-fence]
+    if: >-
+      always() &&
+      needs.gate.outputs.sha != '' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: write
+      statuses: write
+      issues: write
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      RECOVERY_RESULT: ${{ needs.recover-paper.result }}
+      RECOVERY_FENCE_RESULT: ${{ needs.release-recovered-fence.result }}
+      PRODUCTION_RECOVERY_RECEIPT: ${{ needs.recover-paper.outputs.receipt }}
+      RECOVERED_FENCE_RECEIPT: ${{ needs.release-recovered-fence.outputs.receipt }}
+      PRODUCTION_JOB_RESULTS: ${{ toJSON(needs) }}
+      PRODUCTION_DEPLOYMENT_ID: ${{ needs.publish-production-delivery.outputs.deployment_id }}
+    steps:
+      - name: Check out trusted failure reporting
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .github/agentic-policy.json
+      - name: Record exact-SHA failure without claiming recovery succeeded
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { PRODUCTION_STATUS_CONTEXT, PRODUCTION_ENVIRONMENT } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const { pauseFactoryControl } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-lifecycle-reconciler.cjs"),
+            );
+            const { describeProductionRecovery } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const url = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            let recoveryState = "recovery-retained";
+            try {
+              recoveryState = describeProductionRecovery(process.env);
+            } catch {
+              core.error("Recovery evidence is missing or invalid; retained recovery is not a success.");
+            }
+            const fs = require("node:fs");
+            const reporting = [() => github.rest.repos.createCommitStatus({
+              ...context.repo, sha: process.env.RESOLVED_SHA, state: "failure",
+              context: PRODUCTION_STATUS_CONTEXT, target_url: url,
+              description: recoveryState === "disabled-verified" ?
+                "Delivery failed; disabled/Manual recovery verified." :
+                recoveryState === "fence-retained" ? "Delivery failed; disabled/Manual verified, fence recovery retained." :
+                  recoveryState === "untouched-deferral" ? "Delivery failed; the verified deferred source was left untouched." :
+                    "Delivery failed; production activation/recovery is not verified.",
+            }), () => pauseFactoryControl({
+              github, core, ...context.repo,
+              reason: `Production delivery failed for ${process.env.RESOLVED_SHA} (${url}); recovery: ${recoveryState}.`,
+            }), () => {
+              fs.mkdirSync("production-recovery-status", { recursive: true });
+              const results = JSON.parse(process.env.PRODUCTION_JOB_RESULTS);
+              fs.writeFileSync("production-recovery-status/receipt.json", JSON.stringify({
+                schemaVersion: 1, releaseSha: process.env.RESOLVED_SHA,
+                runId: Number(process.env.GITHUB_RUN_ID), runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+                state: recoveryState, recoveryResult: process.env.RECOVERY_RESULT,
+                fenceResult: process.env.RECOVERY_FENCE_RESULT,
+                failedJobs: Object.entries(results).filter(([, value]) =>
+                  ["failure", "cancelled"].includes(value.result)).map(([name]) => name),
+              }) + "\n", { flag: "wx" });
+            }];
+            if (/^[1-9][0-9]*$/.test(process.env.PRODUCTION_DEPLOYMENT_ID || "")) {
+              reporting.push(() => github.rest.repos.createDeploymentStatus({
+                ...context.repo, deployment_id: Number(process.env.PRODUCTION_DEPLOYMENT_ID),
+                state: "failure", environment: PRODUCTION_ENVIRONMENT, log_url: url,
+                description: "The owning production workflow failed; this is not completed paper delivery.",
+              }));
+            }
+            const outcomes = await Promise.allSettled(reporting.map((action) => Promise.resolve().then(action)));
+            outcomes.forEach((outcome, index) => {
+              if (outcome.status === "rejected") core.error(`Production failure reporting action ${index + 1} failed; it was not retried.`);
+            });
+            core.setFailed(`Production delivery failed (${url}); recovery result: ${process.env.RECOVERY_RESULT}.`);
+      - name: Retain the explicit final recovery or retained state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-recovery-status-${{ github.run_id }}-${{ github.run_attempt }}
+          path: production-recovery-status/receipt.json
+          if-no-files-found: error
+          retention-days: 90

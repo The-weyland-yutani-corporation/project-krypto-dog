@@ -34,6 +34,20 @@ const reconciler = jest.requireActual<ReconcilerModule>(
 );
 
 describe("canonical agentic policy", () => {
+  it.each([false, null, "true"])("rejects a non-paper authority contract: %j", (paperOnly) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "paper-authority-"));
+    const candidatePath = path.join(directory, "policy.json");
+    const candidate = JSON.parse(fs.readFileSync(policyPath, "utf8")) as {
+      authority: { paperOnly: unknown };
+    };
+    candidate.authority.paperOnly = paperOnly;
+    fs.writeFileSync(candidatePath, JSON.stringify(candidate));
+    try {
+      expect(() => policyModule.loadAgenticPolicy(candidatePath)).toThrow("authority.paperOnly");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it.each([
     { startingCapitalUSD: 0 },
     { startingCapitalUSD: -200 },
@@ -62,6 +76,7 @@ describe("canonical agentic policy", () => {
       maxOpenActionableOpportunities: 20,
       forksRequireHumanApproval: true,
       paperOnly: true,
+      productionDelivery: { maxDeferredRetries: 1, retryDelayMinutes: 15, evidenceTimeoutMinutes: 360 },
     });
     expect(policyModule.AGENTIC_POLICY.requiredContexts).toEqual([
       "Quality and evidence gates",
@@ -79,6 +94,25 @@ describe("canonical agentic policy", () => {
     ).not.toEqual(
       expect.arrayContaining(["security-review", "trading-safety"]),
     );
+  });
+
+  it.each([
+    { maxDeferredRetries: 0 }, { maxDeferredRetries: 3 }, { retryDelayMinutes: 1 },
+    { retryDelayMinutes: 61 }, { evidenceTimeoutMinutes: 361 }, { evidenceTimeoutMinutes: 15 },
+    { maxDeferredRetries: "1" },
+  ])("rejects unbounded or invalid production retry policy: %j", (change) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "production-policy-"));
+    const candidatePath = path.join(directory, "policy.json");
+    const candidate = JSON.parse(fs.readFileSync(policyPath, "utf8")) as {
+      productionDelivery: Record<string, unknown>;
+    };
+    Object.assign(candidate.productionDelivery, change);
+    fs.writeFileSync(candidatePath, JSON.stringify(candidate));
+    try {
+      expect(() => policyModule.loadAgenticPolicy(candidatePath)).toThrow("productionDelivery");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it.each(["neutral", "skipped"])(

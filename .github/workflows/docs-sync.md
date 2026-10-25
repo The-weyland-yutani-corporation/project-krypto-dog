@@ -50,8 +50,8 @@ safe-outputs:
     max: 1
   noop:
     report-as-issue: false
-max-ai-credits: 1400
-max-daily-ai-credits: 3000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 ---
 
 # Docs Sync

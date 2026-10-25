@@ -4,6 +4,7 @@ const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const { isAutonomousGoal } = require("./agentic-autonomy.cjs");
 const { selectTrustedCheckRuns, verifyTrustedReviewEvidence } = require("./agentic-review-evidence.cjs");
 const { createDispatchRecord, isControllerDispatchedRun } = require("./agentic-dispatch.cjs");
+const { createCreditAdmission } = require("./agentic-credit-admission.cjs");
 const {
   CODE_REVIEW_CHECK,
   FACTORY_MODE_LABELS,
@@ -877,6 +878,7 @@ async function reconcileAgenticPullRequests({
   autonomous = autonomous === true && AGENTIC_POLICY.autonomy.enabled;
   const { owner, repo } = context.repo;
   const repository = `${owner}/${repo}`;
+  const admitCredits = createCreditAdmission({ github, owner, repo, core });
   const defaultBranch =
     (context.payload &&
       context.payload.repository &&
@@ -1373,7 +1375,9 @@ async function reconcileAgenticPullRequests({
         );
       };
       const dispatchForPullRequest = async (workflowId, inputs = {}) => {
-        return runPolicyOperation(async () => {
+        let dispatched = false;
+        const completed = await runPolicyOperation(async () => {
+          if (workflowId.endsWith(".lock.yml") && !(await admitCredits(workflowId)).allowed) return;
           const metadata = dispatchMetadata(workflowId, number, sha);
           if (autonomous) {
             if (typeof onDispatch !== "function") throw new Error("Autonomous dispatch requires a trusted receipt publisher.");
@@ -1381,11 +1385,13 @@ async function reconcileAgenticPullRequests({
             metadata.correlation_id = record.correlation;
             await onDispatch(record);
           }
-          return dispatch(workflowId, defaultBranch, {
+          await dispatch(workflowId, defaultBranch, {
             ...inputs,
             ...metadata,
           });
+          dispatched = true;
         });
+        return completed && dispatched;
       };
       if (policy.riskExceedsGoal) {
         await addHumanBoundaryLabel();

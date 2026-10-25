@@ -742,7 +742,7 @@ export function runEvidenceEvaluation(
       ).length,
     },
     disclaimers: [
-      "Engineering-only simulation; this imported report is not eligible for v2.2 or v3 production release gates and does not execute or authorize live trading.",
+      "Engineering-only simulation; this imported report is not eligible for production release gates and cannot substitute for actual deployment or scheduled paper-run evidence.",
       "Simulated historical or externally supplied paper evidence does not guarantee future performance or positive expected value.",
       "Operator-declared plan timestamps and implementation commit SHAs are provenance claims, not immutable or cryptographic attestations from the standalone evaluator.",
       "Source metadata and sourceFileSha256 are importer/operator-declared; without retained raw bytes, the standalone evaluator cannot independently verify the raw-source hash or authenticity.",

@@ -1,4 +1,5 @@
-export {};
+import { productionDeferralFixture, productionPromotionFixture } from "../deployment/azure/production-promotion-fixture";
+import { archive } from "./receipt-archive-fixture";
 
 interface Label {
   name: string;
@@ -94,6 +95,7 @@ interface ApiParams {
 }
 
 interface ReconcilerModule {
+  planDeferredProductionRetry(input: unknown): { state: string; reason?: string; record?: Record<string, unknown> };
   reconcileFactoryLifecycle(input: {
     github: unknown;
     context: unknown;
@@ -384,6 +386,7 @@ interface HarnessOptions {
   failIssueNumbers?: number[];
   defaultBranch?: string;
   now?: string;
+  production?: ReturnType<typeof productionPromotionFixture>;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -439,7 +442,8 @@ function createHarness(options: HarnessOptions = {}) {
     return undefined;
   }
 
-  const repoGet = jest.fn(async () => ({ data: { default_branch: defaultBranch } }));
+  const repoGet = jest.fn(async () => ({ data: { id: 456, default_branch: defaultBranch } }));
+  const createWorkflowDispatch = jest.fn(async (_params: ApiParams) => ({ status: 204 }));
 
   const listForRepo = jest.fn();
   const listComments = jest.fn();
@@ -448,8 +452,8 @@ function createHarness(options: HarnessOptions = {}) {
   const listFiles = jest.fn();
   const listForRef = jest.fn();
   const listCommitStatusesForRef = jest.fn();
-  const listDeployments = jest.fn();
-  const listDeploymentStatuses = jest.fn();
+  const listDeployments = options.production?.github.rest.repos.listDeployments ?? jest.fn();
+  const listDeploymentStatuses = options.production?.github.rest.repos.listDeploymentStatuses ?? jest.fn();
   const listEventsForTimeline = jest.fn();
   const getIssue = jest.fn(async (params: ApiParams) => {
     const issue = issues.get(params.issue_number ?? -1);
@@ -529,6 +533,9 @@ function createHarness(options: HarnessOptions = {}) {
     if (method === listDeploymentStatuses) {
       return deploymentStatusesByDeployment[params.deployment_id ?? -1] ?? [];
     }
+    if (options.production) {
+      return options.production.github.paginate(method, params);
+    }
     throw new Error("Unexpected paginated method in test harness");
   });
 
@@ -563,7 +570,7 @@ function createHarness(options: HarnessOptions = {}) {
     const comment = {
       id: nextCommentId++,
       body: params.body ?? "",
-      created_at: DEFAULT_NOW,
+      created_at: options.now ?? DEFAULT_NOW,
       user: ACTIONS_ACTOR,
     };
     if (entity && entity.comments) entity.comments.push(comment);
@@ -585,8 +592,9 @@ function createHarness(options: HarnessOptions = {}) {
     if (issue) {
       issue.state = (params.state as "open" | "closed") ?? issue.state;
       issue.state_reason = params.state_reason;
+      if (Array.isArray(params.labels)) issue.labels = params.labels.map((name) => ({ name }));
     }
-    return {};
+    return { data: issue };
   });
 
   const graphql = jest.fn(async (query: string, variables: { pullRequestId?: string }) => {
@@ -623,6 +631,8 @@ function createHarness(options: HarnessOptions = {}) {
     paginate,
     graphql,
     rest: {
+      actions: options.production ? { ...options.production.github.rest.actions, createWorkflowDispatch } : undefined,
+      git: { getRef: jest.fn(async () => ({ data: { object: { sha: options.production?.sha } } })) },
       repos: {
         get: repoGet,
         listCommitStatusesForRef,
@@ -668,6 +678,10 @@ function createHarness(options: HarnessOptions = {}) {
       paginate,
       listEventsForTimeline,
       listFiles,
+      getIssue,
+      listComments,
+      listPulls,
+      createWorkflowDispatch,
     },
   };
 }
@@ -693,6 +707,421 @@ function autoMergeCalls(graphql: jest.Mock): unknown[][] {
     ([, variables]) => variables && variables.pullRequestId,
   );
 }
+
+describe("bounded production deferral recovery", () => {
+  beforeEach(() => jest.useFakeTimers({ now: new Date("2026-08-21T01:45:00Z") }));
+  afterEach(() => jest.useRealTimers());
+
+  function setup() {
+    const production = productionDeferralFixture("2026-08-21T00:00:00Z", repository);
+    const issue = issueFixture(601, "factory:deployed-dev");
+    const pull = pullRequestFixture(701, issue.number, {
+      state: "closed", merged_at: DEFAULT_NOW, merge_commit_sha: production.sha,
+    });
+    const h = createHarness({ issues: [issue], pullRequests: [pull], production, now: production.time(105) });
+    return { ...h, production, issue, pull, execute: (now = production.time(105)) => reconcileFactoryLifecycle({
+      github: h.github, core: h.core, context: { repo: { owner, repo } }, now,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+    }) };
+  }
+
+  it("writes durable claim/source-bound intent before its sole retry and never repeats an ambiguous pending request", async () => {
+    const h = setup();
+    h.mocks.createWorkflowDispatch.mockImplementation(async () => {
+      expect(h.issue.comments.some((comment) => comment.body.startsWith("<!-- factory-production-retry:v1 "))).toBe(true);
+      return { status: 204 };
+    });
+    await h.execute();
+    expect(h.mocks.createWorkflowDispatch).toHaveBeenCalledWith({
+      owner, repo, workflow_id: "azure-deploy-prod.yml", ref: "main",
+      inputs: { commit_sha: h.production.sha, deployment_stage: "full", promotion_mode: "continuous" },
+    });
+    expect(h.issue.state).toBe("open");
+    expect(labelsOf(h.issue)).toContain("factory:deployed-dev");
+    await h.execute();
+    expect(h.mocks.createWorkflowDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits the configured delay and never retries a mutated deferral", async () => {
+    const h = setup();
+    await h.execute(h.production.time(100));
+    expect(h.mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    const deploymentJob = h.production.deferralJobs.find((job) => job.name.startsWith("Deploy infra/environment"));
+    if (!deploymentJob) throw new Error("Missing fixture deployment job");
+    deploymentJob.conclusion = "success";
+    await h.execute();
+    expect(labelsOf(h.issue)).toContain("blocked");
+    expect(h.mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it("pauses on refused or uncertain dispatch and preserves the consumed retry", async () => {
+    const h = setup();
+    h.mocks.createWorkflowDispatch.mockRejectedValue(new Error("Dispatch response unavailable"));
+    await h.execute();
+    expect(h.mocks.createWorkflowDispatch).toHaveBeenCalledTimes(1);
+    expect(labelsOf(h.issue)).toContain("blocked");
+    expect(labelsOf(h.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
+    expect(h.issue.comments.some((comment) => comment.body.startsWith("<!-- factory-production-retry:v1 "))).toBe(true);
+  });
+
+  it("does not dispatch an old main SHA", async () => {
+    const h = setup();
+    h.github.rest.git.getRef.mockResolvedValue({ data: { object: { sha: "f".repeat(40) } } });
+    await h.execute();
+    expect(h.mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(labelsOf(h.issue)).toContain("blocked");
+  });
+
+  it.each(["before-intent", "after-intent"])("does not redispatch a changed native attempt %s", async (timing) => {
+    const h = setup();
+    let changed = false;
+    let scopeReads = 0;
+    const read = h.production.github.rest.actions.getWorkflowRun.getMockImplementation();
+    const paginate = h.mocks.paginate.getMockImplementation();
+    const createComment = h.mocks.createComment.getMockImplementation();
+    if (!read || !paginate || !createComment) throw new Error("Missing fixture methods");
+    h.production.github.rest.actions.getWorkflowRun.mockImplementation(async (args) => {
+      const response = await read(args);
+      if (!response.data || typeof response.data !== "object" || Array.isArray(response.data)) {
+        throw new Error("Missing native run fixture");
+      }
+      return changed && args.run_id === 2001
+        ? { data: { ...response.data, status: "queued", conclusion: null } }
+        : response;
+    });
+    h.mocks.paginate.mockImplementation(async (method, args) => {
+      const result = await paginate(method, args);
+      if (method === h.mocks.listFiles) {
+        scopeReads += 1;
+        if (timing === "before-intent" && scopeReads === 2) changed = true;
+      }
+      return result;
+    });
+    h.mocks.createComment.mockImplementation(async (args) => {
+      const result = await createComment(args);
+      if (timing === "after-intent" && args.body?.startsWith("<!-- factory-production-retry:v1 ")) changed = true;
+      return result;
+    });
+    await h.execute();
+    expect(changed).toBe(true);
+    expect(h.mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(labelsOf(h.issue)).toContain("factory:deployed-dev");
+    expect(h.issue.comments.some((comment) => comment.body.startsWith("<!-- factory-production-retry:v1 ")))
+      .toBe(timing === "after-intent");
+    expect(h.core.info).toHaveBeenCalledWith(expect.stringContaining("no duplicate dispatch"));
+  });
+
+  it.each(["pause", "claim", "scope", "merge"])("rechecks %s after durable intent, before dispatch", async (change) => {
+    const h = setup();
+    const createComment = h.mocks.createComment.getMockImplementation();
+    if (!createComment) throw new Error("Missing comment fixture");
+    h.mocks.createComment.mockImplementation(async (args) => {
+      const result = await createComment(args);
+      if (args.body?.startsWith("<!-- factory-production-retry:v1 ")) {
+        if (change === "pause") {
+          const control = h.getControlIssue();
+          if (!control) throw new Error("Missing control fixture");
+          control.labels = [{ name: "factory-control" }, { name: "factory-mode:paused" }];
+        }
+        if (change === "claim") h.issue.comments = h.issue.comments.filter((comment) => !comment.body.includes("factory-claim:v1"));
+        if (change === "scope") h.issue.body = "### Allowed paths\n\ndocs/**";
+        if (change === "merge") h.pull.merge_commit_sha = "f".repeat(40);
+      }
+      return result;
+    });
+    await h.execute();
+    expect(h.mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(h.issue.comments.some((comment) => comment.body.startsWith("<!-- factory-production-retry:v1 "))).toBe(true);
+    expect(labelsOf(h.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
+    expect(labelsOf(h.issue)).toContain(change === "pause" ? "factory:deployed-dev" : "blocked");
+  });
+
+  it("requires a native trusted comment receipt, not merely a successful write response", async () => {
+    const h = setup();
+    const createComment = h.mocks.createComment.getMockImplementation();
+    if (!createComment) throw new Error("Missing comment fixture");
+    h.mocks.createComment.mockImplementation(async (args) => {
+      const result = await createComment(args);
+      return args.body?.startsWith("<!-- factory-production-retry:v1 ")
+        ? { data: { ...result.data, user: ASSIGNMENT_ACTOR } } : result;
+    });
+    await h.execute();
+    expect(h.mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(labelsOf(h.issue)).toContain("blocked");
+    expect(h.core.warning).toHaveBeenCalledWith(expect.stringContaining("intent was not confirmed"));
+  });
+
+  it("timestamps intent at the mutation boundary after slow evidence reads", async () => {
+    const h = setup();
+    const createComment = h.mocks.createComment.getMockImplementation();
+    const paginate = h.mocks.paginate.getMockImplementation();
+    if (!createComment || !paginate) throw new Error("Missing fixture methods");
+    h.mocks.paginate.mockImplementation(async (method, args) => {
+      const result = await paginate(method, args);
+      if (method === h.mocks.listFiles) jest.setSystemTime(new Date(h.production.time(108)));
+      return result;
+    });
+    h.mocks.createComment.mockImplementation(async (args) => {
+      const result = await createComment(args);
+      result.data.created_at = new Date().toISOString();
+      return result;
+    });
+    await h.execute();
+    expect(h.mocks.createWorkflowDispatch).toHaveBeenCalledTimes(1);
+    const intent = h.issue.comments.find((comment) => comment.body.startsWith("<!-- factory-production-retry:v1 "));
+    expect(intent?.body).toContain(`"requestedAt":"${h.production.time(108)}"`);
+  });
+
+  it.each(["duplicate", "future", "server-time", "unknown-field", "wrong-source", "invalid-json"])(
+    "rejects %s trusted retry ledgers",
+    async (kind) => {
+      const h = setup();
+      await h.execute();
+      const intent = h.issue.comments.find((comment) => comment.body.startsWith("<!-- factory-production-retry:v1 "));
+      if (!intent) throw new Error("Missing fixture retry intent");
+      if (kind === "duplicate") h.issue.comments.push({ ...intent, id: intent.id + 1 });
+      if (kind === "future") {
+        intent.body = intent.body.replace(h.production.time(105), h.production.time(110));
+        intent.created_at = h.production.time(110);
+      }
+      if (kind === "server-time") intent.created_at = h.production.time(100);
+      if (kind === "unknown-field") intent.body = intent.body.replace('"attempt":1', '"attempt":1,"extra":true');
+      if (kind === "wrong-source") intent.body = intent.body.replace(h.production.sha, "f".repeat(40));
+      if (kind === "invalid-json") intent.body = "<!-- factory-production-retry:v1 {broken} -->";
+      expect(() => reconciler.planDeferredProductionRetry({
+        issue: h.issue, comments: h.issue.comments, claim: { nonce: NONCE_FOR(h.issue.number) }, pullRequest: h.pull,
+        delivery: { retryable: true, reason: "production-deferred", runId: 2001, runAttempt: 1, completedAt: h.production.time(90) },
+        now: h.production.time(105),
+      })).toThrow();
+    },
+  );
+
+  it("exhausts the per-claim retry budget for a subsequent native deferral", async () => {
+    const h = setup();
+    await h.execute();
+    const result = reconciler.planDeferredProductionRetry({
+      issue: h.issue, comments: h.issue.comments, claim: { nonce: NONCE_FOR(h.issue.number) }, pullRequest: h.pull,
+      delivery: { retryable: true, reason: "production-deferred", runId: 2002, runAttempt: 1, completedAt: h.production.time(105) },
+      now: h.production.time(125),
+    });
+    expect(result).toEqual({ state: "exhausted", reason: "production-retry-budget-exhausted" });
+  });
+
+  it("does not let a forged human ledger consume or reset trusted retry budget", async () => {
+    const h = setup();
+    h.issue.comments.push({
+      id: 900, body: "<!-- factory-production-retry:v1 malformed -->", user: ASSIGNMENT_ACTOR,
+      created_at: h.production.time(100),
+    });
+    await h.execute();
+    expect(h.mocks.createWorkflowDispatch).toHaveBeenCalledTimes(1);
+    const ledger = h.issue.comments.find((comment) => comment.body.startsWith("<!-- factory-production-retry:v1 {"));
+    if (!ledger) throw new Error("Missing test ledger");
+    ledger.body = ledger.body.replace('"attempt":1', '"attempt":2');
+    expect(() => reconciler.planDeferredProductionRetry({
+      issue: h.issue, comments: h.issue.comments, claim: { nonce: NONCE_FOR(h.issue.number) }, pullRequest: h.pull,
+      delivery: { retryable: true, reason: "production-deferred", runId: 2001, runAttempt: 1, completedAt: h.production.time(90) },
+      now: h.production.time(105),
+    })).toThrow("duplicate attempts");
+  });
+});
+
+describe("native paper-production lifecycle completion", () => {
+  beforeEach(() => jest.useFakeTimers({ now: new Date("2026-08-21T01:05:00Z") }));
+  afterEach(() => jest.useRealTimers());
+
+  function setup() {
+    const production = productionPromotionFixture("2026-08-21T00:00:00.000Z", repository);
+    const issue = issueFixture(600, "factory:deployed-dev");
+    const pull = pullRequestFixture(700, issue.number, {
+      state: "closed", merged_at: DEFAULT_NOW, merge_commit_sha: production.sha,
+    });
+    const harness = createHarness({ issues: [issue], pullRequests: [pull], production });
+    const execute = (now = production.time(65)) => reconcileFactoryLifecycle({
+      github: harness.github, core: harness.core, context: { repo: { owner, repo } },
+      now, assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+    });
+    return { ...harness, production, issue, pull, execute };
+  }
+
+  it("atomically closes only after real native archives, jobs, delivery and renewed provenance pass", async () => {
+    const h = setup();
+    await h.execute();
+    expect(h.issue.state).toBe("closed");
+    expect(labelsOf(h.issue)).toEqual(["risk:routine", "factory:done"]);
+    expect(h.mocks.updateIssue).toHaveBeenCalledTimes(1);
+    expect(h.mocks.updateIssue).toHaveBeenCalledWith({
+      owner, repo, issue_number: 600, state: "closed", state_reason: "completed",
+      labels: ["risk:routine", "factory:done"],
+    });
+    expect(h.mocks.addLabels).not.toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ["factory:done"] }),
+    );
+    expect(h.production.github.rest.actions.downloadArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({ artifact_id: 502 }),
+    );
+    expect(h.production.github.rest.actions.listWorkflowRuns).toHaveBeenCalledTimes(4);
+    expect(h.issue.comments.some((comment) => comment.body.includes("1001/2"))).toBe(true);
+    await h.execute();
+    expect(h.mocks.updateIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["not-started", "in-progress", "disabled", "deferred"])("keeps %s production open", async (state) => {
+    const h = setup();
+    if (state === "not-started") {
+      h.production.github.rest.actions.listWorkflowRuns.mockResolvedValue({
+        data: { total_count: 0, workflow_runs: [] },
+      });
+    } else if (state === "in-progress") {
+      h.production.run.status = "in_progress";
+    } else {
+      const results = Object.fromEntries(Object.keys(h.production.receipt.results).map((id) => [
+        id, state === "deferred" && !["gate", "force-disable-rollout", "publish-release-receipt"].includes(id) ||
+          ["prepare-paper", "promote-paper"].includes(id) ? "skipped" : "success",
+      ]));
+      const receipt = {
+        ...h.production.receipt, status: state, evidence: null, results,
+        release: {
+          ...h.production.receipt.release, status: state, results,
+          binding: state === "deferred" ? null : h.production.binding,
+        },
+      };
+      h.production.github.rest.actions.downloadArtifact.mockResolvedValue({ data: archive(receipt) });
+    }
+    await h.execute();
+    expect(h.issue.state).toBe("open");
+    expect(labelsOf(h.issue)).toContain("factory:deployed-dev");
+    expect(h.mocks.updateIssue).not.toHaveBeenCalled();
+    expect(h.core.info).toHaveBeenCalledWith(expect.stringContaining("waiting for exact-SHA paper production"));
+  });
+
+  it.each(["failure", "cancelled", "timed_out"])("blocks and pauses a %s native production run", async (conclusion) => {
+    const h = setup();
+    h.production.run.conclusion = conclusion;
+    await h.execute();
+    expect(h.issue.state).toBe("open");
+    expect(labelsOf(h.issue)).toContain("blocked");
+    expect(labelsOf(h.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
+    expect(h.mocks.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it("still pauses production delivery when the issue failure audit cannot be written", async () => {
+    const h = setup();
+    h.production.run.conclusion = "failure";
+    const createComment = h.mocks.createComment.getMockImplementation();
+    if (!createComment) throw new Error("Missing comment fixture");
+    h.mocks.createComment.mockImplementation(async (args) => {
+      if (args.issue_number === h.issue.number) throw new Error("Issue reporting write unavailable");
+      return createComment(args);
+    });
+    await h.execute();
+    expect(labelsOf(h.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
+    expect(h.mocks.updateIssue).not.toHaveBeenCalled();
+    expect(h.core.warning).toHaveBeenCalledWith(expect.stringContaining("could not be fully persisted"));
+  });
+
+  it.each(["archive", "jobs", "development", "deployment", "merge", "scope"])(
+    "rejects missing or inconsistent %s proof",
+    async (part) => {
+      const h = setup();
+      if (part === "archive") h.production.artifacts.length = 0;
+      if (part === "jobs") h.production.nativeJobs[0].conclusion = "skipped";
+      if (part === "development") h.production.developmentRun.run_attempt = 2;
+      if (part === "deployment") h.production.github.rest.repos.listDeploymentStatuses.mockResolvedValue({
+        data: [{ id: 402, state: "failure" }],
+      });
+      if (part === "merge") h.pull.merge_commit_sha = "not-an-exact-merge-sha";
+      if (part === "scope") h.issue.body = "### Allowed paths\n\ndocs/**\n";
+      await h.execute();
+      expect(h.issue.state).toBe("open");
+      expect(labelsOf(h.issue)).toContain("blocked");
+      expect(labelsOf(h.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
+      expect(h.mocks.updateIssue).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["claim", "scope", "merge", "duplicate-pr", "assignee"])(
+    "rechecks %s provenance after loading production proof",
+    async (part) => {
+      const h = setup();
+      h.production.github.rest.repos.listDeploymentStatuses.mockImplementation(async () => {
+        if (part === "claim") h.issue.comments = h.issue.comments.filter((comment) => !comment.body.includes("factory-claim:v1"));
+        if (part === "scope") h.issue.body = "### Allowed paths\n\nsrc/**\n";
+        if (part === "merge") h.pull.merge_commit_sha = "f".repeat(40);
+        if (part === "duplicate-pr") h.pulls.set(701, pullRequestFixture(701, h.issue.number));
+        if (part === "assignee") h.issue.assignees = [];
+        return { data: [{ id: 401, state: "success" }] };
+      });
+      await h.execute();
+      expect(h.issue.state).toBe("open");
+      expect(labelsOf(h.issue)).toContain("blocked");
+      expect(labelsOf(h.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
+      expect(h.mocks.updateIssue).not.toHaveBeenCalled();
+    },
+  );
+
+  it("honors a factory pause arriving after production proof", async () => {
+    const h = setup();
+    h.production.github.rest.repos.listDeploymentStatuses.mockImplementation(async () => {
+      const control = h.getControlIssue();
+      if (!control) throw new Error("Missing test control");
+      control.labels = [{ name: "factory-control" }, { name: "factory-mode:paused" }];
+      return { data: [{ id: 401, state: "success" }] };
+    });
+    await h.execute();
+    expect(h.issue.state).toBe("open");
+    expect(labelsOf(h.issue)).toContain("factory:deployed-dev");
+    expect(h.mocks.updateIssue).not.toHaveBeenCalled();
+    expect(h.core.info).toHaveBeenCalledWith(expect.stringContaining("no completion mutation"));
+  });
+
+  it("rejects a new production run arriving during final provenance checks", async () => {
+    const h = setup();
+    const current = { data: { total_count: 1, workflow_runs: [h.production.run] } };
+    h.production.github.rest.actions.listWorkflowRuns
+      .mockResolvedValueOnce(current).mockResolvedValueOnce(current)
+      .mockResolvedValue({ data: { total_count: 2, workflow_runs: [h.production.run, { ...h.production.run, id: 1002 }] } });
+    await h.execute();
+    expect(labelsOf(h.issue)).toContain("blocked");
+    expect(h.issue.comments.some((comment) => comment.body.includes("production-evidence-changed-before-completion"))).toBe(true);
+    expect(h.mocks.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it.each(["claim", "scope", "pause"])("rechecks %s after publishing its completion audit", async (change) => {
+    const h = setup();
+    const createComment = h.mocks.createComment.getMockImplementation();
+    if (!createComment) throw new Error("Missing comment fixture");
+    h.mocks.createComment.mockImplementation(async (args) => {
+      const result = await createComment(args);
+      if (args.body?.includes("Completion applies atomically")) {
+        if (change === "claim") h.issue.comments = h.issue.comments.filter((comment) => !comment.body.includes("factory-claim:v1"));
+        if (change === "scope") h.issue.body = "### Allowed paths\n\ndocs/**";
+        if (change === "pause") {
+          const control = h.getControlIssue();
+          if (!control) throw new Error("Missing control fixture");
+          control.labels = [{ name: "factory-control" }, { name: "factory-mode:paused" }];
+        }
+      }
+      return result;
+    });
+    await h.execute();
+    expect(h.mocks.updateIssue).not.toHaveBeenCalled();
+    expect(h.issue.state).toBe("open");
+    expect(labelsOf(h.issue)).toContain(change === "pause" ? "factory:deployed-dev" : "blocked");
+  });
+
+  it("expires missing production evidence instead of closing from the development label", async () => {
+    const h = setup();
+    h.production.github.rest.actions.listWorkflowRuns.mockResolvedValue({
+      data: { total_count: 0, workflow_runs: [] },
+    });
+    await h.execute("2026-08-21T02:52:00.000Z");
+    expect(labelsOf(h.issue)).toContain("blocked");
+    expect(labelsOf(h.getControlIssue() ?? undefined)).toContain("factory-mode:paused");
+    expect(h.issue.comments.some((comment) => comment.body.includes("production-evidence-timeout"))).toBe(true);
+    expect(h.mocks.updateIssue).not.toHaveBeenCalled();
+  });
+});
 
 describe("agentic lifecycle reconciler factory-mode gate", () => {
   it("performs no mutations and logs an advisory when the control issue is missing", async () => {
@@ -1790,21 +2219,23 @@ describe("agentic lifecycle reconciler integration", () => {
     );
   });
 
-  it("persists only factory:deployed-dev when dev evidence succeeds, and closes as factory:done only on the next run", async () => {
+  it("keeps development success open until a later pass verifies paper production", async () => {
+    const production = productionPromotionFixture("2026-08-21T00:00:00.000Z", repository);
     const issue = issueFixture(16, "factory:merged");
     const pull = pullRequestFixture(110, 16, {
       state: "closed",
-      merged_at: "2024-02-01T00:00:00.000Z",
-      merge_commit_sha: "merged-sha-110",
+      merged_at: DEFAULT_NOW,
+      merge_commit_sha: production.sha,
     });
     const harness = createHarness({
       issues: [issue],
       pullRequests: [pull],
+      production,
       statusesBySha: {
-        "merged-sha-110": [{ id: 1, context: "Dev deployment evidence", state: "success" }],
+        [production.sha]: [{ id: 1, context: "Dev deployment evidence", state: "success" }],
       },
       deploymentsBySha: {
-        "merged-sha-110": [{ id: 501 }],
+        [production.sha]: [{ id: 501 }],
       },
       deploymentStatusesByDeployment: {
         501: [{ id: 1, state: "success" }],
@@ -1815,7 +2246,7 @@ describe("agentic lifecycle reconciler integration", () => {
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
-      now: DEFAULT_NOW,
+      now: production.time(65),
       assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
 
@@ -1834,12 +2265,12 @@ describe("agentic lifecycle reconciler integration", () => {
       github: harness.github,
       context: { repo: { owner, repo } },
       core: harness.core,
-      now: DEFAULT_NOW,
+      now: production.time(65),
       assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
     });
 
-    // Second, separate run: `factory:deployed-dev -> factory:done` and the
-    // issue is finally closed as completed.
+    // A separate pass verifies native development and production archives,
+    // renews ownership and scope, and applies closed + done atomically.
     expect(labelsOf(harness.issues.get(16))).toContain("factory:done");
     expect(harness.issues.get(16)?.state).toBe("closed");
     expect(harness.issues.get(16)?.state_reason).toBe("completed");
@@ -1911,12 +2342,13 @@ describe("agentic lifecycle reconciler integration", () => {
     expect(harness.mocks.removeLabel).not.toHaveBeenCalled();
   });
 
-  it("closes a factory:deployed-dev issue idempotently left over from a partial prior run", async () => {
+  it("does not trust a deployed-dev label without the owned merged PR", async () => {
     const issue = issueFixture(19, "factory:deployed-dev");
     const harness = await reconcile({ issues: [issue] });
 
-    expect(labelsOf(harness.issues.get(19))).toContain("factory:done");
-    expect(harness.issues.get(19)?.state).toBe("closed");
+    expect(labelsOf(harness.issues.get(19))).toContain("blocked");
+    expect(harness.issues.get(19)?.state).toBe("open");
+    expect(harness.mocks.updateIssue).not.toHaveBeenCalled();
   });
 
   it("fails closed to blocked when an issue carries more than one lifecycle label, and best-effort pauses the factory", async () => {

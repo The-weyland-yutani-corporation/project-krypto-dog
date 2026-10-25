@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { creditFixture } from "./credit-admission-fixture";
 
 const { AGENTIC_POLICY } = jest.requireActual<{
   AGENTIC_POLICY: {
@@ -145,13 +146,14 @@ describe("standing repository mission", () => {
   });
 });
 
-function intakeFixture(owned: object[] = [], history: object[] = []) {
+function intakeFixture(owned: object[] = [], history: object[] = [], workflow = "opportunity-discovery.lock.yml") {
   const dispatch = jest.fn(async () => undefined);
+  const credits = creditFixture(workflow, "o/r", "2026-10-17T12:00:00Z");
   const github = {
-    rest: { issues: { listForRepo: "issues" }, actions: { listWorkflowRuns: "runs", createWorkflowDispatch: dispatch } },
-    paginate: jest.fn(async (endpoint: string) => {
+    rest: { issues: { listForRepo: "issues" }, actions: { ...credits.api, createWorkflowDispatch: dispatch } },
+    paginate: jest.fn(async (endpoint: unknown) => {
       if (endpoint === "issues") return [{ number: 99, labels: ["ready-for-ai-dev"] }];
-      if (endpoint === "runs") return history;
+      if (endpoint === credits.api.listWorkflowRuns) return history;
       return owned;
     }),
   };
@@ -160,7 +162,7 @@ function intakeFixture(owned: object[] = [], history: object[] = []) {
     context: { repo: { owner: "o", repo: "r" }, payload: { repository: { default_branch: "main" } } },
     now: "2026-10-17T12:00:00Z",
     queueResult: { mode: "active", activeGoal: { number: 7, concurrencyLimit: 1 }, budgetRemaining: 2 },
-    dispatch,
+    dispatch, credits,
   };
 }
 
@@ -208,13 +210,51 @@ describe("durable intake handoffs", () => {
 
   it("sees outstanding stages from before midnight independently of today's attempt window", async () => {
     const fixture = intakeFixture([{ number: 8, state: "open", labels: ["ready-for-planning"] }]);
-    fixture.github.paginate.mockImplementation(async (endpoint: string, ...args: unknown[]) => {
+    fixture.github.paginate.mockImplementation(async (endpoint: unknown, ...args: unknown[]) => {
       if (endpoint === "issues") return [];
-      if (endpoint !== "runs") return [{ number: 8, state: "open", labels: ["ready-for-planning"] }];
+      if (endpoint !== fixture.credits.api.listWorkflowRuns) return [{ number: 8, state: "open", labels: ["ready-for-planning"] }];
       const params = args[0] as { status?: string };
+      if (params.status) expect(params).not.toHaveProperty("created");
       return params.status === "queued" ? [{ status: "queued", created_at: "2026-10-16T23:59:59Z" }] : [];
     });
     await intake.runFactoryIntake(fixture);
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+    expect(fixture.github.paginate).toHaveBeenCalledWith(
+      fixture.credits.api.listWorkflowRuns,
+      expect.objectContaining({ workflow_id: "em-planning.lock.yml", status: "queued" }),
+    );
+  });
+
+  it("does not substitute discovery when an owned planning stage exceeds its credit limit", async () => {
+    const fixture = intakeFixture([{ number: 8, state: "open", labels: ["ready-for-planning"] }], [], "em-planning.lock.yml");
+    fixture.credits.addRun(20001);
+    await intake.runFactoryIntake(fixture);
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+    expect(fixture.credits.api.downloadArtifact).toHaveBeenCalledTimes(1);
+    expect(fixture.core.info).toHaveBeenCalledWith(expect.stringContaining("rolling-credit-limit"));
+  });
+
+  it("leaves exhausted discovery undispatched for a later scheduled pass", async () => {
+    const fixture = intakeFixture();
+    fixture.credits.addRun(20001);
+    await intake.runFactoryIntake(fixture);
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+    expect(fixture.core.info).toHaveBeenCalledWith(expect.stringContaining("20001/20000"));
+  });
+
+  it("does not advance intake after implementation credit deferral", async () => {
+    const fixture = intakeFixture();
+    Object.assign(fixture.queueResult, { creditAdmission: { allowed: false } });
+    await intake.runFactoryIntake(fixture);
+    expect(fixture.github.paginate).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("fails explicitly on missing credit evidence before requesting any workflow", async () => {
+    const fixture = intakeFixture();
+    fixture.credits.addRun(1);
+    fixture.credits.api.listWorkflowRunArtifacts.mockResolvedValue({ data: { total_count: 0, artifacts: [] } });
+    await expect(intake.runFactoryIntake(fixture)).rejects.toThrow("unique latest-run");
     expect(fixture.dispatch).not.toHaveBeenCalled();
   });
 
@@ -364,6 +404,14 @@ describe("machine-verified boundary merge", () => {
       const source = fs.readFileSync(path.join(__dirname, "../../.github/workflows", workflow), "utf8");
       expect(source).toContain("sparse-checkout: |");
       expect(source).toContain("            .github/agentic-policy.json");
+    }
+  });
+
+  it("loads trusted workflow limits in both credit-admitting controller checkouts", () => {
+    for (const workflow of ["factory-queue-controller.yml", "agentic-pr-reconciler.yml"]) {
+      const source = fs.readFileSync(path.join(__dirname, "../../.github/workflows", workflow), "utf8");
+      expect(source).toContain("            .github/workflows");
+      expect(source).toContain("ref: ${{ github.event.repository.default_branch }}");
     }
   });
 });

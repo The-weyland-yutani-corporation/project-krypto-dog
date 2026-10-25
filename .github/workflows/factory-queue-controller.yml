@@ -41,6 +41,7 @@ jobs:
           sparse-checkout: |
             .github/scripts
             .github/agentic-policy.json
+            .github/workflows
 
       - name: Run deterministic queue controller
         uses: actions/github-script@v9

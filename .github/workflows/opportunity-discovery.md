@@ -39,8 +39,8 @@ safe-outputs:
     hide-older-comments: true
   noop:
     report-as-issue: false
-max-ai-credits: 1000
-max-daily-ai-credits: 2000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 ---
 
 # Opportunity Discovery
@@ -86,7 +86,7 @@ Only discover opportunities in these categories:
 
 ## Excluded scope (always noop for these)
 
-- Real-money execution, leverage, borrowing, transfers, or weakening guardrails.
+- Alternative financial execution engines, leverage, borrowing, or weakening guardrails.
 - Guaranteed-income claims, cherry-picked backtests, ignoring losing days, or
   raising capital/risk to force the owner's aspirational daily-profit target.
 
@@ -100,7 +100,7 @@ Act as a proactive PM/research agent.
 4. Use external web sources only when they materially improve the ticket; cite them in the issue body.
 5. Create only high-confidence software tickets with clear acceptance criteria and validation plans.
 6. Every created ticket starts behind rubber-duck review. Do not label tickets `ready-for-planning` or `ready-for-ai-dev`.
-7. For any ticket touching guardrails, portfolio accounting, risk controls, or live-trading boundaries, state that it requires rubber-duck and trading-safety review before implementation.
+7. For any ticket touching guardrails, portfolio accounting, risk controls, or simulated execution, state that it requires rubber-duck and trading-safety review before implementation.
 8. If no opportunity clears the quality bar, call `noop`.
 9. Link the created opportunity to the active goal and include the goal number
    in its body. Set the safe output's native `parent` to that goal number.

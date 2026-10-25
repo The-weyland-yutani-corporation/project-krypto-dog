@@ -36,9 +36,9 @@ proposal), `run-flow.ts` (invocation lease + journaling), `llm.ts`, `index.ts`.
 
 ## Escalation / non-goals
 
-- Changing the paper/live boundary, adding trade tools, or altering guardrail
-  authorization → **trading safety review** and, if live-adjacent, an accepted
-  governance proposal and release plan.
+- Changes to simulated execution, model tools, or guardrail authorization
+  require **trading safety review**. The product is permanently paper-only;
+  there is no separate execution mode to approve.
 - Agents may author control-plane implementation changes within issue scope.
   Boundary risk requires current-head automated QA/security verification,
   not a blanket human merge requirement. Preserve application invariants.

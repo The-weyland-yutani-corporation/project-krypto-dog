@@ -46,10 +46,10 @@
       "actions": ["add-labels", "add-comment"]
     },
     "pm-triage-high-risk-live-trading": {
-      "labels": ["trading-safety"],
+      "labels": [],
       "noop": false,
-      "escalate": true,
-      "actions": ["add-labels", "add-comment"]
+      "escalate": false,
+      "actions": ["add-comment"]
     },
     "pm-triage-high-risk-guardrail": {
       "labels": ["trading-safety"],

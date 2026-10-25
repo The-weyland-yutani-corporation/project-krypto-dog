@@ -1,4 +1,4 @@
-export {};
+import { creditFixture } from "./credit-admission-fixture";
 
 interface PullRequest {
   number: number;
@@ -84,6 +84,7 @@ interface ApiParams {
 }
 
 interface HarnessOptions {
+  credit?: ReturnType<typeof creditFixture>;
   autonomous?: boolean;
   controlTimelineError?: boolean;
   pullRequests?: PullRequest[];
@@ -322,6 +323,7 @@ function successRun(
 }
 
 function createHarness(options: HarnessOptions = {}) {
+  const credits = options.credit ?? creditFixture("code-review.lock.yml", repository, new Date().toISOString());
   const pullRequests = options.pullRequests ?? [pullRequest(1)];
   const fileErrors = new Set(options.fileErrors ?? []);
   const addLabelErrors = new Set(options.addLabelErrors ?? []);
@@ -454,6 +456,9 @@ function createHarness(options: HarnessOptions = {}) {
   );
 
   const listWorkflowRuns = jest.fn(async (params: ApiParams) => {
+    if (typeof params.created === "string" || typeof params.status === "string" || params.per_page === 1) {
+      return credits.api.listWorkflowRuns(params);
+    }
     const workflowId = params.workflow_id ?? "";
     const workflowRuns = pullRequests.flatMap((pull, index) => {
       const key = runKey(workflowId, pull.head.sha);
@@ -584,6 +589,7 @@ function createHarness(options: HarnessOptions = {}) {
     ),
     rest: {
       actions: {
+        ...credits.api,
         approveWorkflowRun,
         createWorkflowDispatch,
         listWorkflowRuns,
@@ -665,6 +671,64 @@ function autoMergeCalls(mock: jest.Mock): unknown[][] {
 }
 
 describe("agentic PR reconciler integration", () => {
+  it("does not dispatch or arm merge when missing review exceeds its native credit budget", async () => {
+    const credits = creditFixture("code-review.lock.yml", repository, new Date().toISOString());
+    credits.addRun(20001);
+    const { mocks, core } = await reconcile({
+      credit: credits,
+      checksBySha: { "sha-1": [] },
+      runs: { [runKey("code-review.lock.yml", "sha-1")]: [] },
+    });
+    expect(credits.api.downloadArtifact).toHaveBeenCalledTimes(1);
+    expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mocks.addLabels).not.toHaveBeenCalled();
+    expect(autoMergeCalls(mocks.graphql)).toEqual([]);
+    expect(core.info).toHaveBeenCalledWith(expect.stringContaining("20001/20000"));
+  });
+
+  it("does not substitute self-heal for an over-budget reviewer", async () => {
+    const credits = creditFixture("code-review.lock.yml", repository, new Date().toISOString());
+    credits.addRun(20001);
+    const { mocks } = await reconcile({
+      credit: credits, checksBySha: { "sha-1": [] },
+      runs: {
+        [runKey("code-review.lock.yml", "sha-1")]: [],
+        [runKey("ci.yml", "sha-1")]: [successRun(20, "CI", { conclusion: "failure" })],
+      },
+    });
+    expect(credits.api.downloadArtifact).toHaveBeenCalledTimes(1);
+    expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mocks.addLabels).not.toHaveBeenCalled();
+  });
+
+  it("requires credit admission for self-heal without consuming repair labels", async () => {
+    const credits = creditFixture("pr-self-heal.lock.yml", repository, new Date().toISOString());
+    credits.addRun(20001);
+    const { mocks } = await reconcile({
+      credit: credits,
+      runs: { [runKey("ci.yml", "sha-1")]: [successRun(20, "CI", { conclusion: "failure" })] },
+    });
+    expect(credits.api.downloadArtifact).toHaveBeenCalledTimes(1);
+    expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mocks.addLabels).not.toHaveBeenCalled();
+  });
+
+  it("surfaces unavailable credit evidence without retrying or creating a review request", async () => {
+    const credits = creditFixture("code-review.lock.yml", repository, new Date().toISOString());
+    credits.api.listWorkflowRuns.mockRejectedValue(new Error("credit history unavailable"));
+    const harness = createHarness({
+      credit: credits, checksBySha: { "sha-1": [] },
+      runs: { [runKey("code-review.lock.yml", "sha-1")]: [] },
+    });
+    await expect(reconcileAgenticPullRequests({
+      github: harness.github, context: reconcilerContext(), core: harness.core,
+      assignmentActorNodeId: ASSIGNMENT_ACTOR.node_id,
+    })).rejects.toThrow("Failed to reconcile");
+    expect(credits.api.listWorkflowRuns).toHaveBeenCalledTimes(1);
+    expect(harness.mocks.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(autoMergeCalls(harness.mocks.graphql)).toEqual([]);
+  });
+
   it.each([false, true])("fails closed after an activation timeline error (autonomous=%s)", async (autonomous) => {
     const { mocks, core } = await reconcile({ autonomous, controlTimelineError: true });
     expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
@@ -1546,7 +1610,7 @@ describe("agentic PR reconciler integration", () => {
     ).toBe(false);
   });
 
-  it("manually redispatches held agentic review for same-repository PRs", async () => {
+  it("admits only one held agentic review per workflow in the controller pass", async () => {
     const trusted = pullRequest(1);
     const untrusted = pullRequest(2, {
       labels: [{ name: "agentic-factory" }],
@@ -1579,15 +1643,6 @@ describe("agentic PR reconciler integration", () => {
           workflow_id: "code-review.lock.yml",
           ref: "main",
           inputs: pullRequestInputs("code-review.lock.yml", 1),
-        },
-      ],
-      [
-        {
-          owner: "VeVarunSharma",
-          repo: "project-krypto-dog",
-          workflow_id: "code-review.lock.yml",
-          ref: "main",
-          inputs: pullRequestInputs("code-review.lock.yml", 2),
         },
       ],
     ]);

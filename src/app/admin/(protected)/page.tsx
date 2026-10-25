@@ -55,7 +55,7 @@ function StatusBadge({
   return <Badge variant="outline">Idle</Badge>;
 }
 
-export default async function AdminDashboard() {
+async function loadDashboardData() {
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   const [
@@ -86,13 +86,27 @@ export default async function AdminDashboard() {
       .limit(1),
   ]);
 
-  const state = stateRows[0] ?? null;
-  const totalTrades = totalTradesRows[0].value;
-  const recentTrades = recentTradesRows[0].value;
-  const totalPnl = Number(pnlRows[0].value) || 0;
-  const latestRun = latestRunRows[0] ?? null;
-  const latestAlert = latestAlertRows[0] ?? null;
-  const renderedAtMs = Date.now();
+  return {
+    state: stateRows[0] ?? null,
+    totalTrades: totalTradesRows[0].value,
+    recentTrades: recentTradesRows[0].value,
+    totalPnl: Number(pnlRows[0].value) || 0,
+    latestRun: latestRunRows[0] ?? null,
+    latestAlert: latestAlertRows[0] ?? null,
+    renderedAtMs: Date.now(),
+  };
+}
+
+export default async function AdminDashboard() {
+  const {
+    state,
+    totalTrades,
+    recentTrades,
+    totalPnl,
+    latestRun,
+    latestAlert,
+    renderedAtMs,
+  } = await loadDashboardData();
   const leaseExpired =
     state?.leaseExpiresAt !== null &&
     state?.leaseExpiresAt !== undefined &&
@@ -116,7 +130,7 @@ export default async function AdminDashboard() {
       <PageHeader
         eyebrow="Operator console"
         title="Agent dashboard"
-        description="Paper portfolio state, run controls, and deterministic evidence snapshots before any live trading."
+        description="Simulated portfolio state, run controls, and deterministic evidence. Every environment is paper-only."
       />
 
       {state && (

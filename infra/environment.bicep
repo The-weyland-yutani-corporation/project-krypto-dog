@@ -60,6 +60,23 @@ param postgresAdministratorLogin string = 'krypto_owner'
 @secure()
 param postgresAdministratorLoginPassword string
 
+@description('Initialize credentials for a fresh environment, or preserve them during an existing-release cutover so source ops jobs retain database access.')
+@allowed([
+  'initialize'
+  'preserve'
+])
+param postgresCredentialMode string = 'initialize'
+
+@description('Stage the existing ops direct-url binding only for a proven-new PostgreSQL/Key Vault foundation. Existing foundations keep their bindings unchanged.')
+@allowed([
+  'none'
+  'initialize'
+])
+param bootstrapDatabaseAccessMode string = 'none'
+
+@secure()
+param bootstrapDirectUrl string = ''
+
 @description('PostgreSQL compute SKU name.')
 param postgresSkuName string = 'Standard_B1ms'
 
@@ -165,6 +182,7 @@ module postgres 'modules/postgresql.bicep' = {
     privateDnsZoneId: network.outputs.postgresPrivateDnsZoneId
     administratorLogin: postgresAdministratorLogin
     administratorLoginPassword: postgresAdministratorLoginPassword
+    preserveAdministratorPassword: postgresCredentialMode == 'preserve'
     skuName: postgresSkuName
     skuTier: postgresSkuTier
     storageSizeGB: postgresStorageSizeGB
@@ -200,6 +218,19 @@ module identities 'modules/identities.bicep' = {
     registryId: acr.outputs.registryId
     tags: envTags
   }
+}
+
+module bootstrapDatabaseAccess 'modules/ops-database-access.bicep' = if (bootstrapDatabaseAccessMode == 'initialize') {
+  name: 'bootstrap-database-access'
+  params: {
+    keyVaultName: keyVault.outputs.vaultName
+    opsIdentityPrincipalId: identities.outputs.opsIdentityPrincipalId
+    writeSecret: true
+    directUrl: bootstrapDirectUrl
+  }
+  dependsOn: [
+    postgres
+  ]
 }
 
 module evidenceStorage 'modules/storage.bicep' = {

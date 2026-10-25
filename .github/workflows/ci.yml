@@ -142,6 +142,7 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
+          POSTGRES_INITDB_ARGS: "--set=max_prepared_transactions=4"
         ports:
           - 5432:5432
         options: >-

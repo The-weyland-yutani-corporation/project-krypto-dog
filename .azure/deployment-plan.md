@@ -13,6 +13,274 @@ gates must pass before execution. Approval is not validation or deployment
 proof. Existing Bicep is the selected recipe; this is a modification/recovery
 of the Next.js application, not an AZD migration.
 
+## Repository delivery repair (not commissioning)
+
+The owner-approved permanent paper-only POC plan is being implemented in draft
+[PR #376](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/pull/376).
+The signed cutover and scheduled-execution proof components are published.
+Published production admission binds immutable exact-source development
+evidence, actual native job results, and repeated current-main and run-attempt
+readback. Missing workloads now require read-only database inspection before
+production mutation. Receipt-publication failures use the existing development
+disabled/Manual recovery. The current source increment implements native
+paper promotion, bounded deferral recovery and production-aware lifecycle/full
+canary completion. That published increment completed local component checks,
+with the aggregate Windows harness limitations recorded below. A subsequent
+Trading Safety finding requires the early-failure recovery repair described
+below. Current-head native checks and
+reviews remain required; these source changes do not enable either deployment
+workflow or resume the factory.
+
+Keep exact-head reviews, healthy deployment/smoke, restore verification,
+zero-fill shadow, actual scheduled paper execution, reconciled accounting,
+and basic independent failure alerts. Separate analytics projects/private
+queries, final mailbox delivery, irreversible retention locking, and formal
+response sign-off remain optional. Existing retention, identities, credentials,
+emergency stops, and external protection settings remain unchanged.
+
+Published source `e57982a` passed native CI, infrastructure and substantive
+Trading Safety review. The expanded PostgreSQL 17 bootstrap profile and
+transactional candidate-image binding now have actual supported-runtime
+PostgreSQL coverage. This is source proof, not Azure commissioning.
+
+Code Review run `40182749340` for that head stopped before agent execution at the
+rolling 24-hour workflow guardrail: 6511.781075 AI credits against a 5000-credit
+limit. Earlier run `40181249323` recorded 1512.975625 credits against its
+1500-credit per-run cap before provider HTTP 403 responses. The harness called
+those responses authentication failures, but that classification alone does
+not establish a credential or billing configuration defect. No budget, model,
+credential or protection change has been made, and no substantive current-head
+code-review verdict exists. The follow-up source-only prompt change avoids
+overlapping specialist subreviews and duplicated completed CI while preserving
+full diff coverage, independent review requirements and both credit limits.
+It has not yet demonstrated lower cost or a successful native code-review
+verdict. No additional trial runs or A/B rollout are authorized by this change.
+The published review-cost repair `48a6e93` subsequently passed native CI,
+infrastructure and substantive Trading Safety. Its Code Review `40185637618`
+again stopped before agent execution at 6511.781075 / 5000 rolling credits,
+so it provides no measurement of the changed review prompt's cost.
+
+The later published disabled-release source `bf028a0` passed native CI
+`40187525179` and infrastructure `40187525167`. Code Review `40187525148`
+again failed activation at 6511.781075 / 5000 rolling credits. Trading Safety
+`40187525157` failed during agent execution after recording 1607.598 credits
+against the unchanged 1600-credit run cap, followed by provider HTTP 403
+responses classified as authentication failures. Its check publisher was
+skipped. Neither classification nor source tests establish a completed native
+verdict, an expired credential, or permission to change budgets/models or rerun
+around these guards.
+
+The four review prompts now require exact committed revisions and complete
+merge-base-to-head diffs rather than temporary checkout changes. Trading Safety
+explicitly reviewed that committed range at `e57982a`; general Code Review
+still needs to run within the unchanged limits. Its prior log also shows
+overlapping general/security subreviews and repeated metadata reads. Any
+cost-reduction follow-up must preserve full required review coverage and cannot
+substitute local results for a missing native verdict.
+
+Fresh-database admission includes strict inventory/job/report validators,
+migration-side revalidation, and unchanged-snapshot PostgreSQL regression
+coverage. Mocks and Bicep compilation are not operational bootstrap evidence.
+These findings are separate from
+the existing MonitorOps execution-denial hold and stale deployment run
+`37642379119`. None of those holds was bypassed.
+The completed stage-specific checks below are historical receipts, not evidence
+that the current application source is approved or the factory is commissioned.
+
+### Historical automatic disabled-release increment
+
+The published `bf028a0` increment admitted development-completion events to the existing
+production workflow only when the factory has a human-attested active state.
+It bound the exact triggering development run/attempt to the latest verified
+receipt and repeated source, development and factory checks before Azure access.
+That increment selected full disabled/Manual releases for automatic events;
+manual foundation/full commissioning remained separate. It enabled or
+dispatched no workflow and introduced no first paper activation or schedule.
+Local source checks passed: 845 factory tests, 277 production evidence/workflow
+tests, lint, script typecheck, build and strict pinned compilation. These are
+not hosted production execution or Azure commissioning evidence.
+
+At that checkpoint the activation-design question had received no explicit
+user choice, so first-activation authorization and paper-promotion/lifecycle
+integration were not introduced until the subsequent source integration below.
+
+### Native paper-promotion and lifecycle source integration
+
+The subsequent instruction to continue autonomously and make implementation
+decisions selects an explicit operator paper-activation action for first
+activation or deliberate recovery. Continuous activation must instead verify
+an immutable native promotion receipt matching the currently deployed paper
+release. Neither route clears account stops or relaxes smoke, shadow,
+accounting, exact-source, schedule-observation or failure-recovery requirements.
+Manual foundation/full commissioning still defaults to disabled/Manual.
+This is an implementation decision, not approval to dispatch, enable workflows,
+alter protected settings, commission Azure, retry a denied operation or resume
+the factory.
+
+The source now has native prepare/activate/recover jobs, immutable closed
+promotion receipts, receipt-bound Deployment/failure publishers, and
+production-aware lifecycle/canary consumers. Preparation obtains fresh smoke,
+exactly one zero-fill Manual shadow and read-only readiness. Activation arms
+independent monitoring before schedules and requires fresh authenticated proof
+of an actual scheduled PAPER run. Recovery repeats owned binding and quiescence
+before disabling monitoring; it does not reset account state. Hard runner loss
+or force cancellation is not assumed recovered.
+
+The lifecycle rechecks native development/production, claim, assignment,
+unique PR, scope and exact merge before atomically closing with `factory:done`.
+The canonical production-delivery policy allows one mutation-free continuous
+deferral retry after 15 minutes, with a six-hour missing-evidence deadline.
+Native comment intent consumes retry budget before dispatch; uncertain
+responses are not replayed, and newer/pending attempts suppress duplicates.
+Queued runs still require ordinary continuous admission; a ledger does not
+grant first-activation authority. Full-canary acceptance independently checks
+the merged heartbeat and renewed provenance, not a green label alone.
+
+Local source evidence for the integrated increment:
+
+- 916 factory tests and 397 production evidence/orchestration/workflow tests
+  passed, including native archive consumers, executable workflow scripts,
+  mutation-boundary drift, retry uncertainty and independent failure reporting.
+- The real report-validator CLI passed 232 assertions. Canonical policy,
+  deterministic evaluations (26 fixtures, all 15 critical cases), the 15
+  instruction-contract tests, generated documentation and Markdown links passed.
+- Application build, script typecheck and lint passed; lint retains the existing
+  `postcss.config.mjs` anonymous-default-export warning.
+- Approved GH-AW v0.81.6 strict source compilation passed for all 18 workflows.
+  Repeated compilation was byte-identical for all 20 generated artifacts.
+  Generated locks were not edited manually.
+
+The aggregate local harness did not pass: Windows wrappers directly spawning
+`jest.cmd` or `npx` failed, and the global GH-AW version is not the repository's
+pinned version. The corresponding component checks and the separately approved
+pinned source compiler passed; this does not convert a wrapper failure into an
+aggregate pass. Native Linux harness/current-head review evidence is still
+required. No global tool replacement or MonitorOps verification retry was used.
+
+The first integrated head `519afb2` passed native CI `40198625030`, including
+the Linux harness, PostgreSQL execution and Docker targets. Infrastructure
+`40198624974` passed Bicep and parameter compilation but found that the isolated
+ops-wrapper test omitted the validator's new shared production-report module.
+The follow-up copies and cleans up that dependency without changing admission
+expectations or production validation. The actual fake-Azure wrapper now passes
+locally; its existing filesystem-dependent symlink case is skipped on Windows.
+The corrected head `3dfcd98` passed native CI `40199290196` and infrastructure
+`40199290209`, including the actual Linux helper fixture. Code Review `40198624998`
+again stopped before execution at the unchanged
+6511.781075 / 5000 rolling credit guard; it supplies no substantive verdict.
+
+### Required early-failure recovery correction
+
+Trading Safety workflow `40199290235` completed, but its substantive check
+`121188151532` failed with required fixes at `3dfcd98`. Its confirmed defect:
+the recovery gate depended on successful disabled-release publication and
+preparation having run. An uncertain fence acquisition or partial forced
+disable/monitoring failure could therefore skip recovery. The historical safe
+verdict at `519afb2` does not override that later finding. Current general Code
+Review `40199290216` again refused activation at the unchanged rolling credit
+guard, before agent execution.
+
+The source correction captures and persists exact source context before
+acquisition; includes every mutation-capable predecessor and publisher in
+bounded recovery; and no longer requires preparation, a disabled receipt or
+activation authority to compensate failure. It preserves verified deferral,
+accepts only complete current source/candidate bindings, and retains explicit
+failure on ambiguous ownership or runtime state. Recovery never reacquires or
+extends a fence, resets balances, clears stops/leases or guesses a restore point.
+
+Rollout recovery remains in `production-promotion`. Separate fence completion
+uses the existing `production-deploy` Environment and signed cutover protocol,
+preserving purpose-specific trust and source/candidate release validation.
+Source completion refuses any attempted candidate migration; candidate recovery
+retains its fence without successful native migration and baseline backup.
+One-hour retained intent is persisted before recovery Azure access; result,
+owner-completion and final failure artifacts contain only nonsecret state.
+Failure reporting requires validated bound receipts rather than equating job
+success with verified recovery, and independently attempts pause/failure writes.
+Schema-2 promotion receipts bind the additional native job; historical
+schema-1 receipts retain exact validation against their original inventory.
+
+The correction passed 712 tests across the eight production workflow,
+orchestration, evidence, signed-observation and fence suites; 916 factory tests;
+and all 232 assertions through the actual report CLI. Build, lint, script
+typecheck, canonical policy, generated docs and links passed; lint retains the
+existing PostCSS warning. Strict pinned GH-AW compilation passed all 18 sources
+without changing source or generated artifact bytes. These are local source
+checks, not Azure recovery execution or a current-head specialist verdict.
+
+The correction requires new exact-head native review. It has not run against Azure, enabled a workflow, dispatched
+a reviewer/deployment, changed an approval/credential/budget, resolved the
+denied MonitorOps command or stale run, or resumed the factory.
+
+Source integration and verification do not establish Azure commissioning,
+current-head native reviews, live monitoring, first paper activation, an
+unpaused factory or a completed full canary. All external holds remain.
+
+### Automated credit-admission correction
+
+The pinned GH-AW v0.81.6 guard intentionally skips every `workflow_dispatch`,
+including the factory controllers' automated requests. The queue, intake and
+PR controllers now check the existing workflow limits and recorded native usage
+before claims, dispatch receipts or agent requests. Credit exhaustion defers
+work to a later scheduled pass; it does not clear a factory pause, consume a
+repair attempt or justify a substitute reviewer or discovery run.
+
+The check preserves GH-AW's rolling run-creation window and recorded-usage
+threshold. It requires complete bounded native history and its latest immutable
+usage cache; missing, expired, malformed, rerun-ambiguous or changing evidence
+fails explicitly rather than becoming zero usage. Outstanding runs also defer
+work. Trusted workflow source is included in both controller checkouts, without
+changing any credit limit, model, credential, agent permission or workflow pin.
+This is source enforcement, not a hard billing cap or a distributed lock on
+independently triggered runs. No native review or commissioning hold is lifted.
+
+### Owner-requested AIC limits
+
+The owner subsequently approved uniform limits of 5,000 AIC per run and
+20,000 AIC per rolling 24-hour workflow budget across all 18 agentic workflows.
+The source frontmatter, compiled locks and generated workflow inventory carry
+these values; the existing controller and monitoring readers continue to derive
+them from trusted source. Credit enforcement, recorded usage, models, identities,
+permissions, retry limits and factory/deployment controls remain unchanged.
+
+These are per-workflow thresholds, not a shared repository spending limit or a
+hard billing ceiling. Earlier failed runs and their original limits above remain
+historical evidence, not current policy or successful reviews. This budget-only
+change does not authorize a forbidden retry, deployment, merge or factory resume.
+
+### Fresh-database admission repair
+
+Autonomous source implementation uses a bounded catalog-only inspection in the
+existing migrate-init job slot. It reuses the existing ops identity and
+`direct-url` Key Vault access, not another service, a new Reader grant, or
+credentials embedded in a job definition. For genuinely new foundations, the
+already-planned secret binding and its exact existing per-secret role assignment
+are established earlier. Existing bindings and administrator credentials are not
+overwritten to make inspection work. Older foundations missing that prerequisite
+stop with an explicit compatibility failure.
+
+An absent server must be corroborated immediately before creating the foundation.
+An existing private database must be inspected before foundation mutation; every
+fresh full release must repeat inspection before release and migration mutation.
+The probe executes only fixed catalog reads in a bounded read-only transaction.
+Retained application objects, migration history or runtime roles reject fresh
+admission; no fence, stop, balance, role or credential is cleared. Creating the
+single inspection-only job and its immutable image is a disclosed bootstrap
+exception, not permission to deploy the remaining workloads before admission.
+
+The first release preserves the inspected direct-url binding and checks protected
+runtime credential consistency. Migration repeats the empty-database check
+inside the ops process before any Drizzle, role/password bootstrap, or seed.
+Temporary-job cleanup requires the downloaded canonical report, unchanged owned
+configuration, and a unique known terminal execution; uncertain outcomes retain
+the resource and block admission. Report freshness is checked again after cleanup.
+Neither Azure resource inventory nor this database read is a distributed lock;
+native workflow serialization and immediate, bounded rechecks remain necessary.
+
+This is preparation work. Native bootstrap deployment, secret bindings,
+commissioning and first activation still require their established protections
+and stage-specific validation. No operational hold is lifted by this design.
+
 ## Conditional commissioning authorization
 
 Approval covers one commissioning pass for the selected new target, at most
@@ -24,15 +292,16 @@ hosted workflows. `azure-deploy-prod.yml` may be enabled only for its
 protected disabled/Manual release.
 
 Reviewers and branch protections remain unchanged. Old Azure resources and
-historical data stay untouched. Production activation and real-money
-execution remain excluded. Failed validation, source checks, or Environment
+historical data stay untouched. First production activation remains separately
+scoped; every environment is permanently paper-only. Failed validation, source checks, or Environment
 admission block execution; this approval does not waive any of them.
 
 ## Goal
 
-Recover unattended software delivery through a verified development/shadow
-deployment and a separately protected, disabled production release. Keep
-real-money trading disabled and preserve the emergency pause,
+Recover unattended software delivery through verified development/shadow and
+production paper deployments. Commissioning first establishes a protected,
+disabled production release; later activation follows the approved native
+evidence-gated design. Preserve the emergency pause,
 current-head review, migrations, reconciliation, backup, rollback, and health
 evidence requirements.
 
@@ -61,7 +330,8 @@ evidence requirements.
   [MonitorOps run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39551325097)
   also executed its agent successfully, but the collector command was denied
   permission and the agent emitted a no-op instead of a status report.
-  Model startup is repaired; operational monitoring is not yet verified.
+  That run proved the model selection then; it does not override the current
+  Code Review budget block. Operational monitoring is not yet verified.
 - Target selection does not authorize provisioning, permission changes,
   production activation, or removal of platform protections.
 
@@ -202,11 +472,88 @@ report queued. The cancellation retry is exhausted; do not retry indefinitely,
 delete its audit history, or treat the contradictory response as a verified
 cancellation.
 
-Protected credential rebinding and the recovery merge remain on hold until
-that stale-run state is resolved. No Azure bindings or database secrets were
-changed. Read-only validation of later stages may proceed, but it does not
-remove this stop. Other platform, workload-access, production, and rotation
-workflows had no active runs when checked.
+The owner subsequently merged
+[PR #374](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/pull/374)
+at `104c39197b41db396bb86c3c2c669ca950a3b07a`; its exact-SHA push CI
+[passed](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39639335132).
+The source-merge hold is superseded, but protected credential rebinding
+remains on hold until the stale-run state is resolved. No Azure bindings or
+database secrets were changed. Read-only validation of later stages may
+proceed, but it does not remove this stop.
+
+## Full-factory implementation follow-up
+
+The owner approved a native GitHub Actions design for unattended delivery
+through monitored paper production in
+[issue #375](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/375).
+The owner subsequently approved the permanent-paper-only, lean POC revision
+for implementation. Development and production remain real Azure deployments;
+neither has an alternative financial execution mode. This revises source scope,
+not historical deployment receipts or any specifically denied operation.
+
+Required readiness is exact-head review, main-only admission, image provenance,
+healthy disabled smoke and zero-fill shadow, current migrations/restore proof,
+reconciled accounting, owned cutover, actual scheduled paper execution and
+basic independent failure alerts. Separate PostHog projects/private queries,
+final mailbox proof, formal response sign-off and irreversible retention
+locking are optional enhancements. Keep environment tags, provider/audit
+correlation, private versioned evidence, all existing retention and backups.
+
+The evidence repair uses existing trusted GitHub workflow identities for
+Azure readback. A short-lived GitHub OIDC proof binds the canonical observation
+digest, immutable repository identity, main workflow/source SHA, Environment,
+run/attempt, owner and exact release/resources. Ops verifies signature,
+audience, freshness and bindings before use; release freshness and ownership
+are rechecked in its PostgreSQL transaction. Scheduled evidence must
+authenticate the actual execution, not caller-supplied timing. Do not add Azure
+Reader grants, forward cloud/GitHub access tokens, persist raw proofs, or add
+a signing/orchestration service. GitHub concurrency bounds Azure mutation
+races; Azure and PostgreSQL do not share a distributed transaction.
+
+For a healthy release with an open paper position or active lease, upgrades
+must defer without forcing a trade or changing balances. Full factory
+completion must eventually include exact-release production evidence.
+
+The read-only activation verifier now rejects operator pause, drawdown lock,
+and missing or invalid values for either control. This safeguard neither
+clears those controls nor implements or authorizes production promotion.
+Published source checkpoint `f0ffff8dee5547b970434d3cecd64e0a435c1653`
+implements an ops-owned cutover fence, runtime and
+paper-executor enforcement, migration/backup coverage, exact Azure execution
+binding, and production workflow admission before forced disable. Healthy
+position/lease deferral is mutation-free; an expired or failed fence remains
+held for owned recovery. Existing-release infrastructure updates omit the
+PostgreSQL administrator password so source ops jobs retain database access.
+Fresh provisioning remains explicit, and foundation/full production admission
+requires successful exact-SHA main push CI.
+
+Its exact-head
+[CI](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39699485807)
+and
+[infrastructure validation](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39699485790)
+passed, including real PostgreSQL migration/execution and strict harness checks.
+Required review is not complete: the code-review agent ended with a Copilot
+request HTTP 403, and the trading review reported missing Jest for its own
+targeted execution. Workflow success alone does not replace a complete review.
+
+The corrective checkpoint adds forward migration 0009 to retain completed
+owners, stable per-run ownership, independently retryable migration/backup,
+release and smoke jobs, exact returned main-push CI provenance, and fresh
+fence checks before forced disable and its monitoring change. The corrected
+head still requires hosted migration/concurrency/restore checks and complete
+current-head review before merge.
+
+These historical checkpoints are implementation work, not deployment proof.
+Evidence-bound paper promotion and production-aware lifecycle completion are
+now integrated in source as described above; native current-head review and
+actual commissioning remain pending. MonitorOps' separately denied pinned-tool
+verification remains blocked and must not be retried through an alternate path.
+
+Exact Environment protection changes, first production activation and any
+new external telemetry/account effects still require their separate approvals.
+An irreversible evidence-policy lock is optional and is not authorized here.
+Factory control and the deployment workflows remain
+paused/disabled; the bootstrap remains the only completed provisioning stage.
 
 ## Verified preparation evidence
 
@@ -404,9 +751,10 @@ are `main` and `develop/azure`. Development does not reference the legacy
 `development-promotion` Environment.
 
 Consequently, this infrastructure recovery alone cannot truthfully deliver
-100% unattended production delivery. A separate, explicitly approved
-production-protection/promotion design is still required. Do not remove or
-bypass those protections under this plan.
+100% unattended production delivery. The native paper-promotion source design
+does not change those external settings. Exact protection changes and first
+activation still require their separately scoped approvals; do not remove or
+bypass protections under the source implementation authorization.
 
 ## Proposed repair surfaces
 
@@ -420,8 +768,8 @@ bypass those protections under this plan.
 - Do not reuse the old cross-tenant Foundry endpoint or database URLs.
 - Use the owner-selected full footprint: three resource groups, four OIDC
   identities, two model deployments, and both dev and prod workload
-  identities. There is no new dev-only abstraction or automatic production
-  activation path.
+  identities. There is no new dev-only abstraction. Automatic continuation
+  requires verified prior paper operation and cannot authorize first activation.
 - Disclose each identity, role grant, protected-setting change, and secret
   prerequisite in the final approval request. No secret values are to be
   displayed or committed.
@@ -438,7 +786,9 @@ bypass those protections under this plan.
   Its separate repair session also remains blocked by the tool-approval layer,
   including after the owner's fresh approval for scoped local validation tools;
   no source fix or permission workaround was attempted.
-- Production software-delivery scope, which remains manual and disabled.
+- The implemented unattended paper-production source still requires native
+  current-head review, actual commissioning and its separate external-effects
+  approvals. The production workflow remains disabled.
 
 ## Validation and activation
 

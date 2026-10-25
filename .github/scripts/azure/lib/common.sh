@@ -31,7 +31,7 @@ azure_common_image_digest_pattern='^sha256:[0-9a-f]{64}$'
 azure_common_job_execution_id_pattern='^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'
 azure_common_job_name_pattern='^[a-z][a-z0-9-]{0,30}[a-z0-9]$'
 azure_common_resource_group_pattern='^[A-Za-z0-9._()-]{1,90}$'
-azure_common_operations='migrate-init preflight verified-backup target-smoke activation-check'
+azure_common_operations='database-inspection migrate-init preflight verified-backup target-smoke activation-check deployment-admission production-verification'
 # Bare HTTPS blob *container* URL only: exact `<account>.blob.core.windows.net`
 # host, and exactly one path segment (the container name) with no
 # trailing slash, credentials, query string, or fragment. This is
@@ -128,6 +128,27 @@ azure_validate_job_execution_id() {
     return 1
   fi
   printf '%s' "${value}"
+}
+
+azure_validate_fence_owner() {
+  local value="${1:-}"
+  if ! [[ "${value}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+    echo "Deployment fence owner must be a lowercase UUID v4 or v5." >&2
+    return 1
+  fi
+  printf '%s' "${value}"
+}
+
+# UUID v5 is stable across attempts of one trusted repository/workflow run.
+# The owner is an idempotency key, not an authorization credential.
+azure_deployment_fence_owner() {
+  local repository_id="${GITHUB_REPOSITORY_ID:-}" run_id="${GITHUB_RUN_ID:-}"
+  if ! [[ "${repository_id}" =~ ^[1-9][0-9]*$ ]] ||
+     ! [[ "${run_id}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Fence ownership requires positive GITHUB_REPOSITORY_ID and GITHUB_RUN_ID." >&2
+    return 1
+  fi
+  node "$(dirname "${BASH_SOURCE[0]}")/deployment-owner.cjs" "${repository_id}" "${run_id}"
 }
 
 azure_validate_job_name() {

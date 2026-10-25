@@ -1,6 +1,6 @@
 name: Agentic Lifecycle Reconciler
 
-# Deterministic issue/session/PR/dev lifecycle reconciler for the
+# Deterministic issue/session/PR/deployment lifecycle reconciler for the
 # safety-bounded autonomous SDLC factory (specs/factory.md).
 # This workflow never executes issue/PR-authored code: it only checks out
 # the trusted reconciler implementation from the exact default branch and
@@ -15,9 +15,8 @@ name: Agentic Lifecycle Reconciler
 # Deployment) itself before that workflow run completes, so a `status`
 # event would fire on every ordinary commit status across the repo -- a
 # high-volume storm for a signal this reconciler doesn't need a dedicated
-# trigger for. The `workflow_run` trigger on "Azure deploy dev" completing,
-# plus the conservative schedule, is sufficient to pick up dev evidence
-# promptly without that volume.
+# trigger for. Development and production completion plus the conservative
+# schedule pick up immutable deployment evidence without that volume.
 
 on:
   workflow_dispatch: {}
@@ -29,7 +28,7 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, closed, labeled, unlabeled]
   workflow_run:
-    workflows: ["Azure deploy dev"]
+    workflows: ["Azure deploy dev", "Azure deploy prod"]
     types: [completed]
 
 concurrency:
@@ -45,13 +44,14 @@ permissions:
   issues: write
   pull-requests: write
   checks: read
-  actions: read
+  # One ledger-bound retry of a verified mutation-free production deferral.
+  actions: write
   deployments: read
   statuses: read
 
 jobs:
   reconcile:
-    name: Reconcile factory issue/PR/dev lifecycle
+    name: Reconcile factory issue/PR/paper-production lifecycle
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

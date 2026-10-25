@@ -22,15 +22,19 @@
 // missing, malformed, or mismatched otherwise -- never a generic failure.
 
 import { readFileSync } from "node:fs";
+import { validateObservationReceipt, validateProductionReport } from "./lib/production-report.cjs";
 
 const RELEASE_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const OPERATIONS = new Set([
+  "database-inspection",
   "migrate-init",
   "preflight",
   "verified-backup",
   "target-smoke",
   "activation-check",
+  "deployment-admission",
+  "production-verification",
 ]);
 
 function fail(message) {
@@ -123,7 +127,170 @@ function requireMatch(object, field, expected, context) {
   }
 }
 
+function requireWorkflowObservation(purpose, workflowSha, generatedAt) {
+  try {
+    validateObservationReceipt(report.workflowObservation, {
+      purpose, workflowSha, generatedAt, digest: args["workflow-observation-digest"],
+    });
+  } catch (error) {
+    fail(error.message);
+  }
+}
+
 switch (operation) {
+  case "database-inspection": {
+    if (!expectedImageDigest) fail("--image-digest is required for database inspection.");
+    const expected = {
+      schemaVersion: "2.0.0", operation, environmentName: "prod",
+      releaseSha: expectedReleaseSha, imageDigest: expectedImageDigest,
+      jobExecutionId: args["job-execution-id"],
+      azureExecutionName: args["azure-execution-name"],
+      reason: "empty-database",
+    };
+    for (const key of ["jobExecutionId", "azureExecutionName"]) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(expected[key] ?? "")) {
+        fail("Database inspection requires exact logical and native execution identities.");
+      }
+    }
+    if (Object.keys(report).sort().join(",") !== [
+      ...Object.keys(expected), "approved", "generatedAt", "inspection",
+    ].sort().join(",")) fail("Database inspection report has unknown or missing fields.");
+    for (const [field, value] of Object.entries(expected)) {
+      requireMatch(report, field, value, "database-inspection report");
+    }
+    requireTrue(report, "approved", "database-inspection report");
+    const inspection = requireField(report, "inspection", "object");
+    if (Object.keys(inspection).sort().join(",") !== [
+      "databaseHost", "databaseName", "runtimeLoginRole", "observedAt",
+      "readOnly", "objectCount", "runtimeRolePresent", "runtimeLoginPresent", "empty",
+      "catalogProfile", "serverVersionNum", "stateCounts",
+    ].sort().join(",")) fail("Database inspection requires a closed catalog snapshot.");
+    for (const [field, argument] of [
+      ["databaseHost", "database-host"], ["databaseName", "database-name"],
+      ["runtimeLoginRole", "runtime-login-role"],
+    ]) {
+      if (typeof args[argument] !== "string" || args[argument].length === 0) {
+        fail(`--${argument} is required.`);
+      }
+      requireMatch(inspection, field, args[argument], "database-inspection target");
+    }
+    requireTrue(inspection, "readOnly", "database-inspection snapshot");
+    requireTrue(inspection, "empty", "database-inspection snapshot");
+    requireMatch(inspection, "catalogProfile", "postgresql-17-bootstrap-v2", "database-inspection snapshot");
+    if (!Number.isSafeInteger(inspection.serverVersionNum) ||
+        inspection.serverVersionNum < 170000 || inspection.serverVersionNum >= 180000) {
+      fail("Database inspection requires the validated PostgreSQL 17 catalog profile.");
+    }
+    const stateCounts = requireField(inspection, "stateCounts", "object");
+    const categories = ["catalogObjects", "largeObjects", "databaseSettings", "privilegeChanges", "metadata"];
+    if (Array.isArray(stateCounts) ||
+        Object.keys(stateCounts).sort().join(",") !== categories.sort().join(",") ||
+        Object.values(stateCounts).some((value) => value !== 0)) {
+      fail("Every persistent-state category must be present and empty.");
+    }
+    if (inspection.objectCount !== 0 || inspection.runtimeRolePresent !== false ||
+        inspection.runtimeLoginPresent !== false) {
+      fail("Retained objects or runtime roles cannot authorize fresh database initialization.");
+    }
+    const observed = Date.parse(requireField(inspection, "observedAt", "string"));
+    const generated = Date.parse(requireField(report, "generatedAt", "string"));
+    const now = Date.now();
+    if (!Number.isFinite(observed) || !Number.isFinite(generated) ||
+        observed > generated + 5_000 || generated - observed > 30_000 ||
+        observed > now + 5_000 || generated > now + 5_000 ||
+        now - observed > 180_000 || now - generated > 180_000) {
+      fail("Database inspection is stale or has invalid observation timing.");
+    }
+    break;
+  }
+  case "production-verification": {
+    try {
+      validateProductionReport(report, args);
+    } catch (error) {
+      fail(error.message);
+    }
+    break;
+  }
+  case "deployment-admission": {
+    const action = args["admission-action"];
+    const owner = args["fence-owner"];
+    const sourceSha = args["source-release-sha"];
+    const candidateSha = args["candidate-release-sha"];
+    const targetOrigin = args["target-origin"];
+    const executionId = args["job-execution-id"];
+    const azureExecutionName = args["azure-execution-name"];
+    if (!["acquire", "verify", "release"].includes(action)) fail("--admission-action must be acquire, verify, or release.");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(owner ?? "")) {
+      fail("--fence-owner must be a lowercase UUID v4 or v5.");
+    }
+    if (!RELEASE_SHA_PATTERN.test(sourceSha ?? "") || !RELEASE_SHA_PATTERN.test(candidateSha ?? "")) {
+      fail("Both source and candidate release SHAs are required.");
+    }
+    if (!expectedImageDigest) fail("--image-digest is required for admission.");
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(executionId ?? "")) {
+      fail("--job-execution-id is required for admission.");
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(azureExecutionName ?? "")) {
+      fail("--azure-execution-name is required for admission.");
+    }
+    let origin;
+    try {
+      origin = new URL(targetOrigin);
+    } catch {
+      fail("--target-origin must be a bare HTTPS origin.");
+    }
+    if (origin.protocol !== "https:" || origin.origin !== targetOrigin) {
+      fail("--target-origin must be a bare HTTPS origin.");
+    }
+    // Older source ops may acquire/verify during their first upgrade, never release.
+    if (!(action === "release" ? ["1.1.0"] : ["1.0.0", "1.1.0"]).includes(report.schemaVersion)) {
+      fail("Unsupported admission schema; fence release requires attested schema 1.1.0.");
+    }
+    for (const [field, expected] of Object.entries({
+      operation,
+      action,
+      owner,
+      sourceReleaseSha: sourceSha,
+      candidateReleaseSha: candidateSha,
+      releaseSha: expectedReleaseSha,
+      imageDigest: expectedImageDigest,
+      targetOrigin,
+      environmentName: "prod",
+      jobExecutionId: executionId,
+      azureExecutionName,
+    })) {
+      requireMatch(report, field, expected, "deployment-admission report");
+    }
+    const now = Date.now();
+    const generatedAt = Date.parse(requireField(report, "generatedAt", "string"));
+    if (!Number.isFinite(generatedAt) || generatedAt > now + 120_000 || now - generatedAt > 30 * 60_000) {
+      fail("Admission evidence is invalid, future-dated, or older than 30 minutes.");
+    }
+    if (action === "release") {
+      requireWorkflowObservation("cutover-release", candidateSha, generatedAt);
+    } else if (report.schemaVersion === "1.1.0" && report.workflowObservation !== null) {
+      fail("Non-release admission cannot claim a workflow-observation receipt.");
+    }
+    if (report.status === "deferred" && args["allow-deferred"] === "true" && action === "acquire") {
+      if (
+        !["open-position", "run-lease", "database-busy"].includes(report.reason) ||
+        report.expiresAt !== null
+      ) {
+        fail("Deferred admission has an invalid reason or claims an acquired fence.");
+      }
+      process.stdout.write("validate-report: deployment DEFERRED; the source release was not changed.\n");
+      process.exit(75);
+    }
+    requireMatch(report, "status", { acquire: "admitted", verify: "held", release: "released" }[action], "deployment-admission report");
+    const expiresAt = Date.parse(requireField(report, "expiresAt", "string"));
+    if (
+      !Number.isFinite(expiresAt) ||
+      (action !== "release" && (expiresAt <= now || expiresAt - generatedAt > 6 * 60 * 60_000 + 120_000))
+    ) {
+      fail("The admission fence deadline is invalid or expired.");
+    }
+    break;
+  }
   case "migrate-init": {
     requireTrue(report, "success", "migrate-init report");
     requireTrue(report, "migrated", "migrate-init report");

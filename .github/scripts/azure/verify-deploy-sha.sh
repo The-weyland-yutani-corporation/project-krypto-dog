@@ -4,8 +4,8 @@
 # exact `origin/<branch>` ref (the real, current tip of that branch on
 # the remote -- never a locally-cached/stale one, since this script
 # always fetches the branch fresh) and (b) has at least one *successful*
-# run of the given CI workflow file for that *exact* commit SHA with
-# `event == "push"` (never a `pull_request`-triggered run, which could
+# run of the given CI workflow file for that *exact* commit SHA and branch
+# with `event == "push"` (never a `pull_request`-triggered run, which could
 # have run against unreviewed/unmerged code, and never a
 # `workflow_dispatch`-triggered CI run, which proves nothing about the
 # commit having gone through the real push-triggered pipeline).
@@ -91,7 +91,7 @@ echo "Verifying commit ${sha} is an ancestor of origin/${branch} in ${repo}..."
 if [ "$(git rev-parse --is-shallow-repository 2>/dev/null || echo false)" = "true" ]; then
   git fetch --quiet --unshallow origin || git fetch --quiet --depth=1000000000 origin
 fi
-git fetch --quiet origin "${branch}"
+git fetch --quiet origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
 if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
   git fetch --quiet origin "${sha}" || true
 fi
@@ -106,26 +106,35 @@ if ! git merge-base --is-ancestor "${sha}" "origin/${branch}"; then
 fi
 echo "Confirmed: ${sha} is an ancestor of origin/${branch}."
 
-echo "Verifying a successful '${ci_workflow}' run exists for exact commit ${sha} (event=push)..."
+echo "Verifying a successful '${ci_workflow}' run exists for exact commit ${sha} (branch=${branch}, event=push)..."
 # NOTE: `gh api` silently switches its default HTTP method from GET to
 # POST whenever any `-f`/`-F` field is supplied, which would 404 against
 # this read-only endpoint -- `-X GET` must be explicit here.
-success_count="$(gh api \
+runs="$(gh api \
   -X GET \
   "repos/${repo}/actions/workflows/${ci_workflow}/runs" \
   -f "head_sha=${sha}" \
+  -f "branch=${branch}" \
   -f "event=push" \
   -f "status=completed" \
-  --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')"
+  -f "per_page=100")"
+success_count="$(printf '%s' "${runs}" | jq -er --arg sha "${sha}" --arg branch "${branch}" '
+  .workflow_runs |
+  if type != "array" then error("Missing workflow run inventory")
+  else [.[] | select(
+    .head_sha == $sha and .head_branch == $branch and
+    .event == "push" and .status == "completed" and .conclusion == "success"
+  )] | length end
+')"
 
 if ! [[ "${success_count}" =~ ^[0-9]+$ ]]; then
   echo "Unexpected response while querying the GitHub Actions API for ${ci_workflow} runs against ${sha}." >&2
   exit 1
 fi
 if [ "${success_count}" -lt 1 ]; then
-  echo "No successful, push-triggered '${ci_workflow}' run was found for exact commit ${sha} -- refusing to deploy a commit that CI never validated on a push event." >&2
+  echo "No successful, push-triggered '${ci_workflow}' run was found for exact commit ${sha} on branch ${branch} -- refusing unverified deployment." >&2
   exit 1
 fi
 
-echo "Confirmed: ${success_count} successful push-triggered '${ci_workflow}' run(s) found for commit ${sha}."
+echo "Confirmed: ${success_count} successful push-triggered '${ci_workflow}' run(s) found for commit ${sha} on ${branch}."
 echo "SHA verification passed for ${sha} against origin/${branch}."

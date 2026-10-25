@@ -241,6 +241,40 @@ describe("agentic SDLC workflow contracts", () => {
     expect(reconciler).toContain("QA Test Plan");
   });
 
+  it.each([
+    ["code", codeReview],
+    ["security", securityReview],
+    ["trading safety", tradingSafetyReview],
+    ["QA", qaReview],
+  ])("grounds %s review in committed PR evidence, not checkout changes", (_name, workflow) => {
+    const prompt = workflow.split(/\r?\n---\r?\n/)[1];
+    expect(prompt).toContain("GitHub REST");
+    expect(prompt).toContain("matching the head to the trigger or dispatched SHA");
+    expect(prompt).toContain("`git diff <merge_base_sha> <head_sha> --`");
+    expect(prompt).toContain("`git show <head_sha>:<path>`");
+    expect(prompt).toContain("fully paginated");
+    expect(prompt).toContain("omitted/truncated patches");
+    expect(prompt).toContain("workspace diagnostics, not PR evidence");
+    expect(prompt).toContain("`git ls-tree <merge_base_sha> -- <path>`");
+    expect(prompt).toContain("`git ls-tree <head_sha> -- <path>`");
+    expect(prompt).toContain("report an incomplete review and a failing check");
+    expect(prompt).toContain("Missing local history is not an empty diff");
+  });
+
+  it("bounds general-review duplication under the configured credit limits", () => {
+    expect(codeReview).toContain("Do not launch overlapping security");
+    expect(codeReview).toContain("specialist escalation labels and independently required checks");
+    expect(codeReview).toContain("non-overlapping scopes");
+    expect(codeReview).toContain("committed-diff coverage and the final verdict");
+    expect(codeReview).toContain("one compact changed-file inventory and exact-head CI summary");
+    expect(codeReview).toContain("Reuse completed exact-head CI and retained test evidence");
+    expect(codeReview).toContain("passing CI never substitutes for reviewing the changed behavior");
+    expect(codeReview).toContain("Do not sacrifice coverage or verdict quality to fit a budget");
+    expect(codeReview).toContain("review still fails; do not request alternate runs or a higher limit");
+    expect(codeReview).toMatch(/^max-ai-credits: 5000\r?$/m);
+    expect(codeReview).toMatch(/^max-daily-ai-credits: 20000\r?$/m);
+  });
+
   it("enrolls docs-sync repairs without arming unverified auto-merge", () => {
     expect(docsSync).toContain('      - "specs/**"');
     expect(docsSync).toContain("auto-merge: false");
@@ -323,19 +357,25 @@ describe("agentic SDLC workflow contracts", () => {
     expect(devDeploy).toContain("production_environment: false");
   });
 
-  it("keeps production deployment structurally manual-only", () => {
+  it("gates automatic disabled production releases on verified development and factory activation", () => {
     const triggerBlock = prodDeploy.slice(
       prodDeploy.indexOf("on:"),
       prodDeploy.indexOf("concurrency:"),
     );
 
     expect(triggerBlock).toContain("workflow_dispatch:");
-    expect(triggerBlock).not.toContain("workflow_run:");
+    expect(triggerBlock).toContain("workflow_run:");
+    expect(triggerBlock).toContain('workflows: ["Azure deploy dev"]');
+    expect(prodDeploy).toContain("resolveProductionInvocation");
+    expect(prodDeploy).toContain("assertProductionFactoryMode");
+    expect(prodDeploy).toContain("expectedRunId: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ID)");
+    expect(prodDeploy).toContain("expectedRunAttempt: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ATTEMPT)");
     expect(prodDeploy).toContain("environment: production-promotion");
     expect(prodDeploy).toContain("environment: production-deploy");
+    expect(prodDeploy).not.toMatch(/--set-string-param rolloutMode=(paper|shadow)/);
   });
 
-  it("keeps the full-cycle canary goal-authorized and dev-only", () => {
+  it("requires owned native paper production for the goal-authorized full canary", () => {
     expect(fullE2e).toContain("factory:goal-approved");
     expect(fullE2e).toContain("factory-mode:active");
     expect(fullE2e).toContain("isAutonomousGoal");
@@ -343,8 +383,13 @@ describe("agentic SDLC workflow contracts", () => {
     expect(fullE2e).not.toContain("FACTORY_CANARY_GOAL");
     expect(fullE2e).toContain("factory-queue-controller.yml");
     expect(fullE2e).toContain("factory:done");
-    expect(fullE2e).toContain("Dev deployment evidence");
-    expect(fullE2e).toContain('environment: "development"');
+    expect(fullE2e).toContain("inspectProductionDelivery");
+    expect(fullE2e).toContain("verifyPersistedAssignmentProvenance");
+    expect(fullE2e).toContain("correlatePullRequests");
+    expect(fullE2e).toContain("resolveFactoryMode");
+    expect(fullE2e).toContain("releaseSha: pull.merge_commit_sha");
+    expect(fullE2e).not.toContain("search.issuesAndPullRequests");
+    expect(fullE2e).not.toContain("listCommitStatusesForRef");
     expect(fullE2e).toContain("factory-full-heartbeat.md");
     expect(fullE2e).toContain("REQUESTED_AT");
     expect(fullE2e).not.toContain("azure-deploy-prod");

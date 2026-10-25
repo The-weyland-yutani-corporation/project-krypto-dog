@@ -14,13 +14,13 @@ function renderAutonomousGoal(config = AGENTIC_POLICY.autonomy) {
     ["Measurable success condition", "Produce reproducible out-of-sample and forward-paper evidence against the hypothesis, including losing/no-trade days, drawdown, turnover, fees, slippage, cash and ETH buy-and-hold benchmarks, and infrastructure/AI costs separately. Report target shortfall and infeasibility explicitly. A profitable backtest is not proof of future daily income. Deliver independently verified software improvements through current-head checks and merge to main."],
     ["Allowed scope", "Select, triage, plan, implement, review, and repair bounded ETH/USDC paper-strategy research, evaluation, data-quality, safety, and delivery work without per-change human approval. Fix missing safety/evidence foundations before relying on strategy results."],
     ["Allowed paths", config.allowedPaths.join("\n")],
-    ["Explicit non-goals", "No real-money order execution, fund transfers, leverage, borrowing, capital top-ups or balance resets to hide losses, secret disclosure, permission bypass, weakened application safety, or unverified success claims. Do not increase risk merely to force the profit target."],
+    ["Explicit non-goals", "Every deployment remains paper-only. No alternative financial execution engine, leverage, borrowing, capital top-ups or balance resets to hide losses, secret disclosure, permission bypass, weakened application safety, or unverified success claims. Do not increase risk merely to force the profit target."],
     ["Maximum autonomous risk tier", config.maxRiskTier],
     ["Maximum active coding-agent sessions", String(config.maxActiveAssignments)],
     ["Assignment budget", String(config.maxAssignmentsPerDay)],
     ["Required evidence", "Passing current-head quality, migrations, code review, and risk-selected QA/security/trading-safety checks. Scope, assignment, and PR provenance must agree."],
     ["Pause and stop conditions", "Honor the emergency factory control. Isolate failed items, cap retries and daily assignments, and stop on ambiguous provenance or duplicate work."],
-    ["Execution boundaries", "- [x] Required automated verification stays enabled.\n- [x] Real-money execution remains disabled.\n- [x] The emergency pause is never cleared by a scheduled loop."],
+    ["Execution boundaries", "- [x] Required automated verification stays enabled.\n- [x] Every environment remains permanently paper-only.\n- [x] The emergency pause is never cleared by a scheduled loop."],
   ];
   return `${GOAL_MARKER}\n\n${fields.map(([heading, value]) => `### ${heading}\n\n${value}`).join("\n\n")}`;
 }

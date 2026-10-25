@@ -32,8 +32,8 @@ safe-outputs:
   allowed-github-references: []
   noop:
     report-as-issue: false
-max-ai-credits: 1000
-max-daily-ai-credits: 2500
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 ---
 
 # Agentic CorrectionOps (staged, report-only)
@@ -120,7 +120,7 @@ cache.
   branch push, file edit, deletion, or `add-labels` output, and it must never
   apply a code, policy, instruction, label, or trading change. It measures only.
 - Never score, learn around, or comment on trading authorization, guardrails,
-  leases, reconciliation, operator pause, or paper/live behavior. A human
+  leases, reconciliation, operator pause, or paper-execution behavior. A human
   disagreement never weakens an immutable path route; surface such a conflict as
   a safety warning only.
 - Do not store or quote any raw issue body, comment body, prompt text, or review

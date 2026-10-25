@@ -1,6 +1,7 @@
 "use strict";
 
 const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
+const { createCreditAdmission } = require("./agentic-credit-admission.cjs");
 
 const STAGES = Object.freeze([
   { label: "needs-rubber-duck", workflow: "rubber-duck-architecture.lock.yml", input: "target" },
@@ -29,12 +30,14 @@ function dispatchDecision(runs, correlation, maxAttempts = 2) {
 async function runFactoryIntake({ github, context, core, queueResult, now = new Date().toISOString() }) {
   if (!AGENTIC_POLICY.autonomy.enabled || queueResult.mode !== "active" ||
       queueResult.autoPaused || queueResult.blocked || !queueResult.activeGoal ||
+      queueResult.creditAdmission?.allowed === false ||
       queueResult.dispatched || !(queueResult.budgetRemaining > 0)) return;
   if (!Number.isFinite(Date.parse(now))) throw new Error("Intake requires a valid clock.");
   const { owner, repo } = context.repo;
   const defaultBranch = context.payload?.repository?.default_branch;
   if (!defaultBranch) throw new Error("Intake requires the repository default branch.");
   const goal = queueResult.activeGoal;
+  const admitCredits = createCreditAdmission({ github, owner, repo, core, now });
   const issues = (await github.paginate(github.rest.issues.listForRepo, {
     owner, repo, state: "open", labels: "agentic-factory", per_page: 100,
   })).filter((issue) => !issue.pull_request);
@@ -84,6 +87,7 @@ async function runFactoryIntake({ github, context, core, queueResult, now = new 
       core.info(`Issue #${issue.number}: ${stage.workflow} ${reason}.`);
       continue;
     }
+    if (!(await admitCredits(stage.workflow)).allowed) return;
     await github.rest.actions.createWorkflowDispatch({
       owner, repo, workflow_id: stage.workflow, ref: defaultBranch,
       inputs: {
@@ -105,6 +109,7 @@ async function runFactoryIntake({ github, context, core, queueResult, now = new 
     core.info(`Opportunity discovery: ${reason}.`);
     return;
   }
+  if (!(await admitCredits(workflow)).allowed) return;
   await github.rest.actions.createWorkflowDispatch({
     owner, repo, workflow_id: workflow, ref: defaultBranch,
     inputs: { correlation_id: correlation, focus: `Standing repository mission #${goal.number}` },

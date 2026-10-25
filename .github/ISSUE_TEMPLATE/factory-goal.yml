@@ -9,7 +9,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        This issue authorizes scope, not production or live-trading action.
+        This issue authorizes software scope, not arbitrary cloud mutations.
+        Every deployment remains paper-only; trusted delivery follows the canonical policy.
         A human maintainer must apply `factory:goal-approved` before the queue can consume child work.
   - type: textarea
     id: objective
@@ -75,7 +76,7 @@ body:
     id: evidence
     attributes:
       label: Required evidence
-      description: List tests, checks, metrics, and dev/staging proof required for completion.
+      description: List tests, checks, metrics, and exact-release deployment proof required for completion.
     validations:
       required: true
   - type: textarea
@@ -88,11 +89,11 @@ body:
   - type: checkboxes
     id: boundaries
     attributes:
-      label: Human-only boundaries
+      label: Execution boundaries
       options:
-        - label: Production deployment remains human-approved.
+        - label: Required automated verification stays enabled.
           required: true
-        - label: Live-trading enablement remains human-approved.
+        - label: Every environment remains permanently paper-only.
           required: true
         - label: Automation may pause itself but may not unpause itself.
           required: true

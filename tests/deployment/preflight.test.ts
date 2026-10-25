@@ -29,6 +29,14 @@ const canonicalMigrationRows = [
     "drizzle/0007_azure_retire_supabase_http_functions.sql",
     "1786579433481",
   ],
+  [
+    "drizzle/0008_deployment_cutover_fence.sql",
+    "1792612861659",
+  ],
+  [
+    "drizzle/0009_deployment_fence_history.sql",
+    "1792629857081",
+  ],
 ].map(([path, createdAt]) => ({
   hash: createHash("sha256")
     .update(readFileSync(path!, "utf8"))
@@ -105,6 +113,15 @@ function createSqlMock(
     AgentJournal: {
       hasSelect: true,
       hasInsert: true,
+      hasUpdate: false,
+      hasDelete: false,
+      hasTruncate: false,
+      hasTrigger: false,
+      hasReferences: false,
+    },
+    DeploymentFence: {
+      hasSelect: true,
+      hasInsert: false,
       hasUpdate: false,
       hasDelete: false,
       hasTruncate: false,
@@ -260,6 +277,7 @@ function createSqlMock(
       if (query.includes("FROM pg_tables")) {
         const tables = [
           { schemaName: "krypto", tableName: "AgentJournal" },
+          { schemaName: "krypto", tableName: "DeploymentFence" },
           { schemaName: "krypto", tableName: "AgentRun" },
           { schemaName: "krypto", tableName: "AgentState" },
           { schemaName: "krypto", tableName: "TradeExecution" },
@@ -293,6 +311,7 @@ function createSqlMock(
       if (query.includes("relation.relkind::text AS kind")) {
         const relations = [
           { schema: "krypto", name: "AgentJournal", kind: "r" },
+          { schema: "krypto", name: "DeploymentFence", kind: "r" },
           { schema: "krypto", name: "AgentRun", kind: "r" },
           { schema: "krypto", name: "AgentState", kind: "r" },
           { schema: "krypto", name: "TradeExecution", kind: "r" },
@@ -576,10 +595,14 @@ describe("deployment preflight helpers", () => {
 
     expect(report.blockers).toEqual([]);
     expect(report.databasePreflightPassed).toBe(true);
+    expect(report.manualGatesRemaining).toEqual([
+      "Create and restore-verify the release backup.",
+      "Keep rollout mode disabled until target smoke and activation evidence pass.",
+    ]);
     expect(report.schemaVersion).toBe("2.0.0");
     expect(report.provider).toBe("azure");
     expect(report.inventory.database).toBe("krypto");
-    expect(report.inventory.drizzleMigrationCount).toBe(8);
+    expect(report.inventory.drizzleMigrationCount).toBe(10);
     expect(report.inventory.openPaperPosition).toBe(false);
     expect(report.inventory.restrictedRolePrivileges).toHaveLength(2);
     expect(report.inventory.obsoleteInvocationFunctions).toEqual([]);
@@ -891,7 +914,7 @@ describe("deployment preflight helpers", () => {
     expect(report.provider).toBe("azure");
     expect(report.databasePreflightPassed).toBe(true);
     expect(report.blockers).toEqual([]);
-    expect(report.inventory.drizzleMigrationCount).toBe(8);
+    expect(report.inventory.drizzleMigrationCount).toBe(10);
     expect(report.inventory.obsoleteInvocationFunctions).toEqual([]);
     expect(report.inventory.runtimeRole).toEqual(
       expect.objectContaining({

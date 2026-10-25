@@ -2,7 +2,8 @@
 // Container App, the hourly/daily scheduler Container Apps Jobs, and the
 // five manual operations Container Apps Jobs, using Key Vault references
 // resolved through per-secret RBAC. This is the only template that
-// creates the Key Vault secret objects themselves; their values are
+// creates the application Key Vault secret objects; the existing ops direct-url
+// binding may already have been established by a proven-new foundation. Values are
 // supplied as @secure() parameters at deploy time and must never be
 // committed to a .bicepparam file.
 //
@@ -33,8 +34,7 @@
 // ROLLOUT_MODE 'disabled' on the web app, regardless of parameters — only
 // rollout.bicep may change either. Re-running this template (e.g. to ship
 // a new image digest) re-lands both at their disabled/manual defaults,
-// which matches ADR 0008 item 12 (deploy and schedule activation are two
-// separately approved steps).
+// so deployment and evidence-gated paper activation remain separate stages.
 //
 // Deploy with:
 //   az deployment group create \
@@ -141,6 +141,20 @@ param opsImageDigest string
 @maxLength(40)
 param releaseSha string
 
+@description('GitHub owner/repository executing the trusted release workflow. Nonsecret; used only to verify workflow-observed Azure evidence.')
+@minLength(3)
+param githubRepository string
+
+@description('Immutable GitHub repository ID, from GITHUB_REPOSITORY_ID in the trusted workflow.')
+@minLength(1)
+@maxLength(20)
+param githubRepositoryId string
+
+@description('Immutable GitHub repository owner ID, from GITHUB_REPOSITORY_OWNER_ID in the trusted workflow.')
+@minLength(1)
+@maxLength(20)
+param githubRepositoryOwnerId string
+
 @description('Azure OpenAI v1 base URL for the dedicated Foundry account, ending in /openai/v1/.')
 param azureOpenAIBaseUrl string
 
@@ -170,6 +184,13 @@ param databaseUrl string
 @description('Direct (migration-only) connection string. Supplied at deploy time; never committed. Granted to the scheduler-adjacent ops identity for migrate-init/preflight/verified-backup/target-smoke/activation-check — never to the runtime/web identity.')
 @secure()
 param directUrl string
+
+@description('Preserve the already-inspected direct-url secret during first release; normal owned release updates retain their existing secret workflow.')
+@allowed([
+  'update'
+  'preserve'
+])
+param directUrlBindingMode string = 'update'
 
 @description('Shared secret validating the x-cron-secret header on /api/agent/run and /api/agent/daily-summary. Supplied at deploy time; never committed.')
 @secure()
@@ -203,6 +224,12 @@ param tags object = {
 var envTags = union(tags, { environment: environmentName })
 var webImageDigestRef = '${registryLoginServer}/${webImageName}@${imageDigest}'
 var opsImageDigestRef = '${registryLoginServer}/${opsImageName}@${opsImageDigest}'
+var workflowObservationEnv = [
+  { name: 'DEPLOYMENT_REPOSITORY', value: githubRepository }
+  { name: 'DEPLOYMENT_REPOSITORY_ID', value: githubRepositoryId }
+  { name: 'DEPLOYMENT_REPOSITORY_OWNER_ID', value: githubRepositoryOwnerId }
+  { name: 'OPS_IMAGE_DIGEST', value: opsImageDigest }
+]
 
 resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' existing = {
   name: keyVaultName
@@ -233,12 +260,9 @@ resource databaseUrlSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   }
 }
 
-resource directUrlSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
+resource directUrlSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' existing = {
   parent: keyVault
   name: 'direct-url'
-  properties: {
-    value: directUrl
-  }
 }
 
 resource cronSecretSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
@@ -398,13 +422,13 @@ resource opsDatabaseUrlAccess 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
-resource opsDirectUrlAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, 'direct-url', opsIdentityPrincipalId, 'ops')
-  scope: directUrlSecret
-  properties: {
-    principalId: opsIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
+module opsDirectUrlAccess 'modules/ops-database-access.bicep' = {
+  name: 'ops-database-access'
+  params: {
+    keyVaultName: keyVaultName
+    opsIdentityPrincipalId: opsIdentityPrincipalId
+    writeSecret: directUrlBindingMode == 'update'
+    directUrl: directUrl
   }
 }
 
@@ -726,7 +750,7 @@ module targetSmokeJob 'modules/container-app-job.bicep' = {
       'run'
       'azure:ops-job'
     ]
-    nonSecretEnv: concat(opsCommonNonSecretEnv, [
+    nonSecretEnv: concat(opsCommonNonSecretEnv, workflowObservationEnv, [
       { name: 'OPERATION', value: 'target-smoke' }
       { name: 'TARGET_BASE_URL', value: targetBaseUrl }
       // TARGET_CONFIRM_HOST is scripts/azure/operations/target-smoke.ts's
@@ -782,7 +806,7 @@ module activationCheckJob 'modules/container-app-job.bicep' = {
       'run'
       'azure:ops-job'
     ]
-    nonSecretEnv: concat(opsCommonNonSecretEnv, [
+    nonSecretEnv: concat(opsCommonNonSecretEnv, workflowObservationEnv, [
       { name: 'OPERATION', value: 'activation-check' }
       { name: 'TARGET_ORIGIN', value: targetBaseUrl }
       { name: 'IMAGE_DIGEST', value: imageDigest }

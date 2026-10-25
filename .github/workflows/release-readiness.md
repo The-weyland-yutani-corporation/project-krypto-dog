@@ -40,8 +40,8 @@ safe-outputs:
     deduplicate-by-title: 1
   noop:
     report-as-issue: false
-max-ai-credits: 1200
-max-daily-ai-credits: 3000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 ---
 
 # Release Readiness
@@ -51,13 +51,20 @@ Produce a release readiness checklist and operator handoff.
 ## Task
 
 - Inspect the target release scope, related PRs/issues, CI status, migrations, docs, and deployment runbook.
-- For factory-delivered work, require a successful `Dev deployment evidence`
-  status and successful `development` Deployment on the exact merge SHA.
+- For factory-delivered work, require exact-merge native development and
+  paper-production receipts, actual scheduled PAPER evidence and receipt-bound
+  production Deployment. Confirm the latest workflow attempts and required
+  jobs; green statuses, disabled releases, deferrals and `factory:done` labels
+  alone are not completed delivery. Apply `specs/factory.md` for ownership,
+  artifact expiry and bounded recovery.
 - Identify required secrets, environment changes, migrations, smoke tests, rollback steps, and operator actions.
 - Block release readiness for unresolved high-risk issues.
-- Treat production deployment, schedule activation, secret/permission changes,
-  and live-trading enablement as human-only actions. Never dispatch them from
-  this advisory workflow.
+- Apply the lean paper-production gate contract in `specs/operations.md`.
+  Separate analytics projects, mailbox-delivery proof, and irreversible
+  retention locking are optional, not POC release blockers.
+- This workflow is advisory and does not dispatch deployment or change
+  permissions/secrets. Trusted native workflows own verified paper promotion;
+  commissioning and external-setting changes retain their scoped approvals.
 
 ## Safe outputs
 

@@ -1,8 +1,9 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import {
   agentRun,
   agentState,
+  deploymentFence,
   tradeExecution,
   type AgentState,
   type TradeExecution,
@@ -267,6 +268,22 @@ export function createPaperExecutor(database: typeof db) {
       .limit(1);
     if (existingAfterLock) {
       return resultFromRows("idempotent", existingAfterLock, state);
+    }
+
+    const [fence] = await tx
+      .select({ owner: deploymentFence.owner })
+      .from(deploymentFence)
+      .where(
+        and(
+          eq(deploymentFence.id, ACCOUNT_ID),
+          isNull(deploymentFence.releasedAt),
+        ),
+      )
+      .limit(1);
+    if (fence) {
+      throw new TradeConflictError(
+        "Paper execution is fenced for deployment",
+      );
     }
 
     if (

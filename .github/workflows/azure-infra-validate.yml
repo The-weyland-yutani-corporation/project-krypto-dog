@@ -20,6 +20,8 @@ on:
   pull_request:
     paths:
       - "infra/**"
+      - ".github/scripts/azure/**"
+      - ".github/workflows/azure-deploy-prod.yml"
       - ".github/workflows/azure-infra-validate.yml"
   workflow_dispatch:
 
@@ -86,6 +88,9 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Verify the compiled PostgreSQL credential-preservation contract
+        run: node .github/scripts/azure/tests/test-postgres-credentials.mjs
+
   bicepparam-build:
     name: Build every .bicepparam file
     runs-on: ubuntu-latest
@@ -119,6 +124,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify executable Azure entrypoints in Git and the native checkout
+        run: node .github/scripts/azure/tests/test-executable-entrypoints.mjs
+
       - name: Self-test lib/common.sh validators
         run: .github/scripts/azure/tests/test-common-sh.sh
 
@@ -136,3 +144,6 @@ jobs:
 
       - name: Self-test full-template operations job start
         run: .github/scripts/azure/tests/test-run-ops-job.sh
+
+      - name: Self-test read-only bootstrap boundaries and owned cleanup
+        run: bash .github/scripts/azure/tests/test-database-bootstrap.sh

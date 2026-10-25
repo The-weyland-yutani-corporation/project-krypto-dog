@@ -15,8 +15,11 @@ import {
   type AzureOperation,
 } from "./lib/report-path";
 import * as activationCheck from "./operations/activation-check";
+import * as databaseInspection from "./operations/database-inspection";
+import * as deploymentAdmission from "./operations/deployment-admission";
 import * as migrateInit from "./operations/migrate-init";
 import * as preflight from "./operations/preflight";
+import * as productionVerification from "./operations/production-verification";
 import type {
   AzureOperationContext,
   AzureOperationResult,
@@ -35,6 +38,8 @@ async function dispatch(
   context: AzureOperationContext,
 ): Promise<AzureOperationResult> {
   switch (operation) {
+    case "database-inspection":
+      return databaseInspection.run(context);
     case "migrate-init":
       return migrateInit.run(context);
     case "preflight":
@@ -45,6 +50,10 @@ async function dispatch(
       return targetSmoke.run(context);
     case "activation-check":
       return activationCheck.run(context);
+    case "deployment-admission":
+      return deploymentAdmission.run(context);
+    case "production-verification":
+      return productionVerification.run(context);
     /* istanbul ignore next -- exhaustiveness guard, unreachable after validateOperation */
     default: {
       const exhaustive: never = operation;

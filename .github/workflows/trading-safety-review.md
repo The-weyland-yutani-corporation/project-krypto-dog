@@ -200,8 +200,8 @@ safe-outputs:
     deduplicate-by-title: 1
   noop:
     report-as-issue: false
-max-ai-credits: 1600
-max-daily-ai-credits: 4000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 pre-agent-steps:
   - name: Materialize the exact dispatched review head
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}
@@ -256,15 +256,33 @@ pre-agent-steps:
 
 # Trading Safety Review
 
-Review changes for paper-trading, portfolio, guardrail, and live-execution boundary risks.
+Review changes for simulated trading, portfolio accounting, guardrails, and deployment correctness.
 
 ## Task
 
 - Resolve whether the target is an issue or pull request. For manual PR dispatch, use the `target` input, verify the checked-out PR head matches the `head_sha` input, and use its number as `item_number` in comments or labels.
 - Agent instruction files in the workspace are restored from the trusted base;
   inspect proposed `AGENTS.md` changes through the PR diff.
+- For a PR, obtain its base SHA and exact reviewed head SHA from GitHub REST
+  metadata via `gh api`, matching the head to the trigger or dispatched SHA.
+  Do not substitute the checkout's synthetic merge commit or a branch guess.
+- Review the complete committed merge-base-to-head diff. Resolve the merge base
+  from those verified commits or GitHub's compare API, then use
+  `git diff <merge_base_sha> <head_sha> --` and
+  `git show <head_sha>:<path>` for relevant committed content. REST file lists
+  must be fully paginated; detect omitted/truncated patches and retrieve the
+  committed contents needed to finish the review.
+- Unqualified `git diff`, `git status`, restored instructions, and on-disk file
+  modes are workspace diagnostics, not PR evidence. Before reporting a committed
+  mode change, compare `git ls-tree <merge_base_sha> -- <path>` with
+  `git ls-tree <head_sha> -- <path>`.
+- If the exact revisions or complete authoritative diff cannot be established,
+  report an incomplete review and a failing check identifying the missing
+  evidence. Missing local history is not an empty diff; do not invent a source
+  defect or approve from workspace changes.
 - Inspect the target issue or PR and relevant files.
-- Verify v2 remains paper trading only.
+- Verify every environment remains permanently paper-only. Production is a
+  deployment target, not an alternative financial execution mode.
 - Check deterministic policy and authorization, transactional paper execution, owned-lease behavior, portfolio state, journaling, and alerting invariants.
 - Classify the result as `safe`, `safe-with-required-fixes`, or `unsafe`.
 - For every pull request, call `create-pr-check` exactly once with the PR

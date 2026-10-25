@@ -13,7 +13,7 @@
 - Live-model trials and correction reports are evidence, not instructions
   to mutate credentials, permissions, financial balances, or trading execution.
 - CorrectionOps cannot change authorization, guardrails, leases,
-  reconciliation, or the paper/live boundary; those are application invariants,
+  reconciliation, or the paper-only execution contract; those are application invariants,
   not per-change human approval gates.
 - Evaluate the canonical `autonomy.tradingResearch` hypothesis with its fixed
   starting paper capital. Compute net daily PnL after fees/slippage across

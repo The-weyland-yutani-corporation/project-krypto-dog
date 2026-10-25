@@ -1,12 +1,17 @@
 jest.mock("../../../../scripts/azure/lib/run-cli", () => ({
   runCli: jest.fn(),
 }));
+jest.mock("../../../../src/deployment/database-inspection", () => ({
+  inspectEmptyDatabase: jest.fn(),
+}));
 
+import { inspectEmptyDatabase } from "../../../../src/deployment/database-inspection";
 import { runCli } from "../../../../scripts/azure/lib/run-cli";
 import { run } from "../../../../scripts/azure/operations/migrate-init";
 import type { AzureOperationContext } from "../../../../scripts/azure/operations/types";
 
 const mockedRunCli = jest.mocked(runCli);
+const mockedInspection = jest.mocked(inspectEmptyDatabase);
 
 const CONTEXT: AzureOperationContext = {
   environmentName: "prod-eastus",
@@ -23,6 +28,9 @@ const REQUIRED_ENV_NAMES = [
 ] as const;
 
 const RUNTIME_LOGIN_PASSWORD_VALUE = "correct-horse-battery-staple";
+const OPTIONAL_ENV_NAMES = [
+  "MIGRATION_REQUIRE_EMPTY_DATABASE", "DATABASE_INSPECTION_HOST", "DATABASE_INSPECTION_NAME",
+] as const;
 
 function setAllRequiredEnv(): void {
   process.env.DIRECT_URL = "postgres://admin@db.example.com/krypto";
@@ -36,14 +44,16 @@ describe("scripts/azure/operations/migrate-init", () => {
 
   beforeEach(() => {
     mockedRunCli.mockReset();
-    for (const name of REQUIRED_ENV_NAMES) {
+    mockedInspection.mockReset();
+    for (const name of [...REQUIRED_ENV_NAMES, ...OPTIONAL_ENV_NAMES]) {
       originalEnv[name] = process.env[name];
     }
+    for (const name of OPTIONAL_ENV_NAMES) delete process.env[name];
     setAllRequiredEnv();
   });
 
   afterEach(() => {
-    for (const name of REQUIRED_ENV_NAMES) {
+    for (const name of [...REQUIRED_ENV_NAMES, ...OPTIONAL_ENV_NAMES]) {
       if (originalEnv[name] === undefined) {
         delete process.env[name];
       } else {
@@ -69,6 +79,7 @@ describe("scripts/azure/operations/migrate-init", () => {
     mockedRunCli.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
 
     const result = await run(CONTEXT);
+    expect(mockedInspection).not.toHaveBeenCalled();
 
     expect(mockedRunCli).toHaveBeenNthCalledWith(
       1,
@@ -196,6 +207,83 @@ describe("scripts/azure/operations/migrate-init", () => {
       environmentName: "prod-eastus",
       releaseSha: "a".repeat(40),
       exitCode: 1,
+    });
+  });
+
+  describe("fresh production admission", () => {
+    const context = { ...CONTEXT, environmentName: "prod" };
+    beforeEach(() => {
+      process.env.MIGRATION_REQUIRE_EMPTY_DATABASE = "true";
+      process.env.DATABASE_INSPECTION_HOST = "psql-krypto-prod02.postgres.database.azure.com";
+      process.env.DATABASE_INSPECTION_NAME = "postgres";
+      process.env.DIRECT_URL = "postgres://krypto_owner:fixture@psql-krypto-prod02.postgres.database.azure.com/postgres?sslmode=require";
+      process.env.DATABASE_URL = `postgres://azure_app_identity:${RUNTIME_LOGIN_PASSWORD_VALUE}@psql-krypto-prod02.postgres.database.azure.com/postgres?sslmode=require`;
+      mockedInspection.mockResolvedValue({
+        catalogProfile: "postgresql-17-bootstrap-v2", serverVersionNum: 170005,
+        stateCounts: {
+          catalogObjects: 0, largeObjects: 0, databaseSettings: 0, privilegeChanges: 0, metadata: 0,
+        },
+        databaseHost: process.env.DATABASE_INSPECTION_HOST,
+        databaseName: "postgres", runtimeLoginRole: "azure_app_identity",
+        observedAt: new Date().toISOString(), readOnly: true, objectCount: 0,
+        runtimeRolePresent: false, runtimeLoginPresent: false, empty: true,
+      });
+      mockedRunCli.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    });
+
+    it("rechecks the exact private database before the first mutating command", async () => {
+      const result = await run(context);
+      expect(result.passed).toBe(true);
+      expect(mockedInspection).toHaveBeenCalledWith({
+        directUrl: process.env.DIRECT_URL, expectedHost: process.env.DATABASE_INSPECTION_HOST,
+        expectedDatabase: "postgres", runtimeLoginRole: "azure_app_identity",
+      });
+      expect(mockedInspection.mock.invocationCallOrder[0]).toBeLessThan(mockedRunCli.mock.invocationCallOrder[0]);
+      expect(mockedRunCli).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not migrate, rotate credentials or seed retained database state", async () => {
+      mockedInspection.mockResolvedValueOnce({
+        catalogProfile: "postgresql-17-bootstrap-v2", serverVersionNum: 170005,
+        stateCounts: {
+          catalogObjects: 0, largeObjects: 1, databaseSettings: 0, privilegeChanges: 0, metadata: 0,
+        },
+        databaseHost: process.env.DATABASE_INSPECTION_HOST ?? "",
+        databaseName: "postgres", runtimeLoginRole: "azure_app_identity",
+        observedAt: new Date().toISOString(), readOnly: true, objectCount: 1,
+        runtimeRolePresent: false, runtimeLoginPresent: false, empty: false,
+      });
+      expect(await run(context)).toMatchObject({
+        passed: false, report: { step: "fresh-database-admission", reason: "existing-database-state" },
+      });
+      expect(mockedRunCli).not.toHaveBeenCalled();
+    });
+
+    it("reports inspection failure without leaking driver credentials", async () => {
+      mockedInspection.mockRejectedValueOnce(new Error(`Connection failed: ${process.env.DIRECT_URL}`));
+      const result = await run(context);
+      expect(result).toMatchObject({
+        passed: false, report: { step: "fresh-database-admission", reason: "database-inspection-failed" },
+      });
+      expect(JSON.stringify(result)).not.toContain("postgres://");
+      expect(mockedRunCli).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["DATABASE_URL", "postgres://wrong:password@foreign.example.com/postgres"],
+      ["AZURE_RUNTIME_LOGIN_PASSWORD", "mismatched-password"],
+      ["DATABASE_INSPECTION_NAME", ""],
+    ])("refuses inconsistent %s before even opening the database", async (name, value) => {
+      process.env[name] = value;
+      expect((await run(context)).passed).toBe(false);
+      expect(mockedInspection).not.toHaveBeenCalled();
+      expect(mockedRunCli).not.toHaveBeenCalled();
+    });
+
+    it.each(["false", "1", "TRUE", ""])("rejects ambiguous fresh mode %j", async (value) => {
+      process.env.MIGRATION_REQUIRE_EMPTY_DATABASE = value;
+      await expect(run(context)).rejects.toThrow(/explicit production admission/);
+      expect(mockedRunCli).not.toHaveBeenCalled();
     });
   });
 });

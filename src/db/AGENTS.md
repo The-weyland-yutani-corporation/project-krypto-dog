@@ -25,6 +25,7 @@ agent-state invariants.
   `specialistRouting.tradingSafety` in
   [`.github/agentic-policy.json`](../../.github/agentic-policy.json)).
 - Agents may implement and test database, backup, and inventory automation
-  against disposable/local targets. Executing any production database
-  operation remains human-only — see
-  [`specs/operations.md`](../../specs/operations.md).
+  against disposable/local targets. Production migrations and backups belong
+  to the reviewed, evidence-gated native deployment workflow, never arbitrary
+  model tools or ad hoc production commands. Preserve the commissioning and
+  recovery gates in [`specs/operations.md`](../../specs/operations.md).

@@ -96,7 +96,7 @@ That filter is not the risk classifier. Use
 routine changes need baseline checks; sensitive/reversible changes add QA and
 path-selected specialists; boundary changes require the same trusted automated
 evidence rather than per-change human approval.
-Unknown paths, malformed risk data, factory-control files, live/production
+Unknown paths, malformed risk data, factory-control files, production
 boundaries, permission policy, destructive migrations, and migrations whose
 patch content is unavailable fail closed to `risk:boundary`.
 The specialist route regexes remain centralized in
@@ -122,7 +122,7 @@ goal/risk/path ceiling without weakening those routes.
   `Agentic merge policy`; required conversation resolution still applies.
 - Self-heal never treats missing or held checks as failures. It stops after two
   routine attempts, one sensitive attempt, or zero boundary attempts, and
-  never edits factory, production, live, permission, or unrelated scope.
+  never edits factory, production, permission, or unrelated scope.
 
 ## Proactive opportunity discovery
 
@@ -144,8 +144,8 @@ through manual workflow dispatch. It creates work inside the standing repository
 - Unleveraged ETH/USDC paper-strategy experiments may be proposed with explicit
   safety/evidence dependencies and out-of-sample validation. Report losing days,
   costs and infeasibility; never raise risk or reset capital to force the target.
-- Trading-strategy, guardrail, portfolio, risk, or live-adjacent opportunities must include safety notes and require rubber-duck/trading-safety review before implementation.
-- It creates software tickets and experiments only; it never gives trading advice or authorizes live trading.
+- Trading-strategy, guardrail, portfolio, risk, or simulated-accounting opportunities must include safety notes and require rubber-duck/trading-safety review before implementation.
+- It creates software tickets and experiments for the permanently paper-only product; it never gives trading advice.
 
 ## Design-system convention
 

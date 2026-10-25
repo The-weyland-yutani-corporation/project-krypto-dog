@@ -18,7 +18,7 @@ review, and merge to `main` without per-change human approval.
   exact-head merge binding, rollback, and durable failure reporting.
 - Preserve application accounting, deterministic trading authorization,
   reconciliation, idempotency, leases, admin authentication, and journaling.
-  Software deployment does not enable real-money trading or authorize transfers.
+  Development and production are permanently paper-only environments.
 - Do not bypass GitHub rulesets, required checks, or environment protections.
   Report external configuration blockers rather than claiming deployment.
 

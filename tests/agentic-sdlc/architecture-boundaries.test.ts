@@ -39,7 +39,7 @@ describe("agent-legible architecture boundaries", () => {
     expect(source).toContain('from "@/db"');
   });
 
-  it("has no live executor in v2", () => {
+  it("has no non-paper executor or model-accessible mutating trade tool", () => {
     const unsafe = sourceFiles("src").filter((file) =>
       /(?:^|[/.-])live[/.-].*execut|execut.*[/.-]live(?:[/.-]|$)/i.test(
         file,

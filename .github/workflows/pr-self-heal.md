@@ -123,8 +123,8 @@ safe-outputs:
     max: 3
   noop:
     report-as-issue: false
-max-ai-credits: 2200
-max-daily-ai-credits: 5000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 timeout-minutes: 30
 pre-agent-steps:
   - name: Check out the exact dispatched PR head
@@ -176,7 +176,7 @@ Repair failed checks on an eligible routine or sensitive agent pull request
   have at most one. Boundary work has zero repair attempts.
 - Repair only files already authorized by the linked issue scope. Never edit
   `.github/**`, `infra/**`, `specs/**`, package manifests, environment files,
-  production/live boundaries, or unrelated files.
+  production deployment boundaries, or unrelated files.
 - Do not repair a PR carrying `blocked`, `self-heal-exhausted`, or
   `ready-for-human-review`. Review-requirement labels (`needs-qa`,
   `security-review`, `trading-safety`) may remain; repair only a demonstrated
@@ -201,7 +201,7 @@ Repair failed checks on an eligible routine or sensitive agent pull request
    instructions.
 5. Do not rename or delete files, expand scope, weaken tests, remove
    assertions, bypass required checks, or relax trading, guardrail, mutex,
-   auth, CSRF, journaling, paper/live, database, deployment, or workflow
+   auth, CSRF, journaling, paper execution, database, deployment, or workflow
    protections.
 6. Run the narrowest relevant validation. Use the repository baseline when the
    failure spans multiple areas.

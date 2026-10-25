@@ -29,14 +29,14 @@ export default function Home() {
 
         <div className="grid gap-8 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
           <div>
-            <Badge variant="info">Paper trading only · v2 evidence mode</Badge>
+            <Badge variant="info">Paper trading only · simulation POC</Badge>
             <h1 className="mt-6 max-w-3xl text-5xl font-semibold tracking-[-0.06em] text-foreground md:text-7xl">
               Autonomous trading needs an operator console.
             </h1>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
               Project Krypto runs a guarded ETH/USDC paper-trading agent with
               journaled reasoning, drawdown controls, deterministic backtests,
-              and evidence gates before any live funds move.
+              and verified deployments. Every trade is simulated, including in production.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button asChild size="lg">
@@ -73,7 +73,7 @@ export default function Home() {
                   <Terminal className="h-5 w-5 text-info" />
                   Evidence terminal
                 </CardTitle>
-                <Badge variant="success">no live funds</Badge>
+                <Badge variant="success">simulated portfolio</Badge>
               </div>
             </CardHeader>
             <CardContent>

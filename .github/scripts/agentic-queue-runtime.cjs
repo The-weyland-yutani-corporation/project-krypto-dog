@@ -34,6 +34,7 @@ const {
 } = require("./agentic-queue-controller.cjs");
 const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const { AUTONOMOUS_GOAL_LABEL, isAutonomousGoal, ensureAutonomousGoal } = require("./agentic-autonomy.cjs");
+const { createCreditAdmission } = require("./agentic-credit-admission.cjs");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -122,7 +123,7 @@ const GOAL_FORM_HEADINGS = Object.freeze({
   assignmentBudget: "Assignment budget",
   requiredEvidence: "Required evidence",
   pauseConditions: "Pause and stop conditions",
-  boundaries: "Human-only boundaries",
+  boundaries: "Execution boundaries",
 });
 
 // Narrative sections that must be non-empty for a goal to be considered a
@@ -300,7 +301,7 @@ function normalizeLabels(labels) {
  * Parses a rendered GitHub issue-form checkboxes section (each option
  * renders as a markdown task-list line, `- [x] Label` or `- [ ] Label`) and
  * requires that at least one checkbox line is present and every one of them
- * is checked. Used for the goal template's "Human-only boundaries" section,
+ * is checked. Used for the goal template's "Execution boundaries" section,
  * where all three checkboxes are required for a goal to be authorized.
  *
  * @param {unknown} sectionText
@@ -1540,6 +1541,12 @@ async function runFactoryQueueController({ github, context, core, config = {} })
   }
 
   const selectedIssue = selection.selected;
+  const admitCredits = createCreditAdmission({ github, owner, repo, core, now });
+  const creditAdmission = await admitCredits(IMPLEMENT_WORKFLOW_ID);
+  if (!creditAdmission.allowed) {
+    result.creditAdmission = creditAdmission;
+    return result;
+  }
   const runId =
     typeof config.runId === "string" && config.runId.trim() !== ""
       ? config.runId
