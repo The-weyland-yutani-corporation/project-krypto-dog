@@ -395,6 +395,17 @@ an explicit local check, not a claimed mandatory CI gate. Before adding a
 demo-evidence CI job, review isolated database lifecycle, permissions,
 sanitization, and retention; do not upload traces or secrets.
 
+Keep the Next.js and Zod security-update floors in `package.json`. Azure Identity
+is temporarily pinned to `4.13.0`: newer published Identity releases currently
+depend on MSAL Node versions affected by
+[GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5).
+Its MSAL dependency uses a scoped UUID `11.1.1` override to retain CommonJS
+support while fixing
+[GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq).
+Use an Identity release with a supported, unaffected dependency chain before
+lifting that pin; do not force an incompatible MSAL major override or lower
+CI's production dependency-audit threshold.
+
 ## Troubleshooting and support
 
 | Symptom | Safe next step |
