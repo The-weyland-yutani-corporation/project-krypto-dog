@@ -162,6 +162,8 @@ try {
   ];
   for (const [overrides, expectedStatus, description] of [
     [{}, 0, "current owned admission"],
+    [{ schemaVersion: "1.1.0", workflowObservation: null }, 0, "current schema admission"],
+    [{ schemaVersion: "1.1.0", workflowObservation: {} }, 1, "acquisition cannot claim release evidence"],
     [{ owner: "22222222-2222-4222-8222-222222222222" }, 1, "different owner"],
     [{ candidateReleaseSha: RELEASE_SHA_A }, 1, "different candidate"],
     [{ sourceReleaseSha: RELEASE_SHA_B }, 1, "different source"],
@@ -189,7 +191,7 @@ try {
     ["verify", "held", baseAdmission.expiresAt, 0],
     ["verify", "held", new Date(Date.now() - 1000).toISOString(), 1],
     ["verify", "admitted", baseAdmission.expiresAt, 1],
-    ["release", "released", new Date(Date.now() - 1000).toISOString(), 0],
+    ["release", "released", new Date(Date.now() - 1000).toISOString(), 1],
     ["release", "deferred", null, 1],
   ]) {
     const reportPath = path.join(admissionDirectory, "report.json");
@@ -198,6 +200,53 @@ try {
       scriptPath, "--report", reportPath, ...admissionArgs, "--admission-action", action,
     ], { encoding: "utf8" });
     assert.equal(result.status, expectedStatus, `${action}/${status}: ${result.stderr}`);
+    passCount += 1;
+  }
+  const workflowObservation = {
+    issuer: "https://token.actions.githubusercontent.com",
+    purpose: "cutover-release",
+    observationDigest: "d".repeat(64),
+    repositoryId: "456",
+    repositoryOwnerId: "789",
+    workflowRef: "owner/project/.github/workflows/azure-deploy-prod.yml@refs/heads/main",
+    workflowSha: RELEASE_SHA_B,
+    runId: "123",
+    runAttempt: 1,
+    observedAt: new Date(Date.parse(baseAdmission.generatedAt) - 1000).toISOString(),
+    expiresAt: new Date(Date.parse(baseAdmission.generatedAt) + 120_000).toISOString(),
+  };
+  const attested = {
+    ...baseAdmission, schemaVersion: "1.1.0", action: "release", status: "released",
+    expiresAt: new Date(Date.now() - 1000).toISOString(), workflowObservation,
+  };
+  for (const [overrides, expectedStatus, description] of [
+    [{}, 0, "fresh attested release can compensate an expired fence"],
+    [{ schemaVersion: "1.0.0" }, 1, "legacy release cannot use the new receipt"],
+    [{ workflowObservation: null }, 1, "missing receipt"],
+    [{ workflowObservation: [] }, 1, "array instead of receipt"],
+    ...Object.keys(workflowObservation).map((field) => [
+      { workflowObservation: Object.fromEntries(Object.entries(workflowObservation).filter(([key]) => key !== field)) },
+      1, `receipt is missing ${field}`,
+    ]),
+    ...[
+      { issuer: "https://untrusted.example.com" }, { purpose: "scheduled-execution" },
+      { observationDigest: "e".repeat(64) }, { workflowSha: RELEASE_SHA_A },
+      { repositoryId: 456 }, { repositoryOwnerId: "0" }, { runId: "123; echo bad" },
+      { runAttempt: 0 }, { runAttempt: "1" },
+      { workflowRef: "owner/project/.github/workflows/untrusted.yml@refs/heads/main" },
+      { token: "raw-proof-must-not-be-in-a-report" },
+      { observedAt: new Date(Date.parse(baseAdmission.generatedAt) - 180_001).toISOString() },
+      { observedAt: new Date(Date.parse(baseAdmission.generatedAt) + 1000).toISOString() },
+      { expiresAt: baseAdmission.generatedAt },
+    ].map((change) => [{ workflowObservation: { ...workflowObservation, ...change } }, 1, JSON.stringify(change)]),
+  ]) {
+    const reportPath = path.join(admissionDirectory, "report.json");
+    writeFileSync(reportPath, JSON.stringify({ ...attested, ...overrides }));
+    const result = spawnSync(process.execPath, [
+      scriptPath, "--report", reportPath, ...admissionArgs, "--admission-action", "release",
+      "--workflow-observation-digest", workflowObservation.observationDigest,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, expectedStatus, `attested release ${description}: ${result.stderr}`);
     passCount += 1;
   }
   for (const [reportOwner, expectedStatus] of [

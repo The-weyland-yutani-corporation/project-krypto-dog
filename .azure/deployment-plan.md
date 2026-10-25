@@ -24,15 +24,16 @@ hosted workflows. `azure-deploy-prod.yml` may be enabled only for its
 protected disabled/Manual release.
 
 Reviewers and branch protections remain unchanged. Old Azure resources and
-historical data stay untouched. Production activation and real-money
-execution remain excluded. Failed validation, source checks, or Environment
+historical data stay untouched. First production activation remains separately
+scoped; every environment is permanently paper-only. Failed validation, source checks, or Environment
 admission block execution; this approval does not waive any of them.
 
 ## Goal
 
-Recover unattended software delivery through a verified development/shadow
-deployment and a separately protected, disabled production release. Keep
-real-money trading disabled and preserve the emergency pause,
+Recover unattended software delivery through verified development/shadow and
+production paper deployments. Commissioning first establishes a protected,
+disabled production release; later activation follows the approved native
+evidence-gated design. Preserve the emergency pause,
 current-head review, migrations, reconciliation, backup, rollback, and health
 evidence requirements.
 
@@ -216,6 +217,30 @@ proceed, but it does not remove this stop.
 The owner approved a native GitHub Actions design for unattended delivery
 through monitored paper production in
 [issue #375](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/issues/375).
+The owner subsequently approved the permanent-paper-only, lean POC revision
+for implementation. Development and production remain real Azure deployments;
+neither has an alternative financial execution mode. This revises source scope,
+not historical deployment receipts or any specifically denied operation.
+
+Required readiness is exact-head review, main-only admission, image provenance,
+healthy disabled smoke and zero-fill shadow, current migrations/restore proof,
+reconciled accounting, owned cutover, actual scheduled paper execution and
+basic independent failure alerts. Separate PostHog projects/private queries,
+final mailbox proof, formal response sign-off and irreversible retention
+locking are optional enhancements. Keep environment tags, provider/audit
+correlation, private versioned evidence, all existing retention and backups.
+
+The evidence repair uses existing trusted GitHub workflow identities for
+Azure readback. A short-lived GitHub OIDC proof binds the canonical observation
+digest, immutable repository identity, main workflow/source SHA, Environment,
+run/attempt, owner and exact release/resources. Ops verifies signature,
+audience, freshness and bindings before use; release freshness and ownership
+are rechecked in its PostgreSQL transaction. Scheduled evidence must
+authenticate the actual execution, not caller-supplied timing. Do not add Azure
+Reader grants, forward cloud/GitHub access tokens, persist raw proofs, or add
+a signing/orchestration service. GitHub concurrency bounds Azure mutation
+races; Azure and PostgreSQL do not share a distributed transaction.
+
 For a healthy release with an open paper position or active lease, upgrades
 must defer without forcing a trade or changing balances. Full factory
 completion must eventually include exact-release production evidence.
@@ -254,9 +279,10 @@ promotion, production-aware lifecycle completion, and actual commissioning
 remain pending. MonitorOps' separately denied pinned-tool verification remains
 blocked and must not be retried through an alternate path.
 
-Exact Environment protection changes, production activation, external
-telemetry effects, and the irreversible evidence-policy lock still require
-their separate approvals. Factory control and the deployment workflows remain
+Exact Environment protection changes, first production activation and any
+new external telemetry/account effects still require their separate approvals.
+An irreversible evidence-policy lock is optional and is not authorized here.
+Factory control and the deployment workflows remain
 paused/disabled; the bootstrap remains the only completed provisioning stage.
 
 ## Verified preparation evidence

@@ -33,8 +33,7 @@
 // ROLLOUT_MODE 'disabled' on the web app, regardless of parameters — only
 // rollout.bicep may change either. Re-running this template (e.g. to ship
 // a new image digest) re-lands both at their disabled/manual defaults,
-// which matches ADR 0008 item 12 (deploy and schedule activation are two
-// separately approved steps).
+// so deployment and evidence-gated paper activation remain separate stages.
 //
 // Deploy with:
 //   az deployment group create \
@@ -141,6 +140,20 @@ param opsImageDigest string
 @maxLength(40)
 param releaseSha string
 
+@description('GitHub owner/repository executing the trusted release workflow. Nonsecret; used only to verify workflow-observed Azure evidence.')
+@minLength(3)
+param githubRepository string
+
+@description('Immutable GitHub repository ID, from GITHUB_REPOSITORY_ID in the trusted workflow.')
+@minLength(1)
+@maxLength(20)
+param githubRepositoryId string
+
+@description('Immutable GitHub repository owner ID, from GITHUB_REPOSITORY_OWNER_ID in the trusted workflow.')
+@minLength(1)
+@maxLength(20)
+param githubRepositoryOwnerId string
+
 @description('Azure OpenAI v1 base URL for the dedicated Foundry account, ending in /openai/v1/.')
 param azureOpenAIBaseUrl string
 
@@ -203,6 +216,12 @@ param tags object = {
 var envTags = union(tags, { environment: environmentName })
 var webImageDigestRef = '${registryLoginServer}/${webImageName}@${imageDigest}'
 var opsImageDigestRef = '${registryLoginServer}/${opsImageName}@${opsImageDigest}'
+var workflowObservationEnv = [
+  { name: 'DEPLOYMENT_REPOSITORY', value: githubRepository }
+  { name: 'DEPLOYMENT_REPOSITORY_ID', value: githubRepositoryId }
+  { name: 'DEPLOYMENT_REPOSITORY_OWNER_ID', value: githubRepositoryOwnerId }
+  { name: 'OPS_IMAGE_DIGEST', value: opsImageDigest }
+]
 
 resource keyVault 'Microsoft.KeyVault/vaults@2024-11-01' existing = {
   name: keyVaultName
@@ -726,7 +745,7 @@ module targetSmokeJob 'modules/container-app-job.bicep' = {
       'run'
       'azure:ops-job'
     ]
-    nonSecretEnv: concat(opsCommonNonSecretEnv, [
+    nonSecretEnv: concat(opsCommonNonSecretEnv, workflowObservationEnv, [
       { name: 'OPERATION', value: 'target-smoke' }
       { name: 'TARGET_BASE_URL', value: targetBaseUrl }
       // TARGET_CONFIRM_HOST is scripts/azure/operations/target-smoke.ts's
@@ -782,7 +801,7 @@ module activationCheckJob 'modules/container-app-job.bicep' = {
       'run'
       'azure:ops-job'
     ]
-    nonSecretEnv: concat(opsCommonNonSecretEnv, [
+    nonSecretEnv: concat(opsCommonNonSecretEnv, workflowObservationEnv, [
       { name: 'OPERATION', value: 'activation-check' }
       { name: 'TARGET_ORIGIN', value: targetBaseUrl }
       { name: 'IMAGE_DIGEST', value: imageDigest }

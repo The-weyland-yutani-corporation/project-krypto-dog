@@ -638,14 +638,14 @@ function ruleTodoMarkers(ctx) {
 }
 
 /**
- * Rule: no prohibited live executor exists in v2. Mirrors the canonical
+ * Rule: no alternative financial executor exists. Mirrors the permanent
  * governance invariant: no `live`-executor source file and no
  * `src/tools/safe-trade.ts` mutating tool.
  */
 function ruleNoProhibitedLiveExecutor(ctx) {
   const ruleId = "no_prohibited_live_executor";
   const remediation =
-    "remove the live-execution path; a live executor requires an accepted governance proposal, release plan, and human enablement";
+    "remove the non-paper execution path; every environment is permanently paper-only and has no enablement approval exception";
   const violations = [];
   const liveRe =
     /(?:^|[/.-])live[/.-].*execut|execut.*[/.-]live(?:[/.-]|$)/i;

@@ -16,6 +16,7 @@
 #     [--expected-shadow-idempotency-key <manual-shadow:key>] \
 #     [--expected-shadow-started-after <UTC timestamp>] \
 #     [--production-verification-config <phase-specific-nonsecret-json>] \
+#     [--workflow-observation-proof <private-proof-file>] \
 #     [--poll-interval-seconds <n>]
 #
 # Azure replaces the execution template when any start override is supplied.
@@ -50,6 +51,7 @@ deployment_candidate_release_sha=""
 deployment_source_image_digest=""
 production_config=""
 production_overrides="[]"
+workflow_observation_proof=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -113,6 +115,10 @@ while [ $# -gt 0 ]; do
       production_config="${2:?--production-verification-config requires a value}"
       shift 2
       ;;
+    --workflow-observation-proof)
+      workflow_observation_proof="${2:?--workflow-observation-proof requires a private file}"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -168,6 +174,29 @@ if [ -n "${production_config}" ]; then
     exit 1
   fi
   production_overrides="$(node "${script_dir}/production-evidence.cjs" verification-overrides "${production_config}")"
+fi
+
+proof_args=(--arg workflow_observation "")
+if [ "${deployment_fence_action}" = "release" ]; then
+  if [ ! -f "${workflow_observation_proof}" ] || [ -L "${workflow_observation_proof}" ] ||
+     [ "$(wc -c < "${workflow_observation_proof}")" -gt 16384 ]; then
+    echo "Fence release requires a bounded, private workflow-observation proof file." >&2
+    exit 1
+  fi
+  jq -e --arg invocation "${job_execution_id}" '
+    (keys | sort) == ["observation", "token"]
+    and (.token | type == "string" and length <= 12000
+      and test("^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"))
+    and .observation.purpose == "cutover-release"
+    and .observation.operationExecutionId == $invocation
+  ' "${workflow_observation_proof}" >/dev/null || {
+    echo "The workflow proof does not match this constrained release invocation." >&2
+    exit 1
+  }
+  proof_args=(--rawfile workflow_observation "${workflow_observation_proof}")
+elif [ -n "${workflow_observation_proof}" ]; then
+  echo "Workflow-observation proofs are accepted only by attested fence release." >&2
+  exit 1
 fi
 
 echo "Starting Container Apps Job '${job_name}' in resource group '${resource_group}' (JOB_EXECUTION_ID=${job_execution_id})."
@@ -240,6 +269,7 @@ jq \
   --arg deployment_source_release_sha "${deployment_source_release_sha}" \
   --arg deployment_candidate_release_sha "${deployment_candidate_release_sha}" \
   --arg deployment_source_image_digest "${deployment_source_image_digest}" \
+  "${proof_args[@]}" \
   --argjson production_overrides "${production_overrides}" '
   .properties.template
   | if ((.containers // []) | type) != "array"
@@ -260,11 +290,15 @@ jq \
        else empty end),
       (if $deployment_fence_action != "" then
          {name: "OPERATION", value: "deployment-admission"},
-         {name: "DEPLOYMENT_FENCE_ACTION", value: $deployment_fence_action},
+         {name: "DEPLOYMENT_FENCE_ACTION", value:
+           (if $deployment_fence_action == "release" then "release-attested-v1" else $deployment_fence_action end)},
          {name: "DEPLOYMENT_FENCE_OWNER", value: $deployment_fence_owner},
          {name: "DEPLOYMENT_SOURCE_RELEASE_SHA", value: $deployment_source_release_sha},
          {name: "DEPLOYMENT_CANDIDATE_RELEASE_SHA", value: $deployment_candidate_release_sha},
          {name: "DEPLOYMENT_SOURCE_IMAGE_DIGEST", value: $deployment_source_image_digest}
+       else empty end),
+      (if $workflow_observation != "" then
+         {name: "DEPLOYMENT_WORKFLOW_OBSERVATION", value: $workflow_observation}
        else empty end)
     ] + $production_overrides) as $overrides
   | ($overrides | map(.name)) as $override_names
@@ -286,6 +320,7 @@ start_output="$(az containerapp job start \
   --resource-group "${resource_group}" \
   --yaml "${execution_template_file}" \
   --output json)"
+rm -f "${job_definition_file}" "${execution_template_file}"
 
 execution_name="$(printf '%s' "${start_output}" | jq -r '.name // empty')"
 if [ -z "${execution_name}" ]; then

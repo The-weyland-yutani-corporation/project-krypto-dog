@@ -39,5 +39,7 @@
   unsafe work is reported rather than deleting tests or weakening checks.
 - Exact-SHA development/deployment evidence is separate from a successful
   merge. Production rollout is not proven by local tests or a merged PR.
-  The application remains non-live: real-money execution and transfers are
-  outside automated software-delivery effects.
+  Development and production are permanently paper-only. The approved full
+  delivery contract requires exact-merge paper-production and scheduled-run
+  evidence before completion; development-only lifecycle behavior must not be
+  presented as that full result while its production integration is pending.

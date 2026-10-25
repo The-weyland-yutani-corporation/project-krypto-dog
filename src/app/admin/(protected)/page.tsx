@@ -116,7 +116,7 @@ export default async function AdminDashboard() {
       <PageHeader
         eyebrow="Operator console"
         title="Agent dashboard"
-        description="Paper portfolio state, run controls, and deterministic evidence snapshots before any live trading."
+        description="Simulated portfolio state, run controls, and deterministic evidence. Every environment is paper-only."
       />
 
       {state && (

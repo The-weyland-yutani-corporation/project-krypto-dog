@@ -103,7 +103,10 @@ Development/shadow delivery remains the existing exact-release pipeline.
 Production deployment is still structurally manual and protected by GitHub
 Environments; the idea-to-main changes do not claim to make it unattended.
 Production automation needs its own validated release path and authorized
-platform configuration. No live-money execution or transfers are enabled.
+platform configuration. Both environments are permanently paper-only. The
+approved POC design keeps deployment health, restore proof, actual scheduled
+execution and failure alerts, while separate telemetry-project commissioning,
+mailbox-delivery proof and irreversible retention locking are optional.
 
 See [`agentic-workflows-map.md`](./agentic-workflows-map.md) for the generated
 source/trigger inventory.

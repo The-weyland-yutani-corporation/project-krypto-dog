@@ -6,7 +6,7 @@ Human-approved goal -> eligible issue -> owned claim -> implementation PR -> cur
 
 ## Safety and governance model
 
-[`specs/factory.md`](../specs/factory.md) and [`.github/agentic-policy.json`](../.github/agentic-policy.json) are authoritative. Boundary/forked work requires human approval; production, live trading, secrets/accounts, and architecture are never autonomous.
+[`specs/factory.md`](../specs/factory.md) and [`.github/agentic-policy.json`](../.github/agentic-policy.json) are authoritative. Same-repository boundary/architecture work uses risk-selected automated verification, not per-change human approval. Forks and external access retain their explicit controls. Every environment is permanently paper-only; trusted production delivery follows the approved POC gate contract, not model-issued deployment commands.
 
 ## Workflow catalog
 

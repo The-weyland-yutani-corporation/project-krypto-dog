@@ -36,7 +36,9 @@ safe-outputs:
       `Refs #${{ github.event.inputs.issue }}` in the PR body. Do not use an
       issue-closing keyword; the lifecycle reconciler closes the issue only
       after exact-SHA dev evidence passes. Preserve all Project Krypto safety
-      boundaries and never make production or live-trading changes.
+      boundaries. Author paper-production automation only within the issue's
+      allowed paths; deployment mutations belong to trusted native workflows,
+      not the coding agent. Every environment is permanently paper-only.
     allowed: [copilot]
     max: 1
     target: ${{ github.event.inputs.issue }}

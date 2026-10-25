@@ -176,7 +176,7 @@ Repair failed checks on an eligible routine or sensitive agent pull request
   have at most one. Boundary work has zero repair attempts.
 - Repair only files already authorized by the linked issue scope. Never edit
   `.github/**`, `infra/**`, `specs/**`, package manifests, environment files,
-  production/live boundaries, or unrelated files.
+  production deployment boundaries, or unrelated files.
 - Do not repair a PR carrying `blocked`, `self-heal-exhausted`, or
   `ready-for-human-review`. Review-requirement labels (`needs-qa`,
   `security-review`, `trading-safety`) may remain; repair only a demonstrated
@@ -201,7 +201,7 @@ Repair failed checks on an eligible routine or sensitive agent pull request
    instructions.
 5. Do not rename or delete files, expand scope, weaken tests, remove
    assertions, bypass required checks, or relax trading, guardrail, mutex,
-   auth, CSRF, journaling, paper/live, database, deployment, or workflow
+   auth, CSRF, journaling, paper execution, database, deployment, or workflow
    protections.
 6. Run the narrowest relevant validation. Use the repository baseline when the
    failure spans multiple areas.

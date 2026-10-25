@@ -240,6 +240,9 @@ function loadAgenticPolicy(policyPath = DEFAULT_POLICY_PATH) {
     ["forksRequireHumanApproval", "humanOnly", "paperOnly"],
     "authority",
   );
+  if (authority.paperOnly !== true) {
+    invalid("authority.paperOnly must be true: every environment is permanently paper-only");
+  }
 
   const lowRiskPathSource = string(
     lowRiskDocs.pathPattern,

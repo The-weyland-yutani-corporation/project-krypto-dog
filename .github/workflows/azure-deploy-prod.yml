@@ -1,7 +1,7 @@
 name: Azure deploy prod
 
 # Production deployment is manual-only. An operator supplies an exact
-# CI-passed commit SHA through workflow_dispatch. Existing releases pass the
+# CI-passed workflow commit SHA through workflow_dispatch. Existing releases pass the
 # `production-promotion` approval
 # before forced disable, then the separate `production-deploy` approval for
 # current-release safety and infrastructure/release work.
@@ -108,6 +108,10 @@ jobs:
           candidate="${INPUT_COMMIT_SHA}"
           source .github/scripts/azure/lib/common.sh
           validated="$(azure_validate_release_sha "${candidate}")"
+          if [ "${validated}" != "${GITHUB_SHA}" ] || [ "${validated}" != "${GITHUB_WORKFLOW_SHA}" ]; then
+            echo "Production requires the exact workflow source commit, not an older main ancestor." >&2
+            exit 1
+          fi
           deployment_stage="${INPUT_DEPLOYMENT_STAGE}"
           if [ "${deployment_stage}" != "foundation" ] && [ "${deployment_stage}" != "full" ]; then
             echo "deployment_stage must be exactly 'foundation' or 'full'." >&2
@@ -1279,11 +1283,22 @@ jobs:
       CURRENT_WEB_DIGEST_HEX: ${{ needs.force-disable-rollout.outputs.current_digest }}
       FENCE_OWNER: ${{ needs.force-disable-rollout.outputs.fence_owner }}
       TARGET_ORIGIN: ${{ needs.force-disable-rollout.outputs.target_origin }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
     steps:
       - name: Checkout ${{ needs.gate.outputs.sha }}
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up the supported Node runtime for cutover attestation
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked attestation dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -1321,6 +1336,29 @@ jobs:
           fi
           source .github/scripts/azure/lib/common.sh
           execution_id="$(azure_new_job_execution_id deployment-admission release)"
+          umask 077
+          proof_dir="$(mktemp -d "${RUNNER_TEMP}/krypto-cutover-proof.XXXXXX")"
+          cleanup() {
+            rm -f "${proof_dir}/proof.json" "${proof_dir}/receipt.json"
+            rmdir "${proof_dir}"
+          }
+          trap cleanup EXIT
+          node --import tsx scripts/azure/attest-cutover-state.ts \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --web-app "${WEB_APP_NAME}" \
+            --hourly-job "${PROD_HOURLY_JOB_NAME}" \
+            --daily-job "${PROD_DAILY_JOB_NAME}" \
+            --ops-job "${ACTIVATION_CHECK_JOB_NAME}" \
+            --expected-image "${ACR_LOGIN_SERVER}/krypto-web@sha256:${WEB_DIGEST_HEX}" \
+            --owner "${FENCE_OWNER}" \
+            --source-release-sha "${CURRENT_SHA}" \
+            --source-image-digest "sha256:${CURRENT_WEB_DIGEST_HEX}" \
+            --candidate-release-sha "${RESOLVED_SHA}" \
+            --runtime-release-sha "${RESOLVED_SHA}" \
+            --job-execution-id "${execution_id}" \
+            --proof-output "${proof_dir}/proof.json" \
+            --receipt-output "${proof_dir}/receipt.json"
+          observation_digest="$(jq -er '.observationDigest | select(test("^[0-9a-f]{64}$"))' "${proof_dir}/receipt.json")"
           bash .github/scripts/azure/run-deployment-admission.sh \
             --action release --owner "${FENCE_OWNER}" \
             --source-release-sha "${CURRENT_SHA}" \
@@ -1332,6 +1370,8 @@ jobs:
             --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
             --container-url "${EVIDENCE_CONTAINER_URL}" \
             --job-execution-id "${execution_id}" \
+            --workflow-observation-proof "${proof_dir}/proof.json" \
+            --workflow-observation-digest "${observation_digest}" \
             --destination evidence \
             --timeout-seconds 600
           echo "status=released" >> "$GITHUB_OUTPUT"

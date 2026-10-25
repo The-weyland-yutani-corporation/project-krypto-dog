@@ -142,6 +142,8 @@ describe("production cutover workflow", () => {
     const resolve = run("gate", "Resolve and format-validate the exact commit SHA to deploy");
     expect(resolve).toContain('if [ "${GITHUB_REF}" != "refs/heads/main" ]');
     expect(resolve).toContain('azure_validate_release_sha "${candidate}"');
+    expect(resolve).toContain('"${validated}" != "${GITHUB_SHA}"');
+    expect(resolve).toContain('"${validated}" != "${GITHUB_WORKFLOW_SHA}"');
     expect(resolve).toContain('"${deployment_stage}" != "foundation"');
     expect(resolve).toContain('"${deployment_stage}" != "full"');
     const verify = step("gate", "Verify manually-dispatched SHA branch and successful push CI");
@@ -259,6 +261,28 @@ describe("production cutover workflow", () => {
     expect(job("verify-final-state").if).toContain("needs.target-smoke.result == 'success'");
   });
 
+  it("prepares trusted attestation dependencies before Azure login and never publishes the bearer proof", () => {
+    const releaseJob = job("release-cutover-fence");
+    expect(releaseJob.steps[0].with?.["persist-credentials"]).toBe(false);
+    expect(step("release-cutover-fence", "Set up the supported Node runtime for cutover attestation").with?.["node-version-file"])
+      .toBe(".nvmrc");
+    expect(run("release-cutover-fence", "Install locked attestation dependencies without lifecycle scripts"))
+      .toBe("npm ci --ignore-scripts --no-audit --no-fund");
+    expectBefore("release-cutover-fence",
+      "Install locked attestation dependencies without lifecycle scripts", "Azure login (OIDC)");
+    expect(releaseJob.env?.AZURE_SUBSCRIPTION_ID).toBe("${{ vars.AZURE_SUBSCRIPTION_ID }}");
+    const script = run("release-cutover-fence", "Verify the new disabled release before releasing its cutover fence");
+    expect(script.indexOf("attest-cutover-state.ts")).toBeLessThan(script.indexOf("--action release"));
+    expect(script).toContain('--runtime-release-sha "${RESOLVED_SHA}"');
+    expect(script).toContain('--workflow-observation-proof "${proof_dir}/proof.json"');
+    expect(script).toContain('--workflow-observation-digest "${observation_digest}"');
+    expect(script).toContain('mktemp -d "${RUNNER_TEMP}/krypto-cutover-proof.XXXXXX"');
+    expect(script).toContain('rm -f "${proof_dir}/proof.json" "${proof_dir}/receipt.json"');
+    expect(script).toContain("trap cleanup EXIT");
+    const upload = releaseJob.steps.find((entry) => entry.uses === "actions/upload-artifact@v4");
+    expect(upload?.with?.path).toBe("evidence/");
+  });
+
   it("retries release and smoke without reacquiring or requiring a consumed owner", () => {
     for (const id of ["release-cutover-fence", "target-smoke"]) {
       const scripts = job(id).steps.map((current) => current.run ?? "").join("\n");
@@ -284,6 +308,7 @@ describe("production cutover workflow", () => {
 function createRecoveryFixture(options: {
   failReleaseOnce?: boolean;
   failSmokeOnce?: boolean;
+  failAttestationOnce?: boolean;
   quiescent?: boolean;
   fence?: "held" | "released";
 } = {}) {
@@ -314,6 +339,23 @@ switch (command) {
     state.events.push("quiescence");
     failed = state.quiescent !== true;
     break;
+  case "attest-cutover-state.ts":
+    assert.equal(argument("--owner"), process.env.FENCE_OWNER);
+    assert.equal(argument("--source-release-sha"), process.env.CURRENT_SHA);
+    assert.equal(argument("--candidate-release-sha"), process.env.RESOLVED_SHA);
+    assert.equal(argument("--runtime-release-sha"), process.env.RESOLVED_SHA);
+    assert.equal(argument("--source-image-digest"), "sha256:" + process.env.CURRENT_WEB_DIGEST_HEX);
+    assert.equal(argument("--ops-job"), process.env.ACTIVATION_CHECK_JOB_NAME);
+    state.events.push("attest");
+    failed = state.failAttestationOnce === true;
+    state.failAttestationOnce = false;
+    if (!failed) {
+      fs.writeFileSync(argument("--proof-output"), JSON.stringify({
+        invocation: argument("--job-execution-id"), token: "private-fixture-proof",
+      }), { flag: "wx", mode: 0o600 });
+      fs.writeFileSync(argument("--receipt-output"), JSON.stringify({ observationDigest: "f".repeat(64) }), { flag: "wx" });
+    }
+    break;
   case "run-deployment-admission.sh":
     assert.equal(argument("--action"), "release");
     assert.equal(argument("--owner"), process.env.FENCE_OWNER);
@@ -322,6 +364,10 @@ switch (command) {
     assert.equal(argument("--job-release-sha"), process.env.RESOLVED_SHA);
     assert.equal(argument("--source-image-digest"), "sha256:" + process.env.CURRENT_WEB_DIGEST_HEX);
     assert.equal(argument("--target-origin"), process.env.TARGET_ORIGIN);
+    assert.equal(argument("--workflow-observation-digest"), "f".repeat(64));
+    assert.equal(JSON.parse(fs.readFileSync(argument("--workflow-observation-proof"), "utf8")).invocation,
+      argument("--job-execution-id"));
+    assert(!args.some((value) => value.includes("private-fixture-proof")));
     state.events.push("release");
     state.fence = "released";
     failed = state.failReleaseOnce === true;
@@ -364,6 +410,7 @@ if (failed) {
     GITHUB_REPOSITORY_ID: "456",
     GITHUB_RUN_ID: "123",
     GITHUB_OUTPUT: "outputs.txt",
+    RUNNER_TEMP: ".",
     EXISTING_RELEASE: "true",
     ADMISSION_STATUS: "admitted",
     FENCE_OWNER: "34aa399d-f243-5b32-832f-e399e1f22b74",
@@ -392,6 +439,15 @@ if (failed) {
         encoding: "utf8",
         env: { ...environment, GITHUB_RUN_ATTEMPT: String(attempt), ...overrides },
         input: `
+node() {
+  if [ "$1" = "--import" ] && [ "$2" = "tsx" ] && [ "$3" = "scripts/azure/attest-cutover-state.ts" ]; then
+    shift 3
+    command node .github/scripts/azure/fixture.cjs attest-cutover-state.ts "$@"
+  else
+    command node "$@"
+  fi
+}
+export -f node
 az() {
   if [ "$1" = "containerapp" ] && [ "$2" = "show" ]; then
     printf '%s' "\${LIVE_ACR_LOGIN_SERVER}/krypto-web@sha256:\${CURRENT_WEB_DIGEST_HEX}"
@@ -409,6 +465,7 @@ ${run(jobId, name)}
       fence: z.string(), approved: z.boolean(), events: z.array(z.string()),
     }).parse(JSON.parse(fs.readFileSync(path.join(directory, "state.json"), "utf8"))),
     outputs: () => fs.readFileSync(path.join(directory, "outputs.txt"), "utf8"),
+    privateDirectories: () => fs.readdirSync(directory).filter((name) => name.startsWith("krypto-cutover-proof.")),
     dispose: () => fs.rmSync(directory, { recursive: true, force: true }),
   };
 }
@@ -438,8 +495,9 @@ describe("cutover recovery executes the real workflow scripts", () => {
         fence: "released",
         approved: true,
         events: ["verify", "migrate-init", "verified-backup", "quiescence",
-          "release", "quiescence", "target-smoke", "quiescence", "target-smoke"],
+          "attest", "release", "quiescence", "target-smoke", "quiescence", "target-smoke"],
       });
+      expect(fixture.privateDirectories()).toEqual([]);
     } finally {
       fixture.dispose();
     }
@@ -451,7 +509,22 @@ describe("cutover recovery executes the real workflow scripts", () => {
       expect(fixture.execute("release-cutover-fence", release).status).toBe(1);
       expect(fixture.state()).toMatchObject({ fence: "released", approved: false });
       expect(fixture.execute("release-cutover-fence", release, 2).status).toBe(0);
-      expect(fixture.state().events).toEqual(["quiescence", "release", "quiescence", "release"]);
+      expect(fixture.state().events).toEqual(["quiescence", "attest", "release", "quiescence", "attest", "release"]);
+      expect(fixture.privateDirectories()).toEqual([]);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("fails closed when fresh attestation fails and cleans private scratch on both attempts", () => {
+    const fixture = createRecoveryFixture({ failAttestationOnce: true });
+    try {
+      expect(fixture.execute("release-cutover-fence", release).status).toBe(1);
+      expect(fixture.state()).toMatchObject({ fence: "held", approved: false, events: ["quiescence", "attest"] });
+      expect(fixture.privateDirectories()).toEqual([]);
+      expect(fixture.execute("release-cutover-fence", release, 2).status).toBe(0);
+      expect(fixture.state().events).toEqual(["quiescence", "attest", "quiescence", "attest", "release"]);
+      expect(fixture.privateDirectories()).toEqual([]);
     } finally {
       fixture.dispose();
     }

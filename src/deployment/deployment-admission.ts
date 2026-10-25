@@ -16,6 +16,12 @@ import {
 } from "@/deployment/target-smoke";
 import { ETH_SCALE, parseDecimal } from "@/trading/accounting";
 import { AccountingError } from "@/trading/errors";
+import {
+  assertFreshWorkflowObservation,
+  WorkflowObservationError,
+  type VerifiedWorkflowObservation,
+  type WorkflowObservationReceipt,
+} from "@/deployment/workflow-observation";
 
 export const DEPLOYMENT_FENCE_TIMEOUT_SECONDS = 6 * 60 * 60;
 
@@ -45,11 +51,12 @@ export type DeploymentAdmissionOptions = DeploymentBinding & {
   databaseUrl: string;
 } & (
     | { action: "acquire"; cronSecret: string; approvalSecret: string }
-    | { action: "verify" | "release" }
+    | { action: "verify" }
+    | { action: "release"; observation: VerifiedWorkflowObservation }
   );
 
 export type DeploymentAdmissionReport = DeploymentBinding & {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.1.0";
   generatedAt: string;
   operation: "deployment-admission";
   action: DeploymentFenceAction;
@@ -57,6 +64,7 @@ export type DeploymentAdmissionReport = DeploymentBinding & {
   reason: string;
   summary: string;
   expiresAt: string | null;
+  workflowObservation: WorkflowObservationReceipt | null;
 };
 
 type StateRow = {
@@ -104,7 +112,7 @@ function matchesBinding(fence: FenceRow, binding: DeploymentBinding): boolean {
   );
 }
 
-// Ops-only. Release must follow verified disabled/Manual Azure readback.
+// Ops-only. Release consumes signed disabled/Manual readback in its transaction.
 // Expiry is a recovery deadline, never permission to resume trading.
 export async function runDeploymentAdmission(
   options: DeploymentAdmissionOptions,
@@ -129,6 +137,7 @@ export async function runDeploymentAdmission(
       throw new Error("CRON_SECRET is required for deployment admission.");
     }
   }
+  let workflowObservation: WorkflowObservationReceipt | null = null;
 
   function report(
     status: DeploymentAdmissionStatus,
@@ -137,7 +146,7 @@ export async function runDeploymentAdmission(
     expiresAt: Date | null = null,
   ): DeploymentAdmissionReport {
     return {
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.1.0",
       generatedAt: new Date().toISOString(),
       operation: "deployment-admission",
       action,
@@ -146,6 +155,7 @@ export async function runDeploymentAdmission(
       reason,
       summary,
       expiresAt: expiresAt?.toISOString() ?? null,
+      workflowObservation,
     };
   }
 
@@ -283,7 +293,7 @@ export async function runDeploymentAdmission(
         );
       }
 
-      if (action === "verify") {
+      if (options.action === "verify") {
         if (!fence || fence.releasedAt !== null || !matchesBinding(fence, binding)) {
           return report("blocked", "ownership-mismatch", "The exact active cutover fence is not held.");
         }
@@ -292,7 +302,7 @@ export async function runDeploymentAdmission(
         }
         return report("held", "fence-held", "The exact healthy, unexpired cutover fence remains held.", fence.expiresAt);
       }
-      if (action === "release") {
+      if (options.action === "release") {
         if (!fence || !matchesBinding(fence, binding)) {
           return report(
             "blocked",
@@ -300,6 +310,31 @@ export async function runDeploymentAdmission(
             "Only the exact cutover owner and release binding may release its fence.",
           );
         }
+        const [{ releaseObservedAt }] = await tx<Array<{ releaseObservedAt: Date }>>`
+          SELECT clock_timestamp() AS "releaseObservedAt"
+        `;
+        try {
+          assertFreshWorkflowObservation(options.observation, releaseObservedAt);
+        } catch (error) {
+          if (!(error instanceof WorkflowObservationError)) throw error;
+          return report("blocked", "workflow-observation", error.message);
+        }
+        const observed = options.observation.observation;
+        if (observed.purpose !== "cutover-release" ||
+            observed.owner !== binding.owner ||
+            observed.sourceReleaseSha !== binding.sourceReleaseSha ||
+            observed.candidateReleaseSha !== binding.candidateReleaseSha ||
+            observed.sourceImageDigest !== binding.imageDigest ||
+            observed.targetOrigin !== binding.targetOrigin ||
+            observed.workflow.sha !== binding.candidateReleaseSha ||
+            (observed.releaseSha !== binding.candidateReleaseSha &&
+              (observed.releaseSha !== binding.sourceReleaseSha || observed.imageDigest !== binding.imageDigest))) {
+          return report(
+            "blocked", "workflow-observation-binding",
+            "Disabled readback does not match the exact cutover owner and release binding.",
+          );
+        }
+        workflowObservation = options.observation.receipt;
         if (fence.releasedAt !== null) {
           return report(
             "released",
@@ -388,7 +423,7 @@ export async function runDeploymentAdmission(
         VALUES (
           ${`deployment-fence-released-${randomUUID()}`},
           'Ops caller released its owned deployment fence; operator stops are unchanged.',
-          ${tx.json({ event: "deployment-fence-released", ...binding })}
+          ${tx.json({ event: "deployment-fence-released", ...binding, workflowObservation })}
         )
       `;
       return report(

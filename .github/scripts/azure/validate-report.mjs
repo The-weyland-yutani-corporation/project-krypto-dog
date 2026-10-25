@@ -270,8 +270,11 @@ switch (operation) {
     if (origin.protocol !== "https:" || origin.origin !== targetOrigin) {
       fail("--target-origin must be a bare HTTPS origin.");
     }
+    // Older source ops may acquire/verify during their first upgrade, never release.
+    if (!(action === "release" ? ["1.1.0"] : ["1.0.0", "1.1.0"]).includes(report.schemaVersion)) {
+      fail("Unsupported admission schema; fence release requires attested schema 1.1.0.");
+    }
     for (const [field, expected] of Object.entries({
-      schemaVersion: "1.0.0",
       operation,
       action,
       owner,
@@ -290,6 +293,33 @@ switch (operation) {
     const generatedAt = Date.parse(requireField(report, "generatedAt", "string"));
     if (!Number.isFinite(generatedAt) || generatedAt > now + 120_000 || now - generatedAt > 30 * 60_000) {
       fail("Admission evidence is invalid, future-dated, or older than 30 minutes.");
+    }
+    if (action === "release") {
+      const digest = args["workflow-observation-digest"];
+      const receipt = requireField(report, "workflowObservation", "object");
+      const fields = [
+        "issuer", "purpose", "observationDigest", "repositoryId", "repositoryOwnerId",
+        "workflowRef", "workflowSha", "runId", "runAttempt", "observedAt", "expiresAt",
+      ];
+      if (!/^[0-9a-f]{64}$/.test(digest ?? "") ||
+          Object.keys(receipt).length !== fields.length || !fields.every((field) => field in receipt) ||
+          receipt.issuer !== "https://token.actions.githubusercontent.com" ||
+          receipt.purpose !== "cutover-release" || receipt.observationDigest !== digest ||
+          receipt.workflowSha !== candidateSha ||
+          !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/azure-deploy-prod\.yml@refs\/heads\/main$/.test(receipt.workflowRef) ||
+          !["repositoryId", "repositoryOwnerId", "runId"].every((field) =>
+            typeof receipt[field] === "string" && /^[1-9][0-9]{0,19}$/.test(receipt[field])) ||
+          !Number.isSafeInteger(receipt.runAttempt) || receipt.runAttempt < 1) {
+        fail("Fence release lacks its exact, closed, authenticated workflow-observation receipt.");
+      }
+      const observed = Date.parse(receipt.observedAt);
+      const expiry = Date.parse(receipt.expiresAt);
+      if (!Number.isFinite(observed) || !Number.isFinite(expiry) ||
+          observed > generatedAt || generatedAt - observed > 180_000 || expiry <= generatedAt) {
+        fail("Fence release observation was not fresh when the release report was generated.");
+      }
+    } else if (report.schemaVersion === "1.1.0" && report.workflowObservation !== null) {
+      fail("Non-release admission cannot claim a workflow-observation receipt.");
     }
     if (report.status === "deferred" && args["allow-deferred"] === "true" && action === "acquire") {
       if (

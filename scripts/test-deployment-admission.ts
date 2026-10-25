@@ -16,6 +16,7 @@ import {
 } from "@/deployment/target-smoke";
 import { executePaperTrade } from "@/trading/paper-executor";
 import { DEFAULT_STRATEGY_CONFIG } from "@/trading/strategy-config";
+import { verifiedCutoverFixture } from "../tests/deployment/workflow-observation-fixture";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required.");
@@ -31,6 +32,13 @@ const base: DeploymentAdmissionOptions & { action: "acquire" } = {
   cronSecret: "disposable-admission-cron-secret",
   approvalSecret: "disposable-admission-approval-secret-at-least-32",
 };
+
+async function releaseOptions(owner = base.owner): Promise<DeploymentAdmissionOptions & { action: "release" }> {
+  return {
+    ...base, owner, action: "release",
+    observation: await verifiedCutoverFixture({ owner, targetOrigin: base.targetOrigin }, new Date()),
+  };
+}
 
 async function stateSnapshot(): Promise<string> {
   const [row] = await sql<Array<{ state: string }>>`
@@ -247,25 +255,30 @@ async function main(): Promise<void> {
     triggerSource: "admin",
     idempotencyKey: "expired-fence-still-blocks",
   })).kind, "mutex");
-  assert.equal((await runDeploymentAdmission({
-    ...base,
-    action: "release",
-    owner: randomUUID(),
-  })).status, "blocked");
+  assert.equal((await runDeploymentAdmission(await releaseOptions(randomUUID()))).status, "blocked");
 
   await sql`
     UPDATE "krypto"."AgentState"
     SET "isOperatorPaused" = true, "isLocked" = true WHERE id = 'singleton'
   `;
   before = await stateSnapshot();
-  assert.equal((await runDeploymentAdmission({ ...base, action: "release" })).status, "released");
+  const release = await runDeploymentAdmission(await releaseOptions());
+  assert.equal(release.status, "released");
+  const [releaseAudit] = await sql<Array<{ proof: string | null }>>`
+    SELECT "marketConditions"->'workflowObservation'->>'observationDigest' AS proof
+    FROM "krypto"."AgentJournal"
+    WHERE "marketConditions"->>'event' = 'deployment-fence-released'
+      AND "marketConditions"->>'owner' = ${base.owner}
+  `;
+  assert.equal(releaseAudit?.proof, release.workflowObservation?.observationDigest,
+    "Fence release and its authenticated readback digest must commit together.");
   assert.equal(await stateSnapshot(), before, "Releasing a deployment fence must not clear either stop.");
   const [tombstone] = await sql<Array<{ owner: string; releasedAt: Date | null }>>`
     SELECT owner, "releasedAt" FROM "krypto"."DeploymentFence" WHERE id = 'singleton'
   `;
   assert.equal(tombstone.owner, base.owner);
   assert(tombstone.releasedAt);
-  assert.equal((await runDeploymentAdmission({ ...base, action: "release" })).reason, "already-released");
+  assert.equal((await runDeploymentAdmission(await releaseOptions())).reason, "already-released");
 
   await sql`
     UPDATE "krypto"."AgentState"
@@ -275,11 +288,11 @@ async function main(): Promise<void> {
   const results = await Promise.all(owners.map((owner) => runDeploymentAdmission({ ...base, owner })));
   assert.deepEqual(results.map((result) => result.status).sort(), ["admitted", "blocked"],
     "Released singleton history must allow one new owner to acquire the active partial-index slot.");
-  assert.equal((await runDeploymentAdmission({ ...base, action: "release" })).status, "blocked",
+  assert.equal((await runDeploymentAdmission(await releaseOptions())).status, "blocked",
     "An old owner must never release a newer cutover.");
   const winner = results.find((result) => result.status === "admitted");
   assert(winner);
-  assert.equal((await runDeploymentAdmission({ ...base, owner: winner.owner, action: "release" })).status, "released");
+  assert.equal((await runDeploymentAdmission(await releaseOptions(winner.owner))).status, "released");
   const completedFences = await fenceSnapshot();
   assert.equal((await runDeploymentAdmission(base)).reason, "released-owner",
     "Owner A must remain consumed after owner B completes a later cutover.");
@@ -323,7 +336,7 @@ async function main(): Promise<void> {
     triggerSource: "admin",
     idempotencyKey: "account-reset-still-fenced",
   })).kind, "mutex");
-  assert.equal((await runDeploymentAdmission({ ...base, owner: resetOwner, action: "release" })).status, "released");
+  assert.equal((await runDeploymentAdmission(await releaseOptions(resetOwner))).status, "released");
 
   console.log("Deployment admission passed: exact source binding, mutation-free deferral, native row-lock race, runtime read-only fence, executor refusal, expiry, durable owner replay protection, multi-owner singleton history, single-active uniqueness, stop preservation, and seed/reset history preservation.");
 }

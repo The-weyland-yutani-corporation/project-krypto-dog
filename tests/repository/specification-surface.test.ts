@@ -37,12 +37,25 @@ describe("canonical specification surface", () => {
       "deterministic",
       "guardrail",
       "reconciliation",
-      "real-money",
-      "transfers",
+      "permanently paper-only",
+      "deployment environments",
     ]) {
       expect(combined).toContain(term);
     }
     expect(combined).toContain("without per-change human approval");
+  });
+
+  it("has no future financial-execution approval path in role instructions", () => {
+    for (const file of fs.readdirSync(path.join(root, ".github/agents"))) {
+      if (!file.endsWith(".md")) continue;
+      const source = fs.readFileSync(path.join(root, ".github/agents", file), "utf8");
+      expect(source).not.toMatch(/v3 live|live execution belongs|live-trading changes unless/i);
+    }
+    const policy = JSON.parse(fs.readFileSync(path.join(root, ".github/agentic-policy.json"), "utf8")) as {
+      authority: { paperOnly: boolean; humanOnly: string[] };
+    };
+    expect(policy.authority.paperOnly).toBe(true);
+    expect(policy.authority.humanOnly).not.toContain("real_money_trading_and_fund_transfers");
   });
 
   it("preserves immutable migration provenance through Git history", () => {

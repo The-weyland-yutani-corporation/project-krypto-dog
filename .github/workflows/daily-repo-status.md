@@ -91,7 +91,7 @@ GitHub alerts (`> [!NOTE]`, `> [!WARNING]`). No emoji, no invented numbers.
   failures.
 - **Autonomy funnel and invariants** — include queue/lifecycle counts,
   assignment/repair/dev outcomes, duplicate/orphaned state, stale leases,
-  boundary escalations, and production/live attempts when the snapshot exposes
+  boundary escalations, and paper-production delivery attempts when the snapshot exposes
   them.
 
 ### 4. Embed the state-hash marker

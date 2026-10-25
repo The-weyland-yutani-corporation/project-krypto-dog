@@ -26,7 +26,8 @@ Explore how structured AI recommendations become controlled, auditable workflow
 outcomes using synthetic ETH/USDC scenarios. Start with the isolated mock/shadow
 demo: **no Azure account or real-provider credentials required**.
 
-> **Paper only.** No live trading, wallets, custody, or exchange orders. The model
+> **Permanently paper-only.** Development and production are real deployments
+> of the same simulation, not steps toward another trading mode. The model
 > has no mutating trade tool. This engineering demonstration is not investment
 > advice, a return forecast, or authorization for production deployment.
 
@@ -232,7 +233,7 @@ displayed shadow account or investment-performance claims.
 
 Do not treat trading policy as a generic financial recommendation engine.
 Adaptation is a separately reviewed implementation, not permission to remove
-guardrails or enable live execution.
+guardrails or change this product's paper-only execution contract.
 
 **Customer worksheet:** record the process owner, request, required context,
 permitted proposal, deterministic checks, human approval point, useful output,

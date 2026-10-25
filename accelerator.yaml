@@ -64,14 +64,14 @@ demo:
     - docs/assets/accelerator/trades.png
   architecture_path: docs/assets/accelerator/architecture.svg
 safety:
-  live_trading_supported: false
+  paper_only: true
   model_has_mutating_trade_tools: false
   harness_trade_execution_enabled: false
   production_changes_required_for_demo: false
   disclaimer: >-
     Engineering demonstration only. Not investment advice, a return forecast,
     compliance certification, Microsoft endorsement, or authorization for
-    production deployment or live-money execution.
+    production deployment. Every deployment remains a paper-only simulation.
 engagement:
   motion: discovery-workshop
   proposed_outcome: >-

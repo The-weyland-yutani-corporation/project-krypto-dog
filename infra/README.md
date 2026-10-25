@@ -10,7 +10,8 @@ This tree implements the Azure-native target accepted by
 > changes are approved by these files.
 >
 > **Paper only.** Templates support `disabled`, `shadow`, and `paper`.
-> Nothing provisions or authorizes live-money execution.
+> These are the complete modes in every environment; production is a real
+> deployment of the same simulation.
 
 **Historical checkpoint, not a current environment attestation.** The dates and
 live-state tables below record the 2026-08-15 provisioning work. Previous README and
@@ -45,7 +46,7 @@ removing or bypassing a protection.
 - Email is per-environment Azure Communication Services Email with an
   Azure-managed domain.
 - Every event is tagged with `deployment_environment`; separate PostHog
-  projects remain required before production promotion.
+  projects are optional for this POC, not production-promotion prerequisites.
 
 The owner retained `westus3`. Historical region restrictions from the previous
 subscription do not establish capabilities in the new target.
@@ -65,7 +66,7 @@ cost assumptions, outstanding prerequisites, and approval boundaries.
 | Dev foundation | ACR, private PostgreSQL 17, Key Vault, evidence storage, Container Apps environment, ACS Email managed domain, Log Analytics/alerts, and workload identities exist | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841581875) |
 | Prod foundation | Same foundation resource classes exist with production controls | [Foundation passed](https://github.com/VeVarunSharma/project-krypto-dog/actions/runs/31841960745) |
 | Releases | Dev/prod web Container Apps and scheduler/ops jobs are deployed; dev completed target-smoke and scheduled-run evidence; production remains disabled/manual | Deployed with safety state |
-| Analytics | Shared ingestion key temporarily staged with mandatory dev/prod event tags; separate projects remain a promotion gate | Release-testable |
+| Analytics | Shared ingestion key staged with mandatory dev/prod event tags; separate projects were a historical gate, superseded by the accepted POC decision | Release-testable |
 
 Azure Support API ticket creation for the dedicated account failed because the
 subscription has no eligible support plan. The established account removed that historical release blocker. That does
@@ -148,7 +149,8 @@ successful deployment attestation. Preserve those protections; a chat
 approval or a green local build does not bypass them. Fully unattended
 production delivery still needs an explicitly approved protection design.
 
-No executable production promotion workflow is shipped or approved. The
+No executable production promotion workflow is shipped yet; its approved
+native design is still being implemented. The
 `production-promotion` name denotes the separately reviewed forced-disable
 boundary used only by `azure-deploy-prod.yml` and
 `azure-rotate-secrets.yml`; it is not an available activation path. Any
@@ -306,8 +308,10 @@ Environment, not the legacy `development-promotion` Environment; inspect the
 protections actually referenced by each workflow. Any approved dispatch must
 use the configured branch, exact CI-passed SHA, and existing CI gate.
 
-Both production stages require dispatch from protected `main` and successful
-main push CI for the exact candidate SHA. The verifier refreshes the exact
+Both production stages require dispatch from protected `main`, a candidate
+equal to both `GITHUB_SHA` and `GITHUB_WORKFLOW_SHA`, and successful main push
+CI for that exact SHA. An older main ancestor cannot run through newer
+privileged workflow code. The verifier refreshes the exact
 remote-tracking branch and independently checks each returned run's SHA,
 branch, event, terminal status, and successful conclusion; another branch's
 success does not authorize production. Production `foundation` is only for
@@ -348,10 +352,10 @@ it does not rotate the PostgreSQL administrator password or database-side
 runtime role password. Such rotation needs a separately coordinated procedure,
 not an incidental password update halfway through an owned cutover.
 
-Dev and prod use independent safety/auth values. The temporary PostHog
-shared-key fallback is allowed only because `POSTHOG_ENVIRONMENT` is mandatory
-and attached to every event; separate projects remain required before
-production promotion. All corresponding `.bicepparam` calls use
+Dev and prod use independent safety/auth values. A shared PostHog capture
+project is acceptable for the POC because `POSTHOG_ENVIRONMENT` is mandatory
+and attached to every event; separate projects and private backend-query
+credentials are optional. All corresponding `.bicepparam` calls use
 `readEnvironmentVariable()` with no fallback, so missing values fail closed.
 
 ACS is intentionally different:
@@ -391,8 +395,8 @@ Target-smoke evidence retains the response's opaque provider message ID and
 requires exactly one matching `daily-summary-delivery` journal row created
 during the smoke run. Unrelated, stale, future-dated, malformed or duplicate
 audits cannot substitute for that correlation. This proves provider acceptance
-and local audit persistence, **not** final recipient delivery; the latter
-remains a separate readiness gate.
+and local audit persistence, **not** final recipient delivery. Mailbox-delivery
+proof is optional and must not be represented by provider acceptance.
 
 ## Web/runtime configuration
 
@@ -438,6 +442,58 @@ All five also receive `ENVIRONMENT_NAME`, `RELEASE_SHA`,
 `AZURE_CLIENT_ID` selects the ops identity for Foundry; no model credential is
 mounted.
 
+Only `target-smoke` and `activation-check` also receive the nonsecret
+`DEPLOYMENT_REPOSITORY`, `DEPLOYMENT_REPOSITORY_ID`,
+`DEPLOYMENT_REPOSITORY_OWNER_ID`, and `OPS_IMAGE_DIGEST` trust bindings.
+Release parameters take the repository values from the trusted workflow's
+GitHub context. This adds no identity, grant, secret, or physical job.
+
+### Workflow-attested cutover release
+
+The trusted main-branch production workflow installs locked dependencies
+without lifecycle scripts before Azure login. Immediately before releasing
+an existing fence, `scripts/azure/attest-cutover-state.ts` reads the actual
+web app, ready/inactive revisions, scheduler jobs/executions, and ops job
+using the existing deployment identity and an explicit subscription.
+The runtime containers expose immutable images, not `RELEASE_SHA`; the
+collector binds their observed digest to candidate ops metadata or the
+original owned source image. Same-SHA rebuilds and exact-source compensation
+remain distinguishable by digest.
+
+Both quiescence paths use the same bounded ARM execution reader. It follows
+every `nextLink`, retaining the exact HTTPS authority, resource and API
+version, and rejects duplicate records, malformed pages, cycles and more
+than 20 pages or 2,000 executions. A partial first page cannot authorize
+release. These are observations of Azure's available execution inventory,
+not a complete historical audit: Azure [retains only recent terminal
+executions](https://learn.microsoft.com/azure/container-apps/jobs#get-job-execution-history),
+and provider history defects or delayed state reporting remain
+operational evidence limitations. The reader does not start or stop jobs.
+
+Readback must finish within 90 seconds. The collector hashes its closed,
+purpose-bound observation into a dedicated GitHub OIDC audience. The ops
+verifier requires GitHub's signature and fixed issuer/JWKS, immutable
+repository/owner IDs, exact main workflow/source, `production-deploy`
+Environment, run/attempt, and logical invocation. It checks 180-second
+freshness again against database time after acquiring the account/fence
+locks. Fence release and the nonsecret provenance journal share that
+transaction; operator/drawdown stops and completed-owner history remain intact.
+
+The private proof is passed by file, never as token text in shell arguments.
+The native helper injects it only into the constrained execution template
+and deletes local template files immediately after the start response.
+The workflow removes its private proof/receipt scratch on success or failure;
+only the verified nonsecret receipt reaches published evidence and journals.
+Release uses the `release-attested-v1` wire action so an older ops image
+cannot silently execute an unsigned release. Admission report schema 1.1
+is required for release; legacy 1.0 is accepted only for acquire/verify during
+the first source upgrade.
+
+This is **workflow-attested Azure readback**, not an Azure-signed statement.
+Azure and PostgreSQL do not share a transaction: shared production mutation
+serialization, fresh readback, bounded proof validity, and final-state checks
+remain necessary. Missing or expired proof leaves the fence held.
+
 ### Read-only production proof
 
 The `production-verification` operation reuses the existing production
@@ -476,8 +532,9 @@ credential hash is exposed in the report. Older 1.0/1.1 reports are rejected.
 The reported host and keyed binding identify the mounted telemetry settings; they do
 **not** prove separate projects or backend event visibility. This read-only
 operation is not an activation authority or an executable promotion workflow.
-Independent readiness authorization and backend delivery evidence remain
-required before production can leave disabled/Manual.
+The approved lean readiness contract in `specs/operations.md` still requires
+trusted release admission and deployment/accounting evidence; separate
+analytics projects, backend queries and final mailbox proof are not gates.
 
 `npm run test:integration` exercises the real verification queries through
 `scripts/test-production-verification.ts` against a freshly migrated, seeded
@@ -608,8 +665,8 @@ with boundary `0`.
   pending or failed. This ordering lets the disabled cron smoke execute after
   the fence is released without enabling trading or schedules. Neither fence
   release nor a passing disabled smoke is evidence of production promotion.
-- Prod full deployment and secret rotation end disabled/manual. No executable
-  production promotion workflow is shipped or approved.
+- Prod full deployment and secret rotation end disabled/manual. The approved
+  automatic paper-promotion design is not yet an executable, commissioned path.
 - Prod deploy and rotation share concurrency group
   `azure-production-mutation`.
 
@@ -639,9 +696,9 @@ Evidence uses:
 The dev retention parameter is 7 days; prod is 90 days. An unlocked
 time-based immutability policy already prevents blob overwrite/delete during
 retention. Azure does not expose the irreversible lock action as a Bicep
-property, so production still requires one deliberate post-foundation
-operator action to lock the policy. Never automate or repeat that action
-casually.
+property. Locking is optional for the POC and requires separate, deliberate
+approval if requested; it is not an activation gate. Preserve existing
+retention and locks, and never unlock, shorten or delete them as a shortcut.
 
 ## Outputs
 
@@ -677,6 +734,8 @@ for f in infra/modules/*.bicep; do az bicep build --file "$f"; done
 For `.bicepparam` compilation, export inert local stubs only:
 
 ```bash
+GITHUB_REPOSITORY=example/project GITHUB_REPOSITORY_ID=123 \
+GITHUB_REPOSITORY_OWNER_ID=456 \
 POSTGRES_ADMIN_PASSWORD_DEV=stub POSTGRES_ADMIN_PASSWORD_PROD=stub \
 DATABASE_URL_DEV=stub DIRECT_URL_DEV=stub CRON_SECRET_DEV=stub \
 POSTHOG_API_KEY_DEV=stub ADMIN_PASSWORD_DEV=stub \

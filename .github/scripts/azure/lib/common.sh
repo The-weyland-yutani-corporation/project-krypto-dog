@@ -148,15 +148,7 @@ azure_deployment_fence_owner() {
     echo "Fence ownership requires positive GITHUB_REPOSITORY_ID and GITHUB_RUN_ID." >&2
     return 1
   fi
-  node -e '
-    const namespace = Buffer.from("6ba7b8109dad11d180b400c04fd430c8", "hex");
-    const name = `project-krypto/production-cutover/${process.argv[1]}/${process.argv[2]}`;
-    const bytes = require("node:crypto").createHash("sha1").update(namespace).update(name).digest().subarray(0, 16);
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = bytes.toString("hex");
-    process.stdout.write(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`);
-  ' "${repository_id}" "${run_id}"
+  node "$(dirname "${BASH_SOURCE[0]}")/deployment-owner.cjs" "${repository_id}" "${run_id}"
 }
 
 azure_validate_job_name() {

@@ -34,6 +34,20 @@ const reconciler = jest.requireActual<ReconcilerModule>(
 );
 
 describe("canonical agentic policy", () => {
+  it.each([false, null, "true"])("rejects a non-paper authority contract: %j", (paperOnly) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "paper-authority-"));
+    const candidatePath = path.join(directory, "policy.json");
+    const candidate = JSON.parse(fs.readFileSync(policyPath, "utf8")) as {
+      authority: { paperOnly: unknown };
+    };
+    candidate.authority.paperOnly = paperOnly;
+    fs.writeFileSync(candidatePath, JSON.stringify(candidate));
+    try {
+      expect(() => policyModule.loadAgenticPolicy(candidatePath)).toThrow("authority.paperOnly");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it.each([
     { startingCapitalUSD: 0 },
     { startingCapitalUSD: -200 },

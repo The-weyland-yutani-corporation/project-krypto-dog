@@ -11,6 +11,7 @@ import {
   computeApprovalSignature,
   cronSecretBinding,
 } from "@/deployment/target-smoke";
+import { verifiedCutoverFixture } from "./workflow-observation-fixture";
 
 jest.mock("postgres", () => {
   const actual = jest.requireActual<typeof postgres>("postgres");
@@ -37,6 +38,10 @@ const BASE: DeploymentAdmissionOptions & { action: "acquire" } = {
   approvalSecret: "private-deployment-approval-secret-32-characters",
 };
 
+async function releaseOptions(owner = OWNER): Promise<DeploymentAdmissionOptions & { action: "release" }> {
+  return { ...BASE, owner, action: "release", observation: await verifiedCutoverFixture({ owner }, NOW) };
+}
+
 function createSqlMock(options: {
   state?: Record<string, unknown> | null;
   fence?: Record<string, unknown> | null;
@@ -44,6 +49,7 @@ function createSqlMock(options: {
   bindingExists?: boolean;
   invalidSignature?: boolean;
   failure?: Error;
+  releaseObservedAt?: Date;
 } = {}) {
   const statements: string[] = [];
   const journalRecords: unknown[] = [];
@@ -76,6 +82,9 @@ function createSqlMock(options: {
       if (query.startsWith("SET LOCAL")) return [];
       if (query === 'SELECT clock_timestamp() AS "observedAt"') {
         return [{ observedAt: NOW }];
+      }
+      if (query === 'SELECT clock_timestamp() AS "releaseObservedAt"') {
+        return [{ releaseObservedAt: options.releaseObservedAt ?? NOW }];
       }
       if (query.includes('FROM "krypto"."AgentState"')) {
         return options.state === null
@@ -209,7 +218,7 @@ describe("owned deployment cutover admission", () => {
     const binding = { ...BASE, owner: "34aa399d-f243-5b32-832f-e399e1f22b74" };
     expect((await runDeploymentAdmission(binding)).status).toBe("admitted");
     expect((await runDeploymentAdmission({ ...binding, action: "verify" })).status).toBe("held");
-    expect((await runDeploymentAdmission({ ...binding, action: "release" })).status).toBe("released");
+    expect((await runDeploymentAdmission(await releaseOptions(binding.owner))).status).toBe("released");
     const writes = mock.writes().length;
     expect((await runDeploymentAdmission(binding)).reason).toBe("released-owner");
     expect(mock.writes()).toHaveLength(writes);
@@ -327,9 +336,9 @@ describe("owned deployment cutover admission", () => {
   it("rejects completed-owner replay even after a different cutover has completed", async () => {
     const mock = createSqlMock();
     expect((await runDeploymentAdmission(BASE)).status).toBe("admitted");
-    expect((await runDeploymentAdmission({ ...BASE, action: "release" })).status).toBe("released");
+    expect((await runDeploymentAdmission(await releaseOptions())).status).toBe("released");
     expect((await runDeploymentAdmission({ ...BASE, owner: OTHER_OWNER })).status).toBe("admitted");
-    expect((await runDeploymentAdmission({ ...BASE, owner: OTHER_OWNER, action: "release" })).status).toBe("released");
+    expect((await runDeploymentAdmission(await releaseOptions(OTHER_OWNER))).status).toBe("released");
     const writes = mock.writes().length;
     expect(await runDeploymentAdmission(BASE)).toMatchObject({
       status: "blocked", reason: "released-owner",
@@ -342,9 +351,9 @@ describe("owned deployment cutover admission", () => {
   it("does not mistake an old tombstone for permission to release a newer active owner", async () => {
     createSqlMock();
     await runDeploymentAdmission(BASE);
-    await runDeploymentAdmission({ ...BASE, action: "release" });
+    await runDeploymentAdmission(await releaseOptions());
     await runDeploymentAdmission({ ...BASE, owner: OTHER_OWNER });
-    expect(await runDeploymentAdmission({ ...BASE, action: "release" })).toMatchObject({
+    expect(await runDeploymentAdmission(await releaseOptions())).toMatchObject({
       status: "blocked", reason: "ownership-mismatch",
     });
   });
@@ -380,17 +389,25 @@ describe("owned deployment cutover admission", () => {
       fence: {},
       state: { isOperatorPaused: true, isLocked: true },
     });
-    const result = await runDeploymentAdmission({ ...BASE, action: "release" });
+    const options = await releaseOptions();
+    const result = await runDeploymentAdmission(options);
     expect(result).toMatchObject({ status: "released", reason: "fence-released" });
     expect(mock.writes()).toHaveLength(2);
     expect(mock.writes()[0]).toContain('SET "releasedAt" = clock_timestamp()');
     expect(mock.writes().join(" ")).not.toMatch(/UPDATE "krypto"\."AgentState"|DELETE/);
-    expect(mock.journalRecords[0]).toMatchObject({ event: "deployment-fence-released", owner: OWNER });
+    expect(mock.journalRecords[0]).toMatchObject({
+      event: "deployment-fence-released", owner: OWNER,
+      workflowObservation: options.observation.receipt,
+    });
+    expect(result.workflowObservation).toEqual(options.observation.receipt);
+    const fenceRead = mock.statements.findIndex((query) => query.includes('FROM "krypto"."DeploymentFence"'));
+    const releaseClock = mock.statements.findIndex((query) => query.includes('AS "releaseObservedAt"'));
+    expect(releaseClock).toBeGreaterThan(fenceRead);
   });
 
   it("allows owned compensation after expiry, but does not remove the tombstone", async () => {
     const mock = createSqlMock({ fence: { expiresAt: NOW } });
-    expect(await runDeploymentAdmission({ ...BASE, action: "release" })).toMatchObject({ status: "released" });
+    expect(await runDeploymentAdmission(await releaseOptions())).toMatchObject({ status: "released" });
     expect(mock.writes()[0]).toContain("UPDATE");
     expect(mock.writes().join(" ")).not.toContain("DELETE");
   });
@@ -399,7 +416,7 @@ describe("owned deployment cutover admission", () => {
     "rejects a missing or differently owned release: %j",
     async (fence) => {
       const mock = createSqlMock({ fence });
-      expect(await runDeploymentAdmission({ ...BASE, action: "release" })).toMatchObject({
+      expect(await runDeploymentAdmission(await releaseOptions())).toMatchObject({
         status: "blocked",
         reason: "ownership-mismatch",
       });
@@ -409,7 +426,7 @@ describe("owned deployment cutover admission", () => {
 
   it("makes a repeated exact release idempotent without new writes", async () => {
     const mock = createSqlMock({ fence: { releasedAt: NOW } });
-    expect(await runDeploymentAdmission({ ...BASE, action: "release" })).toMatchObject({
+    expect(await runDeploymentAdmission(await releaseOptions())).toMatchObject({
       status: "released",
       reason: "already-released",
     });
@@ -422,7 +439,7 @@ describe("owned deployment cutover admission", () => {
     { accountingStatus: "QUARANTINED" },
   ])("does not release a fence over unsafe trading state: %j", async (state) => {
     const mock = createSqlMock({ fence: {}, state });
-    expect(await runDeploymentAdmission({ ...BASE, action: "release" })).toMatchObject({ status: "blocked" });
+    expect(await runDeploymentAdmission(await releaseOptions())).toMatchObject({ status: "blocked" });
     expect(mock.writes()).toEqual([]);
   });
 
@@ -440,7 +457,7 @@ describe("owned deployment cutover admission", () => {
     Object.setPrototypeOf(failure, postgres.PostgresError.prototype);
     Object.assign(failure, { code: "55P03" });
     createSqlMock({ failure });
-    expect(await runDeploymentAdmission({ ...BASE, action })).toMatchObject({
+    expect(await runDeploymentAdmission(action === "acquire" ? BASE : await releaseOptions())).toMatchObject({
       status: action === "acquire" ? "deferred" : "blocked",
       reason: "database-busy",
     });
@@ -464,5 +481,37 @@ describe("owned deployment cutover admission", () => {
 
   it("does not accept an arbitrary operation action", () => {
     expect(() => validateDeploymentFenceAction("unpause")).toThrow(/acquire, verify, or release/);
+  });
+
+  it("keeps a fence held when its proof expires while waiting for database locks", async () => {
+    const mock = createSqlMock({ fence: {}, releaseObservedAt: new Date(NOW.getTime() + 180_001) });
+    expect(await runDeploymentAdmission(await releaseOptions())).toMatchObject({
+      status: "blocked", reason: "workflow-observation",
+    });
+    expect(mock.writes()).toEqual([]);
+  });
+
+  it.each([
+    { owner: OTHER_OWNER },
+    { sourceReleaseSha: "e".repeat(40) },
+    { candidateReleaseSha: "e".repeat(40) },
+    { sourceImageDigest: `sha256:${"e".repeat(64)}` },
+    { targetOrigin: "https://elsewhere.example.com" },
+  ])("rejects signed evidence for another fence binding: %j", async (overrides) => {
+    const mock = createSqlMock({ fence: {} });
+    const options = await releaseOptions();
+    options.observation = await verifiedCutoverFixture(overrides, NOW);
+    expect(await runDeploymentAdmission(options)).toMatchObject({
+      status: "blocked", reason: "workflow-observation-binding",
+    });
+    expect(mock.writes()).toEqual([]);
+  });
+
+  it("rejects a copied verification brand instead of treating caller objects as signed evidence", async () => {
+    const mock = createSqlMock({ fence: {} });
+    const options = await releaseOptions();
+    options.observation = { ...options.observation };
+    expect(await runDeploymentAdmission(options)).toMatchObject({ status: "blocked", reason: "workflow-observation" });
+    expect(mock.writes()).toEqual([]);
   });
 });

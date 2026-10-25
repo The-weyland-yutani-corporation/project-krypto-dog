@@ -256,7 +256,7 @@ pre-agent-steps:
 
 # Trading Safety Review
 
-Review changes for paper-trading, portfolio, guardrail, and live-execution boundary risks.
+Review changes for simulated trading, portfolio accounting, guardrails, and deployment correctness.
 
 ## Task
 
@@ -264,7 +264,8 @@ Review changes for paper-trading, portfolio, guardrail, and live-execution bound
 - Agent instruction files in the workspace are restored from the trusted base;
   inspect proposed `AGENTS.md` changes through the PR diff.
 - Inspect the target issue or PR and relevant files.
-- Verify v2 remains paper trading only.
+- Verify every environment remains permanently paper-only. Production is a
+  deployment target, not an alternative financial execution mode.
 - Check deterministic policy and authorization, transactional paper execution, owned-lease behavior, portfolio state, journaling, and alerting invariants.
 - Classify the result as `safe`, `safe-with-required-fixes`, or `unsafe`.
 - For every pull request, call `create-pr-check` exactly once with the PR

@@ -48,10 +48,10 @@ while true; do
     --output json > "${scratch}/hourly.json"
   az containerapp job show --name "${daily_job}" --resource-group "${resource_group}" \
     --output json > "${scratch}/daily.json"
-  az containerapp job execution list --name "${hourly_job}" --resource-group "${resource_group}" \
-    --output json > "${scratch}/hourly-executions.json"
-  az containerapp job execution list --name "${daily_job}" --resource-group "${resource_group}" \
-    --output json > "${scratch}/daily-executions.json"
+  node "${script_dir}/lib/job-executions.cjs" "${scratch}/hourly.json" \
+    > "${scratch}/hourly-executions.json"
+  node "${script_dir}/lib/job-executions.cjs" "${scratch}/daily.json" \
+    > "${scratch}/daily-executions.json"
   jq -n \
     --slurpfile web "${scratch}/web.json" \
     --slurpfile revisions "${scratch}/revisions.json" \

@@ -122,7 +122,7 @@ const GOAL_FORM_HEADINGS = Object.freeze({
   assignmentBudget: "Assignment budget",
   requiredEvidence: "Required evidence",
   pauseConditions: "Pause and stop conditions",
-  boundaries: "Human-only boundaries",
+  boundaries: "Execution boundaries",
 });
 
 // Narrative sections that must be non-empty for a goal to be considered a
@@ -300,7 +300,7 @@ function normalizeLabels(labels) {
  * Parses a rendered GitHub issue-form checkboxes section (each option
  * renders as a markdown task-list line, `- [x] Label` or `- [ ] Label`) and
  * requires that at least one checkbox line is present and every one of them
- * is checked. Used for the goal template's "Human-only boundaries" section,
+ * is checked. Used for the goal template's "Execution boundaries" section,
  * where all three checkboxes are required for a goal to be authorized.
  *
  * @param {unknown} sectionText

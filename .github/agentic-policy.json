@@ -4,7 +4,7 @@
     "enabled": true,
     "goalTitle": "[factory-goal] Evaluate profitable ETH/USDC swing trading",
     "milestone": "Continuous autonomous delivery",
-    "objective": "Build and evaluate ETH/USDC swing-trading software against the owner's capital and daily-profit hypothesis. Continuously turn evidence into scoped issues, tested PRs, and verified merges. Protect capital and report infeasibility honestly instead of forcing a profit target.",
+    "objective": "Build and evaluate ETH/USDC paper-trading software against the declared paper-capital and daily-profit hypothesis. Continuously turn evidence into scoped issues, tested PRs, and verified deployments. Preserve simulated accounting and report infeasibility honestly instead of forcing a profit target.",
     "tradingResearch": {
       "market": "ETH/USDC",
       "startingCapitalUSD": 200,
@@ -152,7 +152,6 @@
   "authority": {
     "forksRequireHumanApproval": true,
     "humanOnly": [
-      "real_money_trading_and_fund_transfers",
       "secrets_and_external_accounts"
     ],
     "paperOnly": true

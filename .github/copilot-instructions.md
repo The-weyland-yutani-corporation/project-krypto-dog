@@ -6,8 +6,8 @@ The app remains paper-only. The model returns one structured, read-only
 `HOLD`/`BUY`/`SELL` proposal; it never receives a mutating trade tool.
 Preserve deterministic authorization, accounting reconciliation, drawdown and
 cooldown controls, operator pause, idempotency, owned leases, admin auth,
-journaling, and explicit failures. Unattended software delivery does not
-authorize real-money execution or fund transfers.
+journaling, and explicit failures. Development and production are real
+deployments of the same permanently paper-only product.
 
 ## Read the shared instructions first
 
@@ -32,7 +32,7 @@ area before editing:
 - Charts and graphs must use Project Krypto's EvilCharts-inspired Recharts
   components/patterns, not default unstyled Recharts output.
 - Keep the visual direction as a dark trading-terminal/operator-console.
-- Locked, paused, destructive, and paper-vs-live states must remain explicit.
+- Locked, paused, destructive, disabled, shadow, and paper states must remain explicit.
 - If a UI change intentionally deviates from `DESIGN.md`, document why in the
   PR or implementation notes.
 

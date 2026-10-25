@@ -59,7 +59,7 @@ Run a round-robin review using these lenses:
 2. Architect: is the design maintainable and correctly bounded?
 3. Security reviewer: are there exploitable risks?
 4. QA engineer: is the plan testable and are edge cases covered?
-5. Trading safety reviewer: can the change affect paper/live trading boundaries or guardrails?
+5. Trading safety reviewer: can the change affect simulated accounting, execution, or guardrails?
 
 Synthesize one final recommendation: `approve`, `revise`, or `block`.
 

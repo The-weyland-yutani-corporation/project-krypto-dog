@@ -11,8 +11,8 @@ Own deterministic trade policy and transactional paper execution:
 
 ## Application invariants
 
-- Execution remains paper-only. Software-delivery autonomy does not enable
-  exchange orders, real-money execution, custody, or transfers.
+- Execution is permanently paper-only in development and production.
+  Deployment environments do not select a different execution engine.
 - The model proposes one structured decision and never receives a mutating
   trade tool. Authorization and execution remain deterministic.
 - Preserve eligibility, sizing, balances, exposure, DCA, stop-loss, freshness,

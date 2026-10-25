@@ -186,15 +186,15 @@ function goalBody(overrides: Partial<Record<string, string>> = {}): string {
     "Measurable success condition": "All gates green.",
     "Allowed scope": "src/**, tests/**",
     "Allowed paths": "src/**\ntests/**",
-    "Explicit non-goals": "Production and live trading.",
+    "Explicit non-goals": "Arbitrary cloud mutations and alternative financial execution.",
     "Maximum autonomous risk tier": "risk:sensitive",
     "Maximum active coding-agent sessions": "1",
     "Assignment budget": "10",
     "Required evidence": "CI green.",
     "Pause and stop conditions": "Any required check unresolved.",
-    "Human-only boundaries": [
-      "- [x] Production deployment remains human-approved.",
-      "- [x] Live-trading enablement remains human-approved.",
+    "Execution boundaries": [
+      "- [x] Required automated verification stays enabled.",
+      "- [x] Every environment remains permanently paper-only.",
       "- [x] Automation may pause itself but may not unpause itself.",
     ].join("\n"),
     ...overrides,
@@ -263,15 +263,15 @@ function goalBodyWithDuplicateHeading(
     "Measurable success condition": "All gates green.",
     "Allowed scope": "src/**, tests/**",
     "Allowed paths": "src/**\ntests/**",
-    "Explicit non-goals": "Production and live trading.",
+    "Explicit non-goals": "Arbitrary cloud mutations and alternative financial execution.",
     "Maximum autonomous risk tier": "risk:sensitive",
     "Maximum active coding-agent sessions": "1",
     "Assignment budget": "10",
     "Required evidence": "CI green.",
     "Pause and stop conditions": "Any required check unresolved.",
-    "Human-only boundaries": [
-      "- [x] Production deployment remains human-approved.",
-      "- [x] Live-trading enablement remains human-approved.",
+    "Execution boundaries": [
+      "- [x] Required automated verification stays enabled.",
+      "- [x] Every environment remains permanently paper-only.",
       "- [x] Automation may pause itself but may not unpause itself.",
     ].join("\n"),
   };
@@ -804,15 +804,15 @@ describe("factory queue-controller runtime: goal completeness must be human-deri
     expect(result.activeGoal).toBeNull();
   });
 
-  it("fails closed when a Human-only boundaries checkbox is unchecked", async () => {
+  it("fails closed when an Execution boundaries checkbox is unchecked", async () => {
     const { result } = await run({
       issues: [
         controlIssue(10, ["factory-mode:active"]),
         goalIssue(1, {
           body: goalBody({
-            "Human-only boundaries": [
-              "- [x] Production deployment remains human-approved.",
-              "- [ ] Live-trading enablement remains human-approved.",
+            "Execution boundaries": [
+              "- [x] Required automated verification stays enabled.",
+              "- [ ] Every environment remains permanently paper-only.",
               "- [x] Automation may pause itself but may not unpause itself.",
             ].join("\n"),
           }),
@@ -823,11 +823,11 @@ describe("factory queue-controller runtime: goal completeness must be human-deri
     expect(result.activeGoalReason).toBe("goal-boundaries-not-fully-checked");
   });
 
-  it("fails closed when the Human-only boundaries section is missing entirely", async () => {
+  it("fails closed when the Execution boundaries section is missing entirely", async () => {
     const { result } = await run({
       issues: [
         controlIssue(10, ["factory-mode:active"]),
-        goalIssue(1, { body: goalBody({ "Human-only boundaries": "_No response_" }) }),
+        goalIssue(1, { body: goalBody({ "Execution boundaries": "_No response_" }) }),
       ],
     });
 

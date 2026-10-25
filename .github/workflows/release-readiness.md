@@ -55,9 +55,12 @@ Produce a release readiness checklist and operator handoff.
   status and successful `development` Deployment on the exact merge SHA.
 - Identify required secrets, environment changes, migrations, smoke tests, rollback steps, and operator actions.
 - Block release readiness for unresolved high-risk issues.
-- Treat production deployment, schedule activation, secret/permission changes,
-  and live-trading enablement as human-only actions. Never dispatch them from
-  this advisory workflow.
+- Apply the lean paper-production gate contract in `specs/operations.md`.
+  Separate analytics projects, mailbox-delivery proof, and irreversible
+  retention locking are optional, not POC release blockers.
+- This workflow is advisory and does not dispatch deployment or change
+  permissions/secrets. Trusted native workflows own verified paper promotion;
+  commissioning and external-setting changes retain their scoped approvals.
 
 ## Safe outputs
 

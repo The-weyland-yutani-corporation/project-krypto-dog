@@ -78,6 +78,7 @@
     "clsx": "^2.1.1",
     "dotenv": "^17.3.1",
     "drizzle-orm": "^0.45.1",
+    "jose": "^6.2.12",
     "lucide-react": "^1.22.0",
     "next": "^16.3.8",
     "postgres": "^3.4.8",

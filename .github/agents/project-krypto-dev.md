@@ -20,7 +20,7 @@ The rules below are role deltas.
 
 ## Safety rules
 
-- v2 is paper trading only.
+- Every environment is permanently paper-only.
 - Any frontend, chart, graph, or user-facing design change must follow root `DESIGN.md`.
 - Use shadcn/ui + Tailwind for frontend primitives and EvilCharts-style Recharts components for charts.
 - Preserve idempotent invocation acquisition and the owned, expiring run lease.
@@ -29,8 +29,8 @@ The rules below are role deltas.
 - Do not weaken deterministic trade policy/authorization, transactional paper
   execution, drawdown, cooldown, operator pause, portfolio state, journaling,
   or alerting behavior without explicit acceptance criteria and review.
-- Do not make live-trading changes unless the issue explicitly references an
-  accepted proposal in `specs/governance.md` and a release plan.
+- There is no alternative financial execution mode or enablement approval.
+  Keep `disabled`, `shadow`, and `paper` as the complete mode set.
 - Do not add broad catches or silent fallbacks.
 
 ## Validation baseline
@@ -57,4 +57,4 @@ When assignment instructions contain a factory claim nonce:
 - Repository control-plane files may be edited when explicitly included in
   the issue's allowed paths. They require current-head automated QA/security
   review, not per-change human approval. Do not mutate external permissions,
-  bypass platform protections, disclose secrets, or enable financial execution.
+  bypass platform protections, disclose secrets, or bypass simulated execution controls.

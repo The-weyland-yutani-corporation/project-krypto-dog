@@ -56,6 +56,9 @@ Refine the issue into an implementation-ready work item.
 
 - Read the issue title, body, comments, labels, and relevant repository context.
 - Identify the user/system problem, scope, non-goals, acceptance criteria, and validation plan.
+- The product is permanently paper-only in development and production.
+  Decline requests for another financial execution mode as unsupported; do
+  not advance them or open an enablement/governance approval path.
 - Require a linked parent issue carrying `factory:autonomous-goal`, whose
   scope matches `.github/agentic-policy.json`'s standing autonomy mission.
   No per-issue human approval is required. For a new, unowned idea, assess it
