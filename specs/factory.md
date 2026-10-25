@@ -24,6 +24,13 @@
   migrations, and code review; sensitive/boundary changes add QA and applicable
   security/trading-safety checks. Boundary risk alone does not require a human.
   Malformed or missing evidence never authorizes merge.
+- PR reviewers establish the exact base/head revisions and inspect their
+  committed merge-base-to-head diff. Restored trusted instructions, synthetic
+  merge checkouts, and physical file modes are not evidence of PR changes.
+  Mode-change findings require committed tree metadata. Missing history,
+  incomplete pagination, or omitted patches must be resolved from authoritative
+  data; otherwise the review fails as incomplete, not as an invented source
+  defect or a successful empty diff.
 - The merge controller verifies immutable verdict receipts from trusted
   workflow runs, then performs a native GitHub merge bound to the exact
   checked SHA. It does not leave a future head armed for auto-merge.

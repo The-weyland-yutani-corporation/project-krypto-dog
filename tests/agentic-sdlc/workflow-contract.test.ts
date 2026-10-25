@@ -241,6 +241,26 @@ describe("agentic SDLC workflow contracts", () => {
     expect(reconciler).toContain("QA Test Plan");
   });
 
+  it.each([
+    ["code", codeReview],
+    ["security", securityReview],
+    ["trading safety", tradingSafetyReview],
+    ["QA", qaReview],
+  ])("grounds %s review in committed PR evidence, not checkout changes", (_name, workflow) => {
+    const prompt = workflow.split(/\r?\n---\r?\n/)[1];
+    expect(prompt).toContain("GitHub REST");
+    expect(prompt).toContain("matching the head to the trigger or dispatched SHA");
+    expect(prompt).toContain("`git diff <merge_base_sha> <head_sha> --`");
+    expect(prompt).toContain("`git show <head_sha>:<path>`");
+    expect(prompt).toContain("fully paginated");
+    expect(prompt).toContain("omitted/truncated patches");
+    expect(prompt).toContain("workspace diagnostics, not PR evidence");
+    expect(prompt).toContain("`git ls-tree <merge_base_sha> -- <path>`");
+    expect(prompt).toContain("`git ls-tree <head_sha> -- <path>`");
+    expect(prompt).toContain("report an incomplete review and a failing check");
+    expect(prompt).toContain("Missing local history is not an empty diff");
+  });
+
   it("enrolls docs-sync repairs without arming unverified auto-merge", () => {
     expect(docsSync).toContain('      - "specs/**"');
     expect(docsSync).toContain("auto-merge: false");

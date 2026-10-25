@@ -249,6 +249,23 @@ Review the PR for real defects only.
 - For manual dispatch, verify the checked-out PR head matches the `head_sha` input and include the PR number as `item_number` in comments or labels.
 - Agent instruction files in the workspace are restored from the trusted base;
   inspect proposed `AGENTS.md` changes through the PR diff.
+- For a PR, obtain its base SHA and exact reviewed head SHA from GitHub REST
+  metadata via `gh api`, matching the head to the trigger or dispatched SHA.
+  Do not substitute the checkout's synthetic merge commit or a branch guess.
+- Review the complete committed merge-base-to-head diff. Resolve the merge base
+  from those verified commits or GitHub's compare API, then use
+  `git diff <merge_base_sha> <head_sha> --` and
+  `git show <head_sha>:<path>` for relevant committed content. REST file lists
+  must be fully paginated; detect omitted/truncated patches and retrieve the
+  committed contents needed to finish the review.
+- Unqualified `git diff`, `git status`, restored instructions, and on-disk file
+  modes are workspace diagnostics, not PR evidence. Before reporting a committed
+  mode change, compare `git ls-tree <merge_base_sha> -- <path>` with
+  `git ls-tree <head_sha> -- <path>`.
+- If the exact revisions or complete authoritative diff cannot be established,
+  report an incomplete review and a failing check identifying the missing
+  evidence. Missing local history is not an empty diff; do not invent a source
+  defect or approve from workspace changes.
 - Treat the exact marker `<!-- agentic-e2e:self-heal -->` in `docs/e2e/factory-heartbeat.md` as a deterministic required fix: create a failing `Agentic code review` check, ask for that marker to be removed, and do not add a specialist label for this known canary. After the marker is absent, review the file normally.
 - Report only correctness, reliability, maintainability, or product-behavior issues that matter.
 - For frontend/admin/chart changes, check that the PR follows root `DESIGN.md`, uses shadcn/ui + Tailwind primitives, and avoids default unstyled chart output.
