@@ -52,7 +52,7 @@ export type DeploymentAdmissionOptions = DeploymentBinding & {
 } & (
     | { action: "acquire"; cronSecret: string; approvalSecret: string }
     | { action: "verify" }
-    | { action: "release"; observation: VerifiedWorkflowObservation }
+    | { action: "release"; releaseImageDigest: string; observation: VerifiedWorkflowObservation }
   );
 
 export type DeploymentAdmissionReport = DeploymentBinding & {
@@ -137,6 +137,9 @@ export async function runDeploymentAdmission(
       throw new Error("CRON_SECRET is required for deployment admission.");
     }
   }
+  const releaseImageDigest = options.action === "release"
+    ? validateImageDigest(options.releaseImageDigest)
+    : null;
   let workflowObservation: WorkflowObservationReceipt | null = null;
 
   function report(
@@ -325,6 +328,7 @@ export async function runDeploymentAdmission(
             observed.sourceReleaseSha !== binding.sourceReleaseSha ||
             observed.candidateReleaseSha !== binding.candidateReleaseSha ||
             observed.sourceImageDigest !== binding.imageDigest ||
+            observed.imageDigest !== releaseImageDigest ||
             observed.targetOrigin !== binding.targetOrigin ||
             observed.workflow.sha !== binding.candidateReleaseSha ||
             (observed.releaseSha !== binding.candidateReleaseSha &&
@@ -423,7 +427,7 @@ export async function runDeploymentAdmission(
         VALUES (
           ${`deployment-fence-released-${randomUUID()}`},
           'Ops caller released its owned deployment fence; operator stops are unchanged.',
-          ${tx.json({ event: "deployment-fence-released", ...binding, workflowObservation })}
+          ${tx.json({ event: "deployment-fence-released", ...binding, releaseImageDigest, workflowObservation })}
         )
       `;
       return report(

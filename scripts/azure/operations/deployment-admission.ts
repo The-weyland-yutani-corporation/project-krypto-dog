@@ -74,7 +74,10 @@ export async function run(
         observation.observation.targetOrigin !== binding.targetOrigin) {
       throw new Error("Workflow readback does not match this exact operations release and target.");
     }
-    options = { ...binding, action, observation };
+    options = {
+      ...binding, action, observation,
+      releaseImageDigest: candidateImage ? requireEnv("IMAGE_DIGEST") : binding.imageDigest,
+    };
   }
   const report = await runDeploymentAdmission(options);
   return {

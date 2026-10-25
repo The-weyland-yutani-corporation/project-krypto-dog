@@ -39,7 +39,10 @@ const BASE: DeploymentAdmissionOptions & { action: "acquire" } = {
 };
 
 async function releaseOptions(owner = OWNER): Promise<DeploymentAdmissionOptions & { action: "release" }> {
-  return { ...BASE, owner, action: "release", observation: await verifiedCutoverFixture({ owner }, NOW) };
+  return {
+    ...BASE, owner, action: "release", releaseImageDigest: `sha256:${"d".repeat(64)}`,
+    observation: await verifiedCutoverFixture({ owner }, NOW),
+  };
 }
 
 function createSqlMock(options: {
@@ -397,6 +400,7 @@ describe("owned deployment cutover admission", () => {
     expect(mock.writes().join(" ")).not.toMatch(/UPDATE "krypto"\."AgentState"|DELETE/);
     expect(mock.journalRecords[0]).toMatchObject({
       event: "deployment-fence-released", owner: OWNER,
+      releaseImageDigest: options.releaseImageDigest,
       workflowObservation: options.observation.receipt,
     });
     expect(result.workflowObservation).toEqual(options.observation.receipt);
@@ -410,6 +414,56 @@ describe("owned deployment cutover admission", () => {
     expect(await runDeploymentAdmission(await releaseOptions())).toMatchObject({ status: "released" });
     expect(mock.writes()[0]).toContain("UPDATE");
     expect(mock.writes().join(" ")).not.toContain("DELETE");
+  });
+
+  it.each([false, true])("rejects the wrong expected candidate digest even on an idempotent release (%s)", async (released) => {
+    const mock = createSqlMock({ fence: { releasedAt: released ? NOW : null } });
+    const options = await releaseOptions();
+    expect(await runDeploymentAdmission({ ...options, releaseImageDigest: `sha256:${"e".repeat(64)}` }))
+      .toMatchObject({ status: "blocked", reason: "workflow-observation-binding" });
+    expect(mock.writes()).toEqual([]);
+    expect(mock.fences[0].releasedAt).toEqual(released ? NOW : null);
+  });
+
+  it("rejects a genuine signed candidate observation for a different immutable image", async () => {
+    const mock = createSqlMock({ fence: {} });
+    const options = await releaseOptions();
+    options.observation = await verifiedCutoverFixture({ imageDigest: `sha256:${"e".repeat(64)}` }, NOW);
+    expect(await runDeploymentAdmission(options))
+      .toMatchObject({ status: "blocked", reason: "workflow-observation-binding" });
+    expect(mock.writes()).toEqual([]);
+    expect(mock.journalRecords).toEqual([]);
+  });
+
+  it("preserves compensation to the exact disabled source image", async () => {
+    const mock = createSqlMock({ fence: { expiresAt: NOW } });
+    const options = await releaseOptions();
+    options.releaseImageDigest = BASE.imageDigest;
+    options.observation = await verifiedCutoverFixture({
+      releaseSha: BASE.sourceReleaseSha, imageDigest: BASE.imageDigest,
+    }, NOW);
+    expect(await runDeploymentAdmission(options)).toMatchObject({ status: "released" });
+    expect(mock.journalRecords[0]).toMatchObject({ releaseImageDigest: BASE.imageDigest });
+  });
+
+  it.each([BASE.imageDigest, `sha256:${"d".repeat(64)}`])(
+    "binds same-SHA source compensation or rebuilt candidate to its distinct expected image (%s)",
+    async (releaseImageDigest) => {
+      createSqlMock({ fence: { sourceReleaseSha: BASE.candidateReleaseSha } });
+      const options = await releaseOptions();
+      options.sourceReleaseSha = BASE.candidateReleaseSha;
+      options.releaseImageDigest = releaseImageDigest;
+      options.observation = await verifiedCutoverFixture({
+        sourceReleaseSha: BASE.candidateReleaseSha, imageDigest: releaseImageDigest,
+      }, NOW);
+      expect(await runDeploymentAdmission(options)).toMatchObject({ status: "released" });
+    },
+  );
+
+  it.each(["", "latest", "sha256:invalid"])("rejects malformed release digest %s before connecting", async (releaseImageDigest) => {
+    const options = await releaseOptions();
+    await expect(runDeploymentAdmission({ ...options, releaseImageDigest })).rejects.toThrow();
+    expect(mockedPostgres).not.toHaveBeenCalled();
   });
 
   it.each([null, { owner: OTHER_OWNER }, { candidateReleaseSha: "e".repeat(40) }])(

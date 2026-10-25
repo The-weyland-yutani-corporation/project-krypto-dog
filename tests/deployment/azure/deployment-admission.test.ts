@@ -125,6 +125,7 @@ describe("production admission ops adapter", () => {
     mockedAdmission.mockResolvedValueOnce({ ...report("released"), action: "release" });
     expect((await run({ ...context, releaseSha })).passed).toBe(true);
     expect(mockedAdmission.mock.calls[0][0]).not.toHaveProperty("approvalSecret");
+    expect(mockedAdmission.mock.calls[0][0]).toMatchObject({ releaseImageDigest: DIGEST });
     expect(mockedVerify).toHaveBeenCalledWith(fixture.proof, fixture.expected);
     expect(process.env.DEPLOYMENT_WORKFLOW_OBSERVATION).toBeUndefined();
     expect(JSON.stringify(mockedAdmission.mock.calls[0][0])).not.toContain(fixture.token);
@@ -199,6 +200,7 @@ describe("production admission ops adapter", () => {
     process.env.IMAGE_DIGEST = `sha256:${"d".repeat(64)}`;
     mockedAdmission.mockResolvedValue({ ...report("released"), action: "release" });
     expect(await run({ ...context, releaseSha: CANDIDATE })).toMatchObject({ passed: true });
+    expect(mockedAdmission.mock.calls[0][0]).toMatchObject({ releaseImageDigest: DIGEST });
   });
 
   it.each([DIGEST, `sha256:${"d".repeat(64)}`])(
@@ -211,6 +213,7 @@ describe("production admission ops adapter", () => {
       expect(await run({ ...context, releaseSha: CANDIDATE })).toMatchObject({ passed: true });
       expect(mockedAdmission.mock.calls[0][0]).toMatchObject({
         sourceReleaseSha: CANDIDATE, candidateReleaseSha: CANDIDATE, imageDigest: DIGEST,
+        releaseImageDigest: imageDigest,
       });
     },
   );

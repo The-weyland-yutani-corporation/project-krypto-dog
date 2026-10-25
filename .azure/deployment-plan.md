@@ -32,10 +32,14 @@ queries, final mailbox delivery, irreversible retention locking, and formal
 response sign-off remain optional. Existing retention, identities, credentials,
 emergency stops, and external protection settings remain unchanged.
 
-Code Review of published increment `d89633d` (run `40163877782`) failed with HTTP 403
-authentication failure from the Copilot requests proxy, without a substantive
-review verdict. New source requires its own successful review. This is separate
-from the existing MonitorOps execution-denial hold and stale deployment run
+Code Review of published increment `c4696f0` (run `40168149564`) failed with HTTP
+403 from the Copilot requests proxy after analysis and again on its harness retry;
+no substantive verdict was emitted. Its Trading Safety check requires fixes for
+fresh-database admission and transactional candidate-image binding. This source
+repair adds the independent transactional image check; the absent-workload versus
+surviving-database ambiguity still needs a safe bootstrap/recovery design.
+New source requires its own successful review. These findings are separate from
+the existing MonitorOps execution-denial hold and stale deployment run
 `37642379119`. None of those holds was bypassed.
 The completed stage-specific checks below are historical receipts, not evidence
 that the current application source is approved or the factory is commissioned.

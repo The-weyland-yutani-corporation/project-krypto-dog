@@ -35,7 +35,7 @@ const base: DeploymentAdmissionOptions & { action: "acquire" } = {
 
 async function releaseOptions(owner = base.owner): Promise<DeploymentAdmissionOptions & { action: "release" }> {
   return {
-    ...base, owner, action: "release",
+    ...base, owner, action: "release", releaseImageDigest: `sha256:${"d".repeat(64)}`,
     observation: await verifiedCutoverFixture({ owner, targetOrigin: base.targetOrigin }, new Date()),
   };
 }
@@ -257,6 +257,26 @@ async function main(): Promise<void> {
   })).kind, "mutex");
   assert.equal((await runDeploymentAdmission(await releaseOptions(randomUUID()))).status, "blocked");
 
+  const wrongCandidateImage = await releaseOptions();
+  before = await stateSnapshot();
+  const fenceBeforeWrongImage = await fenceSnapshot();
+  const [auditBeforeWrongImage] = await sql<Array<{ count: number }>>`
+    SELECT COUNT(*)::int AS count FROM "krypto"."AgentJournal"
+    WHERE "marketConditions"->>'event' = 'deployment-fence-released'
+  `;
+  assert.equal((await runDeploymentAdmission({
+    ...wrongCandidateImage, releaseImageDigest: `sha256:${"e".repeat(64)}`,
+  })).reason, "workflow-observation-binding",
+  "The core transaction must reject a valid signed observation for the wrong candidate image.");
+  assert.equal(await stateSnapshot(), before);
+  assert.equal(await fenceSnapshot(), fenceBeforeWrongImage);
+  const [auditAfterWrongImage] = await sql<Array<{ count: number }>>`
+    SELECT COUNT(*)::int AS count FROM "krypto"."AgentJournal"
+    WHERE "marketConditions"->>'event' = 'deployment-fence-released'
+  `;
+  assert.equal(auditAfterWrongImage.count, auditBeforeWrongImage.count,
+    "Wrong-image release cannot publish a release audit.");
+
   const proofBeforeLease = await releaseOptions();
   await sql`
     UPDATE "krypto"."AgentState"
@@ -312,14 +332,17 @@ async function main(): Promise<void> {
   before = await stateSnapshot();
   const release = await runDeploymentAdmission(await releaseOptions());
   assert.equal(release.status, "released");
-  const [releaseAudit] = await sql<Array<{ proof: string | null }>>`
-    SELECT "marketConditions"->'workflowObservation'->>'observationDigest' AS proof
+  const [releaseAudit] = await sql<Array<{ proof: string | null; imageDigest: string | null }>>`
+    SELECT "marketConditions"->'workflowObservation'->>'observationDigest' AS proof,
+      "marketConditions"->>'releaseImageDigest' AS "imageDigest"
     FROM "krypto"."AgentJournal"
     WHERE "marketConditions"->>'event' = 'deployment-fence-released'
       AND "marketConditions"->>'owner' = ${base.owner}
   `;
   assert.equal(releaseAudit?.proof, release.workflowObservation?.observationDigest,
     "Fence release and its authenticated readback digest must commit together.");
+  assert.equal(releaseAudit.imageDigest, `sha256:${"d".repeat(64)}`,
+    "The exact authorized release image must be recorded with the fence release.");
   assert.equal(await stateSnapshot(), before, "Releasing a deployment fence must not clear either stop.");
   const [tombstone] = await sql<Array<{ owner: string; releasedAt: Date | null }>>`
     SELECT owner, "releasedAt" FROM "krypto"."DeploymentFence" WHERE id = 'singleton'
@@ -386,7 +409,7 @@ async function main(): Promise<void> {
   })).kind, "mutex");
   assert.equal((await runDeploymentAdmission(await releaseOptions(resetOwner))).status, "released");
 
-  console.log("Deployment admission passed: exact source binding, mutation-free deferral, native row-lock race, runtime read-only fence, executor refusal, fresh locked database state, expired signed-proof rejection, atomic release/provenance rollback, expiry, durable owner replay protection, multi-owner singleton history, single-active uniqueness, stop preservation, and seed/reset history preservation.");
+  console.log("Deployment admission passed: exact source binding, mutation-free deferral, native row-lock race, runtime read-only fence, executor refusal, wrong candidate image rejection, fresh locked database state, expired signed-proof rejection, atomic release/provenance rollback, expiry, durable owner replay protection, multi-owner singleton history, single-active uniqueness, stop preservation, and seed/reset history preservation.");
 }
 
 main()
