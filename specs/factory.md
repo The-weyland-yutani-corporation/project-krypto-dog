@@ -31,6 +31,10 @@
   incomplete pagination, or omitted patches must be resolved from authoritative
   data; otherwise the review fails as incomplete, not as an invented source
   defect or a successful empty diff.
+- General code review does not duplicate the independently required specialist
+  audits or completed exact-head CI. Delegated scopes must not overlap, and
+  complete diff coverage and verdict quality remain required. Budget exhaustion
+  blocks review; it never authorizes an alternate run, weaker review, or merge.
 - The merge controller verifies immutable verdict receipts from trusted
   workflow runs, then performs a native GitHub merge bound to the exact
   checked SHA. It does not leave a future head armed for auto-merge.

@@ -33,19 +33,36 @@ queries, final mailbox delivery, irreversible retention locking, and formal
 response sign-off remain optional. Existing retention, identities, credentials,
 emergency stops, and external protection settings remain unchanged.
 
-Code Review of published increments `c4696f0` (run `40168149564`) and `60ffc25`
-(run `40170367000`) failed with HTTP 403 from the Copilot requests proxy after
-analysis and again on the harness retry; no substantive verdict was emitted.
-This is a requests-authentication failure, not a passing code review, and its
-underlying external authorization/billing cause is not yet established.
-The earlier Trading Safety check requires fixes for
-fresh-database admission and transactional candidate-image binding. This source
-repair's independent transactional image check was published as `60ffc25`.
-The fresh-database repair now has source wiring, strict inventory/job/report
-validators, migration-side revalidation, and disposable PostgreSQL regression
-coverage. Native PostgreSQL execution, completed source validation, and
-current-head review of this increment remain required; mocks and Bicep
-compilation are not operational bootstrap evidence. These findings are separate from
+Published source `e57982a` passed native CI, infrastructure and substantive
+Trading Safety review. The expanded PostgreSQL 17 bootstrap profile and
+transactional candidate-image binding now have actual supported-runtime
+PostgreSQL coverage. This is source proof, not Azure commissioning.
+
+Code Review run `40182749340` for that head stopped before agent execution at the
+rolling 24-hour workflow guardrail: 6511.781075 AI credits against a 5000-credit
+limit. Earlier run `40181249323` recorded 1512.975625 credits against its
+1500-credit per-run cap before provider HTTP 403 responses. The harness called
+those responses authentication failures, but that classification alone does
+not establish a credential or billing configuration defect. No budget, model,
+credential or protection change has been made, and no substantive current-head
+code-review verdict exists. The follow-up source-only prompt change avoids
+overlapping specialist subreviews and duplicated completed CI while preserving
+full diff coverage, independent review requirements and both credit limits.
+It has not yet demonstrated lower cost or a successful native code-review
+verdict. No additional trial runs or A/B rollout are authorized by this change.
+
+The four review prompts now require exact committed revisions and complete
+merge-base-to-head diffs rather than temporary checkout changes. Trading Safety
+explicitly reviewed that committed range at `e57982a`; general Code Review
+still needs to run within the unchanged limits. Its prior log also shows
+overlapping general/security subreviews and repeated metadata reads. Any
+cost-reduction follow-up must preserve full required review coverage and cannot
+substitute local results for a missing native verdict.
+
+Fresh-database admission includes strict inventory/job/report validators,
+migration-side revalidation, and unchanged-snapshot PostgreSQL regression
+coverage. Mocks and Bicep compilation are not operational bootstrap evidence.
+These findings are separate from
 the existing MonitorOps execution-denial hold and stale deployment run
 `37642379119`. None of those holds was bypassed.
 The completed stage-specific checks below are historical receipts, not evidence

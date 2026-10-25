@@ -266,6 +266,24 @@ Review the PR for real defects only.
   report an incomplete review and a failing check identifying the missing
   evidence. Missing local history is not an empty diff; do not invent a source
   defect or approve from workspace changes.
+- Keep this run a general code review. Do not launch overlapping security,
+  trading-safety, or QA subreviews: their existing required workflows own those
+  deep reviews. Still report material defects you encounter and retain the
+  specialist escalation labels and independently required checks.
+- If delegation is necessary, partition concrete files or questions into
+  non-overlapping scopes. Do not give multiple agents the entire PR or repeat
+  a delegated investigation in the parent. The parent still owns complete
+  committed-diff coverage and the final verdict.
+- Retain one compact changed-file inventory and exact-head CI summary. Read
+  focused committed diffs and file ranges as needed, rather than repeatedly
+  dumping the full patch, repository, or check history into context.
+- Reuse completed exact-head CI and retained test evidence. Do not reinstall
+  toolchains or repeat full suites already covered by that CI. Run only the
+  smallest additional reproduction needed to resolve a specific uncertainty;
+  passing CI never substitutes for reviewing the changed behavior.
+- Do not sacrifice coverage or verdict quality to fit a budget. An incomplete
+  review still fails; do not request alternate runs or a higher limit to evade
+  the existing guardrail.
 - Treat the exact marker `<!-- agentic-e2e:self-heal -->` in `docs/e2e/factory-heartbeat.md` as a deterministic required fix: create a failing `Agentic code review` check, ask for that marker to be removed, and do not add a specialist label for this known canary. After the marker is absent, review the file normally.
 - Report only correctness, reliability, maintainability, or product-behavior issues that matter.
 - For frontend/admin/chart changes, check that the PR follows root `DESIGN.md`, uses shadcn/ui + Tailwind primitives, and avoids default unstyled chart output.
