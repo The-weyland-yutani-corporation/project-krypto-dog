@@ -19,6 +19,7 @@ name: Azure deploy dev
 on:
   workflow_run:
     workflows: ["CI"]
+    branches: [main]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -55,6 +56,7 @@ jobs:
   gate:
     name: Determine and validate the commit to deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
@@ -89,6 +91,10 @@ jobs:
         id: resolve
         run: |
           set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "Development deployment requires the protected main branch." >&2
+            exit 1
+          fi
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             candidate="${INPUT_COMMIT_SHA}"
           else
@@ -96,6 +102,10 @@ jobs:
           fi
           source .github/scripts/azure/lib/common.sh
           validated="$(azure_validate_release_sha "${candidate}")"
+          if [ "${validated}" != "${GITHUB_SHA}" ] || [ "${validated}" != "${GITHUB_WORKFLOW_SHA}" ]; then
+            echo "Development requires the exact workflow source, not a superseded CI commit." >&2
+            exit 1
+          fi
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             deployment_stage="${INPUT_DEPLOYMENT_STAGE}"
           else
@@ -109,20 +119,7 @@ jobs:
           echo "deployment_stage=${deployment_stage}" >> "$GITHUB_OUTPUT"
           echo "Resolved candidate commit ${validated} (event=${EVENT_NAME}, deployment_stage=${deployment_stage})."
 
-      # The automatic workflow_run path is already provably safe by
-      # construction (this job's own `if:` condition above only lets a
-      # workflow_run event through when CI's own event/conclusion/branch
-      # match `push`/`success`/`develop` -- GitHub computes those fields
-      # itself from the real completed run, so they cannot be spoofed by
-      # an operator). A manually-dispatched SHA carries no such
-      # guarantee -- it is arbitrary operator input -- so it alone must
-      # additionally be proven to be a real ancestor of origin/main
-      # AND to have its own successful, push-triggered CI run before it
-      # is allowed to reach any deploy step. This is a hard, non-format
-      # check: a syntactically valid 40-hex SHA that fails either
-      # condition is rejected exactly like a malformed one.
-      - name: Verify manually-dispatched SHA is an ancestor of main with a successful push CI run
-        if: env.EVENT_NAME == 'workflow_dispatch'
+      - name: Verify exact main SHA has successful push CI
         env:
           RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
           TARGET_REPO: ${{ github.repository }}
@@ -133,6 +130,17 @@ jobs:
             --branch main \
             --repo "${TARGET_REPO}" \
             --ci-workflow ci.yml
+
+      - name: Reject superseded main before development admission
+        uses: actions/github-script@v9
+        env:
+          RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
+        with:
+          script: |
+            const { assertCurrentMain } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            await assertCurrentMain({ github, ...context.repo, releaseSha: process.env.RESOLVED_SHA });
 
   deploy-environment:
     name: Deploy infra/environment.bicep (dev)
@@ -1217,6 +1225,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      target_origin: ${{ steps.verify.outputs.target_origin }}
+      scheduled_execution_name: ${{ steps.verify.outputs.scheduled_execution_name }}
+      scheduled_execution_start_time: ${{ steps.verify.outputs.scheduled_execution_start_time }}
+      scheduled_execution_completed_time: ${{ steps.verify.outputs.scheduled_execution_completed_time }}
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       ACR_NAME: ${{ needs.deploy-environment.outputs.acr_name }}
@@ -1244,6 +1257,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Verify live state and immutable image binding
+        id: verify
         run: |
           set -euo pipefail
           source .github/scripts/azure/lib/common.sh
@@ -1266,8 +1280,15 @@ jobs:
             --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
             --output json)"
 
-          printf '%s' "${web_json}" | jq -e --arg image "${expected_web_image}" \
+          fqdn="$(printf '%s' "${web_json}" | jq -er \
+            '.properties.configuration.ingress.fqdn | select(test("^[a-z0-9][a-z0-9.-]+\\.azurecontainerapps\\.io$"))')"
+          target_origin="https://${fqdn}"
+          printf '%s' "${web_json}" | jq -e --arg image "${expected_web_image}" --arg origin "${target_origin}" \
             '(.properties.template.containers[0].image == $image) and
+             (.properties.provisioningState == "Succeeded") and
+             (.properties.latestReadyRevisionName == .properties.latestRevisionName) and
+             ((.properties.latestReadyRevisionName // "") | length > 0) and
+             (any(.properties.template.containers[0].env[]?; .name == "APP_ORIGIN" and .value == $origin)) and
              (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow"))' >/dev/null
           printf '%s' "${hourly_json}" | jq -e --arg image "${expected_web_image}" \
             '(.properties.configuration.triggerType == "Schedule") and
@@ -1304,8 +1325,9 @@ jobs:
               --name "${digest_bound_job_name}" \
               --resource-group "${DEV_RESOURCE_GROUP_NAME}" \
               --output json)"
-            printf '%s' "${digest_bound_json}" | jq -e --arg digest "${web_digest}" \
-              'any(.properties.template.containers[0].env[]?; .name == "IMAGE_DIGEST" and .value == $digest)' >/dev/null
+            printf '%s' "${digest_bound_json}" | jq -e --arg digest "${web_digest}" --arg origin "${target_origin}" \
+              '(any(.properties.template.containers[0].env[]?; .name == "IMAGE_DIGEST" and .value == $digest)) and
+               (any(.properties.template.containers[0].env[]?; .name == "TARGET_BASE_URL" and .value == $origin))' >/dev/null
           done
 
           web_tag_digest="$(az acr repository show \
@@ -1331,12 +1353,80 @@ jobs:
           printf '%s' "${scheduled_json}" | jq -e \
             --argjson deployed_at "${SCHEDULE_DEPLOYED_AT}" \
             --arg image "${expected_web_image}" \
-            '((.properties.status // .status) == "Succeeded") and
+            --arg name "${SCHEDULED_EXECUTION_NAME}" \
+            '(.name == $name) and (.name | test("^[a-z0-9][a-z0-9-]{0,63}$")) and
+             ((.properties.status // .status) == "Succeeded") and
+             (.properties.startTime | test("^[0-9T:.Z+-]+$")) and
+             (.properties.endTime | test("^[0-9T:.Z+-]+$")) and
              ((try ((.properties.startTime // "") | sub("\\+00:00$"; "Z") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch 0) >= $deployed_at) and
              (.properties.template.containers[0].image == $image) and
              (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "shadow")) and
              (([.properties.template.containers[]?.env[]? | select(.name == "JOB_EXECUTION_ID")] | length) == 0)' >/dev/null
+          echo "target_origin=${target_origin}" >> "$GITHUB_OUTPUT"
+          echo "scheduled_execution_name=${SCHEDULED_EXECUTION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "scheduled_execution_start_time=$(printf '%s' "${scheduled_json}" | jq -r '.properties.startTime')" >> "$GITHUB_OUTPUT"
+          echo "scheduled_execution_completed_time=$(printf '%s' "${scheduled_json}" | jq -r '.properties.endTime')" >> "$GITHUB_OUTPUT"
           echo "Verified live dev state: shadow, both jobs Schedule, release ${release_sha}, web ${web_digest}, ops ${ops_digest}, scheduled execution ${SCHEDULED_EXECUTION_NAME} succeeded."
+
+  publish-release-receipt:
+    name: Publish immutable dev release receipt
+    needs:
+      - gate
+      - deploy-environment
+      - build-images
+      - deploy-release
+      - ops-validate
+      - stage-shadow
+      - validate-shadow
+      - promote-schedule
+      - observe-scheduled-execution
+      - verify-final-state
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.gate.outputs.deployment_stage == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      DEVELOPMENT_JOB_RESULTS: ${{ toJSON(needs) }}
+    outputs:
+      status: ${{ steps.receipt.outputs.status }}
+    steps:
+      - name: Checkout trusted receipt publisher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Create the attempt-bound development receipt
+        id: receipt
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { createDevelopmentReceipt, receiptName } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const { data: run } = await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: Number(process.env.GITHUB_RUN_ID),
+            });
+            const receipt = createDevelopmentReceipt(process.env, JSON.parse(process.env.DEVELOPMENT_JOB_RESULTS), run);
+            fs.mkdirSync("development-receipt", { recursive: true });
+            fs.writeFileSync("development-receipt/receipt.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("name", receiptName("development", receipt.releaseSha, receipt.runId, receipt.runAttempt));
+            core.setOutput("status", receipt.status);
+            core.notice(`Development release outcome: ${receipt.status}. This is not production delivery evidence.`);
+      - name: Retain the immutable development receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.receipt.outputs.name }}
+          path: development-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 90
 
   rollback-disabled:
     name: Roll back dev to disabled/Manual after promotion failure
@@ -1351,6 +1441,7 @@ jobs:
       - promote-schedule
       - observe-scheduled-execution
       - verify-final-state
+      - publish-release-receipt
     if: >-
       always() &&
       (failure() || cancelled()) &&
@@ -1368,7 +1459,9 @@ jobs:
        needs.observe-scheduled-execution.result == 'failure' ||
        needs.observe-scheduled-execution.result == 'cancelled' ||
        needs.verify-final-state.result == 'failure' ||
-       needs.verify-final-state.result == 'cancelled')
+       needs.verify-final-state.result == 'cancelled' ||
+       needs.publish-release-receipt.result == 'failure' ||
+       needs.publish-release-receipt.result == 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: development
@@ -1490,6 +1583,7 @@ jobs:
     needs:
       - gate
       - verify-final-state
+      - publish-release-receipt
       - rollback-disabled
     if: >-
       always() &&
@@ -1503,32 +1597,28 @@ jobs:
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       VERIFY_RESULT: ${{ needs.verify-final-state.result }}
+      RECEIPT_RESULT: ${{ needs.publish-release-receipt.result }}
+      RECEIPT_STATUS: ${{ needs.publish-release-receipt.outputs.status }}
       ROLLBACK_RESULT: ${{ needs.rollback-disabled.result }}
     steps:
       - name: Publish commit status and GitHub Deployment
         uses: actions/github-script@v9
         with:
           script: |
-            const verified = process.env.VERIFY_RESULT === "success";
+            const verified = process.env.VERIFY_RESULT === "success" &&
+              process.env.RECEIPT_RESULT === "success" &&
+              process.env.RECEIPT_STATUS === "shadow" &&
+              process.env.ROLLBACK_RESULT === "skipped";
             const rollbackVerified = process.env.ROLLBACK_RESULT === "success";
             const state = verified ? "success" : "failure";
             const description = verified
-              ? "Exact-SHA dev shadow deployment and scheduled execution passed"
+              ? "Exact-SHA dev shadow, observed execution, and immutable receipt passed"
               : rollbackVerified
                 ? "Dev deployment failed; disabled/manual rollback verified"
                 : "Dev deployment failed; rollback was not verified";
             const targetUrl =
               `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}` +
               `/actions/runs/${process.env.GITHUB_RUN_ID}`;
-
-            await github.rest.repos.createCommitStatus({
-              ...context.repo,
-              sha: process.env.RESOLVED_SHA,
-              state,
-              context: "Dev deployment evidence",
-              description,
-              target_url: targetUrl,
-            });
 
             const { data: deployment } =
               await github.rest.repos.createDeployment({
@@ -1541,13 +1631,25 @@ jobs:
                 transient_environment: true,
                 production_environment: false,
               });
-            if (typeof deployment === "object" && deployment.id) {
-              await github.rest.repos.createDeploymentStatus({
-                ...context.repo,
-                deployment_id: deployment.id,
-                state,
-                description,
-                log_url: targetUrl,
-                auto_inactive: true,
-              });
+            if (!deployment || typeof deployment !== "object" ||
+                !Number.isSafeInteger(deployment.id) || deployment.id <= 0 ||
+                deployment.sha !== process.env.RESOLVED_SHA ||
+                deployment.environment !== "development" || deployment.production_environment !== false) {
+              throw new Error("GitHub did not create the exact-SHA development Deployment.");
             }
+            await github.rest.repos.createDeploymentStatus({
+              ...context.repo,
+              deployment_id: deployment.id,
+              state,
+              description,
+              log_url: targetUrl,
+              auto_inactive: true,
+            });
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: process.env.RESOLVED_SHA,
+              state,
+              context: "Dev deployment evidence",
+              description,
+              target_url: targetUrl,
+            });

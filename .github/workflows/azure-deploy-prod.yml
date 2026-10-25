@@ -5,6 +5,8 @@ name: Azure deploy prod
 # `production-promotion` approval
 # before forced disable, then the separate `production-deploy` approval for
 # current-release safety and infrastructure/release work.
+# Full releases also require the latest exact-source development receipt and
+# its actual successful workflow jobs. Admission is rechecked before Azure access.
 #
 # Safety ordering (specs/governance.md and infra/README.md):
 #   1. Detect the complete current release from deterministic resource
@@ -77,6 +79,7 @@ jobs:
   gate:
     name: Determine and validate the commit to deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -88,6 +91,9 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       deployment_stage: ${{ steps.resolve.outputs.deployment_stage }}
+      development_run_id: ${{ steps.development.outputs.run_id }}
+      development_run_attempt: ${{ steps.development.outputs.run_attempt }}
+      development_workflow_id: ${{ steps.development.outputs.workflow_id }}
     steps:
       # fetch-depth: 0 is required so verify-deploy-sha.sh's
       # `git merge-base --is-ancestor` (manual-dispatch path only) can
@@ -136,6 +142,30 @@ jobs:
             --repo "${TARGET_REPO}" \
             --ci-workflow ci.yml
 
+      - name: Admit current main and verified full development evidence
+        id: development
+        uses: actions/github-script@v9
+        env:
+          RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
+          DEPLOYMENT_STAGE: ${{ steps.resolve.outputs.deployment_stage }}
+        with:
+          script: |
+            const { assertCurrentMain, loadLatestDevelopmentReceipt } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const options = {
+              github, ...context.repo, repositoryId: Number(process.env.GITHUB_REPOSITORY_ID),
+              releaseSha: process.env.RESOLVED_SHA,
+            };
+            if (process.env.DEPLOYMENT_STAGE === "full") {
+              const receipt = await loadLatestDevelopmentReceipt(options);
+              core.setOutput("run_id", receipt.runId);
+              core.setOutput("run_attempt", receipt.runAttempt);
+              core.setOutput("workflow_id", receipt.workflowId);
+            } else {
+              await assertCurrentMain(options);
+            }
+
   force-disable-rollout:
     name: Admit current release before any disabled/Manual cutover
     # Uses the `production-promotion` Environment/identity -- NOT
@@ -157,10 +187,13 @@ jobs:
     environment: production-promotion
     permissions:
       contents: read
+      actions: read
       id-token: write
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       DEPLOYMENT_STAGE: ${{ needs.gate.outputs.deployment_stage }}
+      DEVELOPMENT_RUN_ID: ${{ needs.gate.outputs.development_run_id }}
+      DEVELOPMENT_RUN_ATTEMPT: ${{ needs.gate.outputs.development_run_attempt }}
     outputs:
       existing_release: ${{ steps.detect.outputs.existing_release }}
       candidate_sha: ${{ needs.gate.outputs.sha }}
@@ -176,6 +209,26 @@ jobs:
         with:
           ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
+
+      - name: Revalidate development admission before Azure access
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { assertCurrentMain, loadLatestDevelopmentReceipt } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const options = {
+              github, ...context.repo, repositoryId: Number(process.env.GITHUB_REPOSITORY_ID),
+              releaseSha: process.env.RESOLVED_SHA,
+            };
+            if (process.env.DEPLOYMENT_STAGE === "full") {
+              await loadLatestDevelopmentReceipt({
+                ...options, expectedRunId: Number(process.env.DEVELOPMENT_RUN_ID),
+                expectedRunAttempt: Number(process.env.DEVELOPMENT_RUN_ATTEMPT),
+              });
+            } else {
+              await assertCurrentMain(options);
+            }
 
       - name: Azure login (OIDC)
         uses: azure/login@v2

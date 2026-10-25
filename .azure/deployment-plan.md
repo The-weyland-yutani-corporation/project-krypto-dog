@@ -13,6 +13,33 @@ gates must pass before execution. Approval is not validation or deployment
 proof. Existing Bicep is the selected recipe; this is a modification/recovery
 of the Next.js application, not an AZD migration.
 
+## Repository delivery repair (not commissioning)
+
+The owner-approved permanent paper-only POC plan is being implemented in draft
+[PR #376](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/pull/376).
+The signed cutover and scheduled-execution proof components are published.
+This source increment binds production admission to immutable exact-source
+development evidence, actual native job results, and repeated current-main and
+run-attempt readback. Receipt-publication failures use the existing development
+disabled/Manual recovery. Automatic production promotion and production-aware
+lifecycle completion remain unfinished; these source changes do not enable
+either deployment workflow or resume the factory.
+
+Keep exact-head reviews, healthy deployment/smoke, restore verification,
+zero-fill shadow, actual scheduled paper execution, reconciled accounting,
+and basic independent failure alerts. Separate analytics projects/private
+queries, final mailbox delivery, irreversible retention locking, and formal
+response sign-off remain optional. Existing retention, identities, credentials,
+emergency stops, and external protection settings remain unchanged.
+
+Code Review of published increment `d89633d` (run `40163877782`) failed with HTTP 403
+authentication failure from the Copilot requests proxy, without a substantive
+review verdict. New source requires its own successful review. This is separate
+from the existing MonitorOps execution-denial hold and stale deployment run
+`37642379119`. None of those holds was bypassed.
+The completed stage-specific checks below are historical receipts, not evidence
+that the current application source is approved or the factory is commissioned.
+
 ## Conditional commissioning authorization
 
 Approval covers one commissioning pass for the selected new target, at most
@@ -62,7 +89,8 @@ evidence requirements.
   [MonitorOps run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39551325097)
   also executed its agent successfully, but the collector command was denied
   permission and the agent emitted a no-op instead of a status report.
-  Model startup is repaired; operational monitoring is not yet verified.
+  That run proved the model selection then; it does not override the newer
+  Code Review authentication failure. Operational monitoring is not yet verified.
 - Target selection does not authorize provisioning, permission changes,
   production activation, or removal of platform protections.
 

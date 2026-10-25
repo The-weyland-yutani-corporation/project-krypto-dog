@@ -5,9 +5,25 @@ const { readFileSync } = require("node:fs");
 const { loadRunArchive } = require("../agentic-receipt.cjs");
 
 const RELEASE_WORKFLOW = "azure-deploy-prod.yml";
+const DEVELOPMENT_WORKFLOW = "azure-deploy-dev.yml";
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const EXECUTION = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const DEVELOPMENT_JOBS = Object.freeze({
+  gate: "Determine and validate the commit to deploy",
+  "deploy-environment": "Deploy infra/environment.bicep (dev)",
+  "build-images": "Build web/ops images and resolve digests (dev)",
+  "deploy-release": "Deploy infra/release.bicep (dev, disabled/manual)",
+  "ops-validate": "Run migrate-init / preflight / target-smoke while disabled (dev)",
+  "stage-shadow": "Stage dev shadow with scheduler jobs still Manual",
+  "validate-shadow": "Validate shadow and exactly one manual hourly execution",
+  "promote-schedule": "Promote validated dev shadow jobs to Schedule",
+  "observe-scheduled-execution": "Observe a successful dev hourly scheduled execution",
+  "verify-final-state": "Verify live dev shadow/Schedule and exact SHA/digests",
+});
+const DEVELOPMENT_PUBLISHER = "Publish exact-SHA dev deployment evidence";
+const DEVELOPMENT_RECEIPT_PUBLISHER = "Publish immutable dev release receipt";
+const DEVELOPMENT_ROLLBACK = "Roll back dev to disabled/Manual after promotion failure";
 const RELEASE_JOBS = Object.freeze([
   "gate", "force-disable-rollout", "deploy-environment", "build-images",
   "deploy-release", "migrate-backup", "release-cutover-fence",
@@ -48,11 +64,12 @@ function containerUrl(value) {
 }
 
 function receiptName(stage, sha, runId, attempt) {
-  assert.equal(stage, "release", "Only disabled-release receipts are implemented.");
+  assert(["release", "development"].includes(stage), "Only disabled-release or development receipts are implemented.");
   matching(sha, SHA, "Release SHA");
   integer(runId, "Run ID");
   integer(attempt, "Run attempt");
-  return `production-${stage}-${sha}-${runId}-${attempt}`;
+  const prefix = stage === "development" ? "development-release" : "production-release";
+  return `${prefix}-${sha}-${runId}-${attempt}`;
 }
 
 function validateBinding(binding) {
@@ -103,14 +120,14 @@ function productionVerificationOverrides(config) {
 }
 
 function baseReceipt(env, stage) {
-  assert.equal(stage, "release", "Only disabled-release receipts are implemented.");
+  assert(["release", "development"].includes(stage), "Only disabled-release or development receipts are implemented.");
   matching(env.GITHUB_REPOSITORY, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "Repository");
-  assert.equal(env.GITHUB_REF, "refs/heads/main", "Production evidence requires protected main.");
+  assert.equal(env.GITHUB_REF, "refs/heads/main", "Deployment evidence requires protected main.");
   for (const key of ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_REPOSITORY_ID"]) {
     matching(env[key], /^[1-9][0-9]*$/, key);
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: stage === "development" ? 1 : 2,
     stage,
     repository: env.GITHUB_REPOSITORY,
     repositoryId: integer(Number(env.GITHUB_REPOSITORY_ID), "Repository ID"),
@@ -122,6 +139,113 @@ function baseReceipt(env, stage) {
   };
 }
 
+function timestamp(value, name) {
+  matching(value, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|\+00:00)$/, name);
+  const fraction = /\.(\d+)/.exec(value)?.[1] ?? "";
+  const canonical = `${value.slice(0, 19)}.${fraction.slice(0, 3).padEnd(3, "0")}Z`;
+  assert.equal(new Date(value).toISOString(), canonical, `${name} is not a valid UTC timestamp.`);
+  return canonical;
+}
+
+function validateDevelopmentExecution(receipt) {
+  const execution = object(receipt.scheduledExecution, "Development execution");
+  const manual = object(receipt.manualShadow, "Development manual shadow");
+  matching(execution.name, EXECUTION, "Development execution name");
+  matching(manual.executionName, EXECUTION, "Manual shadow execution name");
+  assert.notEqual(execution.name, manual.executionName, "Manual shadow is not scheduled-window evidence.");
+  assert.equal(manual.idempotencyKey,
+    `manual-shadow:run${receipt.runId}-a${receipt.runAttempt}-manual-hourly`, "Wrong manual shadow invocation.");
+  assert.equal(execution.originAssurance, "schedule-observed-not-origin-proven", "Trigger origin is not proven.");
+  assert.equal(execution.status, "Succeeded", "The development execution did not succeed.");
+  for (const [value, name] of [
+    [execution.startedAt, "Execution start"], [execution.completedAt, "Execution completion"],
+    [execution.scheduleEnabledAt, "Schedule enablement"], [manual.startedAfter, "Manual shadow boundary"],
+  ]) assert.equal(value, timestamp(value, name), `${name} must be canonical UTC.`);
+  const enabledAt = Date.parse(execution.scheduleEnabledAt);
+  const firstWindow = (Math.floor(enabledAt / 3_600_000) + 1) * 3_600_000;
+  const startedAt = Date.parse(execution.startedAt);
+  const completedAt = Date.parse(execution.completedAt);
+  assert(Date.parse(manual.startedAfter) <= enabledAt &&
+    enabledAt < startedAt && startedAt >= firstWindow && startedAt <= firstWindow + 900_000 &&
+    completedAt >= startedAt && completedAt <= Date.parse(receipt.generatedAt),
+  "Development execution does not belong to the verified first schedule window.");
+  assert.equal(receipt.rolloutMode, "shadow");
+  assert.equal(receipt.hourlyTriggerType, "Schedule");
+  assert.equal(receipt.dailyTriggerType, "Schedule");
+}
+
+function createDevelopmentReceipt(env, needs, run) {
+  object(needs, "Development job results");
+  const receipt = baseReceipt(env, "development");
+  validateWorkflowRun(run, {
+    repository: receipt.repository, repositoryId: receipt.repositoryId,
+    stage: "development", releaseSha: receipt.releaseSha,
+  });
+  assert.equal(run.id, receipt.runId, "Wrong producer run.");
+  assert.equal(run.run_attempt, receipt.runAttempt, "Wrong producer attempt.");
+  assert.equal(env.GITHUB_WORKFLOW_SHA, receipt.releaseSha, "Development must execute its exact release source.");
+  assert.equal(receipt.workflowSha, receipt.releaseSha, "Development must deploy its exact workflow source.");
+  assert.equal(env.GITHUB_WORKFLOW_REF,
+    `${receipt.repository}/.github/workflows/${DEVELOPMENT_WORKFLOW}@refs/heads/main`, "Wrong producer workflow.");
+  assert.equal(env.GITHUB_EVENT_NAME, run.event, "Wrong producer event.");
+  assert.equal(env.GITHUB_ACTOR_ID, String(run.actor.id), "Wrong producer actor.");
+  assert.equal(env.GITHUB_TRIGGERING_ACTOR, run.triggering_actor.login, "Wrong rerun actor.");
+  const gate = object(needs.gate, "Development gate");
+  assert.equal(gate.result, "success", "The development gate did not pass.");
+  assert.equal(gate.outputs?.sha, receipt.releaseSha, "Development authorized another release.");
+  assert.equal(gate.outputs?.deployment_stage, "full", "A foundation is not development release evidence.");
+  const results = {};
+  for (const name of Object.keys(DEVELOPMENT_JOBS)) {
+    const result = object(needs[name], `${name} result`).result;
+    assert(["success", "failure", "cancelled", "skipped"].includes(result), `Unknown result for ${name}.`);
+    results[name] = result;
+  }
+  const verified = Object.keys(DEVELOPMENT_JOBS).every((name) => results[name] === "success");
+  const result = {
+    ...receipt, workflowId: run.workflow_id,
+    actorId: run.actor.id, triggeringActorId: run.triggering_actor.id,
+    status: verified ? "shadow" : "failed", results,
+    binding: null, manualShadow: null, scheduledExecution: null,
+  };
+  if (!verified) return result;
+  const environment = object(needs["deploy-environment"].outputs, "Development foundation outputs");
+  const images = object(needs["build-images"].outputs, "Development image outputs");
+  const final = object(needs["verify-final-state"].outputs, "Development final readback");
+  const shadow = object(needs["validate-shadow"].outputs, "Development shadow evidence");
+  const enablement = matching(needs["promote-schedule"].outputs?.schedule_deployed_at,
+    /^[1-9][0-9]*$/, "Development schedule enablement");
+  const enabledAt = integer(Number(enablement), "Development schedule enablement") * 1000;
+  assert(Number.isSafeInteger(enabledAt), "Development schedule enablement exceeds the timestamp range.");
+  result.binding = validateBinding({
+    releaseSha: receipt.releaseSha,
+    webImageDigest: `sha256:${images.web_digest_hex}`,
+    opsImageDigest: `sha256:${images.ops_digest_hex}`,
+    registryLoginServer: environment.acr_login_server,
+    targetOrigin: final.target_origin,
+    evidenceContainerUrl: environment.evidence_container_url,
+  });
+  result.manualShadow = {
+    executionName: shadow.manual_hourly_execution_name,
+    idempotencyKey: shadow.manual_shadow_idempotency_key,
+    startedAfter: timestamp(shadow.manual_shadow_started_after, "Manual shadow boundary"),
+  };
+  assert.equal(final.scheduled_execution_name, needs["observe-scheduled-execution"].outputs?.scheduled_execution_name,
+    "The final readback observed another execution.");
+  result.scheduledExecution = {
+    name: final.scheduled_execution_name,
+    status: "Succeeded",
+    startedAt: timestamp(final.scheduled_execution_start_time, "Execution start"),
+    completedAt: timestamp(final.scheduled_execution_completed_time, "Execution completion"),
+    scheduleEnabledAt: new Date(enabledAt).toISOString(),
+    originAssurance: "schedule-observed-not-origin-proven",
+  };
+  result.rolloutMode = "shadow";
+  result.hourlyTriggerType = "Schedule";
+  result.dailyTriggerType = "Schedule";
+  validateDevelopmentExecution(result);
+  return result;
+}
+
 function createReleaseReceipt(env, needs) {
   object(needs, "Job results");
   const receipt = baseReceipt(env, "release");
@@ -129,6 +253,14 @@ function createReleaseReceipt(env, needs) {
   assert.equal(gate.result, "success", "The release gate did not pass.");
   assert.equal(gate.outputs?.sha, receipt.releaseSha, "The gate authorized a different SHA.");
   assert.equal(gate.outputs?.deployment_stage, "full", "A foundation is not a release.");
+  assert.equal(receipt.workflowSha, receipt.releaseSha, "Production must deploy its exact workflow source.");
+  receipt.development = {};
+  for (const [field, output] of Object.entries({
+    runId: "development_run_id", runAttempt: "development_run_attempt", workflowId: "development_workflow_id",
+  })) {
+    receipt.development[field] = integer(Number(matching(gate.outputs?.[output], /^[1-9][0-9]*$/, output)), output);
+  }
+  assert.notEqual(receipt.development.runId, receipt.runId, "Production cannot be its own development admission.");
   const admission = object(needs["force-disable-rollout"], "Admission");
   const results = {};
   for (const name of RELEASE_JOBS) {
@@ -169,9 +301,9 @@ function createReleaseReceipt(env, needs) {
   };
 }
 
-function validateWorkflowRun(run, { repository, stage, releaseSha }) {
+function validateWorkflowRun(run, { repository, repositoryId, stage, releaseSha }) {
   object(run, "Workflow run");
-  assert.equal(stage, "release", "Only disabled-release receipts are implemented.");
+  assert(["release", "development"].includes(stage), "Only disabled-release or development receipts are implemented.");
   integer(run.id, "Run ID");
   integer(run.run_attempt, "Run attempt");
   integer(run.repository?.id, "Repository ID");
@@ -180,8 +312,19 @@ function validateWorkflowRun(run, { repository, stage, releaseSha }) {
   assert.equal(run.head_branch, "main", "Production evidence must originate on main.");
   matching(run.head_sha, SHA, "Workflow SHA");
   if (releaseSha !== undefined) matching(releaseSha, SHA, "Expected release SHA");
-  assert.equal(run.path, `.github/workflows/${RELEASE_WORKFLOW}`, "Wrong production workflow.");
-  assert.equal(run.event, "workflow_dispatch", "Wrong production event.");
+  const workflow = stage === "development" ? DEVELOPMENT_WORKFLOW : RELEASE_WORKFLOW;
+  assert.equal(run.path, `.github/workflows/${workflow}`, "Wrong deployment workflow.");
+  if (stage === "development") {
+    assert.equal(run.repository.id, integer(repositoryId, "Expected repository ID"), "Wrong immutable repository.");
+    assert.equal(run.head_sha, matching(releaseSha, SHA, "Expected release SHA"), "Wrong development source.");
+    assert(["workflow_run", "workflow_dispatch"].includes(run.event), "Wrong development event.");
+    integer(run.workflow_id, "Development workflow ID");
+    integer(run.actor?.id, "Development actor ID");
+    integer(run.triggering_actor?.id, "Development rerun actor ID");
+    matching(run.triggering_actor?.login, /^[A-Za-z0-9_.-]+(?:\[bot\])?$/, "Development rerun actor");
+  } else {
+    assert.equal(run.event, "workflow_dispatch", "Wrong production event.");
+  }
   return run;
 }
 
@@ -189,7 +332,8 @@ function validateReceipt(receipt, run, expected) {
   validateWorkflowRun(run, expected);
   object(receipt, "Production receipt");
   for (const [field, value] of Object.entries({
-    schemaVersion: 1, stage: expected.stage, repository: expected.repository,
+    schemaVersion: expected.stage === "development" ? 1 : 2,
+    stage: expected.stage, repository: expected.repository,
     repositoryId: run.repository.id, runId: run.id, runAttempt: run.run_attempt,
     workflowSha: run.head_sha,
   })) assert.equal(receipt[field], value, `Production receipt ${field} does not match its run.`);
@@ -204,6 +348,27 @@ function validateReceipt(receipt, run, expected) {
   assert(Number.isFinite(generatedAt) && Number.isFinite(startedAt) && Number.isFinite(updatedAt) &&
     generatedAt >= startedAt && generatedAt <= updatedAt + 120_000,
   "Production evidence is outside its actual workflow attempt.");
+  if (expected.stage === "development") {
+    for (const [field, value] of Object.entries({
+      workflowId: run.workflow_id, actorId: run.actor.id, triggeringActorId: run.triggering_actor.id,
+      releaseSha: run.head_sha,
+    })) assert.equal(receipt[field], value, `Development receipt ${field} does not match its run.`);
+    assert(["shadow", "failed"].includes(receipt.status), "Unknown development outcome.");
+    if (receipt.status === "failed") return receipt;
+    assert.equal(run.conclusion, "success", "A failed workflow cannot authorize production progress.");
+    assert(Object.keys(DEVELOPMENT_JOBS).every((name) => receipt.results?.[name] === "success"),
+      "Development is missing a successful required stage.");
+    validateBinding(receipt.binding);
+    assert.equal(receipt.binding.releaseSha, receipt.releaseSha, "Inconsistent development source binding.");
+    validateDevelopmentExecution(receipt);
+    assert(Date.parse(receipt.manualShadow.startedAfter) >= startedAt,
+      "Development shadow belongs to an earlier workflow attempt.");
+    return receipt;
+  }
+  assert.equal(receipt.releaseSha, run.head_sha, "Production evidence must use its exact workflow source.");
+  object(receipt.development, "Development admission");
+  for (const field of ["runId", "runAttempt", "workflowId"]) integer(receipt.development[field], `Development ${field}`);
+  assert.notEqual(receipt.development.runId, receipt.runId, "Production cannot be its own development admission.");
   assert(["disabled", "deferred", "failed"].includes(receipt.status), "Unknown production outcome.");
   if (receipt.status === "failed") return receipt;
   assert.equal(run.conclusion, "success", "A failed workflow cannot authorize production progress.");
@@ -238,10 +403,87 @@ async function loadProductionReceipt({ github, owner, repo, run, stage, releaseS
   return validateReceipt(receipt, run, expected);
 }
 
+async function assertCurrentMain({ github, owner, repo, releaseSha }) {
+  matching(releaseSha, SHA, "Expected main SHA");
+  const response = await github.rest.git.getRef({ owner, repo, ref: "heads/main" });
+  assert.equal(response.data.object?.sha, releaseSha, "The release was superseded on main.");
+}
+
+async function loadLatestDevelopmentReceipt({
+  github, owner, repo, repositoryId, releaseSha, expectedRunId, expectedRunAttempt,
+}) {
+  integer(repositoryId, "Expected repository ID");
+  if (expectedRunId !== undefined) integer(expectedRunId, "Expected development run ID");
+  if (expectedRunAttempt !== undefined) integer(expectedRunAttempt, "Expected development run attempt");
+  assert.equal(expectedRunId === undefined, expectedRunAttempt === undefined,
+    "Development revalidation requires both the original run and attempt.");
+  const context = { github, owner, repo, releaseSha };
+  await assertCurrentMain(context);
+  const { data: workflow } = await github.rest.actions.getWorkflow({
+    owner, repo, workflow_id: DEVELOPMENT_WORKFLOW,
+  });
+  integer(workflow.id, "Trusted development workflow ID");
+  assert.equal(workflow.path, `.github/workflows/${DEVELOPMENT_WORKFLOW}`, "Wrong development workflow definition.");
+  const latestRunId = async () => {
+    const { data } = await github.rest.actions.listWorkflowRuns({
+      owner, repo, workflow_id: workflow.id, head_sha: releaseSha, per_page: 100,
+    });
+    assert(Array.isArray(data.workflow_runs) && Number.isSafeInteger(data.total_count) &&
+      data.total_count > 0 && data.total_count <= 100 && data.workflow_runs.length === data.total_count,
+    "A complete bounded inventory of development runs is required.");
+    const ids = data.workflow_runs.map((entry) => {
+      assert.equal(entry.head_sha, releaseSha, "Unrelated source in development inventory.");
+      return integer(entry.id, "Development run ID");
+    });
+    assert.equal(new Set(ids).size, ids.length, "Development inventory is ambiguous.");
+    return Math.max(...ids);
+  };
+  const runId = await latestRunId();
+  if (expectedRunId !== undefined) assert.equal(runId, expectedRunId, "The admitted development run was superseded.");
+  const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+  const expected = { repository: `${owner}/${repo}`, repositoryId, stage: "development", releaseSha };
+  validateWorkflowRun(run, expected);
+  assert.equal(run.id, runId, "Wrong development run.");
+  assert.equal(run.workflow_id, workflow.id, "Wrong immutable development workflow.");
+  if (expectedRunAttempt !== undefined) {
+    assert.equal(run.run_attempt, expectedRunAttempt, "The admitted development attempt was superseded.");
+  }
+  assert.equal(run.status, "completed", "The latest development run is not terminal.");
+  assert.equal(run.conclusion, "success", "The latest development run did not succeed.");
+  const receipt = validateReceipt(await loadRunArchive({
+    github, owner, repo, run, name: receiptName("development", releaseSha, run.id, run.run_attempt),
+  }), run, expected);
+  assert.equal(receipt.status, "shadow", "A green development wrapper is not a verified deployment.");
+  const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
+    owner, repo, run_id: run.id, attempt_number: run.run_attempt, per_page: 100,
+  });
+  assert(Array.isArray(jobs) && jobs.length <= 100, "Development job inventory is missing or unbounded.");
+  for (const name of [
+    ...Object.values(DEVELOPMENT_JOBS), DEVELOPMENT_RECEIPT_PUBLISHER, DEVELOPMENT_PUBLISHER, DEVELOPMENT_ROLLBACK,
+  ]) {
+    const matchingJobs = jobs.filter((job) => job.name === name);
+    assert(matchingJobs.length === 1 && matchingJobs[0].status === "completed" &&
+      matchingJobs[0].conclusion === (name === DEVELOPMENT_ROLLBACK ? "skipped" : "success"),
+    `The actual development attempt is missing its required result: ${name}.`);
+  }
+  const { data: fresh } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: run.id });
+  validateWorkflowRun(fresh, expected);
+  for (const field of ["id", "run_attempt", "workflow_id", "status", "conclusion", "updated_at"]) {
+    assert.equal(fresh[field], run[field], "Development changed during evidence verification.");
+  }
+  assert.equal(fresh.actor.id, run.actor.id, "Development actor changed during verification.");
+  assert.equal(fresh.triggering_actor.id, run.triggering_actor.id, "Development rerun actor changed during verification.");
+  assert.equal(await latestRunId(), run.id, "A newer development run superseded the evidence.");
+  await assertCurrentMain(context);
+  return receipt;
+}
+
 module.exports = {
-  RELEASE_WORKFLOW, RELEASE_JOBS,
-  receiptName, validateBinding, baseReceipt, createReleaseReceipt,
+  RELEASE_WORKFLOW, RELEASE_JOBS, DEVELOPMENT_WORKFLOW, DEVELOPMENT_JOBS,
+  DEVELOPMENT_PUBLISHER, DEVELOPMENT_RECEIPT_PUBLISHER, DEVELOPMENT_ROLLBACK,
+  receiptName, validateBinding, baseReceipt, createReleaseReceipt, createDevelopmentReceipt,
   validateWorkflowRun, validateReceipt, loadProductionReceipt, productionVerificationOverrides,
+  assertCurrentMain, loadLatestDevelopmentReceipt,
 };
 
 if (require.main === module) {

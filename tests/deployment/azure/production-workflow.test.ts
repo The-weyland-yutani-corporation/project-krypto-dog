@@ -17,13 +17,14 @@ const stepSchema = z.object({
   uses: z.string().optional(),
   with: z.record(z.string(), z.unknown()).optional(),
 });
-const workflow = z.object({
+const workflowSchema = z.object({
   on: z.record(z.string(), z.unknown()),
   concurrency: z.object({
     group: z.string(),
     "cancel-in-progress": z.boolean(),
   }),
   jobs: z.record(z.string(), z.object({
+    name: z.string(),
     needs: z.union([z.string(), z.array(z.string())]).optional(),
     if: z.string().optional(),
     environment: z.string().optional(),
@@ -32,32 +33,261 @@ const workflow = z.object({
     permissions: strings.optional(),
     steps: z.array(stepSchema),
   })),
-}).parse(parse(read(".github/workflows/azure-deploy-prod.yml")));
+});
+const workflow = workflowSchema.parse(parse(read(".github/workflows/azure-deploy-prod.yml")));
+const development = workflowSchema.parse(parse(read(".github/workflows/azure-deploy-dev.yml")));
 
-function job(id: string) {
-  const value = workflow.jobs[id];
+function job(id: string, source = workflow) {
+  const value = source.jobs[id];
   if (!value) throw new Error(`Missing production job: ${id}`);
   return value;
 }
 
-function step(jobId: string, name: string) {
-  const value = job(jobId).steps.find((candidate) => candidate.name === name);
+function step(jobId: string, name: string, source = workflow) {
+  const value = job(jobId, source).steps.find((candidate) => candidate.name === name);
   if (!value) throw new Error(`Missing production step: ${jobId}/${name}`);
   return value;
 }
 
-function run(jobId: string, name: string): string {
-  const value = step(jobId, name).run;
+function run(jobId: string, name: string, source = workflow): string {
+  const value = step(jobId, name, source).run;
   if (!value) throw new Error(`Missing production script: ${jobId}/${name}`);
   return value.replace(/\r\n/g, "\n");
 }
 
-function expectBefore(jobId: string, first: string, second: string) {
-  const steps = job(jobId).steps;
-  expect(steps.indexOf(step(jobId, first))).toBeLessThan(
-    steps.indexOf(step(jobId, second)),
+function expectBefore(jobId: string, first: string, second: string, source = workflow) {
+  const steps = job(jobId, source).steps;
+  expect(steps.indexOf(step(jobId, first, source))).toBeLessThan(
+    steps.indexOf(step(jobId, second, source)),
   );
 }
+
+describe("development-to-production handoff", () => {
+  const evidence = jest.requireActual<{
+    DEVELOPMENT_JOBS: Record<string, string>;
+    DEVELOPMENT_PUBLISHER: string;
+    DEVELOPMENT_RECEIPT_PUBLISHER: string;
+    DEVELOPMENT_ROLLBACK: string;
+  }>("../../../.github/scripts/azure/production-evidence.cjs");
+
+  it("requires protected exact-source main and native push CI for every development path", () => {
+    expect(development.on.workflow_run).toEqual({
+      workflows: ["CI"], branches: ["main"], types: ["completed"],
+    });
+    const resolve = run("gate", "Resolve and format-validate the exact commit SHA to deploy", development);
+    expect(resolve).toContain('"${GITHUB_REF}" != "refs/heads/main"');
+    expect(resolve).toContain('"${validated}" != "${GITHUB_SHA}"');
+    expect(resolve).toContain('"${validated}" != "${GITHUB_WORKFLOW_SHA}"');
+    const verify = step("gate", "Verify exact main SHA has successful push CI", development);
+    expect(verify.if).toBeUndefined();
+    expect(verify.run).toContain("--ci-workflow ci.yml");
+    const current = step("gate", "Reject superseded main before development admission", development);
+    expect(current.with?.script).toContain("await assertCurrentMain(");
+  });
+
+  it("aligns every receipt assertion with an actual named development job and keeps publication read-only", () => {
+    for (const [id, name] of Object.entries(evidence.DEVELOPMENT_JOBS)) {
+      expect(job(id, development).name).toBe(name);
+    }
+    const publisher = job("publish-release-receipt", development);
+    expect(publisher.name).toBe(evidence.DEVELOPMENT_RECEIPT_PUBLISHER);
+    expect(publisher.needs).toEqual(Object.keys(evidence.DEVELOPMENT_JOBS));
+    expect(publisher.permissions).toEqual({ contents: "read", actions: "read" });
+    expect(publisher.environment).toBeUndefined();
+    expect(publisher.if).toContain("always()");
+    expect(publisher.if).toContain("needs.gate.outputs.deployment_stage == 'full'");
+    expect(publisher.steps[0].with).toMatchObject({
+      ref: "${{ github.sha }}", "persist-credentials": false, "sparse-checkout": ".github/scripts",
+    });
+    expect(publisher.steps.find((entry) => entry.uses === "actions/upload-artifact@v4")?.with).toMatchObject({
+      name: "${{ steps.receipt.outputs.name }}", path: "development-receipt/receipt.json",
+      "if-no-files-found": "error", "retention-days": 90,
+    });
+    expect(job("rollback-disabled", development).name).toBe(evidence.DEVELOPMENT_ROLLBACK);
+    expect(job("publish-deployment-evidence", development).name).toBe(evidence.DEVELOPMENT_PUBLISHER);
+  });
+
+  it("binds publication to the final Azure readback and recovers when receipt publication fails", () => {
+    const final = job("verify-final-state", development);
+    for (const field of [
+      "target_origin", "scheduled_execution_name", "scheduled_execution_start_time", "scheduled_execution_completed_time",
+    ]) expect(final.outputs?.[field]).toBe(`\${{ steps.verify.outputs.${field} }}`);
+    const script = run("verify-final-state", "Verify live state and immutable image binding", development);
+    expect(script).toContain(".properties.latestReadyRevisionName == .properties.latestRevisionName");
+    expect(script).toContain('.name == "APP_ORIGIN" and .value == $origin');
+    expect(script).toContain('.name == "TARGET_BASE_URL" and .value == $origin');
+    expect(script.indexOf('echo "scheduled_execution_completed_time='))
+      .toBeGreaterThan(script.indexOf("(.properties.endTime | test("));
+    const rollback = job("rollback-disabled", development);
+    expect(rollback.needs).toContain("publish-release-receipt");
+    expect(rollback.if).toContain("needs.publish-release-receipt.result == 'failure'");
+    expect(rollback.if).toContain("needs.publish-release-receipt.result == 'cancelled'");
+    expect(job("publish-deployment-evidence", development).needs).toEqual([
+      "gate", "verify-final-state", "publish-release-receipt", "rollback-disabled",
+    ]);
+  });
+
+  it("revalidates the admitted development run/attempt before production Azure access", () => {
+    const admission = step("gate", "Admit current main and verified full development evidence");
+    expect(admission.env).toMatchObject({
+      RESOLVED_SHA: "${{ steps.resolve.outputs.sha }}",
+      DEPLOYMENT_STAGE: "${{ steps.resolve.outputs.deployment_stage }}",
+    });
+    expect(admission.with?.script).toContain('process.env.DEPLOYMENT_STAGE === "full"');
+    expect(admission.with?.script).toContain("await loadLatestDevelopmentReceipt(options)");
+    expect(admission.with?.script).toContain("await assertCurrentMain(options)");
+    expect(job("gate").outputs).toMatchObject({
+      development_run_id: "${{ steps.development.outputs.run_id }}",
+      development_run_attempt: "${{ steps.development.outputs.run_attempt }}",
+      development_workflow_id: "${{ steps.development.outputs.workflow_id }}",
+    });
+    const check = step("force-disable-rollout", "Revalidate development admission before Azure access");
+    expect(check.with?.script).toContain("expectedRunId: Number(process.env.DEVELOPMENT_RUN_ID)");
+    expect(check.with?.script).toContain("expectedRunAttempt: Number(process.env.DEVELOPMENT_RUN_ATTEMPT)");
+    expect(job("force-disable-rollout").permissions?.actions).toBe("read");
+    expectBefore("force-disable-rollout", check.name, "Azure login (OIDC)");
+    expectBefore("force-disable-rollout", check.name, "Acquire the exact source release's owned cutover fence");
+  });
+
+  it("executes the actual development publisher without overwriting the same attempt", () => {
+    const script = z.string().parse(
+      step("publish-release-receipt", "Create the attempt-bound development receipt", development).with?.script,
+    );
+    const sha = "a".repeat(40);
+    const results = Object.fromEntries(Object.keys(evidence.DEVELOPMENT_JOBS).map((id) => [
+      id, { result: "success", outputs: {} as Record<string, string> },
+    ]));
+    results.gate.outputs = { sha, deployment_stage: "full" };
+    results["deploy-environment"].outputs = {
+      acr_login_server: "acrkryptodev.azurecr.io",
+      evidence_container_url: "https://kryptodev.blob.core.windows.net/evidence",
+    };
+    results["build-images"].outputs = { web_digest_hex: "b".repeat(64), ops_digest_hex: "c".repeat(64) };
+    results["validate-shadow"].outputs = {
+      manual_hourly_execution_name: "manual-execution",
+      manual_shadow_idempotency_key: "manual-shadow:run900-a2-manual-hourly",
+      manual_shadow_started_after: "2026-10-22T00:10:00Z",
+    };
+    results["promote-schedule"].outputs.schedule_deployed_at = String(Date.parse("2026-10-22T00:20:00Z") / 1000);
+    results["observe-scheduled-execution"].outputs.scheduled_execution_name = "observed-execution";
+    results["verify-final-state"].outputs = {
+      target_origin: "https://development.example.com",
+      scheduled_execution_name: "observed-execution",
+      scheduled_execution_start_time: "2026-10-22T01:00:05Z",
+      scheduled_execution_completed_time: "2026-10-22T01:01:10Z",
+    };
+    const nativeRun = {
+      id: 900, run_attempt: 2, workflow_id: 71, head_sha: sha, head_branch: "main",
+      repository: { id: 456, full_name: "owner/project" }, head_repository: { id: 456 },
+      path: ".github/workflows/azure-deploy-dev.yml", event: "workflow_run",
+      actor: { id: 41898282 }, triggering_actor: { id: 41898282, login: "github-actions[bot]" },
+    };
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "krypto-development-publisher-"));
+    try {
+      const execute = () => spawnSync(process.execPath, ["-e", `
+        const NativeDate = Date;
+        globalThis.Date = class extends NativeDate {
+          constructor(value) { super(arguments.length ? value : "2026-10-22T01:59:00Z"); }
+          static now() { return NativeDate.parse("2026-10-22T01:59:00Z"); }
+        };
+        const core = { setOutput: (key, value) => console.log(key + "=" + value), notice: () => {} };
+        const context = { repo: { owner: "owner", repo: "project" } };
+        const github = { rest: { actions: { getWorkflowRun: async () => ({ data: ${JSON.stringify(nativeRun)} }) } } };
+        (async () => { ${script} })().catch(error => { console.error(error.message); process.exitCode = 1; });
+      `], {
+        cwd: directory, encoding: "utf8",
+        env: {
+          ...process.env, GITHUB_WORKSPACE: root, GITHUB_REPOSITORY: "owner/project",
+          GITHUB_REPOSITORY_ID: "456", GITHUB_RUN_ID: "900", GITHUB_RUN_ATTEMPT: "2",
+          GITHUB_SHA: sha, GITHUB_WORKFLOW_SHA: sha, GITHUB_REF: "refs/heads/main", RESOLVED_SHA: sha,
+          GITHUB_WORKFLOW_REF: "owner/project/.github/workflows/azure-deploy-dev.yml@refs/heads/main",
+          GITHUB_EVENT_NAME: "workflow_run", GITHUB_ACTOR_ID: "41898282",
+          GITHUB_TRIGGERING_ACTOR: "github-actions[bot]", DEVELOPMENT_JOB_RESULTS: JSON.stringify(results),
+        },
+      });
+      const first = execute();
+      expect(first.stderr).toBe("");
+      expect(first.status).toBe(0);
+      expect(first.stdout).toContain(`name=development-release-${sha}-900-2`);
+      expect(first.stdout).toContain("status=shadow");
+      const artifact = path.join(directory, "development-receipt", "receipt.json");
+      const original = fs.readFileSync(artifact, "utf8");
+      expect(JSON.parse(original)).toMatchObject({
+        status: "shadow", runId: 900, runAttempt: 2, workflowId: 71, actorId: 41898282, releaseSha: sha,
+      });
+      const repeated = execute();
+      expect(repeated.status).not.toBe(0);
+      expect(repeated.stderr).toContain("EEXIST");
+      expect(fs.readFileSync(artifact, "utf8")).toBe(original);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  const statusScript = z.string().parse(
+    step("publish-deployment-evidence", "Publish commit status and GitHub Deployment", development).with?.script,
+  );
+  const sha = "a".repeat(40);
+  function publishStatus(overrides: NodeJS.ProcessEnv = {}, response: unknown = {
+    id: 7, sha, environment: "development", production_environment: false,
+  }) {
+    const result = spawnSync(process.execPath, ["-e", `
+      const calls = [];
+      const context = { repo: { owner: "owner", repo: "project" } };
+      const github = { rest: { repos: {
+        createDeployment: async input => { calls.push({ method: "deployment", input }); return { data: JSON.parse(process.env.RESPONSE) }; },
+        createDeploymentStatus: async input => { calls.push({ method: "deployment-status", input }); return { data: {} }; },
+        createCommitStatus: async input => { calls.push({ method: "commit-status", input }); return { data: {} }; },
+      } } };
+      (async () => { ${statusScript} })()
+        .catch(error => { console.error(error.message); process.exitCode = 1; })
+        .finally(() => console.log(JSON.stringify(calls)));
+    `], {
+      cwd: root, encoding: "utf8",
+      env: {
+        ...process.env, RESOLVED_SHA: sha, VERIFY_RESULT: "success", RECEIPT_RESULT: "success",
+        RECEIPT_STATUS: "shadow", ROLLBACK_RESULT: "skipped", GITHUB_SERVER_URL: "https://github.com",
+        GITHUB_REPOSITORY: "owner/project", GITHUB_RUN_ID: "900", RESPONSE: JSON.stringify(response),
+        ...overrides,
+      },
+    });
+    return {
+      ...result,
+      calls: z.array(z.object({ method: z.string(), input: z.record(z.string(), z.unknown()) })).parse(JSON.parse(result.stdout)),
+    };
+  }
+
+  it("creates the exact GitHub Deployment before reporting successful commit status", () => {
+    const result = publishStatus();
+    expect(result.status).toBe(0);
+    expect(result.calls.map((call) => call.method)).toEqual(["deployment", "deployment-status", "commit-status"]);
+    expect(result.calls[0].input).toMatchObject({ ref: sha, environment: "development", production_environment: false });
+    expect(result.calls[1].input).toMatchObject({ deployment_id: 7, state: "success" });
+    expect(result.calls[2].input).toMatchObject({ sha, state: "success", context: "Dev deployment evidence" });
+  });
+
+  it.each([
+    { VERIFY_RESULT: "failure" }, { RECEIPT_RESULT: "failure" }, { RECEIPT_STATUS: "failed" },
+    { ROLLBACK_RESULT: "success" }, { RECEIPT_RESULT: "skipped" },
+  ])("publishes failure instead of green partial evidence %j", (overrides) => {
+    const result = publishStatus(overrides);
+    expect(result.status).toBe(0);
+    expect(result.calls[1].input.state).toBe("failure");
+    expect(result.calls[2].input.state).toBe("failure");
+  });
+
+  it.each([
+    null, {}, { id: 0 }, { id: "7" },
+    { id: 7, sha: "b".repeat(40), environment: "development", production_environment: false },
+    { id: 7, sha, environment: "production", production_environment: false },
+    { id: 7, sha, environment: "development", production_environment: true },
+  ])("does not publish success for an invalid GitHub Deployment %j", (response) => {
+    const result = publishStatus({}, response);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("did not create the exact-SHA");
+    expect(result.calls.map((call) => call.method)).toEqual(["deployment"]);
+  });
+});
 
 describe("production cutover workflow", () => {
   it("publishes attempt-bound release evidence without Azure credentials, including partial failure and deferral", () => {
@@ -93,7 +323,10 @@ describe("production cutover workflow", () => {
     const jobs = Object.fromEntries(z.array(z.string()).parse(publisher.needs).map((id) => [
       id, { result: "success", outputs: {} as Record<string, string> },
     ]));
-    jobs.gate.outputs = { sha, deployment_stage: "full" };
+    jobs.gate.outputs = {
+      sha, deployment_stage: "full",
+      development_run_id: "100", development_run_attempt: "1", development_workflow_id: "71",
+    };
     jobs["force-disable-rollout"].outputs.existing_release = "false";
     jobs["release-cutover-fence"].outputs.status = "fresh";
     jobs["deploy-environment"].outputs = {
