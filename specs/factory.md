@@ -35,6 +35,21 @@
   audits or completed exact-head CI. Delegated scopes must not overlap, and
   complete diff coverage and verdict quality remain required. Budget exhaustion
   blocks review; it never authorizes an alternate run, weaker review, or merge.
+- GH-AW v0.81.6 skips its native daily-credit guard for `workflow_dispatch`.
+  Trusted queue, intake and PR controllers therefore check recorded credits
+  before claiming work, minting a dispatch receipt or requesting an agent run.
+  Limits come from their trusted checkout's workflow frontmatter, not a second
+  policy list. The check follows GH-AW's rolling 24-hour run-creation window
+  and recorded usage threshold; it is not a hard account-billing cap.
+  Complete native run history and its latest immutable usage cache are required.
+  Missing, malformed, expired or ambiguous evidence fails rather than implying
+  zero usage. Outstanding runs defer further work, including runs older than
+  the credit window. Each workflow is admitted at most once per controller
+  pass; uncertain reads or dispatches are not replayed in that pass.
+  Credit exhaustion leaves work unclaimed and creates no review receipt or
+  repair label. A later scheduled pass rechecks admission without clearing a
+  factory pause. An estimated expiry is not authorization to dispatch, and
+  independent native triggers are not covered by a distributed budget lock.
 - The merge controller verifies immutable verdict receipts from trusted
   workflow runs, then performs a native GitHub merge bound to the exact
   checked SHA. It does not leave a future head armed for auto-merge.

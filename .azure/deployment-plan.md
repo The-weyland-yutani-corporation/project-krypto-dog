@@ -64,7 +64,7 @@ The later published disabled-release source `bf028a0` passed native CI
 `40187525179` and infrastructure `40187525167`. Code Review `40187525148`
 again failed activation at 6511.781075 / 5000 rolling credits. Trading Safety
 `40187525157` failed during agent execution after recording 1607.598 credits
-against the unchanged 1500-credit run cap, followed by provider HTTP 403
+against the unchanged 1600-credit run cap, followed by provider HTTP 403
 responses classified as authentication failures. Its check publisher was
 skipped. Neither classification nor source tests establish a completed native
 verdict, an expired credential, or permission to change budgets/models or rerun
@@ -215,6 +215,24 @@ denied MonitorOps command or stale run, or resumed the factory.
 Source integration and verification do not establish Azure commissioning,
 current-head native reviews, live monitoring, first paper activation, an
 unpaused factory or a completed full canary. All external holds remain.
+
+### Automated credit-admission correction
+
+The pinned GH-AW v0.81.6 guard intentionally skips every `workflow_dispatch`,
+including the factory controllers' automated requests. The queue, intake and
+PR controllers now check the existing workflow limits and recorded native usage
+before claims, dispatch receipts or agent requests. Credit exhaustion defers
+work to a later scheduled pass; it does not clear a factory pause, consume a
+repair attempt or justify a substitute reviewer or discovery run.
+
+The check preserves GH-AW's rolling run-creation window and recorded-usage
+threshold. It requires complete bounded native history and its latest immutable
+usage cache; missing, expired, malformed, rerun-ambiguous or changing evidence
+fails explicitly rather than becoming zero usage. Outstanding runs also defer
+work. Trusted workflow source is included in both controller checkouts, without
+changing any credit limit, model, credential, agent permission or workflow pin.
+This is source enforcement, not a hard billing cap or a distributed lock on
+independently triggered runs. No native review or commissioning hold is lifted.
 
 ### Fresh-database admission repair
 

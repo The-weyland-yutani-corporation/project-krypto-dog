@@ -49,6 +49,7 @@ jobs:
           sparse-checkout: |
             .github/scripts
             .github/agentic-policy.json
+            .github/workflows
 
       - name: Reconcile checks, policy, and repair
         id: reconcile

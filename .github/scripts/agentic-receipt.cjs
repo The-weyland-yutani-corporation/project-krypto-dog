@@ -2,9 +2,12 @@
 
 const { inflateRawSync } = require("node:zlib");
 
-// GitHub artifact archives contain one small, nonsecret receipt.json. Parse
-// only that bounded shape; never extract archive paths onto the filesystem.
-function readReceiptArchive(data) {
+// Read one explicitly named, bounded file without extracting archive paths.
+function readSingleFileArchive(data, name, maxSize = 65536) {
+  if (typeof name !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name) ||
+      !Number.isSafeInteger(maxSize) || maxSize < 1 || maxSize > 524288) {
+    throw new Error("Invalid receipt archive constraints.");
+  }
   const zip = Buffer.from(data);
   if (zip.length < 22 || zip.length > 262144) throw new Error("Invalid receipt archive size.");
   const end = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
@@ -26,9 +29,9 @@ function readReceiptArchive(data) {
   const extraLength = zip.readUInt16LE(directory + 30);
   const commentLength = zip.readUInt16LE(directory + 32);
   const local = zip.readUInt32LE(directory + 42);
-  if ((flags & ~0x0808) !== 0 || ![0, 8].includes(method) || size > 65536 ||
+  if ((flags & ~0x0808) !== 0 || ![0, 8].includes(method) || size > maxSize ||
       directory + 46 + nameLength + extraLength + commentLength !== end ||
-      zip.subarray(directory + 46, directory + 46 + nameLength).toString("utf8") !== "receipt.json" ||
+      zip.subarray(directory + 46, directory + 46 + nameLength).toString("utf8") !== name ||
       local + 30 > directory || zip.readUInt32LE(local) !== 0x04034b50) {
     throw new Error("Unsupported receipt archive entry.");
   }
@@ -36,13 +39,17 @@ function readReceiptArchive(data) {
   const start = local + 30 + localNameLength + zip.readUInt16LE(local + 28);
   if (start + compressedSize > directory ||
       zip.readUInt16LE(local + 6) !== flags || zip.readUInt16LE(local + 8) !== method ||
-      zip.subarray(local + 30, local + 30 + localNameLength).toString("utf8") !== "receipt.json") {
+      zip.subarray(local + 30, local + 30 + localNameLength).toString("utf8") !== name) {
     throw new Error("Invalid receipt payload.");
   }
   const compressed = zip.subarray(start, start + compressedSize);
-  const content = method === 0 ? compressed : inflateRawSync(compressed, { maxOutputLength: 65536 });
+  const content = method === 0 ? compressed : inflateRawSync(compressed, { maxOutputLength: maxSize });
   if (content.length !== size) throw new Error("Receipt length mismatch.");
-  return JSON.parse(content.toString("utf8"));
+  return content.toString("utf8");
+}
+
+function readReceiptArchive(data) {
+  return JSON.parse(readSingleFileArchive(data, "receipt.json"));
 }
 
 async function loadRunArchive({ github, owner, repo, run, name }) {
@@ -68,4 +75,4 @@ async function loadRunReceipt({ github, owner, repo, run, headSha }) {
   return receipt;
 }
 
-module.exports = { readReceiptArchive, loadRunArchive, loadRunReceipt };
+module.exports = { readSingleFileArchive, readReceiptArchive, loadRunArchive, loadRunReceipt };

@@ -1,5 +1,9 @@
 export function archive(value: unknown, filename = "receipt.json") {
-  const content = Buffer.from(JSON.stringify(value));
+  return archiveText(JSON.stringify(value), filename);
+}
+
+export function archiveText(value: string, filename = "receipt.json") {
+  const content = Buffer.from(value);
   const name = Buffer.from(filename);
   const local = Buffer.alloc(30);
   local.writeUInt32LE(0x04034b50, 0);

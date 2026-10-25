@@ -34,6 +34,7 @@ const {
 } = require("./agentic-queue-controller.cjs");
 const { AGENTIC_POLICY } = require("./agentic-policy.cjs");
 const { AUTONOMOUS_GOAL_LABEL, isAutonomousGoal, ensureAutonomousGoal } = require("./agentic-autonomy.cjs");
+const { createCreditAdmission } = require("./agentic-credit-admission.cjs");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1540,6 +1541,12 @@ async function runFactoryQueueController({ github, context, core, config = {} })
   }
 
   const selectedIssue = selection.selected;
+  const admitCredits = createCreditAdmission({ github, owner, repo, core, now });
+  const creditAdmission = await admitCredits(IMPLEMENT_WORKFLOW_ID);
+  if (!creditAdmission.allowed) {
+    result.creditAdmission = creditAdmission;
+    return result;
+  }
   const runId =
     typeof config.runId === "string" && config.runId.trim() !== ""
       ? config.runId
