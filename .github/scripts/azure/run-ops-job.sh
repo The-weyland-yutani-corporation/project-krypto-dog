@@ -17,6 +17,8 @@
 #     [--expected-shadow-started-after <UTC timestamp>] \
 #     [--production-verification-config <phase-specific-nonsecret-json>] \
 #     [--workflow-observation-proof <private-proof-file>] \
+#     [--database-inspection-config <nonsecret-json>] \
+#     [--fresh-migration-config <nonsecret-json>] \
 #     [--poll-interval-seconds <n>]
 #
 # Azure replaces the execution template when any start override is supplied.
@@ -53,6 +55,9 @@ production_config=""
 production_overrides="[]"
 production_phase=""
 workflow_observation_proof=""
+database_config=""
+database_mode=""
+database_overrides="[]"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -120,6 +125,16 @@ while [ $# -gt 0 ]; do
       workflow_observation_proof="${2:?--workflow-observation-proof requires a private file}"
       shift 2
       ;;
+    --database-inspection-config|--fresh-migration-config)
+      if [ -n "${database_config}" ]; then
+        echo "Database operation modes cannot be combined or repeated." >&2
+        exit 1
+      fi
+      database_mode=inspect
+      if [ "$1" = "--fresh-migration-config" ]; then database_mode=migration; fi
+      database_config="${2:?Database operation requires a configuration}"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -167,6 +182,14 @@ if [ -n "${deployment_fence_action}${deployment_fence_owner}${deployment_source_
     echo "Deployment admission cannot be combined with shadow-run overrides." >&2
     exit 1
   fi
+fi
+
+if [ -n "${database_config}" ]; then
+  if [ -n "${production_config}${deployment_fence_action}${scheduled_idempotency_key}${expected_shadow_idempotency_key}${expected_shadow_started_after}${workflow_observation_proof}" ]; then
+    echo "Database inspection/initialization cannot be combined with another operation override." >&2
+    exit 1
+  fi
+  node "${script_dir}/database-bootstrap.cjs" config "${database_config}" >/dev/null
 fi
 
 if [ -n "${production_config}" ]; then
@@ -222,6 +245,11 @@ az containerapp job show \
   --name "${job_name}" \
   --resource-group "${resource_group}" \
   --output json > "${job_definition_file}"
+
+if [ -n "${database_config}" ]; then
+  database_overrides="$(node "${script_dir}/database-bootstrap.cjs" job \
+    "${database_config}" "${job_definition_file}" "${database_mode}")"
+fi
 
 if [ -n "${deployment_fence_action}" ]; then
   jq -e '
@@ -279,6 +307,7 @@ jq \
   --arg deployment_candidate_release_sha "${deployment_candidate_release_sha}" \
   --arg deployment_source_image_digest "${deployment_source_image_digest}" \
   "${proof_args[@]}" \
+  --argjson database_overrides "${database_overrides}" \
   --argjson production_overrides "${production_overrides}" '
   .properties.template
   | if ((.containers // []) | type) != "array"
@@ -309,7 +338,7 @@ jq \
       (if $workflow_observation != "" then
          {name: "DEPLOYMENT_WORKFLOW_OBSERVATION", value: $workflow_observation}
        else empty end)
-    ] + $production_overrides) as $overrides
+    ] + $production_overrides + $database_overrides) as $overrides
   | ($overrides | map(.name)) as $override_names
   | .containers[0].env = (
       ((.containers[0].env // [])

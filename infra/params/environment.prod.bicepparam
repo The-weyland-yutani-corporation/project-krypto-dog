@@ -47,6 +47,8 @@ param postgresAdministratorLoginPassword = readEnvironmentVariable('POSTGRES_ADM
 // Only the deployment workflow's proven-fresh path selects initialize.
 // Existing releases must keep their versioned source ops credentials valid.
 param postgresCredentialMode = 'preserve'
+param bootstrapDatabaseAccessMode = 'none'
+param bootstrapDirectUrl = readEnvironmentVariable('DIRECT_URL_PROD')
 // Production sizing should be reviewed and raised from the dev-equivalent
 // Burstable default before go-live; ADR 0008 item 8 accepts single-zone
 // only with 35-day PITR as the interim posture.

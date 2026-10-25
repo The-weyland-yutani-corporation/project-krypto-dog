@@ -388,12 +388,14 @@ describe("production cutover workflow", () => {
 
   it("rejects foundation on an existing release and never treats partial inventory as fresh", () => {
     const detect = run("force-disable-rollout", "Detect a complete existing release or a genuinely fresh environment");
-    expect(detect).toContain('"${present}" -eq 8');
-    expect(detect).toContain('"${DEPLOYMENT_STAGE}" = "foundation"');
-    expect(detect).toContain('echo "existing_release=true"');
-    expect(detect).toContain('elif [ "${present}" -eq 0 ]');
-    expect(detect).toContain('echo "existing_release=false"');
-    expect(detect).toMatch(/Partial state[\s\S]*exit 1/);
+    expect(detect).toContain('inventory="$(bash .github/scripts/azure/read-production-inventory.sh)"');
+    expect(detect).toContain('"${existing}" = true ] && [ "${DEPLOYMENT_STAGE}" = foundation');
+    expect(detect).toMatch(/Foundation is for a fresh environment only[\s\S]*exit 1/);
+    expect(detect).toContain('echo "existing_release=${existing}"');
+    expect(detect).toContain("'.postgresExists | tostring'");
+    expect(detect).toContain("'.kind'");
+    expect(detect).toContain("missing workloads do not authorize database initialization");
+    expect(detect).not.toContain('"${present}"');
     expect(run("force-disable-rollout", "Resolve the currently-deployed release SHA and image digest"))
       .toContain('git merge-base --is-ancestor "${current_sha}" "${RESOLVED_SHA}"');
   });
@@ -831,8 +833,9 @@ describe("credential-preserving production updates", () => {
   it("selects credentials before both preview and deployment, without changing the renderer", () => {
     expect(invocation).toBeGreaterThan(0);
     expect(render).toContain('--set-string-param postgresCredentialMode="${credential_mode}"');
-    expect(step("deploy-environment", "Render environment.prod.bicepparam").env?.EXISTING_RELEASE)
-      .toBe("${{ needs.force-disable-rollout.outputs.existing_release }}");
+    expect(render).toContain('--set-string-param bootstrapDatabaseAccessMode="${access_mode}"');
+    expect(step("deploy-environment", "Render environment.prod.bicepparam").env?.FOUNDATION_KIND)
+      .toBe("${{ needs.force-disable-rollout.outputs.foundation_kind }}");
     expectBefore("deploy-environment", "Render environment.prod.bicepparam", "What-if infra/environment.bicep");
     for (const name of ["What-if infra/environment.bicep", "Deploy infra/environment.bicep"]) {
       expect(run("deploy-environment", name)).toContain("--parameters /tmp/environment.prod.resolved.bicepparam");
@@ -840,14 +843,15 @@ describe("credential-preserving production updates", () => {
   });
 
   it.each([
-    ["true", "preserve"],
-    ["false", "initialize"],
-  ])("executes the real credential selector for inventory %s", (existing, expected) => {
+    ["existing", "preserve/none"],
+    ["inspect", "preserve/none"],
+    ["new", "initialize/initialize"],
+  ])("executes the real credential selector for inventory %s", (kind, expected) => {
     const result = spawnSync("bash", ["-s"], {
       cwd: root,
       encoding: "utf8",
-      env: { ...process.env, EXISTING_RELEASE: existing },
-      input: `${render.slice(0, invocation)}\nprintf '%s' "\${credential_mode}"\n`,
+      env: { ...process.env, FOUNDATION_KIND: kind },
+      input: `${render.slice(0, invocation)}\nprintf '%s/%s' "\${credential_mode}" "\${access_mode}"\n`,
     });
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
@@ -856,18 +860,56 @@ describe("credential-preserving production updates", () => {
 
   it.each(["", "unknown", "TRUE", "deferred", "true\nfalse"])(
     "rejects ambiguous inventory %j instead of initializing credentials",
-    (existing) => {
+    (kind) => {
       const result = spawnSync("bash", ["-s"], {
         cwd: root,
         encoding: "utf8",
-        env: { ...process.env, EXISTING_RELEASE: existing },
+        env: { ...process.env, FOUNDATION_KIND: kind },
         input: render.slice(0, invocation),
       });
       expect(result.error).toBeUndefined();
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("requires an explicit release inventory result");
+      expect(result.stderr).toContain("require an explicit database/foundation inventory result");
     },
   );
+
+  it.each([["true", "update"], ["false", "preserve"]])(
+    "keeps the inspected binding through first-release creation for existing=%s",
+    (existing, expected) => {
+      const release = run("deploy-release", "Render release.prod.bicepparam");
+      const selection = release.slice(0, release.indexOf("node .github/scripts/azure/render-bicepparam.mjs"));
+      const result = spawnSync("bash", ["-s"], {
+        cwd: root, encoding: "utf8", env: { ...process.env, EXISTING_RELEASE: existing },
+        input: `${selection}\nprintf '%s' "\${direct_url_mode}"\n`,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe(expected);
+      expect(release).toContain('--set-string-param directUrlBindingMode="${direct_url_mode}"');
+    },
+  );
+
+  it("wires bounded inspection before every fresh database mutation and preserves its evidence", () => {
+    const helper = fs.readFileSync(path.join(root, ".github/scripts/azure/revalidate-deployment-fence.sh"), "utf8");
+    expect(helper).toContain('node "${script_dir}/database-bootstrap.cjs" initial-credentials');
+    expect(helper.match(/run-database-inspection.sh" temporary/g)).toHaveLength(2);
+    expect(helper).toContain('run-database-inspection.sh" candidate "${stage}"');
+    expectBefore("deploy-environment", "Build the inspection-only image for an existing empty foundation",
+      "Revalidate cutover ownership before foundation mutation");
+    expect(step("deploy-environment", "Build the inspection-only image for an existing empty foundation").if)
+      .toBe("needs.force-disable-rollout.outputs.foundation_kind == 'inspect'");
+    expect(run("migrate-backup", "Run migrate-init (new release)"))
+      .toContain('--fresh-migration-config');
+    expect(step("migrate-backup", "Revalidate cutover ownership before migration").env?.FRESH_DATABASE_CONFIG_OUTPUT)
+      .toBe("/tmp/fresh-migration-config.json");
+    for (const [id, name] of [
+      ["deploy-environment", "Publish foundation database inspection evidence"],
+      ["deploy-release", "Publish pre-release database inspection evidence"],
+      ["migrate-backup", "Publish pre-migration database inspection evidence"],
+    ]) {
+      expect(step(id, name).if).toBe("always()");
+      expect(step(id, name).with?.path).toBe("evidence-bootstrap/");
+    }
+  });
 
   it.each(["initialize", "preserve"])("renders the real prod parameters with %s mode", (mode) => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "krypto-cutover-"));
@@ -893,7 +935,7 @@ describe("credential-preserving production updates", () => {
 
 describe("cutover binding failures", () => {
   it.each([
-    ["fresh", { existing_release: "false" }, 0],
+    ["fresh without a defined database boundary", { existing_release: "false" }, 1],
     ["missing", {}, 1],
     ["malformed", { existing_release: "unknown" }, 1],
     ["boolean false", { existing_release: false }, 1],

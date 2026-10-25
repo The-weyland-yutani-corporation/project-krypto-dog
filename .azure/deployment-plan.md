@@ -18,10 +18,11 @@ of the Next.js application, not an AZD migration.
 The owner-approved permanent paper-only POC plan is being implemented in draft
 [PR #376](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/pull/376).
 The signed cutover and scheduled-execution proof components are published.
-This source increment binds production admission to immutable exact-source
-development evidence, actual native job results, and repeated current-main and
-run-attempt readback. Receipt-publication failures use the existing development
-disabled/Manual recovery. Automatic production promotion and production-aware
+Published production admission binds immutable exact-source development
+evidence, actual native job results, and repeated current-main and run-attempt
+readback. The current source increment replaces missing-workload freshness with
+read-only database inspection before production mutation. Receipt-publication
+failures use the existing development disabled/Manual recovery. Automatic production promotion and production-aware
 lifecycle completion remain unfinished; these source changes do not enable
 either deployment workflow or resume the factory.
 
@@ -32,17 +33,56 @@ queries, final mailbox delivery, irreversible retention locking, and formal
 response sign-off remain optional. Existing retention, identities, credentials,
 emergency stops, and external protection settings remain unchanged.
 
-Code Review of published increment `c4696f0` (run `40168149564`) failed with HTTP
-403 from the Copilot requests proxy after analysis and again on its harness retry;
-no substantive verdict was emitted. Its Trading Safety check requires fixes for
+Code Review of published increments `c4696f0` (run `40168149564`) and `60ffc25`
+(run `40170367000`) failed with HTTP 403 from the Copilot requests proxy after
+analysis and again on the harness retry; no substantive verdict was emitted.
+This is a requests-authentication failure, not a passing code review, and its
+underlying external authorization/billing cause is not yet established.
+The earlier Trading Safety check requires fixes for
 fresh-database admission and transactional candidate-image binding. This source
-repair adds the independent transactional image check; the absent-workload versus
-surviving-database ambiguity still needs a safe bootstrap/recovery design.
-New source requires its own successful review. These findings are separate from
+repair's independent transactional image check was published as `60ffc25`.
+The fresh-database repair now has source wiring, strict inventory/job/report
+validators, migration-side revalidation, and disposable PostgreSQL regression
+coverage. Native PostgreSQL execution, completed source validation, and
+current-head review of this increment remain required; mocks and Bicep
+compilation are not operational bootstrap evidence. These findings are separate from
 the existing MonitorOps execution-denial hold and stale deployment run
 `37642379119`. None of those holds was bypassed.
 The completed stage-specific checks below are historical receipts, not evidence
 that the current application source is approved or the factory is commissioned.
+
+### Fresh-database admission repair
+
+Autonomous source implementation uses a bounded catalog-only inspection in the
+existing migrate-init job slot. It reuses the existing ops identity and
+`direct-url` Key Vault access, not another service, a new Reader grant, or
+credentials embedded in a job definition. For genuinely new foundations, the
+already-planned secret binding and its exact existing per-secret role assignment
+are established earlier. Existing bindings and administrator credentials are not
+overwritten to make inspection work. Older foundations missing that prerequisite
+stop with an explicit compatibility failure.
+
+An absent server must be corroborated immediately before creating the foundation.
+An existing private database must be inspected before foundation mutation; every
+fresh full release must repeat inspection before release and migration mutation.
+The probe executes only fixed catalog reads in a bounded read-only transaction.
+Retained application objects, migration history or runtime roles reject fresh
+admission; no fence, stop, balance, role or credential is cleared. Creating the
+single inspection-only job and its immutable image is a disclosed bootstrap
+exception, not permission to deploy the remaining workloads before admission.
+
+The first release preserves the inspected direct-url binding and checks protected
+runtime credential consistency. Migration repeats the empty-database check
+inside the ops process before any Drizzle, role/password bootstrap, or seed.
+Temporary-job cleanup requires the downloaded canonical report, unchanged owned
+configuration, and a unique known terminal execution; uncertain outcomes retain
+the resource and block admission. Report freshness is checked again after cleanup.
+Neither Azure resource inventory nor this database read is a distributed lock;
+native workflow serialization and immediate, bounded rechecks remain necessary.
+
+This is preparation work. Native bootstrap deployment, secret bindings,
+commissioning and first activation still require their established protections
+and stage-specific validation. No operational hold is lifted by this design.
 
 ## Conditional commissioning authorization
 

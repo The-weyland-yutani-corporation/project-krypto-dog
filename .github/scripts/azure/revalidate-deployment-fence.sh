@@ -14,7 +14,38 @@ existing="$(printf '%s' "${binding}" | jq -er '
   .existing_release | select(type == "string" and (. == "true" or . == "false"))
 ')"
 if [ "${existing}" = "false" ]; then
-  echo "The release inventory proved this is a fresh environment; no source fence exists."
+  case "${job_release}:${stage}" in
+    source:check-env)
+      original_kind="$(printf '%s' "${binding}" | jq -er '.foundation_kind')"
+      inventory="$(bash "${script_dir}/read-production-inventory.sh")"
+      current_kind="$(printf '%s' "${inventory}" | jq -er '.kind')"
+      if [ "${current_kind}" != "${original_kind}" ]; then
+        echo "The foundation inventory changed before mutation; no fresh admission is possible." >&2
+        exit 1
+      fi
+      if [ "${current_kind}" = new ]; then
+        node "${script_dir}/database-bootstrap.cjs" initial-credentials
+      elif [ "${current_kind}" = inspect ]; then
+        bash "${script_dir}/run-database-inspection.sh" temporary "${stage}"
+      else
+        echo "Fresh foundation mutation requires an absent or inspected database." >&2
+        exit 1
+      fi
+      ;;
+    source:check-images)
+      echo "Fresh-path image building is a bootstrap exception, not database or release admission."
+      ;;
+    source:check-release)
+      bash "${script_dir}/run-database-inspection.sh" temporary "${stage}"
+      ;;
+    candidate:check-migrate)
+      bash "${script_dir}/run-database-inspection.sh" candidate "${stage}"
+      ;;
+    *)
+      echo "No fresh-database admission is defined for this mutation boundary." >&2
+      exit 1
+      ;;
+  esac
   exit 0
 fi
 if [ "${existing}" != "true" ] ||

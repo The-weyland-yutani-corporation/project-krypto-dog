@@ -26,6 +26,7 @@ import { readFileSync } from "node:fs";
 const RELEASE_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const OPERATIONS = new Set([
+  "database-inspection",
   "migrate-init",
   "preflight",
   "verified-backup",
@@ -152,6 +153,58 @@ function requireWorkflowObservation(purpose, workflowSha, generatedAt) {
 }
 
 switch (operation) {
+  case "database-inspection": {
+    if (!expectedImageDigest) fail("--image-digest is required for database inspection.");
+    const expected = {
+      schemaVersion: "1.0.0", operation, environmentName: "prod",
+      releaseSha: expectedReleaseSha, imageDigest: expectedImageDigest,
+      jobExecutionId: args["job-execution-id"],
+      azureExecutionName: args["azure-execution-name"],
+      reason: "empty-database",
+    };
+    for (const key of ["jobExecutionId", "azureExecutionName"]) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(expected[key] ?? "")) {
+        fail("Database inspection requires exact logical and native execution identities.");
+      }
+    }
+    if (Object.keys(report).sort().join(",") !== [
+      ...Object.keys(expected), "approved", "generatedAt", "inspection",
+    ].sort().join(",")) fail("Database inspection report has unknown or missing fields.");
+    for (const [field, value] of Object.entries(expected)) {
+      requireMatch(report, field, value, "database-inspection report");
+    }
+    requireTrue(report, "approved", "database-inspection report");
+    const inspection = requireField(report, "inspection", "object");
+    if (Object.keys(inspection).sort().join(",") !== [
+      "databaseHost", "databaseName", "runtimeLoginRole", "observedAt",
+      "readOnly", "objectCount", "runtimeRolePresent", "runtimeLoginPresent", "empty",
+    ].sort().join(",")) fail("Database inspection requires a closed catalog snapshot.");
+    for (const [field, argument] of [
+      ["databaseHost", "database-host"], ["databaseName", "database-name"],
+      ["runtimeLoginRole", "runtime-login-role"],
+    ]) {
+      if (typeof args[argument] !== "string" || args[argument].length === 0) {
+        fail(`--${argument} is required.`);
+      }
+      requireMatch(inspection, field, args[argument], "database-inspection target");
+    }
+    requireTrue(inspection, "readOnly", "database-inspection snapshot");
+    requireTrue(inspection, "empty", "database-inspection snapshot");
+    if (inspection.objectCount !== 0 || inspection.runtimeRolePresent !== false ||
+        inspection.runtimeLoginPresent !== false) {
+      fail("Retained objects or runtime roles cannot authorize fresh database initialization.");
+    }
+    const observed = Date.parse(requireField(inspection, "observedAt", "string"));
+    const generated = Date.parse(requireField(report, "generatedAt", "string"));
+    const now = Date.now();
+    if (!Number.isFinite(observed) || !Number.isFinite(generated) ||
+        observed > generated + 5_000 || generated - observed > 30_000 ||
+        observed > now + 5_000 || generated > now + 5_000 ||
+        now - observed > 180_000 || now - generated > 180_000) {
+      fail("Database inspection is stale or has invalid observation timing.");
+    }
+    break;
+  }
   case "production-verification": {
     const phase = args["production-phase"];
     const authorizationId = args["authorization-id"];

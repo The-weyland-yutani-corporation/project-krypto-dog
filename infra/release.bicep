@@ -2,7 +2,8 @@
 // Container App, the hourly/daily scheduler Container Apps Jobs, and the
 // five manual operations Container Apps Jobs, using Key Vault references
 // resolved through per-secret RBAC. This is the only template that
-// creates the Key Vault secret objects themselves; their values are
+// creates the application Key Vault secret objects; the existing ops direct-url
+// binding may already have been established by a proven-new foundation. Values are
 // supplied as @secure() parameters at deploy time and must never be
 // committed to a .bicepparam file.
 //
@@ -184,6 +185,13 @@ param databaseUrl string
 @secure()
 param directUrl string
 
+@description('Preserve the already-inspected direct-url secret during first release; normal owned release updates retain their existing secret workflow.')
+@allowed([
+  'update'
+  'preserve'
+])
+param directUrlBindingMode string = 'update'
+
 @description('Shared secret validating the x-cron-secret header on /api/agent/run and /api/agent/daily-summary. Supplied at deploy time; never committed.')
 @secure()
 param cronSecret string
@@ -252,12 +260,9 @@ resource databaseUrlSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
   }
 }
 
-resource directUrlSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
+resource directUrlSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' existing = {
   parent: keyVault
   name: 'direct-url'
-  properties: {
-    value: directUrl
-  }
 }
 
 resource cronSecretSecret 'Microsoft.KeyVault/vaults/secrets@2024-11-01' = {
@@ -417,13 +422,13 @@ resource opsDatabaseUrlAccess 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
-resource opsDirectUrlAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, 'direct-url', opsIdentityPrincipalId, 'ops')
-  scope: directUrlSecret
-  properties: {
-    principalId: opsIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
+module opsDirectUrlAccess 'modules/ops-database-access.bicep' = {
+  name: 'ops-database-access'
+  params: {
+    keyVaultName: keyVaultName
+    opsIdentityPrincipalId: opsIdentityPrincipalId
+    writeSecret: directUrlBindingMode == 'update'
+    directUrl: directUrl
   }
 }
 

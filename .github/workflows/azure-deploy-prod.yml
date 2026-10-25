@@ -22,6 +22,9 @@ name: Azure deploy prod
 #      infrastructure. Existing-release updates preserve the PostgreSQL
 #      administrator password so source ops jobs retain database access.
 #      A genuinely fresh environment skips the current-release backup.
+#      Missing workloads never establish database freshness: surviving
+#      foundations require a native read-only catalog probe, repeated before
+#      release and migration. Only new foundations initialize database bindings.
 #   4. Manual `foundation` runs stop successfully after environment.bicep
 #      and publish the nonsecret identity/ACS/evidence handoff. Automatic
 #      runs always use `full`.
@@ -74,6 +77,13 @@ env:
   RUNTIME_IDENTITY_NAME: id-krypto-prod02-runtime
   SCHEDULER_IDENTITY_NAME: id-krypto-prod02-scheduler
   EVIDENCE_STORAGE_ACCOUNT_NAME: stkryptoprod02evid
+  POSTGRES_SERVER_NAME: psql-krypto-prod02
+  KEY_VAULT_NAME: kv-krypto-prod02
+  OPS_IDENTITY_NAME: id-krypto-prod02-ops
+  POSTGRES_DATABASE_NAME: postgres
+  RUNTIME_DATABASE_LOGIN_ROLE: krypto_app
+  PROD_DEPLOY_IDENTITY_NAME: ${{ vars.PROD_DEPLOY_IDENTITY_NAME }}
+  PROD_PROMOTION_IDENTITY_NAME: ${{ vars.PROD_PROMOTION_IDENTITY_NAME }}
 
 jobs:
   gate:
@@ -196,6 +206,8 @@ jobs:
       DEVELOPMENT_RUN_ATTEMPT: ${{ needs.gate.outputs.development_run_attempt }}
     outputs:
       existing_release: ${{ steps.detect.outputs.existing_release }}
+      postgres_exists: ${{ steps.detect.outputs.postgres_exists }}
+      foundation_kind: ${{ steps.detect.outputs.foundation_kind }}
       candidate_sha: ${{ needs.gate.outputs.sha }}
       current_sha: ${{ steps.current.outputs.sha }}
       current_digest: ${{ steps.current.outputs.digest }}
@@ -241,45 +253,16 @@ jobs:
         id: detect
         run: |
           set -euo pipefail
-          jobs_json="$(az containerapp job list \
-            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
-            --output json)"
-          apps_json="$(az containerapp list \
-            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
-            --output json)"
-          required_jobs=(
-            "${PROD_HOURLY_JOB_NAME}"
-            "${PROD_DAILY_JOB_NAME}"
-            "${MIGRATE_INIT_JOB_NAME}"
-            "${PREFLIGHT_JOB_NAME}"
-            "${VERIFIED_BACKUP_JOB_NAME}"
-            "${TARGET_SMOKE_JOB_NAME}"
-            "${ACTIVATION_CHECK_JOB_NAME}"
-          )
-          present=0
-          for job_name in "${required_jobs[@]}"; do
-            if printf '%s' "${jobs_json}" | jq -e --arg name "${job_name}" 'any(.[]; .name == $name)' >/dev/null; then
-              present=$((present + 1))
-            fi
-          done
-          if printf '%s' "${apps_json}" | jq -e --arg name "${WEB_APP_NAME}" 'any(.[]; .name == $name)' >/dev/null; then
-            present=$((present + 1))
-          fi
-
-          if [ "${present}" -eq 8 ]; then
-            if [ "${DEPLOYMENT_STAGE}" = "foundation" ]; then
-              echo "Foundation is for a fresh environment only; existing releases require a full owned cutover." >&2
-              exit 1
-            fi
-            echo "existing_release=true" >> "$GITHUB_OUTPUT"
-            echo "A complete existing release was detected."
-          elif [ "${present}" -eq 0 ]; then
-            echo "existing_release=false" >> "$GITHUB_OUTPUT"
-            echo "No release resources were found -- using the explicit fresh-deploy path."
-          else
-            echo "Found ${present}/8 deterministic release resources. Partial state is neither a safe current release nor a proven-fresh environment." >&2
+          inventory="$(bash .github/scripts/azure/read-production-inventory.sh)"
+          existing="$(printf '%s' "${inventory}" | jq -er '.existingRelease | tostring')"
+          if [ "${existing}" = true ] && [ "${DEPLOYMENT_STAGE}" = foundation ]; then
+            echo "Foundation is for a fresh environment only; existing releases require a full owned cutover." >&2
             exit 1
           fi
+          echo "existing_release=${existing}" >> "$GITHUB_OUTPUT"
+          echo "postgres_exists=$(printf '%s' "${inventory}" | jq -er '.postgresExists | tostring')" >> "$GITHUB_OUTPUT"
+          echo "foundation_kind=$(printf '%s' "${inventory}" | jq -er '.kind')" >> "$GITHUB_OUTPUT"
+          echo "Resource inventory classified; missing workloads do not authorize database initialization."
 
       - name: Resolve the currently-deployed release SHA and image digest
         id: current
@@ -776,14 +759,14 @@ jobs:
 
       - name: Render environment.prod.bicepparam
         env:
-          EXISTING_RELEASE: ${{ needs.force-disable-rollout.outputs.existing_release }}
+          FOUNDATION_KIND: ${{ needs.force-disable-rollout.outputs.foundation_kind }}
         run: |
           set -euo pipefail
-          case "${EXISTING_RELEASE}" in
-            true) credential_mode=preserve ;;
-            false) credential_mode=initialize ;;
+          case "${FOUNDATION_KIND}" in
+            new) credential_mode=initialize; access_mode=initialize ;;
+            existing|inspect) credential_mode=preserve; access_mode=none ;;
             *)
-              echo "PostgreSQL credential mode requires an explicit release inventory result." >&2
+              echo "PostgreSQL credentials require an explicit database/foundation inventory result." >&2
               exit 1
               ;;
           esac
@@ -792,11 +775,13 @@ jobs:
             --out /tmp/environment.prod.resolved.bicepparam \
             --set REPLACE_WITH_BOOTSTRAP_PROD_DEPLOY_IDENTITY_PRINCIPAL_ID="${{ steps.identity.outputs.principal_id }}" \
             --set REPLACE_WITH_BOOTSTRAP_PROD_PROMOTION_IDENTITY_PRINCIPAL_ID="${{ steps.identity_promotion.outputs.principal_id }}" \
-            --set-string-param postgresCredentialMode="${credential_mode}"
+            --set-string-param postgresCredentialMode="${credential_mode}" \
+            --set-string-param bootstrapDatabaseAccessMode="${access_mode}"
 
       - name: What-if infra/environment.bicep
         env:
           POSTGRES_ADMIN_PASSWORD_PROD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
         run: |
           set -euo pipefail
           az deployment group what-if \
@@ -848,12 +833,32 @@ jobs:
                (any(.properties.template.containers[0].env[]?; .name == "ROLLOUT_MODE" and .value == "disabled"))' >/dev/null
           done
 
+      - name: Build the inspection-only image for an existing empty foundation
+        if: needs.force-disable-rollout.outputs.foundation_kind == 'inspect'
+        run: |
+          set -euo pipefail
+          source .github/scripts/azure/lib/common.sh
+          out="$(.github/scripts/azure/build-and-resolve-digest.sh \
+            --registry "${ACR_NAME}" \
+            --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
+            --repository krypto-bootstrap-ops \
+            --target ops \
+            --tag "${RESOLVED_SHA}")"
+          digest="$(printf '%s' "${out}" | grep '^digest=' | cut -d= -f2)"
+          digest="$(azure_validate_image_digest "${digest}")"
+          echo "FRESH_INSPECTION_OPS_DIGEST=${digest}" >> "$GITHUB_ENV"
+          echo "FRESH_INSPECTION_IMAGE_REPOSITORY=krypto-bootstrap-ops" >> "$GITHUB_ENV"
+
       - name: Revalidate cutover ownership before foundation mutation
+        env:
+          POSTGRES_ADMIN_PASSWORD_PROD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
         run: bash .github/scripts/azure/revalidate-deployment-fence.sh source check-env
 
       - name: Deploy infra/environment.bicep
         env:
           POSTGRES_ADMIN_PASSWORD_PROD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          DIRECT_URL_PROD: ${{ secrets.DIRECT_URL }}
         run: |
           set -euo pipefail
           az deployment group create \
@@ -984,6 +989,15 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      - name: Publish foundation database inspection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-bootstrap-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence-bootstrap/
+          if-no-files-found: warn
+          retention-days: 90
+
   build-images:
     name: Build web/ops images and resolve digests (prod)
     needs: [gate, force-disable-rollout, deploy-environment]
@@ -1103,6 +1117,7 @@ jobs:
 
       - name: Render release.prod.bicepparam
         env:
+          EXISTING_RELEASE: ${{ needs.force-disable-rollout.outputs.existing_release }}
           ENV_CONTAINER_APPS_ENVIRONMENT_ID: ${{ needs.deploy-environment.outputs.container_apps_environment_id }}
           ENV_ACR_LOGIN_SERVER: ${{ needs.deploy-environment.outputs.acr_login_server }}
           ENV_RUNTIME_IDENTITY_ID: ${{ needs.deploy-environment.outputs.runtime_identity_id }}
@@ -1120,6 +1135,11 @@ jobs:
           BUILD_OPS_DIGEST_HEX: ${{ needs.build-images.outputs.ops_digest_hex }}
         run: |
           set -euo pipefail
+          case "${EXISTING_RELEASE}" in
+            true) direct_url_mode=update ;;
+            false) direct_url_mode=preserve ;;
+            *) echo "Direct database binding mode requires explicit release inventory." >&2; exit 1 ;;
+          esac
           node .github/scripts/azure/render-bicepparam.mjs \
             --template infra/params/release.prod.bicepparam \
             --out /tmp/release.prod.resolved.bicepparam \
@@ -1138,7 +1158,8 @@ jobs:
             --set REPLACE_WITH_ENVIRONMENT_OUTPUT_communicationEmailSender="${ENV_COMMUNICATION_EMAIL_SENDER}" \
             --set REPLACE_WITH_PUSHED_WEB_DIGEST="${BUILD_WEB_DIGEST_HEX}" \
             --set REPLACE_WITH_PUSHED_OPS_DIGEST="${BUILD_OPS_DIGEST_HEX}" \
-            --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${RESOLVED_SHA}"
+            --set REPLACE_WITH_REAL_COMMIT_SHA000000000000="${RESOLVED_SHA}" \
+            --set-string-param directUrlBindingMode="${direct_url_mode}"
 
       - name: What-if infra/release.bicep
         env:
@@ -1164,6 +1185,10 @@ jobs:
         run: node .github/scripts/azure/reject-unsafe-whatif-deletes.mjs --file /tmp/whatif-release.json
 
       - name: Revalidate cutover ownership before release mutation
+        env:
+          FRESH_INSPECTION_OPS_DIGEST: sha256:${{ needs.build-images.outputs.ops_digest_hex }}
+          DATABASE_URL_PROD: ${{ secrets.DATABASE_URL }}
+          RUNTIME_DATABASE_PASSWORD_PROD: ${{ secrets.RUNTIME_DATABASE_PASSWORD }}
         run: bash .github/scripts/azure/revalidate-deployment-fence.sh source check-release
 
       - name: Deploy infra/release.bicep
@@ -1200,6 +1225,15 @@ jobs:
             snake="$(printf '%s' "${name}" | sed -E 's/([A-Z])/_\1/g' | tr '[:upper:]' '[:lower:]')"
             echo "${snake}=${value}" >> "$GITHUB_OUTPUT"
           done
+
+      - name: Publish pre-release database inspection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-bootstrap-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence-bootstrap/
+          if-no-files-found: warn
+          retention-days: 90
 
   migrate-backup:
     name: Migrate and restore-verify the candidate while its fence is held
@@ -1248,18 +1282,32 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Revalidate cutover ownership before migration
+        env:
+          FRESH_INSPECTION_OPS_DIGEST: sha256:${{ needs.build-images.outputs.ops_digest_hex }}
+          FRESH_DATABASE_CONFIG_OUTPUT: /tmp/fresh-migration-config.json
         run: bash .github/scripts/azure/revalidate-deployment-fence.sh candidate check-migrate
 
       - name: Run migrate-init (new release)
+        env:
+          EXISTING_RELEASE: ${{ needs.force-disable-rollout.outputs.existing_release }}
         run: |
           set -euo pipefail
           source .github/scripts/azure/lib/common.sh
           job_execution_id="$(azure_new_job_execution_id migrate-init)"
+          migration_args=()
+          case "${EXISTING_RELEASE}" in
+            false)
+              migration_args=(--fresh-migration-config "$(cat /tmp/fresh-migration-config.json)")
+              ;;
+            true) ;;
+            *) echo "Migration requires explicit fresh or owned-existing admission." >&2; exit 1 ;;
+          esac
           .github/scripts/azure/run-ops-job.sh \
             --job-name "${MIGRATE_INIT_JOB_NAME}" \
             --resource-group "${PROD_RESOURCE_GROUP_NAME}" \
             --job-execution-id "${job_execution_id}" \
-            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}"
+            --timeout-seconds "${OPS_JOB_TIMEOUT_SECONDS}" \
+            "${migration_args[@]}"
           .github/scripts/azure/download-evidence.sh \
             --container-url "${EVIDENCE_CONTAINER_URL}" \
             --environment-name prod \
@@ -1302,6 +1350,15 @@ jobs:
         with:
           name: azure-deploy-prod-migration-${{ github.run_id }}-${{ github.run_attempt }}
           path: evidence/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Publish pre-migration database inspection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-bootstrap-migration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence-bootstrap/
           if-no-files-found: warn
           retention-days: 90
 

@@ -1,3 +1,7 @@
+import { timingSafeEqual } from "node:crypto";
+
+import { inspectEmptyDatabase } from "@/deployment/database-inspection";
+
 import { runCli } from "../lib/run-cli";
 import type { AzureOperationContext, AzureOperationResult } from "./types";
 
@@ -35,7 +39,9 @@ const REQUIRED_ENV_NAMES = [
  * All three underlying commands are idempotent (Drizzle migration
  * history, a safe create-or-rotate role bootstrap, and an
  * `onConflictDoNothing` singleton insert), so a repeat run on an
- * already-initialized environment still reports success.
+ * already-initialized environment still reports success on the owned existing-
+ * release path. The explicit fresh mode rejects any retained state instead of
+ * using idempotency as permission to resume an unknown initialization.
  *
  * The runtime login password is passed to the bootstrap CLI only via
  * `process.env` (inherited by the child process); it is never included
@@ -49,6 +55,59 @@ export async function run(
   for (const name of REQUIRED_ENV_NAMES) {
     if (!process.env[name]) {
       throw new Error(`${name} is required for the migrate-init operation.`);
+    }
+  }
+
+  if (process.env.MIGRATION_REQUIRE_EMPTY_DATABASE !== undefined) {
+    if (process.env.MIGRATION_REQUIRE_EMPTY_DATABASE !== "true" ||
+        context.environmentName !== "prod") {
+      throw new Error("Fresh database initialization requires the explicit production admission mode.");
+    }
+    const failure = (reason: string): AzureOperationResult => ({
+      passed: false,
+      report: {
+        operation: "migrate-init",
+        success: false,
+        step: "fresh-database-admission",
+        environmentName: context.environmentName,
+        releaseSha: context.releaseSha,
+        reason,
+      },
+    });
+    try {
+      const directUrl = process.env.DIRECT_URL;
+      const runtimeUrl = process.env.DATABASE_URL;
+      const runtimeLoginRole = process.env.AZURE_RUNTIME_LOGIN_ROLE;
+      const runtimePassword = process.env.AZURE_RUNTIME_LOGIN_PASSWORD;
+      const expectedHost = process.env.DATABASE_INSPECTION_HOST;
+      const expectedDatabase = process.env.DATABASE_INSPECTION_NAME;
+      if (!directUrl || !runtimeUrl || !runtimeLoginRole || !runtimePassword ||
+          !expectedHost || !expectedDatabase) {
+        return failure("missing-fresh-database-binding");
+      }
+      const runtime = new URL(runtimeUrl);
+      const suppliedPassword = Buffer.from(decodeURIComponent(runtime.password));
+      const expectedPassword = Buffer.from(runtimePassword);
+      if (!["postgres:", "postgresql:"].includes(runtime.protocol) ||
+          runtime.hostname !== expectedHost ||
+          decodeURIComponent(runtime.pathname) !== `/${expectedDatabase}` ||
+          decodeURIComponent(runtime.username) !== runtimeLoginRole ||
+          (runtime.port !== "" && runtime.port !== "5432") ||
+          runtime.hash ||
+          !["require", "verify-ca", "verify-full"].includes(runtime.searchParams.get("sslmode") ?? "") ||
+          [...runtime.searchParams.keys()].some((name) => name !== "sslmode") ||
+          runtime.searchParams.getAll("sslmode").length !== 1 ||
+          suppliedPassword.length !== expectedPassword.length ||
+          !timingSafeEqual(suppliedPassword, expectedPassword)) {
+        return failure("runtime-database-binding-mismatch");
+      }
+      const inspection = await inspectEmptyDatabase({
+        directUrl, expectedHost, expectedDatabase, runtimeLoginRole,
+      });
+      if (!inspection.empty) return failure("existing-database-state");
+    } catch {
+      // Driver/URL errors can contain credentials; persist only the fixed failure.
+      return failure("database-inspection-failed");
     }
   }
 

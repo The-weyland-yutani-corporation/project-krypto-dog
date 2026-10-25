@@ -157,6 +157,10 @@ END
 $$;
 SQL
 
+create_database bootstrap_inspection
+DATABASE_INSPECTION_TEST_URL="$url_prefix/bootstrap_inspection" \
+  npx tsx scripts/test-database-inspection.ts
+
 create_database fresh
 DIRECT_URL="$fresh_url" \
   npx drizzle-kit migrate --config "$through_0006_config" >/dev/null

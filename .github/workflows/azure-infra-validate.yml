@@ -141,3 +141,6 @@ jobs:
 
       - name: Self-test full-template operations job start
         run: .github/scripts/azure/tests/test-run-ops-job.sh
+
+      - name: Self-test read-only bootstrap boundaries and owned cleanup
+        run: bash .github/scripts/azure/tests/test-database-bootstrap.sh

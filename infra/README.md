@@ -319,6 +319,47 @@ an environment without an application release; it rejects a complete existing
 release and partial release inventory. Existing releases use `full` and the
 owned cutover protocol below.
 
+Missing workloads are not an empty-database receipt. The production inventory
+collector compares jobs, apps, PostgreSQL, Key Vault, and the complete resource
+listing. With only the approved bootstrap resources and no database/vault it
+classifies a new foundation. A surviving database/vault without workloads
+requires read-only database inspection; unknown, partial, or inconsistent
+inventory fails before mutation.
+
+The `database-inspection` operation runs fixed catalog reads inside a bounded
+read-only PostgreSQL transaction. Retained relations, functions, types,
+non-platform schemas, or either application runtime role reject fresh admission,
+including old/incompatible fence and migration state. It does not read business
+rows or clear stops, roles, fences, credentials, or balances. Platform-owned
+extension objects alone do not constitute application initialization.
+
+For a foundation with no jobs, `database-inspection.bicep` temporarily creates
+only `caj-prod-migrate-init`, using the existing ops identity and versionless
+`direct-url` reference. It is Manual, single-replica, retry-free, digest-pinned,
+and bounded to 120 seconds. Building its immutable inspection image and creating
+that single job are explicit bootstrap exceptions, not admission for the other
+release resources. Existing foundations without the binding or original
+per-secret grant require separate recovery; inspection never repairs them.
+
+The controller repeats inspection immediately before foundation/release mutation
+and uses a full-template read-only override of the candidate migrate-init job
+before migration. Reports bind the database, release, image, identity context,
+logical invocation and native execution, and expire after 180 seconds.
+`MIGRATION_REQUIRE_EMPTY_DATABASE=true` additionally rechecks the actual
+connection and runtime credential consistency inside migrate-init before
+Drizzle, login/password bootstrap, or seed. Partial initialization cannot be
+retried as a fresh database merely because individual commands are idempotent.
+
+Temporary-job removal requires the canonical report to be saved, the owned
+configuration to remain unchanged, and the execution endpoint and inventory to
+show exactly one known terminal execution. Missing evidence, uncertain
+creation/start, changed configuration, or another execution retains the job and
+fails the boundary. Failed removal or a report expiring during removal also
+blocks release. The real candidate migration job is never deleted. Inspect
+retained job ownership, configuration, executions, and private evidence before
+any separately authorized recovery; do not blindly rerun or overwrite it.
+These checks do not make Azure/PostgreSQL a distributed transaction.
+
 ## Release secrets and Azure-generated values
 
 `release.bicep` accepts these protected deploy-time values:
@@ -334,7 +375,11 @@ RUNTIME_DATABASE_PASSWORD
 DEPLOYMENT_APPROVAL_SECRET
 ```
 
-`environment.bicep` separately accepts `POSTGRES_ADMIN_PASSWORD`.
+`environment.bicep` separately accepts `POSTGRES_ADMIN_PASSWORD` and the secure
+`bootstrapDirectUrl`. New production foundations select
+`bootstrapDatabaseAccessMode=initialize`, establishing the already-planned
+`direct-url` secret and exact ops per-secret grant after PostgreSQL creation.
+All existing foundations select `none` and leave that binding untouched.
 
 For an existing production release, `postgresCredentialMode=preserve` uses
 the PostgreSQL resource's
@@ -342,8 +387,16 @@ the PostgreSQL resource's
 and omits `administratorLoginPassword` from the resource update. Infrastructure
 remains managed, but its deployment cannot invalidate the versioned `DIRECT_URL`
 used by source-image ops jobs between cutover checks. The committed production
-parameters default to `preserve`; only the workflow's explicit fresh-release
-path selects `initialize`. Missing or malformed inventory fails closed.
+parameters default to `preserve`; only an explicitly absent database/foundation
+selects `initialize`. An empty but existing database still uses `preserve`.
+Missing or malformed inventory fails closed.
+
+The shared `ops-database-access.bicep` module preserves the original per-secret
+role-assignment GUID and principal. Production's first release selects
+`directUrlBindingMode=preserve`, retaining the exact secret the probe consumed
+rather than overwriting it with a different deploy-time value. Ordinary releases
+retain the existing `update` behavior; protected runtime credentials must match
+the inspected target before first-release mutation.
 
 Database credential rotation is not part of a normal production upgrade.
 Protected database secrets must still match the database when the new release
@@ -441,6 +494,12 @@ All five also receive `ENVIRONMENT_NAME`, `RELEASE_SHA`,
 `EVIDENCE_CONTAINER_URL`, `AZCOPY_MSI_CLIENT_ID`, and `AZURE_CLIENT_ID`.
 `AZURE_CLIENT_ID` selects the ops identity for Foundry; no model credential is
 mounted.
+
+Read-only bootstrap is a constrained operation of the migrate-init slot, not a
+sixth ops job. A temporary inspector mounts only `DIRECT_URL`; an execution
+override of the existing migration job retains its original three secret
+references and full template. Fixed nonsecret database target/digest overrides
+cannot be combined with shadow, fence, or production-verification overrides.
 
 Only `target-smoke` and `activation-check` also receive the nonsecret
 `DEPLOYMENT_REPOSITORY`, `DEPLOYMENT_REPOSITORY_ID`,
@@ -739,6 +798,7 @@ az bicep build --file infra/platform-account.bicep
 az bicep build --file infra/platform.bicep
 az bicep build --file infra/platform-access.bicep
 az bicep build --file infra/environment.bicep
+az bicep build --file infra/database-inspection.bicep
 az bicep build --file infra/release.bicep
 az bicep build --file infra/rollout.bicep
 az bicep build --file infra/schedule-monitoring.bicep
@@ -792,6 +852,9 @@ Never use real secret values for compile-only validation.
   host, and recipient to avoid unintended drift.
 - A partial deterministic prod release is neither a valid current release nor
   a fresh environment; the prod workflow fails closed.
+- A retained bootstrap inspector is deliberately not treated as an empty
+  environment. Its uncertain state requires investigation, not automatic
+  deletion or another initialization attempt.
 - Live results are limited to the bootstrap/platform/foundation/access
   checkpoint documented above. No release, application URL, ops-job report,
   target smoke, or schedule result is implied.

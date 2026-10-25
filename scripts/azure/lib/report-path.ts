@@ -6,6 +6,7 @@ const ENVIRONMENT_NAME_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
 const JOB_EXECUTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 
 export const AZURE_OPERATIONS = [
+  "database-inspection",
   "migrate-init",
   "preflight",
   "verified-backup",

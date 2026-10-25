@@ -89,6 +89,7 @@ param runtimeDatabaseLoginRole = 'krypto_app'
 
 param databaseUrl = readEnvironmentVariable('DATABASE_URL_PROD')
 param directUrl = readEnvironmentVariable('DIRECT_URL_PROD')
+param directUrlBindingMode = 'preserve'
 param cronSecret = readEnvironmentVariable('CRON_SECRET_PROD')
 param posthogApiKey = readEnvironmentVariable('POSTHOG_API_KEY_PROD')
 param adminPassword = readEnvironmentVariable('ADMIN_PASSWORD_PROD')

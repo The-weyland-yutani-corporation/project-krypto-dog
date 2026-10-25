@@ -15,6 +15,7 @@ import {
   type AzureOperation,
 } from "./lib/report-path";
 import * as activationCheck from "./operations/activation-check";
+import * as databaseInspection from "./operations/database-inspection";
 import * as deploymentAdmission from "./operations/deployment-admission";
 import * as migrateInit from "./operations/migrate-init";
 import * as preflight from "./operations/preflight";
@@ -37,6 +38,8 @@ async function dispatch(
   context: AzureOperationContext,
 ): Promise<AzureOperationResult> {
   switch (operation) {
+    case "database-inspection":
+      return databaseInspection.run(context);
     case "migrate-init":
       return migrateInit.run(context);
     case "preflight":

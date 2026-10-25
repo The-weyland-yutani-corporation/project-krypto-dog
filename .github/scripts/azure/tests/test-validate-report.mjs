@@ -420,6 +420,72 @@ try {
   rmdirSync(productionDirectory);
 }
 
+const inspectionDirectory = mkdtempSync(path.join(tmpdir(), "database-inspection-report-test-"));
+try {
+  const now = Date.now();
+  const report = {
+    schemaVersion: "1.0.0", operation: "database-inspection", environmentName: "prod",
+    releaseSha: RELEASE_SHA_A, imageDigest: DIGEST_1, approved: true, reason: "empty-database",
+    jobExecutionId: "run1-a1-database-inspection-check-release",
+    azureExecutionName: "inspection-1",
+    generatedAt: new Date(now).toISOString(),
+    inspection: {
+      databaseHost: "psql-krypto-prod02.postgres.database.azure.com",
+      databaseName: "postgres", runtimeLoginRole: "krypto_app",
+      observedAt: new Date(now - 1000).toISOString(), readOnly: true, empty: true,
+      objectCount: 0, runtimeRolePresent: false, runtimeLoginPresent: false,
+    },
+  };
+  const inspectionArgs = [
+    "--operation", "database-inspection", "--release-sha", RELEASE_SHA_A,
+    "--image-digest", DIGEST_1, "--job-execution-id", report.jobExecutionId,
+    "--azure-execution-name", report.azureExecutionName,
+    "--database-host", report.inspection.databaseHost,
+    "--database-name", report.inspection.databaseName,
+    "--runtime-login-role", report.inspection.runtimeLoginRole,
+  ];
+  const variants = [
+    [{}, 0],
+    ...[
+      { approved: false }, { reason: "database-inspection-failed" }, { inspection: null },
+      { operation: "migrate-init" }, { releaseSha: RELEASE_SHA_B }, { imageDigest: DIGEST_2 },
+      { environmentName: "dev" }, { azureExecutionName: "another-execution" },
+      { jobExecutionId: "another-attempt" }, { token: "must-not-be-published" },
+      { generatedAt: new Date(now + 30_000).toISOString() }, { generatedAt: "invalid" },
+    ].map((change) => [change, 1]),
+    ...[
+      { empty: false }, { readOnly: false }, { objectCount: 1 }, { objectCount: "0" },
+      { runtimeRolePresent: true }, { runtimeLoginPresent: true }, { runtimeLoginPresent: null },
+      { databaseHost: "foreign.example.com" }, { databaseName: "other" },
+      { runtimeLoginRole: "other" }, { unknown: true },
+      { observedAt: new Date(now - 181_000).toISOString() },
+      { observedAt: new Date(now + 30_000).toISOString() },
+    ].map((change) => [{ inspection: { ...report.inspection, ...change } }, 1]),
+  ];
+  for (const [change, expectedStatus] of variants) {
+    const reportPath = path.join(inspectionDirectory, "report.json");
+    writeFileSync(reportPath, JSON.stringify({ ...report, ...change }));
+    const result = spawnSync(process.execPath, [
+      scriptPath, "--report", reportPath, ...inspectionArgs,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, expectedStatus, `inspection/${JSON.stringify(change)}: ${result.stderr}`);
+    passCount += 1;
+  }
+  for (let index = 0; index < inspectionArgs.length; index += 2) {
+    const reportPath = path.join(inspectionDirectory, "report.json");
+    writeFileSync(reportPath, JSON.stringify(report));
+    const result = spawnSync(process.execPath, [
+      scriptPath, "--report", reportPath,
+      ...inspectionArgs.filter((_value, offset) => offset !== index && offset !== index + 1),
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 1, `missing ${inspectionArgs[index]}: ${result.stderr}`);
+    passCount += 1;
+  }
+} finally {
+  rmSync(path.join(inspectionDirectory, "report.json"), { force: true });
+  rmdirSync(inspectionDirectory);
+}
+
 const expectedImage = `registry.azurecr.io/krypto-web@${DIGEST_1}`;
 function disabledSnapshot() {
   const template = { containers: [{ image: expectedImage, env: [{ name: "ROLLOUT_MODE", value: "disabled" }] }] };

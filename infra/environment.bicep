@@ -67,6 +67,16 @@ param postgresAdministratorLoginPassword string
 ])
 param postgresCredentialMode string = 'initialize'
 
+@description('Stage the existing ops direct-url binding only for a proven-new PostgreSQL/Key Vault foundation. Existing foundations keep their bindings unchanged.')
+@allowed([
+  'none'
+  'initialize'
+])
+param bootstrapDatabaseAccessMode string = 'none'
+
+@secure()
+param bootstrapDirectUrl string = ''
+
 @description('PostgreSQL compute SKU name.')
 param postgresSkuName string = 'Standard_B1ms'
 
@@ -208,6 +218,19 @@ module identities 'modules/identities.bicep' = {
     registryId: acr.outputs.registryId
     tags: envTags
   }
+}
+
+module bootstrapDatabaseAccess 'modules/ops-database-access.bicep' = if (bootstrapDatabaseAccessMode == 'initialize') {
+  name: 'bootstrap-database-access'
+  params: {
+    keyVaultName: keyVault.outputs.vaultName
+    opsIdentityPrincipalId: identities.outputs.opsIdentityPrincipalId
+    writeSecret: true
+    directUrl: bootstrapDirectUrl
+  }
+  dependsOn: [
+    postgres
+  ]
 }
 
 module evidenceStorage 'modules/storage.bicep' = {
