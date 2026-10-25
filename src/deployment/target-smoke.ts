@@ -1280,11 +1280,7 @@ export async function runTargetSmoke(
     checks,
     providerChecksRunFrom: "operator-environment",
     passed: checks.every((check_) => check_.status === "pass"),
-    manualGatesRemaining: [
-      "Confirm the deployment_smoke event is visible in PostHog.",
-      "Confirm the daily summary reached the intended mailbox.",
-      "Review target logs for the two disabled run IDs before shadow promotion.",
-    ],
+    manualGatesRemaining: [],
     binding: targetApproval.value,
   };
 }

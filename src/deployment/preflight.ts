@@ -113,6 +113,7 @@ export interface DeploymentPreflightReport {
   inventory: DeploymentInventory;
   blockers: string[];
   databasePreflightPassed: boolean;
+  /** Remaining pipeline steps; the legacy field name does not require human approval. */
   manualGatesRemaining: string[];
 }
 
@@ -1729,9 +1730,8 @@ export async function runDeploymentPreflight(
     blockers,
     databasePreflightPassed: !hasBlockingChecks(checks),
     manualGatesRemaining: [
-      "Create and verify a point-in-time backup.",
-      "Record operator approval for the observed state.",
-      "Keep rollout mode disabled until target smoke checks pass.",
+      "Create and restore-verify the release backup.",
+      "Keep rollout mode disabled until target smoke and activation evidence pass.",
     ],
   };
 }

@@ -535,6 +535,12 @@ operation is not an activation authority or an executable promotion workflow.
 The approved lean readiness contract in `specs/operations.md` still requires
 trusted release admission and deployment/accounting evidence; separate
 analytics projects, backend queries and final mailbox proof are not gates.
+Successful target-smoke reports therefore have no additional manual gates;
+blocked reports still identify the required remediation. Preflight retains
+the legacy `manualGatesRemaining` field for compatibility, but its remaining
+backup and activation-evidence steps belong to the native pipeline, not a
+per-release human approval. Empty manual gates do not turn disabled smoke
+into paper-promotion authority or clear any operational stop.
 
 `npm run test:integration` exercises the real verification queries through
 `scripts/test-production-verification.ts` against a freshly migrated, seeded

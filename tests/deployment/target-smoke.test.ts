@@ -285,6 +285,7 @@ describe("target deployment smoke", () => {
     );
 
     expect(report.passed).toBe(approved);
+    expect(report.manualGatesRemaining.length === 0).toBe(approved);
     if (!approved) {
       expect(report.binding).toBeNull();
       expect(createApproval).not.toHaveBeenCalled();

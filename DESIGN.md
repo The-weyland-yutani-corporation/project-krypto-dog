@@ -173,7 +173,7 @@ color, and annotation choices. Never drop in raw default Recharts styling.
 - Data before decoration: cards should contain portfolio state, trades, journal
   reasoning, backtest evidence, or guardrail status.
 - Safety states are explicit: `locked`, `paused`, `running`, destructive lease
-  release, and paper-vs-live mode must be visually unmistakable.
+  release, and `disabled`/`shadow`/`paper` modes must be visually unmistakable.
 - Numbers use tabular alignment where possible.
 - Green/red/amber are semantic, not decorative.
 - Cyan/blue is a sparse information/chart accent, not a primary CTA color.
@@ -256,7 +256,7 @@ output, admin behavior, chart data, or page content.
 - Do not make destructive controls look like normal primary actions.
 - Do not use default, unstyled Recharts charts.
 - Do not create one-off Tailwind styles when an existing shadcn primitive fits.
-- Do not hide live/paper trading state.
+- Do not hide the permanent paper-only status or selected execution mode.
 
 ## Responsive behavior
 

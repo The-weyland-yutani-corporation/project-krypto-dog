@@ -595,6 +595,10 @@ describe("deployment preflight helpers", () => {
 
     expect(report.blockers).toEqual([]);
     expect(report.databasePreflightPassed).toBe(true);
+    expect(report.manualGatesRemaining).toEqual([
+      "Create and restore-verify the release backup.",
+      "Keep rollout mode disabled until target smoke and activation evidence pass.",
+    ]);
     expect(report.schemaVersion).toBe("2.0.0");
     expect(report.provider).toBe("azure");
     expect(report.inventory.database).toBe("krypto");
