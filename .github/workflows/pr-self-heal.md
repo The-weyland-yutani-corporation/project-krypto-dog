@@ -123,8 +123,8 @@ safe-outputs:
     max: 3
   noop:
     report-as-issue: false
-max-ai-credits: 2200
-max-daily-ai-credits: 5000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 timeout-minutes: 30
 pre-agent-steps:
   - name: Check out the exact dispatched PR head

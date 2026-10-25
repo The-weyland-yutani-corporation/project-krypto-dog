@@ -41,8 +41,8 @@ safe-outputs:
     max: 1
   noop:
     report-as-issue: false
-max-ai-credits: 1500
-max-daily-ai-credits: 4000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 ---
 
 # Research Brief

@@ -43,8 +43,8 @@ safe-outputs:
     max: 5
   noop:
     report-as-issue: false
-max-ai-credits: 1200
-max-daily-ai-credits: 3000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 ---
 
 # Rubber Duck Architecture Review

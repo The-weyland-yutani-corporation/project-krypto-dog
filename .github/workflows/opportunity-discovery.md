@@ -39,8 +39,8 @@ safe-outputs:
     hide-older-comments: true
   noop:
     report-as-issue: false
-max-ai-credits: 1000
-max-daily-ai-credits: 2000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 ---
 
 # Opportunity Discovery

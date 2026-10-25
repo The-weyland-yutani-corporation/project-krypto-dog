@@ -614,7 +614,7 @@ async function run(
 describe("factory queue-controller runtime: control mode resolution", () => {
   it("defers exhausted implementation credits before claiming or mutating an issue", async () => {
     const credits = creditFixture("implement-ticket.lock.yml", `${owner}/${repo}`, NOW);
-    credits.addRun(1501);
+    credits.addRun(20001);
     const { result, mocks, core } = await run({
       issues: [controlIssue(10, ["factory-mode:active"]), goalIssue(1), candidateIssue(2)],
       credit: credits,
@@ -628,7 +628,7 @@ describe("factory queue-controller runtime: control mode resolution", () => {
     expect(mocks.removeLabel).not.toHaveBeenCalled();
     expect(mocks.createComment).not.toHaveBeenCalled();
     expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
-    expect(core.info).toHaveBeenCalledWith(expect.stringContaining("1501/1500"));
+    expect(core.info).toHaveBeenCalledWith(expect.stringContaining("20001/20000"));
   });
 
   it("does not claim or pause anything when native credit evidence cannot be read", async () => {

@@ -35,8 +35,8 @@ safe-outputs:
   allowed-github-references: []
   noop:
     report-as-issue: false
-max-ai-credits: 1000
-max-daily-ai-credits: 2500
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 ---
 
 # Daily Repo Status (MonitorOps)

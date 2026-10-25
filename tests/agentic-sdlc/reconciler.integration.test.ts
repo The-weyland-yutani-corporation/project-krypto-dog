@@ -673,7 +673,7 @@ function autoMergeCalls(mock: jest.Mock): unknown[][] {
 describe("agentic PR reconciler integration", () => {
   it("does not dispatch or arm merge when missing review exceeds its native credit budget", async () => {
     const credits = creditFixture("code-review.lock.yml", repository, new Date().toISOString());
-    credits.addRun(5001);
+    credits.addRun(20001);
     const { mocks, core } = await reconcile({
       credit: credits,
       checksBySha: { "sha-1": [] },
@@ -683,12 +683,12 @@ describe("agentic PR reconciler integration", () => {
     expect(mocks.createWorkflowDispatch).not.toHaveBeenCalled();
     expect(mocks.addLabels).not.toHaveBeenCalled();
     expect(autoMergeCalls(mocks.graphql)).toEqual([]);
-    expect(core.info).toHaveBeenCalledWith(expect.stringContaining("5001/5000"));
+    expect(core.info).toHaveBeenCalledWith(expect.stringContaining("20001/20000"));
   });
 
   it("does not substitute self-heal for an over-budget reviewer", async () => {
     const credits = creditFixture("code-review.lock.yml", repository, new Date().toISOString());
-    credits.addRun(5001);
+    credits.addRun(20001);
     const { mocks } = await reconcile({
       credit: credits, checksBySha: { "sha-1": [] },
       runs: {
@@ -703,7 +703,7 @@ describe("agentic PR reconciler integration", () => {
 
   it("requires credit admission for self-heal without consuming repair labels", async () => {
     const credits = creditFixture("pr-self-heal.lock.yml", repository, new Date().toISOString());
-    credits.addRun(5001);
+    credits.addRun(20001);
     const { mocks } = await reconcile({
       credit: credits,
       runs: { [runKey("ci.yml", "sha-1")]: [successRun(20, "CI", { conclusion: "failure" })] },

@@ -234,6 +234,20 @@ changing any credit limit, model, credential, agent permission or workflow pin.
 This is source enforcement, not a hard billing cap or a distributed lock on
 independently triggered runs. No native review or commissioning hold is lifted.
 
+### Owner-requested AIC limits
+
+The owner subsequently approved uniform limits of 5,000 AIC per run and
+20,000 AIC per rolling 24-hour workflow budget across all 18 agentic workflows.
+The source frontmatter, compiled locks and generated workflow inventory carry
+these values; the existing controller and monitoring readers continue to derive
+them from trusted source. Credit enforcement, recorded usage, models, identities,
+permissions, retry limits and factory/deployment controls remain unchanged.
+
+These are per-workflow thresholds, not a shared repository spending limit or a
+hard billing ceiling. Earlier failed runs and their original limits above remain
+historical evidence, not current policy or successful reviews. This budget-only
+change does not authorize a forbidden retry, deployment, merge or factory resume.
+
 ### Fresh-database admission repair
 
 Autonomous source implementation uses a bounded catalog-only inspection in the

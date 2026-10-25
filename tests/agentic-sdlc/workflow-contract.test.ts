@@ -261,7 +261,7 @@ describe("agentic SDLC workflow contracts", () => {
     expect(prompt).toContain("Missing local history is not an empty diff");
   });
 
-  it("bounds general-review duplication without reducing coverage or raising budgets", () => {
+  it("bounds general-review duplication under the configured credit limits", () => {
     expect(codeReview).toContain("Do not launch overlapping security");
     expect(codeReview).toContain("specialist escalation labels and independently required checks");
     expect(codeReview).toContain("non-overlapping scopes");
@@ -271,8 +271,8 @@ describe("agentic SDLC workflow contracts", () => {
     expect(codeReview).toContain("passing CI never substitutes for reviewing the changed behavior");
     expect(codeReview).toContain("Do not sacrifice coverage or verdict quality to fit a budget");
     expect(codeReview).toContain("review still fails; do not request alternate runs or a higher limit");
-    expect(codeReview).toMatch(/^max-ai-credits: 1500\r?$/m);
-    expect(codeReview).toMatch(/^max-daily-ai-credits: 5000\r?$/m);
+    expect(codeReview).toMatch(/^max-ai-credits: 5000\r?$/m);
+    expect(codeReview).toMatch(/^max-daily-ai-credits: 20000\r?$/m);
   });
 
   it("enrolls docs-sync repairs without arming unverified auto-merge", () => {

@@ -51,7 +51,7 @@ describe("workflow frontmatter inventory", () => {
       "create-issue",
       "noop",
     ]);
-    expect(opportunity.creditCaps).toEqual({ perRun: 1000, perDay: 2000 });
+    expect(opportunity.creditCaps).toEqual({ perRun: 5000, perDay: 20000 });
   });
 
   it("resolves every declared workflow import", () => {

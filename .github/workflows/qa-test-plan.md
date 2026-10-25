@@ -204,8 +204,8 @@ safe-outputs:
             retention-days: 7
   noop:
     report-as-issue: false
-max-ai-credits: 1600
-max-daily-ai-credits: 3500
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 timeout-minutes: 25
 pre-agent-steps:
   - name: Materialize the exact dispatched QA head

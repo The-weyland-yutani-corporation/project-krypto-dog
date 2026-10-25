@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { deflateRawSync } from "node:zlib";
+import { listSourceWorkflowIds } from "../../scripts/agentic/frontmatter";
 import { archiveText } from "./receipt-archive-fixture";
 import { creditFixture, CREDIT_CACHE_FILE, CREDIT_NOW } from "./credit-admission-fixture";
 
@@ -29,19 +30,18 @@ function admit(fixture: ReturnType<typeof creditFixture>) {
 }
 
 describe("trusted workflow credit limits", () => {
-  it("reads the distinct source limits without changing them", () => {
-    expect(credit.readWorkflowCreditLimits("code-review.lock.yml")).toEqual({ perRun: 1500, perDay: 5000 });
-    expect(credit.readWorkflowCreditLimits("trading-safety-review.lock.yml")).toEqual({ perRun: 1600, perDay: 4000 });
-    expect(credit.readWorkflowCreditLimits("implement-ticket.lock.yml")).toEqual({ perRun: 500, perDay: 1500 });
+  it("reads the owner-configured limits without changing them", () => {
+    expect(credit.readWorkflowCreditLimits("code-review.lock.yml")).toEqual({ perRun: 5000, perDay: 20000 });
+    expect(credit.readWorkflowCreditLimits("trading-safety-review.lock.yml")).toEqual({ perRun: 5000, perDay: 20000 });
+    expect(credit.readWorkflowCreditLimits("implement-ticket.lock.yml")).toEqual({ perRun: 5000, perDay: 20000 });
   });
 
-  it("can read all committed agentic workflow policies", () => {
-    const workflows = fs.readdirSync(path.join(__dirname, "../../.github/workflows"))
-      .filter((name) => name.endsWith(".lock.yml"));
+  it("applies the requested limits to every source workflow", () => {
+    const workflows = listSourceWorkflowIds().map((id) => `${id}.lock.yml`);
     expect(workflows).toHaveLength(18);
     for (const workflow of workflows) {
       const limits = credit.readWorkflowCreditLimits(workflow);
-      expect(limits.perDay).toBeGreaterThanOrEqual(limits.perRun);
+      expect(limits).toEqual({ perRun: 5000, perDay: 20000 });
     }
   });
 
@@ -150,7 +150,7 @@ describe("controller credit admission", () => {
   it("admits empty native history without inventing a usage artifact", async () => {
     const fixture = creditFixture();
     expect(await admit(fixture)).toEqual({
-      allowed: true, reason: "within-recorded-budget", total: 0, limit: 5000, retryAfter: null,
+      allowed: true, reason: "within-recorded-budget", total: 0, limit: 20000, retryAfter: null,
     });
     expect(fixture.api.downloadArtifact).not.toHaveBeenCalled();
     expect(fixture.api.listWorkflowRuns).toHaveBeenCalledWith(expect.objectContaining({
@@ -160,22 +160,22 @@ describe("controller credit admission", () => {
 
   it("accepts exact-threshold usage using the pinned native admission semantics", async () => {
     const fixture = creditFixture();
-    fixture.addRun(5000);
-    expect(await admit(fixture)).toMatchObject({ allowed: true, total: 5000 });
+    for (let index = 0; index < 4; index += 1) fixture.addRun(5000);
+    expect(await admit(fixture)).toMatchObject({ allowed: true, total: 20000, limit: 20000 });
   });
 
   it("defers over-budget work with the exact creation-time expiry, not midnight", async () => {
     const fixture = creditFixture();
-    fixture.addRun(2000, { created_at: "2026-10-25T04:59:25Z", updated_at: "2026-10-25T05:15:57Z" });
-    fixture.addRun(4500);
+    fixture.addRun(5000, { created_at: "2026-10-25T04:59:25Z", updated_at: "2026-10-25T05:15:57Z" });
+    for (let index = 0; index < 4; index += 1) fixture.addRun(5000);
     expect(await admit(fixture)).toEqual({
-      allowed: false, reason: "rolling-credit-limit", total: 6500, limit: 5000,
+      allowed: false, reason: "rolling-credit-limit", total: 25000, limit: 20000,
       retryAfter: "2026-10-26T04:59:25.001Z",
     });
     expect(fixture.core.info).toHaveBeenCalledWith(expect.stringContaining("No dispatch was admitted"));
   });
 
-  it("matches the observed code-review total and next natural admission window", () => {
+  it("preserves historical budget math and admits that ledger under the new limit", () => {
     const usage = [
       ["2026-10-25T02:50:10Z", 353.95733750000005],
       ["2026-10-25T03:53:08Z", 94.10592500000001],
@@ -185,15 +185,19 @@ describe("controller credit admission", () => {
       ["2026-10-25T08:48:03Z", 31.588162500000003],
       ["2026-10-25T09:35:06Z", 1512.9756250000003],
     ] satisfies Array<[string, number]>;
-    const result = credit.budgetDecision(usage.map(([createdAt, credits], id) => ({ id, createdAt, credits })), { perDay: 5000 });
+    const runs = usage.map(([createdAt, credits], id) => ({ id, createdAt, credits }));
+    const result = credit.budgetDecision(runs, { perDay: 5000 });
     expect(result.allowed).toBe(false);
     expect(result.total).toBeCloseTo(6511.781075, 6);
     expect(result.retryAfter).toBe("2026-10-26T04:59:25.001Z");
+    expect(credit.budgetDecision(runs, credit.readWorkflowCreditLimits("code-review.lock.yml"))).toMatchObject({
+      allowed: true, limit: 20000, retryAfter: null,
+    });
   });
 
   it("rechecks naturally on a later pass without retrying within the same pass", async () => {
     const fixture = creditFixture();
-    fixture.addRun(5001);
+    fixture.addRun(20001);
     const first = credit.createCreditAdmission(fixture.input);
     expect((await first(fixture.workflow)).allowed).toBe(false);
     const reads = fixture.api.listWorkflowRuns.mock.calls.length;
@@ -342,8 +346,8 @@ describe("controller credit admission", () => {
 
   it("paginates the whole bounded window instead of counting just the first page", async () => {
     const fixture = creditFixture();
-    for (let index = 0; index < 101; index += 1) fixture.addRun(50);
-    expect(await admit(fixture)).toMatchObject({ allowed: false, total: 5050 });
+    for (let index = 0; index < 101; index += 1) fixture.addRun(200);
+    expect(await admit(fixture)).toMatchObject({ allowed: false, total: 20200 });
     expect(fixture.api.listWorkflowRuns).toHaveBeenCalledWith(expect.objectContaining({ page: 2 }));
   });
 

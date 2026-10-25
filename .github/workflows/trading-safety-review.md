@@ -200,8 +200,8 @@ safe-outputs:
     deduplicate-by-title: 1
   noop:
     report-as-issue: false
-max-ai-credits: 1600
-max-daily-ai-credits: 4000
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 pre-agent-steps:
   - name: Materialize the exact dispatched review head
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha != '' }}

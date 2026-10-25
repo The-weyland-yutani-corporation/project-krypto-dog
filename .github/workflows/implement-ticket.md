@@ -51,8 +51,8 @@ safe-outputs:
     hide-older-comments: true
   noop:
     report-as-issue: false
-max-ai-credits: 500
-max-daily-ai-credits: 1500
+max-ai-credits: 5000
+max-daily-ai-credits: 20000
 timeout-minutes: 10
 pre-agent-steps:
   - name: Require attested factory activation before assignment

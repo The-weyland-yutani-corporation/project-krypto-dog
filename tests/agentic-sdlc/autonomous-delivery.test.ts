@@ -227,7 +227,7 @@ describe("durable intake handoffs", () => {
 
   it("does not substitute discovery when an owned planning stage exceeds its credit limit", async () => {
     const fixture = intakeFixture([{ number: 8, state: "open", labels: ["ready-for-planning"] }], [], "em-planning.lock.yml");
-    fixture.credits.addRun(3001);
+    fixture.credits.addRun(20001);
     await intake.runFactoryIntake(fixture);
     expect(fixture.dispatch).not.toHaveBeenCalled();
     expect(fixture.credits.api.downloadArtifact).toHaveBeenCalledTimes(1);
@@ -236,10 +236,10 @@ describe("durable intake handoffs", () => {
 
   it("leaves exhausted discovery undispatched for a later scheduled pass", async () => {
     const fixture = intakeFixture();
-    fixture.credits.addRun(2001);
+    fixture.credits.addRun(20001);
     await intake.runFactoryIntake(fixture);
     expect(fixture.dispatch).not.toHaveBeenCalled();
-    expect(fixture.core.info).toHaveBeenCalledWith(expect.stringContaining("2001/2000"));
+    expect(fixture.core.info).toHaveBeenCalledWith(expect.stringContaining("20001/20000"));
   });
 
   it("does not advance intake after implementation credit deferral", async () => {
