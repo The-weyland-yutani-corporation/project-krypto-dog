@@ -479,6 +479,14 @@ freshness again against database time after acquiring the account/fence
 locks. Fence release and the nonsecret provenance journal share that
 transaction; operator/drawdown stops and completed-owner history remain intact.
 
+The signed Azure observation is not a cached database approval. Release reads
+reconciled accounting, flat position, lease state, and exact fence ownership
+under those database locks; a subsequently acquired lease still blocks release.
+An expired proof or failed provenance insert leaves the fence unreleased.
+The native PostgreSQL suite exercises both refusals and transaction rollback.
+Target smoke runs after release because the fence deliberately blocks its
+disabled invocation; neither release nor that later smoke enables paper mode.
+
 The private proof is passed by file, never as token text in shell arguments.
 The native helper injects it only into the constrained execution template
 and deletes local template files immediately after the start response.

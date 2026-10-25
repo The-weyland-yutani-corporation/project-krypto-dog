@@ -257,6 +257,54 @@ async function main(): Promise<void> {
   })).kind, "mutex");
   assert.equal((await runDeploymentAdmission(await releaseOptions(randomUUID()))).status, "blocked");
 
+  const proofBeforeLease = await releaseOptions();
+  await sql`
+    UPDATE "krypto"."AgentState"
+    SET "leaseOwner" = 'release-readback-race',
+        "leaseExpiresAt" = clock_timestamp() + INTERVAL '1 minute',
+        "isRunning" = true
+    WHERE id = 'singleton'
+  `;
+  before = await stateSnapshot();
+  const fencedBeforeRelease = await fenceSnapshot();
+  assert.equal((await runDeploymentAdmission(proofBeforeLease)).reason, "run-lease",
+    "A valid signed Azure observation must not override subsequently changed database state.");
+  assert.equal(await stateSnapshot(), before);
+  assert.equal(await fenceSnapshot(), fencedBeforeRelease);
+  await sql`
+    UPDATE "krypto"."AgentState"
+    SET "leaseOwner" = NULL, "leaseExpiresAt" = NULL, "isRunning" = false
+    WHERE id = 'singleton' AND "leaseOwner" = 'release-readback-race'
+  `;
+
+  const staleRelease = await releaseOptions();
+  staleRelease.observation = await verifiedCutoverFixture(
+    { owner: base.owner, targetOrigin: base.targetOrigin },
+    new Date(Date.now() - 181_000),
+  );
+  assert.equal((await runDeploymentAdmission(staleRelease)).reason, "workflow-observation",
+    "Earlier signature verification must not bypass freshness against the current database clock.");
+  assert.equal(await fenceSnapshot(), fencedBeforeRelease);
+
+  before = await stateSnapshot();
+  await sql`
+    ALTER TABLE "krypto"."AgentJournal"
+    ADD CONSTRAINT deployment_admission_test_reject_release_audit
+    CHECK (("marketConditions"->>'event') IS DISTINCT FROM 'deployment-fence-released')
+    NOT VALID
+  `;
+  try {
+    assert.equal((await runDeploymentAdmission(await releaseOptions())).reason, "database-error");
+    assert.equal(await fenceSnapshot(), fencedBeforeRelease,
+      "Rejecting the provenance journal must roll back the preceding fence release.");
+    assert.equal(await stateSnapshot(), before);
+  } finally {
+    await sql`
+      ALTER TABLE "krypto"."AgentJournal"
+      DROP CONSTRAINT deployment_admission_test_reject_release_audit
+    `;
+  }
+
   await sql`
     UPDATE "krypto"."AgentState"
     SET "isOperatorPaused" = true, "isLocked" = true WHERE id = 'singleton'
@@ -338,7 +386,7 @@ async function main(): Promise<void> {
   })).kind, "mutex");
   assert.equal((await runDeploymentAdmission(await releaseOptions(resetOwner))).status, "released");
 
-  console.log("Deployment admission passed: exact source binding, mutation-free deferral, native row-lock race, runtime read-only fence, executor refusal, expiry, durable owner replay protection, multi-owner singleton history, single-active uniqueness, stop preservation, and seed/reset history preservation.");
+  console.log("Deployment admission passed: exact source binding, mutation-free deferral, native row-lock race, runtime read-only fence, executor refusal, fresh locked database state, expired signed-proof rejection, atomic release/provenance rollback, expiry, durable owner replay protection, multi-owner singleton history, single-active uniqueness, stop preservation, and seed/reset history preservation.");
 }
 
 main()
