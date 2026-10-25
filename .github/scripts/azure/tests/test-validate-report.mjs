@@ -424,12 +424,16 @@ const inspectionDirectory = mkdtempSync(path.join(tmpdir(), "database-inspection
 try {
   const now = Date.now();
   const report = {
-    schemaVersion: "1.0.0", operation: "database-inspection", environmentName: "prod",
+    schemaVersion: "2.0.0", operation: "database-inspection", environmentName: "prod",
     releaseSha: RELEASE_SHA_A, imageDigest: DIGEST_1, approved: true, reason: "empty-database",
     jobExecutionId: "run1-a1-database-inspection-check-release",
     azureExecutionName: "inspection-1",
     generatedAt: new Date(now).toISOString(),
     inspection: {
+      catalogProfile: "postgresql-17-bootstrap-v2", serverVersionNum: 170005,
+      stateCounts: {
+        catalogObjects: 0, largeObjects: 0, databaseSettings: 0, privilegeChanges: 0, metadata: 0,
+      },
       databaseHost: "psql-krypto-prod02.postgres.database.azure.com",
       databaseName: "postgres", runtimeLoginRole: "krypto_app",
       observedAt: new Date(now - 1000).toISOString(), readOnly: true, empty: true,
@@ -448,6 +452,7 @@ try {
     [{}, 0],
     ...[
       { approved: false }, { reason: "database-inspection-failed" }, { inspection: null },
+      { schemaVersion: "1.0.0" },
       { operation: "migrate-init" }, { releaseSha: RELEASE_SHA_B }, { imageDigest: DIGEST_2 },
       { environmentName: "dev" }, { azureExecutionName: "another-execution" },
       { jobExecutionId: "another-attempt" }, { token: "must-not-be-published" },
@@ -458,9 +463,21 @@ try {
       { runtimeRolePresent: true }, { runtimeLoginPresent: true }, { runtimeLoginPresent: null },
       { databaseHost: "foreign.example.com" }, { databaseName: "other" },
       { runtimeLoginRole: "other" }, { unknown: true },
+      { catalogProfile: "postgresql-17-bootstrap-v1" },
+      { catalogProfile: undefined }, { serverVersionNum: "170005" },
+      { serverVersionNum: 160005 }, { serverVersionNum: 180000 }, { serverVersionNum: 170000.5 },
+      { stateCounts: null }, { stateCounts: [] }, { stateCounts: {} },
+      { stateCounts: { ...report.inspection.stateCounts, unknown: 0 } },
       { observedAt: new Date(now - 181_000).toISOString() },
       { observedAt: new Date(now + 30_000).toISOString() },
     ].map((change) => [{ inspection: { ...report.inspection, ...change } }, 1]),
+    ...Object.keys(report.inspection.stateCounts).flatMap((category) =>
+      [1, -1, "0", null, undefined].map((value) => [{
+        inspection: {
+          ...report.inspection,
+          stateCounts: { ...report.inspection.stateCounts, [category]: value },
+        },
+      }, 1])),
   ];
   for (const [change, expectedStatus] of variants) {
     const reportPath = path.join(inspectionDirectory, "report.json");

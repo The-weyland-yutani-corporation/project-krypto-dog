@@ -197,11 +197,16 @@ else if (matches("deployment group create")) {
   fs.mkdirSync(destination, { recursive: true });
   const empty = state.scenario !== "retained";
   const report = {
-    schemaVersion: "1.0.0", operation: "database-inspection", environmentName: "prod",
+    schemaVersion: "2.0.0", operation: "database-inspection", environmentName: "prod",
     releaseSha: config.releaseSha, imageDigest: config.imageDigest, jobExecutionId: state.executionId,
     azureExecutionName: "inspection-1", generatedAt: new Date().toISOString(),
     approved: empty, reason: empty ? "empty-database" : "existing-database-state",
     inspection: {
+      catalogProfile: "postgresql-17-bootstrap-v2", serverVersionNum: 170005,
+      stateCounts: {
+        catalogObjects: empty ? 0 : 1, largeObjects: 0, databaseSettings: 0,
+        privilegeChanges: 0, metadata: 0,
+      },
       databaseHost: config.databaseHost, databaseName: config.databaseName,
       runtimeLoginRole: config.runtimeLoginRole, observedAt: new Date().toISOString(),
       readOnly: true, objectCount: empty ? 0 : 1,

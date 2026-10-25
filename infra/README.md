@@ -327,11 +327,30 @@ requires read-only database inspection; unknown, partial, or inconsistent
 inventory fails before mutation.
 
 The `database-inspection` operation runs fixed catalog reads inside a bounded
-read-only PostgreSQL transaction. Retained relations, functions, types,
-non-platform schemas, or either application runtime role reject fresh admission,
-including old/incompatible fence and migration state. It does not read business
-rows or clear stops, roles, fences, credentials, or balances. Platform-owned
-extension objects alone do not constitute application initialization.
+read-only PostgreSQL 17 transaction. Its versioned profile covers schema objects
+(including user-created objects inside system namespaces), database-wide objects
+such as casts, languages, publications, subscriptions and foreign-data bindings,
+legacy non-platform roles, replication origins, prepared transactions,
+large-object metadata, database/global role settings, changed database/public
+schema privileges, and retained annotations. Either application runtime role
+also rejects fresh admission, including old/incompatible fence and migration
+state. Inspection never reads business rows, large-object payloads, or
+subscription connection secrets, and never clears stops, roles, fences,
+credentials, or balances.
+
+Only the default `initdb` footprint and the reviewed stateless `plpgsql` 1.0 /
+`pgcrypto` 1.3 extension footprint are admitted. An extension membership is not
+a blanket exemption: retained extension tables, application routines, altered
+privileges, and other extensions block initialization. Unknown PostgreSQL major
+versions or non-default baselines need separately reviewed evidence, not an
+automatic reset or a guessed empty result.
+
+The native regression uses a fresh, disposable PostgreSQL 17 cluster with
+`max_prepared_transactions >= 1`, so it can prove that a prepared transaction
+with otherwise invisible paper state is rejected. CI and the migration script's
+own local cluster enable four slots. An externally supplied
+`TEST_POSTGRES_ADMIN_URL` must already meet that fixture prerequisite; the
+regression never reconfigures an existing server.
 
 For a foundation with no jobs, `database-inspection.bicep` temporarily creates
 only `caj-prod-migrate-init`, using the existing ops identity and versionless
@@ -344,7 +363,10 @@ per-secret grant require separate recovery; inspection never repairs them.
 The controller repeats inspection immediately before foundation/release mutation
 and uses a full-template read-only override of the candidate migrate-init job
 before migration. Reports bind the database, release, image, identity context,
-logical invocation and native execution, and expire after 180 seconds.
+logical invocation and native execution, and expire after 180 seconds. Schema
+`2.0.0` additionally requires the `postgresql-17-bootstrap-v2` profile, actual
+server version, and every closed persistent-state counter to be zero. Older or
+incomplete catalog reports cannot authorize initialization.
 `MIGRATION_REQUIRE_EMPTY_DATABASE=true` additionally rechecks the actual
 connection and runtime credential consistency inside migrate-init before
 Drizzle, login/password bootstrap, or seed. Partial initialization cannot be

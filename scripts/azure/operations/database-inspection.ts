@@ -21,7 +21,7 @@ export async function run(
   const expectedDatabase = requireEnv("DATABASE_INSPECTION_NAME");
   const runtimeLoginRole = requireEnv("AZURE_RUNTIME_LOGIN_ROLE");
   const base = {
-    schemaVersion: "1.0.0",
+    schemaVersion: "2.0.0",
     operation: "database-inspection",
     environmentName: context.environmentName,
     releaseSha: context.releaseSha,

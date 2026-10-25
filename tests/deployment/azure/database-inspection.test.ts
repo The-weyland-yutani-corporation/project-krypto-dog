@@ -23,11 +23,16 @@ const env = {
   AZURE_RUNTIME_LOGIN_ROLE: "krypto_app",
 };
 const empty: DatabaseInspection = {
+  catalogProfile: "postgresql-17-bootstrap-v2",
+  serverVersionNum: 170005,
   databaseHost: "localhost",
   databaseName: "disposable",
   runtimeLoginRole: "krypto_app",
   observedAt: new Date().toISOString(),
   readOnly: true,
+  stateCounts: {
+    catalogObjects: 0, largeObjects: 0, databaseSettings: 0, privilegeChanges: 0, metadata: 0,
+  },
   objectCount: 0,
   runtimeRolePresent: false,
   runtimeLoginPresent: false,
@@ -53,7 +58,7 @@ describe("database inspection ops adapter", () => {
     expect(result).toMatchObject({
       passed: true,
       report: {
-        schemaVersion: "1.0.0",
+        schemaVersion: "2.0.0",
         operation: "database-inspection",
         environmentName: "prod",
         releaseSha: context.releaseSha,
@@ -69,7 +74,9 @@ describe("database inspection ops adapter", () => {
   });
 
   it("publishes an explicit blocked outcome for retained database or role state", async () => {
-    inspect.mockResolvedValue({ ...empty, objectCount: 4, empty: false });
+    inspect.mockResolvedValue({
+      ...empty, stateCounts: { ...empty.stateCounts, largeObjects: 4 }, objectCount: 4, empty: false,
+    });
     await expect(run(context)).resolves.toMatchObject({
       passed: false,
       report: { approved: false, reason: "existing-database-state" },

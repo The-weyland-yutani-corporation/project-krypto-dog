@@ -156,7 +156,7 @@ switch (operation) {
   case "database-inspection": {
     if (!expectedImageDigest) fail("--image-digest is required for database inspection.");
     const expected = {
-      schemaVersion: "1.0.0", operation, environmentName: "prod",
+      schemaVersion: "2.0.0", operation, environmentName: "prod",
       releaseSha: expectedReleaseSha, imageDigest: expectedImageDigest,
       jobExecutionId: args["job-execution-id"],
       azureExecutionName: args["azure-execution-name"],
@@ -178,6 +178,7 @@ switch (operation) {
     if (Object.keys(inspection).sort().join(",") !== [
       "databaseHost", "databaseName", "runtimeLoginRole", "observedAt",
       "readOnly", "objectCount", "runtimeRolePresent", "runtimeLoginPresent", "empty",
+      "catalogProfile", "serverVersionNum", "stateCounts",
     ].sort().join(",")) fail("Database inspection requires a closed catalog snapshot.");
     for (const [field, argument] of [
       ["databaseHost", "database-host"], ["databaseName", "database-name"],
@@ -190,6 +191,18 @@ switch (operation) {
     }
     requireTrue(inspection, "readOnly", "database-inspection snapshot");
     requireTrue(inspection, "empty", "database-inspection snapshot");
+    requireMatch(inspection, "catalogProfile", "postgresql-17-bootstrap-v2", "database-inspection snapshot");
+    if (!Number.isSafeInteger(inspection.serverVersionNum) ||
+        inspection.serverVersionNum < 170000 || inspection.serverVersionNum >= 180000) {
+      fail("Database inspection requires the validated PostgreSQL 17 catalog profile.");
+    }
+    const stateCounts = requireField(inspection, "stateCounts", "object");
+    const categories = ["catalogObjects", "largeObjects", "databaseSettings", "privilegeChanges", "metadata"];
+    if (Array.isArray(stateCounts) ||
+        Object.keys(stateCounts).sort().join(",") !== categories.sort().join(",") ||
+        Object.values(stateCounts).some((value) => value !== 0)) {
+      fail("Every persistent-state category must be present and empty.");
+    }
     if (inspection.objectCount !== 0 || inspection.runtimeRolePresent !== false ||
         inspection.runtimeLoginPresent !== false) {
       fail("Retained objects or runtime roles cannot authorize fresh database initialization.");

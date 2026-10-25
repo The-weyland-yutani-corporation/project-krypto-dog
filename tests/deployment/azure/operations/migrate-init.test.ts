@@ -219,6 +219,10 @@ describe("scripts/azure/operations/migrate-init", () => {
       process.env.DIRECT_URL = "postgres://krypto_owner:fixture@psql-krypto-prod02.postgres.database.azure.com/postgres?sslmode=require";
       process.env.DATABASE_URL = `postgres://azure_app_identity:${RUNTIME_LOGIN_PASSWORD_VALUE}@psql-krypto-prod02.postgres.database.azure.com/postgres?sslmode=require`;
       mockedInspection.mockResolvedValue({
+        catalogProfile: "postgresql-17-bootstrap-v2", serverVersionNum: 170005,
+        stateCounts: {
+          catalogObjects: 0, largeObjects: 0, databaseSettings: 0, privilegeChanges: 0, metadata: 0,
+        },
         databaseHost: process.env.DATABASE_INSPECTION_HOST,
         databaseName: "postgres", runtimeLoginRole: "azure_app_identity",
         observedAt: new Date().toISOString(), readOnly: true, objectCount: 0,
@@ -240,6 +244,10 @@ describe("scripts/azure/operations/migrate-init", () => {
 
     it("does not migrate, rotate credentials or seed retained database state", async () => {
       mockedInspection.mockResolvedValueOnce({
+        catalogProfile: "postgresql-17-bootstrap-v2", serverVersionNum: 170005,
+        stateCounts: {
+          catalogObjects: 0, largeObjects: 1, databaseSettings: 0, privilegeChanges: 0, metadata: 0,
+        },
         databaseHost: process.env.DATABASE_INSPECTION_HOST ?? "",
         databaseName: "postgres", runtimeLoginRole: "azure_app_identity",
         observedAt: new Date().toISOString(), readOnly: true, objectCount: 1,

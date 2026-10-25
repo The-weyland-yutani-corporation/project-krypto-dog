@@ -20,9 +20,12 @@ const options = {
   expectedDatabase: "disposable",
   runtimeLoginRole: "krypto_app",
 };
-const identity = { database: "disposable", username: "owner", readOnly: "on" };
+const identity = { database: "disposable", username: "owner", readOnly: "on", serverVersionNum: 170005 };
+const emptyCounts = {
+  catalogObjects: 0, largeObjects: 0, databaseSettings: 0, privilegeChanges: 0, metadata: 0,
+};
 const emptyCatalog = {
-  objectCount: 0,
+  stateCounts: emptyCounts,
   runtimeRolePresent: false,
   runtimeLoginPresent: false,
   observedAt: new Date("2026-10-25T00:00:00Z"),
@@ -35,19 +38,22 @@ describe("read-only database bootstrap inspection", () => {
     mockBegin.mockImplementation(async (_options, action) => action({ unsafe: mockQuery }));
     mockQuery.mockReset();
     mockQuery.mockImplementation(async (query) => {
-      if (query.includes("current_database()")) return [identity];
-      if (query.includes("WITH user_namespaces")) return [emptyCatalog];
+      if (query.startsWith("SELECT current_database()")) return [identity];
+      if (query.includes("WITH inspected_database")) return [emptyCatalog];
       return [];
     });
   });
 
   it("admits an actually empty database through fixed read-only queries", async () => {
     await expect(inspectEmptyDatabase(options)).resolves.toEqual({
+      catalogProfile: "postgresql-17-bootstrap-v2",
+      serverVersionNum: 170005,
       databaseHost: "localhost",
       databaseName: "disposable",
       runtimeLoginRole: "krypto_app",
       observedAt: "2026-10-25T00:00:00.000Z",
       readOnly: true,
+      stateCounts: emptyCounts,
       objectCount: 0,
       runtimeRolePresent: false,
       runtimeLoginPresent: false,
@@ -71,15 +77,25 @@ describe("read-only database bootstrap inspection", () => {
     expect(mockEnd).toHaveBeenCalledTimes(1);
   });
 
+  it.each(Object.keys(emptyCounts))("counts retained %s even with no ordinary tables or runtime roles", async (category) => {
+    const stateCounts = { ...emptyCounts, [category]: 1 };
+    mockQuery.mockImplementation(async (query) =>
+      query.startsWith("SELECT current_database()") ? [identity]
+        : query.includes("WITH inspected_database") ? [{ ...emptyCatalog, stateCounts }] : [],
+    );
+    await expect(inspectEmptyDatabase(options)).resolves.toMatchObject({
+      stateCounts, objectCount: 1, empty: false, runtimeRolePresent: false, runtimeLoginPresent: false,
+    });
+  });
+
   it.each([
-    { objectCount: 1 },
     { runtimeRolePresent: true },
     { runtimeLoginPresent: true },
-    { objectCount: 20, runtimeRolePresent: true, runtimeLoginPresent: true },
+    { stateCounts: { ...emptyCounts, catalogObjects: 20 }, runtimeRolePresent: true, runtimeLoginPresent: true },
   ])("rejects retained state without changing it: %j", async (retained) => {
     mockQuery.mockImplementation(async (query) => {
-      return query.includes("current_database()") ? [identity]
-        : query.includes("WITH user_namespaces") ? [{ ...emptyCatalog, ...retained }] : [];
+      return query.startsWith("SELECT current_database()") ? [identity]
+        : query.includes("WITH inspected_database") ? [{ ...emptyCatalog, ...retained }] : [];
     });
     await expect(inspectEmptyDatabase(options)).resolves.toMatchObject({
       ...retained,
@@ -87,6 +103,29 @@ describe("read-only database bootstrap inspection", () => {
       empty: false,
     });
     expect(mockEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([160000, 180000, 170001.5, "170000", null, Number.NaN])(
+    "refuses an unvalidated or malformed server version before reading catalogs: %s",
+    async (serverVersionNum) => {
+      mockQuery.mockImplementation(async (query) =>
+        query.startsWith("SELECT current_database()") ? [{ ...identity, serverVersionNum }] : [],
+      );
+      await expect(inspectEmptyDatabase(options)).rejects.toThrow("PostgreSQL 17");
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(mockEnd).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("reads large-object metadata and subscription identities, never payloads or connection secrets", async () => {
+    await inspectEmptyDatabase(options);
+    const query = mockQuery.mock.calls[2][0];
+    expect(query).toContain("FROM pg_largeobject_metadata");
+    expect(query).not.toMatch(/FROM\s+pg_largeobject\b/);
+    expect(query).toContain("SELECT 'pg_subscription'::regclass, oid FROM pg_subscription");
+    expect(query).not.toContain("subconninfo");
+    expect(query).not.toContain("nspname NOT IN ('pg_catalog'");
+    expect(query).toContain("FROM allowed_extension_objects");
   });
 
   it.each([
@@ -114,18 +153,20 @@ describe("read-only database bootstrap inspection", () => {
     { readOnly: "off" },
   ])("rejects a different or writable actual connection: %j", async (changed) => {
     mockQuery.mockImplementation(async (query) =>
-      query.includes("current_database()") ? [{ ...identity, ...changed }] : [],
+      query.startsWith("SELECT current_database()") ? [{ ...identity, ...changed }] : [],
     );
     await expect(inspectEmptyDatabase(options)).rejects.toThrow("read-only target");
-    expect(mockQuery.mock.calls.some(([query]) => query.includes("WITH user_namespaces"))).toBe(false);
+    expect(mockQuery.mock.calls.some(([query]) => query.includes("WITH inspected_database"))).toBe(false);
     expect(mockEnd).toHaveBeenCalledTimes(1);
   });
 
   it.each([
     [],
     [emptyCatalog, emptyCatalog],
-    [{ ...emptyCatalog, objectCount: "0" }],
-    [{ ...emptyCatalog, objectCount: -1 }],
+    ...[null, [], {}, { ...emptyCounts, unknown: 0 }, ...[
+      "0", -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1,
+    ].map((largeObjects) => ({ ...emptyCounts, largeObjects }))].map((stateCounts) =>
+      [{ ...emptyCatalog, stateCounts }]),
     [{ ...emptyCatalog, runtimeRolePresent: null }],
     [{ ...emptyCatalog, runtimeLoginPresent: 0 }],
     [{ ...emptyCatalog, observedAt: new Date("invalid") }],
@@ -134,13 +175,25 @@ describe("read-only database bootstrap inspection", () => {
     "never turns incomplete catalog evidence into success: %j",
     async ({ rows }) => {
       mockQuery.mockImplementation(async (query) =>
-        query.includes("current_database()") ? [identity]
-          : query.includes("WITH user_namespaces") ? rows : [],
+        query.startsWith("SELECT current_database()") ? [identity]
+          : query.includes("WITH inspected_database") ? rows : [],
       );
       await expect(inspectEmptyDatabase(options)).rejects.toThrow("catalog evidence");
       expect(mockEnd).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("refuses a total exceeding safe-integer bounds", async () => {
+    mockQuery.mockImplementation(async (query) =>
+      query.startsWith("SELECT current_database()") ? [identity]
+        : query.includes("WITH inspected_database") ? [{
+          ...emptyCatalog,
+          stateCounts: { ...emptyCounts, catalogObjects: Number.MAX_SAFE_INTEGER, largeObjects: 1 },
+        }] : [],
+    );
+    await expect(inspectEmptyDatabase(options)).rejects.toThrow("unbounded");
+    expect(mockEnd).toHaveBeenCalledTimes(1);
+  });
 
   it("closes the client and propagates denied/failed reads", async () => {
     mockQuery.mockRejectedValueOnce(new Error("permission denied"));

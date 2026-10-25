@@ -38,7 +38,7 @@ else
   initdb -D "$PGDATA" --auth=trust --username=postgres >/dev/null
   pg_ctl -D "$PGDATA" \
     -l "$PGLOG" \
-    -o "-F -p $PORT -h 127.0.0.1" \
+    -o "-F -p $PORT -h 127.0.0.1 -c max_prepared_transactions=4" \
     -w start >/dev/null
   admin_url="postgresql://postgres@127.0.0.1:$PORT/postgres"
   url_prefix="postgresql://postgres@127.0.0.1:$PORT"
@@ -141,6 +141,10 @@ through_0006_config="$(build_through_config 6 0006)"
 through_0007_config="$(build_through_config 7 0007)"
 through_0008_config="$(build_through_config 8 0008)"
 
+create_database bootstrap_inspection
+DATABASE_INSPECTION_TEST_URL="$url_prefix/bootstrap_inspection" \
+  npx tsx scripts/test-database-inspection.ts
+
 psql "$admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 DO $$
 BEGIN
@@ -156,10 +160,6 @@ BEGIN
 END
 $$;
 SQL
-
-create_database bootstrap_inspection
-DATABASE_INSPECTION_TEST_URL="$url_prefix/bootstrap_inspection" \
-  npx tsx scripts/test-database-inspection.ts
 
 create_database fresh
 DIRECT_URL="$fresh_url" \
