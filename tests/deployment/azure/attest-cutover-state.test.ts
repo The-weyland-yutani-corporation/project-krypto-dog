@@ -4,14 +4,14 @@ import path from "node:path";
 import { ChildProcess, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
-  attestCutoverState, collectCutoverObservation, writeObservationFiles,
+  attestCutoverState, collectCutoverObservation, writeObservationFiles, attestCollectedObservation,
 } from "../../../scripts/azure/attest-cutover-state";
 import { deploymentFenceOwner } from "../../../.github/scripts/azure/lib/deployment-owner.cjs";
 import {
   verifyWorkflowObservation, WORKFLOW_OBSERVATION_ISSUER, WORKFLOW_OBSERVATION_PATH,
   type WorkflowObservationReceipt,
 } from "@/deployment/workflow-observation";
-import { signedCutoverFixture } from "../workflow-observation-fixture";
+import { signedCutoverFixture, signedScheduledFixture, scheduledObservationFixture } from "../workflow-observation-fixture";
 
 jest.mock("node:child_process", () => {
   const actual = jest.requireActual<typeof import("node:child_process")>("node:child_process");
@@ -419,6 +419,33 @@ describe("authenticated observation producer", () => {
     const output = jest.mocked(process.stdout.write).mock.calls.map(([value]) => String(value));
     expect(output[0]).toBe(`::add-mask::${signed.token}\n`);
     expect(output.slice(1).join("")).not.toContain(signed.token);
+  });
+
+  it("attests a collected scheduled observation under the separate promotion Environment", async () => {
+    const observation = scheduledObservationFixture({
+      workflow: {
+        repository, repositoryId: env.GITHUB_REPOSITORY_ID, repositoryOwnerId: env.GITHUB_REPOSITORY_OWNER_ID,
+        sha: candidate, runId: env.GITHUB_RUN_ID, runAttempt: 1,
+      },
+    }, now);
+    const signed = await signedScheduledFixture(observation, now, {
+      sub: "repo:owner@789/project@456:environment:production-promotion",
+      repository, repository_id: env.GITHUB_REPOSITORY_ID,
+      repository_owner_id: env.GITHUB_REPOSITORY_OWNER_ID, workflow_ref: env.GITHUB_WORKFLOW_REF,
+    });
+    jest.mocked(globalThis.fetch).mockResolvedValue(new Response(JSON.stringify({ value: signed.token })));
+    mockedVerify.mockImplementation((proof, expected) =>
+      actualObservation.verifyWorkflowObservation(proof, expected, { now, keys: signed.keys }));
+    const { proof, receipt } = await attestCollectedObservation(observation, requestEnv);
+    expect(JSON.parse(proof)).toEqual({ observation, token: signed.token });
+    expect(receipt).toMatchObject({
+      purpose: "scheduled-execution", repositoryId: env.GITHUB_REPOSITORY_ID,
+      observationDigest: actualObservation.workflowObservationAudience(observation).split(":").at(-1),
+    });
+    expect(JSON.stringify(receipt)).not.toContain(signed.token);
+    expect(new URL(String(jest.mocked(globalThis.fetch).mock.calls[0][0])).searchParams.get("audience"))
+      .toBe(actualObservation.workflowObservationAudience(observation));
+    expect(mockedExecute).not.toHaveBeenCalled();
   });
 
   it.each([

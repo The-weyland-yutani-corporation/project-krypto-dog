@@ -1,4 +1,5 @@
-import { runProductionVerification } from "@/deployment/production-verification";
+import { runProductionVerification, type ProductionVerificationOptions } from "@/deployment/production-verification";
+import { verifyWorkflowObservation, workflowObservationTrustFromEnv } from "@/deployment/workflow-observation";
 import type { AzureOperationContext, AzureOperationResult } from "./types";
 
 function required(name: string): string {
@@ -32,18 +33,31 @@ export async function run(context: AzureOperationContext): Promise<AzureOperatio
     posthogEnvironment: required("POSTHOG_ENVIRONMENT"),
     approvalSecret: required("DEPLOYMENT_APPROVAL_SECRET"),
   };
-  const report = await runProductionVerification(phase === "ready" ? {
-    ...binding, phase,
-    cronSecret: required("CRON_SECRET"),
-    expectedApprovalId: required("EXPECTED_APPROVAL_ID"),
-    approvalCreatedAfter: required("EXPECTED_APPROVAL_CREATED_AFTER"),
-    expectedShadowIdempotencyKey: required("EXPECTED_SHADOW_IDEMPOTENCY_KEY"),
-    expectedShadowStartedAfter: required("EXPECTED_SHADOW_STARTED_AFTER"),
-  } : {
-    ...binding, phase,
-    scheduleEnabledAt: positiveInteger("SCHEDULE_ENABLED_AT_UNIX_SECONDS"),
-    scheduledExecutionStartedAt: required("SCHEDULED_EXECUTION_STARTED_AT"),
-  });
+  let options: ProductionVerificationOptions;
+  if (phase === "ready") {
+    if (process.env.DEPLOYMENT_WORKFLOW_OBSERVATION !== undefined) {
+      delete process.env.DEPLOYMENT_WORKFLOW_OBSERVATION;
+      throw new Error("Ready production verification must not receive a workflow-observation proof.");
+    }
+    options = {
+      ...binding, phase,
+      cronSecret: required("CRON_SECRET"),
+      expectedApprovalId: required("EXPECTED_APPROVAL_ID"),
+      approvalCreatedAfter: required("EXPECTED_APPROVAL_CREATED_AFTER"),
+      expectedShadowIdempotencyKey: required("EXPECTED_SHADOW_IDEMPOTENCY_KEY"),
+      expectedShadowStartedAfter: required("EXPECTED_SHADOW_STARTED_AFTER"),
+    };
+  } else {
+    const proof = required("DEPLOYMENT_WORKFLOW_OBSERVATION");
+    delete process.env.DEPLOYMENT_WORKFLOW_OBSERVATION;
+    const observation = await verifyWorkflowObservation(proof, {
+      ...workflowObservationTrustFromEnv(process.env),
+      purpose: "scheduled-execution", workflowSha: context.releaseSha,
+      operationExecutionId: context.jobExecutionId,
+    });
+    options = { ...binding, phase, opsImageDigest: required("OPS_IMAGE_DIGEST"), observation };
+  }
+  const report = await runProductionVerification(options);
   return {
     passed: report.approved,
     report: {

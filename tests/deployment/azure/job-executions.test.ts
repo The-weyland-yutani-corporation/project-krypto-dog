@@ -35,6 +35,35 @@ describe("bounded ARM job execution inventory", () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
+  it("retains observed timing while stripping unneeded provider metadata", async () => {
+    const item = { ...execution(0), properties: {
+      status: "Succeeded", startTime: "2026-10-21T12:00:01+00:00", endTime: "2026-10-21T12:00:30Z",
+      template: { containers: [{ env: [{ name: "private-provider-value", value: "not-needed" }] }] },
+    } };
+    const read = reader(new Map([[baseUrl, { value: [item] }]]));
+    expect(await readJobExecutions(jobId, read)).toEqual([{
+      id: item.id, name: item.name, properties: {
+        status: "Succeeded", startTime: item.properties.startTime, endTime: item.properties.endTime,
+      },
+    }]);
+  });
+
+  it.each([null, undefined])("omits unavailable timing metadata (%s)", async (value) => {
+    const item = { ...execution(0), properties: { status: "Running", startTime: value, endTime: value } };
+    const read = reader(new Map([[baseUrl, { value: [item] }]]));
+    expect(await readJobExecutions(jobId, read)).toEqual([{
+      id: item.id, name: item.name, properties: { status: "Running" },
+    }]);
+  });
+
+  it.each(["startTime", "endTime"])("rejects a malformed %s", async (field) => {
+    const item = execution(0);
+    const read = reader(new Map([[baseUrl, { value: [{
+      ...item, properties: { ...item.properties, [field]: 123 },
+    }] }]]));
+    await expect(readJobExecutions(jobId, read)).rejects.toThrow();
+  });
+
   it.each([
     baseUrl.replace("https:", "http:"),
     baseUrl.replace("management.azure.com", "elsewhere.example"),

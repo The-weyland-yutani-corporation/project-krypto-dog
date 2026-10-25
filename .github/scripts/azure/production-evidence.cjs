@@ -78,18 +78,14 @@ function productionVerificationOverrides(config) {
       approvalCreatedAfter: "EXPECTED_APPROVAL_CREATED_AFTER",
       shadowIdempotencyKey: "EXPECTED_SHADOW_IDEMPOTENCY_KEY",
       shadowStartedAfter: "EXPECTED_SHADOW_STARTED_AFTER",
-    } : {
-      scheduleEnabledAt: "SCHEDULE_ENABLED_AT_UNIX_SECONDS",
-      scheduledExecutionStartedAt: "SCHEDULED_EXECUTION_STARTED_AT",
-    }),
+    } : {}),
   };
   assert.deepEqual(Object.keys(config).sort(), Object.keys(fields).sort(),
     "Production configuration must contain exactly its phase's nonsecret fields.");
   matching(config.authorizationId, /^[0-9a-f]{64}$/, "Readiness authorization digest");
   integer(config.scheduleGeneration, "Schedule generation");
   assert(config.scheduleGeneration <= Math.floor(Date.now() / 1000), "Schedule generation is in the future.");
-  const dateFields = config.phase === "ready" ?
-    ["approvalCreatedAfter", "shadowStartedAfter"] : ["scheduledExecutionStartedAt"];
+  const dateFields = config.phase === "ready" ? ["approvalCreatedAfter", "shadowStartedAfter"] : [];
   for (const field of dateFields) {
     matching(config[field], /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/, field);
     assert.equal(new Date(config[field]).toISOString().replace(".000Z", "Z"),
@@ -99,10 +95,6 @@ function productionVerificationOverrides(config) {
     matching(config.approvalId, /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/, "Approval ID");
     matching(config.shadowIdempotencyKey, /^manual-shadow:[A-Za-z0-9_.-]{1,64}$/, "Shadow key");
     matching(config.shadowStartedAfter, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, "Shadow start boundary");
-  } else {
-    integer(config.scheduleEnabledAt, "Schedule-enabled boundary");
-    assert(config.scheduleEnabledAt >= config.scheduleGeneration &&
-      config.scheduleEnabledAt <= Math.floor(Date.now() / 1000), "Invalid schedule-enabled boundary.");
   }
   return [
     { name: "OPERATION", value: "production-verification" },

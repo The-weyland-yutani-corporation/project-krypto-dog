@@ -6,6 +6,7 @@ export const WORKFLOW_OBSERVATION_ISSUER = "https://token.actions.githubusercont
 export const WORKFLOW_OBSERVATION_PATH = ".github/workflows/azure-deploy-prod.yml";
 export const WORKFLOW_OBSERVATION_MAX_AGE_MS = 180_000;
 export const WORKFLOW_OBSERVATION_MAX_BYTES = 16_384;
+export const SCHEDULE_OBSERVATION_MAX_AGE_MS = 4_800_000;
 
 export class WorkflowObservationError extends Error {
   override name = "WorkflowObservationError";
@@ -80,9 +81,59 @@ export const cutoverObservationSchema = observationBase.extend({
   schedulerExecutionsQuiescent: z.literal(true),
 }).strict();
 
-export const workflowObservationSchema = cutoverObservationSchema;
+export const scheduledExecutionObservationSchema = observationBase.extend({
+  purpose: z.literal("scheduled-execution"),
+  authorizationId: z.string().regex(/^[0-9a-f]{64}$/),
+  scheduleGeneration: z.number().int().positive().max(9_999_999_999),
+  scheduleEnabledAt: timestamp,
+  revision: cutoverObservationSchema.shape.revision,
+  rolloutMode: z.literal("paper"),
+  hourlyTriggerType: z.literal("Schedule"),
+  dailyTriggerType: z.literal("Schedule"),
+  hourlyCron: z.literal("0 * * * *"),
+  dailyCron: z.literal("5 0 * * *"),
+  inactiveRevisionsQuiescent: z.literal(true),
+  originAssurance: z.literal("schedule-observed-not-origin-proven"),
+  execution: z.object({
+    id: z.string().max(512),
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,127}$/),
+    status: z.literal("Succeeded"),
+    startedAt: timestamp,
+    completedAt: timestamp,
+    imageDigest: digest,
+    templateDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  }).strict(),
+}).strict().superRefine((observation, context) => {
+  const enabled = Date.parse(observation.scheduleEnabledAt);
+  const started = Date.parse(observation.execution.startedAt);
+  const ended = Date.parse(observation.execution.completedAt);
+  const observed = Date.parse(observation.observedAt);
+  const firstWindow = (Math.floor(enabled / 3_600_000) + 1) * 3_600_000;
+  if (observation.execution.id.toLowerCase() !==
+        `${observation.resources.hourly}/executions/${observation.execution.name}`.toLowerCase() ||
+      observation.execution.imageDigest !== observation.imageDigest ||
+      enabled < observation.scheduleGeneration * 1000 || enabled > observed ||
+      observed - enabled > SCHEDULE_OBSERVATION_MAX_AGE_MS ||
+      Math.floor(started / 3_600_000) * 3_600_000 !== firstWindow ||
+      ended < started || ended > observed) {
+    context.addIssue({
+      code: "custom",
+      message: "Scheduled observation must bind the exact job, image and completed first full UTC-hour execution after verified enablement.",
+    });
+  }
+});
+
+export const workflowObservationSchema = z.discriminatedUnion("purpose", [
+  cutoverObservationSchema, scheduledExecutionObservationSchema,
+]);
 export type WorkflowObservation = z.infer<typeof workflowObservationSchema>;
 export type CutoverObservation = z.infer<typeof cutoverObservationSchema>;
+export type ScheduledExecutionObservation = z.infer<typeof scheduledExecutionObservationSchema>;
+
+const observationEnvironments = {
+  "cutover-release": "production-deploy",
+  "scheduled-execution": "production-promotion",
+} as const;
 
 export type WorkflowObservationReceipt = Readonly<{
   issuer: typeof WORKFLOW_OBSERVATION_ISSUER;
@@ -187,7 +238,7 @@ export async function verifyWorkflowObservation(
   sha.parse(expected.workflowSha);
   executionId.parse(expected.operationExecutionId);
   const { observation, token } = parsed.data;
-  const environment = "production-deploy";
+  const environment = observationEnvironments[observation.purpose];
   const workflowRef = `${trust.repository}/${WORKFLOW_OBSERVATION_PATH}@refs/heads/main`;
   const [owner, repo] = trust.repository.split("/");
   const subject = `repo:${owner}@${trust.repositoryOwnerId}/${repo}@${trust.repositoryId}:environment:${environment}`;

@@ -5,7 +5,7 @@ const maxPages = 20;
 const maxExecutions = 2000;
 const jobIdPattern = /^\/subscriptions\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/resourceGroups\/[A-Za-z0-9_.()-]{1,90}\/providers\/Microsoft\.App\/jobs\/[a-z][a-z0-9-]{0,31}$/i;
 
-/** @typedef {{id: string, name: string, properties: {status: string}}} JobExecution */
+/** @typedef {{id: string, name: string, properties: {status: string, startTime?: string, endTime?: string}}} JobExecution */
 
 /**
  * @param {string} jobResourceId
@@ -52,8 +52,16 @@ async function readJobExecutions(jobResourceId, read, startedAt = Date.now()) {
       "Azure returned an execution outside the expected job or without its identity/status.");
       assert(!seenExecutions.has(execution.id.toLowerCase()), "Azure execution inventory contains duplicate records.");
       seenExecutions.add(execution.id.toLowerCase());
+      for (const field of ["startTime", "endTime"]) {
+        assert(execution.properties[field] == null || typeof execution.properties[field] === "string",
+          "Azure execution timing metadata must be a timestamp or absent.");
+      }
       executions.push({
-        id: execution.id, name: execution.name, properties: { status: execution.properties.status },
+        id: execution.id, name: execution.name, properties: {
+          status: execution.properties.status,
+          ...(execution.properties.startTime == null ? {} : { startTime: execution.properties.startTime }),
+          ...(execution.properties.endTime == null ? {} : { endTime: execution.properties.endTime }),
+        },
       });
     }
     assert(page.nextLink == null || typeof page.nextLink === "string",

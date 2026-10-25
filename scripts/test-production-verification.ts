@@ -9,6 +9,7 @@ import {
 } from "@/deployment/production-verification";
 import { buildIdempotencyKey } from "@/deployment/scheduled-trigger";
 import { createTargetApproval, createTargetBinding } from "@/deployment/target-smoke";
+import { scheduledObservationFixture, verifiedScheduledFixture } from "../tests/deployment/workflow-observation-fixture";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required.");
@@ -19,7 +20,7 @@ assert(["localhost", "127.0.0.1", "[::1]"].includes(target.hostname),
   "Production verification fixtures require a loopback database.");
 assert.equal(target.pathname, "/production_verification", "Use the suite's disposable database only.");
 const sql = postgres(databaseUrl, { max: 1, prepare: false });
-const hour = Math.floor(Date.now() / 3_600_000) * 3600;
+const hour = Math.floor((Date.now() - 60_000) / 3_600_000) * 3600;
 const start = new Date(hour * 1000);
 const common = {
   databaseUrl,
@@ -29,10 +30,6 @@ const common = {
   posthogApiKey: "disposable-test-project-key", posthogHost: "https://us.i.posthog.com",
   posthogEnvironment: "prod",
   approvalSecret: "disposable-production-approval-secret-with-32-characters",
-};
-const scheduled: Extract<ProductionVerificationOptions, { phase: "scheduled" }> = {
-  ...common, phase: "scheduled", scheduleEnabledAt: hour - 60,
-  scheduledExecutionStartedAt: start.toISOString(),
 };
 
 async function snapshot(): Promise<string> {
@@ -52,7 +49,7 @@ async function verify(options: ProductionVerificationOptions, approved: boolean)
   const before = await snapshot();
   const report = await runProductionVerification(options);
   assert.equal(report.approved, approved, JSON.stringify(report.blockers));
-  assert.equal(report.schemaVersion, "1.2.0");
+  assert.equal(report.schemaVersion, "1.3.0");
   assert.match(report.posthog.keyBinding, /^[0-9a-f]{64}$/);
   assert(!JSON.stringify(report).includes(options.posthogApiKey));
   assert(!JSON.stringify(report).includes(options.approvalSecret));
@@ -60,6 +57,21 @@ async function verify(options: ProductionVerificationOptions, approved: boolean)
 }
 
 async function main(): Promise<void> {
+  const now = new Date();
+  const observation = scheduledObservationFixture({}, now);
+  const scheduled: Extract<ProductionVerificationOptions, { phase: "scheduled" }> = {
+    ...common, phase: "scheduled", opsImageDigest: observation.opsImageDigest,
+    observation: await verifiedScheduledFixture({
+      workflow: { ...observation.workflow, sha: common.releaseSha },
+      releaseSha: common.releaseSha, imageDigest: common.imageDigest, targetOrigin: common.targetOrigin,
+      authorizationId: common.authorizationId, scheduleGeneration: common.scheduleGeneration,
+      scheduleEnabledAt: new Date((hour - 60) * 1000).toISOString(),
+      execution: {
+        ...observation.execution, imageDigest: common.imageDigest,
+        startedAt: start.toISOString(), completedAt: start.toISOString(),
+      },
+    }, now),
+  };
   const runId = randomUUID();
   const journalId = randomUUID();
   const key = buildIdempotencyKey("/api/agent/run", start, undefined,

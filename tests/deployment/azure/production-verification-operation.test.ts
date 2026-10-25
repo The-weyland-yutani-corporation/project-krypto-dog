@@ -1,18 +1,29 @@
 import { runProductionVerification, type ProductionVerificationReport } from "@/deployment/production-verification";
 import { run } from "../../../scripts/azure/operations/production-verification";
+import { verifyWorkflowObservation } from "@/deployment/workflow-observation";
+import { signedScheduledFixture, OBSERVATION_TRUST } from "../workflow-observation-fixture";
 
 jest.mock("@/deployment/production-verification", () => ({ runProductionVerification: jest.fn() }));
+jest.mock("@/deployment/workflow-observation", () => ({
+  ...jest.requireActual("@/deployment/workflow-observation"), verifyWorkflowObservation: jest.fn(),
+}));
 
 const verify = jest.mocked(runProductionVerification);
+const verifyProof = jest.mocked(verifyWorkflowObservation);
+const actualObservation = jest.requireActual<typeof import("@/deployment/workflow-observation")>(
+  "@/deployment/workflow-observation",
+);
+const NOW = new Date("2026-10-22T01:02:00Z");
 const context = {
   environmentName: "prod", releaseSha: "a".repeat(40),
   jobExecutionId: "run1-a1-ready", reportDirectory: "unused",
 };
 const report: ProductionVerificationReport = {
-  schemaVersion: "1.2.0", operation: "production-verification", phase: "ready", intendedMode: "paper",
+  schemaVersion: "1.3.0", operation: "production-verification", phase: "ready", intendedMode: "paper",
   generatedAt: "2026-10-22T00:01:00Z", releaseSha: context.releaseSha, imageDigest: `sha256:${"b".repeat(64)}`,
   targetOrigin: "https://production.example.com", authorizationId: "c".repeat(64), scheduleGeneration: 1792620000,
   approved: true, checks: [], blockers: [], approvalId: "approval-1", shadowRun: null, scheduledRun: null,
+  workflowObservation: null, scheduledExecution: null,
   posthog: { environment: "prod", host: "https://us.i.posthog.com", keyBinding: "d".repeat(64) },
 };
 const env = {
@@ -26,14 +37,34 @@ const env = {
   EXPECTED_APPROVAL_ID: "approval-1", EXPECTED_APPROVAL_CREATED_AFTER: "2026-10-22T00:00:00Z",
   EXPECTED_SHADOW_IDEMPOTENCY_KEY: "manual-shadow:run-1", EXPECTED_SHADOW_STARTED_AFTER: "2026-10-22T00:00:00Z",
   POSTHOG_API_KEY: "test-only-project-key", POSTHOG_HOST: report.posthog.host, POSTHOG_ENVIRONMENT: "prod",
+  OPS_IMAGE_DIGEST: `sha256:${"e".repeat(64)}`,
+  DEPLOYMENT_REPOSITORY: OBSERVATION_TRUST.repository,
+  DEPLOYMENT_REPOSITORY_ID: OBSERVATION_TRUST.repositoryId,
+  DEPLOYMENT_REPOSITORY_OWNER_ID: OBSERVATION_TRUST.repositoryOwnerId,
 };
+
+async function prepareScheduled() {
+  const fixture = await signedScheduledFixture({
+    workflow: { ...OBSERVATION_TRUST, sha: context.releaseSha, runId: "9876", runAttempt: 1 },
+    releaseSha: context.releaseSha, operationExecutionId: context.jobExecutionId,
+  }, NOW);
+  const observation = await actualObservation.verifyWorkflowObservation(fixture.proof, fixture.expected, {
+    now: NOW, keys: fixture.keys,
+  });
+  process.env.PRODUCTION_VERIFICATION_PHASE = "scheduled";
+  process.env.DEPLOYMENT_WORKFLOW_OBSERVATION = fixture.proof;
+  verifyProof.mockResolvedValue(observation);
+  return { fixture, observation };
+}
 
 describe("production verification ops adapter", () => {
   beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(NOW);
     jest.replaceProperty(process, "env", { ...env });
     verify.mockReset().mockResolvedValue(report);
+    verifyProof.mockReset();
   });
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => { jest.restoreAllMocks(); jest.useRealTimers(); });
 
   it.each([true, false])("preserves the explicit pass/fail result and Azure's builtin execution identity (%s)", async (approved) => {
     verify.mockResolvedValue({ ...report, approved });
@@ -54,20 +85,51 @@ describe("production verification ops adapter", () => {
   });
 
   it("uses the ops-only telemetry binding secret without consulting unused shadow credentials", async () => {
-    process.env.PRODUCTION_VERIFICATION_PHASE = "scheduled";
+    const { fixture, observation } = await prepareScheduled();
     process.env.SCHEDULE_ENABLED_AT_UNIX_SECONDS = "1792620005";
     process.env.SCHEDULED_EXECUTION_STARTED_AT = "2026-10-22T01:00:01Z";
     delete process.env.CRON_SECRET;
     delete process.env.EXPECTED_SHADOW_IDEMPOTENCY_KEY;
     await run(context);
+    expect(verifyProof).toHaveBeenCalledWith(fixture.proof, {
+      ...OBSERVATION_TRUST, purpose: "scheduled-execution",
+      workflowSha: context.releaseSha, operationExecutionId: context.jobExecutionId,
+    });
     expect(verify).toHaveBeenCalledWith(expect.objectContaining({
-      phase: "scheduled", scheduleEnabledAt: 1792620005,
-      scheduledExecutionStartedAt: "2026-10-22T01:00:01Z",
+      phase: "scheduled", observation, opsImageDigest: env.OPS_IMAGE_DIGEST,
       approvalSecret: env.DEPLOYMENT_APPROVAL_SECRET,
     }));
     expect(verify.mock.calls[0][0]).not.toHaveProperty("cronSecret");
+    expect(verify.mock.calls[0][0]).not.toHaveProperty("scheduleEnabledAt");
+    expect(verify.mock.calls[0][0]).not.toHaveProperty("scheduledExecutionStartedAt");
+    expect(process.env.DEPLOYMENT_WORKFLOW_OBSERVATION).toBeUndefined();
   });
 
+  it("removes rejected proofs and never calls the database verifier", async () => {
+    await prepareScheduled();
+    verifyProof.mockRejectedValue(new Error("Untrusted observation"));
+    await expect(run(context)).rejects.toThrow("Untrusted observation");
+    expect(process.env.DEPLOYMENT_WORKFLOW_OBSERVATION).toBeUndefined();
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "DEPLOYMENT_WORKFLOW_OBSERVATION", "OPS_IMAGE_DIGEST",
+    "DEPLOYMENT_REPOSITORY", "DEPLOYMENT_REPOSITORY_ID", "DEPLOYMENT_REPOSITORY_OWNER_ID",
+  ])("requires scheduled-proof binding %s", async (name) => {
+    await prepareScheduled();
+    delete process.env[name];
+    await expect(run(context)).rejects.toThrow();
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("rejects a proof on the ready phase", async () => {
+    process.env.DEPLOYMENT_WORKFLOW_OBSERVATION = "unexpected";
+    await expect(run(context)).rejects.toThrow("must not receive");
+    expect(process.env.DEPLOYMENT_WORKFLOW_OBSERVATION).toBeUndefined();
+    expect(verifyProof).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
+  });
   it.each(["ready", "scheduled"])("requires the mounted ops-only binding secret for %s proof", async (phase) => {
     process.env.PRODUCTION_VERIFICATION_PHASE = phase;
     delete process.env.DEPLOYMENT_APPROVAL_SECRET;

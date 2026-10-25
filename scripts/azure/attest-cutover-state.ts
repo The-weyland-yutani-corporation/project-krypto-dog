@@ -15,6 +15,7 @@ import {
   WORKFLOW_OBSERVATION_MAX_BYTES,
   WORKFLOW_OBSERVATION_PATH,
   type CutoverObservation,
+  type WorkflowObservation,
   type WorkflowObservationReceipt,
 } from "../../src/deployment/workflow-observation";
 
@@ -217,6 +218,16 @@ export async function attestCutoverState(argv: string[], env: NodeJS.ProcessEnv)
     candidateReleaseSha: required("candidate-release-sha"), runtimeReleaseSha: required("runtime-release-sha"),
     operationExecutionId: required("job-execution-id"),
   }, env);
+  const { proof, receipt } = await attestCollectedObservation(observation, env);
+  attestationStage = "private proof publication";
+  await writeObservationFiles(proofPath, receiptPath, proof, receipt);
+  process.stdout.write(`Attested disabled cutover ${receipt.observationDigest}.\n`);
+}
+
+export async function attestCollectedObservation(
+  observation: WorkflowObservation,
+  env: NodeJS.ProcessEnv,
+): Promise<{ proof: string; receipt: WorkflowObservationReceipt }> {
   attestationStage = "GitHub OIDC request";
   const request = new URL(z.string().min(1).parse(env.ACTIONS_ID_TOKEN_REQUEST_URL));
   assert(request.protocol === "https:" && request.hostname.endsWith(".actions.githubusercontent.com") &&
@@ -244,11 +255,9 @@ export async function attestCutoverState(argv: string[], env: NodeJS.ProcessEnv)
   attestationStage = "workflow proof verification";
   const verified = await verifyWorkflowObservation(proof, {
     ...observation.workflow, workflowSha: observation.workflow.sha,
-    purpose: "cutover-release", operationExecutionId: observation.operationExecutionId,
+    purpose: observation.purpose, operationExecutionId: observation.operationExecutionId,
   });
-  attestationStage = "private proof publication";
-  await writeObservationFiles(proofPath, receiptPath, proof, verified.receipt);
-  process.stdout.write(`Attested disabled cutover ${verified.receipt.observationDigest}.\n`);
+  return { proof, receipt: verified.receipt };
 }
 
 if (process.argv[1] && /attest-cutover-state\.(ts|js)$/.test(process.argv[1])) {

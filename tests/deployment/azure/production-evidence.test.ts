@@ -83,14 +83,13 @@ describe("immutable production release evidence", () => {
       ]);
     });
 
-    it("keeps actual enablement and scheduled execution boundaries separate from generation", () => {
-      const overrides = productionVerificationOverrides({
-        ...common, phase: "scheduled", scheduleEnabledAt: 1792620010,
-        scheduledExecutionStartedAt: "2026-10-22T00:00:01.123Z",
-      });
-      expect(overrides).toContainEqual({ name: "SCHEDULE_ENABLED_AT_UNIX_SECONDS", value: "1792620010" });
-      expect(overrides).toContainEqual({ name: "SCHEDULED_EXECUTION_STARTED_AT", value: "2026-10-22T00:00:01.123Z" });
-      expect(overrides).not.toContainEqual(expect.objectContaining({ name: "EXPECTED_APPROVAL_ID" }));
+    it("accepts only authorization and generation, leaving execution timing to the signed proof", () => {
+      expect(productionVerificationOverrides({ ...common, phase: "scheduled" })).toEqual([
+        { name: "OPERATION", value: "production-verification" },
+        { name: "PRODUCTION_VERIFICATION_PHASE", value: "scheduled" },
+        { name: "PRODUCTION_AUTHORIZATION_ID", value: common.authorizationId },
+        { name: "SCHEDULE_GENERATION_UNIX_SECONDS", value: String(common.scheduleGeneration) },
+      ]);
     });
 
     it.each([
@@ -106,12 +105,13 @@ describe("immutable production release evidence", () => {
       expect(() => productionVerificationOverrides({ ...ready, ...overrides })).toThrow();
     });
 
-    it("rejects missing required fields and out-of-order enablement", () => {
+    it("rejects missing required fields and caller-selected execution timing", () => {
       expect(() => productionVerificationOverrides({ ...common, phase: "ready" })).toThrow();
-      expect(() => productionVerificationOverrides({
-        ...common, phase: "scheduled", scheduleEnabledAt: common.scheduleGeneration - 1,
-        scheduledExecutionStartedAt: "2026-10-22T00:00:01Z",
-      })).toThrow("boundary");
+      for (const extra of [
+        { scheduleEnabledAt: common.scheduleGeneration + 1 },
+        { scheduledExecutionStartedAt: "2026-10-22T00:00:01Z" },
+        { DEPLOYMENT_WORKFLOW_OBSERVATION: "{}" }, { azureExecutionName: "caller-selected" },
+      ]) expect(() => productionVerificationOverrides({ ...common, phase: "scheduled", ...extra })).toThrow();
     });
   });
   afterEach(() => jest.useRealTimers());

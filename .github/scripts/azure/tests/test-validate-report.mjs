@@ -270,7 +270,8 @@ try {
 
 const productionDirectory = mkdtempSync(path.join(tmpdir(), "production-report-test-"));
 try {
-  const hour = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+  const now = Date.now();
+  const hour = Math.floor((now - 10_000) / 3_600_000) * 3_600_000;
   const enabled = hour / 1000 - 20;
   const generation = enabled - 60;
   const start = new Date(hour).toISOString();
@@ -284,11 +285,11 @@ try {
     "exact-approval-id", "fresh-approval",
   ];
   const scheduledChecks = [
-    ...commonChecks, "scheduled-run-binding", "scheduled-run-terminal",
+    ...commonChecks, "scheduled-execution-observation", "scheduled-run-binding", "scheduled-run-terminal",
     "scheduled-run-journal", "scheduled-run-fills",
   ];
   const base = {
-    schemaVersion: "1.2.0", operation: "production-verification", phase: "ready",
+    schemaVersion: "1.3.0", operation: "production-verification", phase: "ready",
     intendedMode: "paper", generatedAt: new Date().toISOString(),
     releaseSha: RELEASE_SHA_A, imageDigest: DIGEST_1, targetOrigin: "https://krypto.example.com",
     authorizationId: "d".repeat(64), scheduleGeneration: generation, approved: true,
@@ -298,7 +299,7 @@ try {
       id: "shadow-run-1", idempotencyKey: "manual-shadow:run-1", outcome: "SHADOW",
       startedAt: start, completedAt: start, tradeCount: 0, errorType: null,
     },
-    scheduledRun: null,
+    scheduledRun: null, workflowObservation: null, scheduledExecution: null,
     posthog: { host: "https://us.i.posthog.com", environment: "prod", keyBinding: "a".repeat(64) },
     environmentName: "prod", jobExecutionId: "run1-a1-ready", azureExecutionName: "execution-1",
   };
@@ -309,6 +310,19 @@ try {
       id: "paper-run-1", idempotencyKey: scheduledKey, outcome: "HOLD",
       startedAt: start, completedAt: start, tradeCount: 0, journalCount: 1, tradeJournalCount: 0,
     },
+    workflowObservation: {
+      issuer: "https://token.actions.githubusercontent.com", purpose: "scheduled-execution",
+      observationDigest: "e".repeat(64), repositoryId: "123", repositoryOwnerId: "456",
+      workflowRef: "owner/project/.github/workflows/azure-deploy-prod.yml@refs/heads/main",
+      workflowSha: RELEASE_SHA_A, runId: "1001", runAttempt: 1,
+      observedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 120_000).toISOString(),
+    },
+    scheduledExecution: {
+      id: "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod/providers/Microsoft.App/jobs/caj-hourly/executions/hourly-observed",
+      name: "hourly-observed", status: "Succeeded", imageDigest: DIGEST_1, templateDigest: "f".repeat(64),
+      startedAt: start, completedAt: start, scheduleEnabledAt: new Date(enabled * 1000).toISOString(),
+      originAssurance: "schedule-observed-not-origin-proven",
+    },
   };
   const args = [
     "--operation", "production-verification", "--release-sha", RELEASE_SHA_A, "--image-digest", DIGEST_1,
@@ -318,7 +332,12 @@ try {
     "--expected-shadow-idempotency-key", base.shadowRun.idempotencyKey,
     "--expected-shadow-started-after", start,
     "--expected-scheduled-idempotency-key", scheduledKey,
-    "--schedule-enabled-at", String(enabled), "--scheduled-execution-started-at", start,
+    "--schedule-enabled-at", scheduled.scheduledExecution.scheduleEnabledAt,
+    "--scheduled-execution-started-at", start, "--scheduled-execution-completed-at", start,
+    "--scheduled-execution-resource-id", scheduled.scheduledExecution.id,
+    "--scheduled-execution-name", scheduled.scheduledExecution.name,
+    "--scheduled-execution-template-digest", scheduled.scheduledExecution.templateDigest,
+    "--workflow-observation-digest", scheduled.workflowObservation.observationDigest,
   ];
   for (const [report, overrides, expectedStatus] of [
     [base, {}, 0], [scheduled, {}, 0],
@@ -326,6 +345,7 @@ try {
     ...[base, scheduled].flatMap((report) => [
       [report, { schemaVersion: "1.0.0" }, 1],
       [report, { schemaVersion: "1.1.0" }, 1],
+      [report, { schemaVersion: "1.2.0" }, 1],
       [report, { posthog: { host: base.posthog.host, environment: "prod", keySha256: "a".repeat(64) } }, 1],
       [report, { posthog: { ...base.posthog, keyBinding: null } }, 1],
       [report, { posthog: { ...base.posthog, keyBinding: ["a".repeat(64)] } }, 1],
@@ -343,6 +363,8 @@ try {
       [report, { generatedAt: new Date(Date.now() + 600_000).toISOString() }, 1],
     ]),
     [base, { approvalId: "copied-approval" }, 1],
+    [base, { workflowObservation: scheduled.workflowObservation }, 1],
+    [base, { scheduledExecution: scheduled.scheduledExecution }, 1],
     [base, { shadowRun: { ...base.shadowRun, outcome: "LOCKED" } }, 1],
     [base, { shadowRun: { ...base.shadowRun, tradeCount: 1 } }, 1],
     [base, { shadowRun: { ...base.shadowRun, errorType: "journal-failed" } }, 1],
@@ -352,7 +374,23 @@ try {
     [scheduled, { scheduledRun: { ...scheduled.scheduledRun, tradeCount: 1 } }, 1],
     [scheduled, { scheduledRun: { ...scheduled.scheduledRun, outcome: "EXECUTED", tradeCount: 1 } }, 1],
     [scheduled, { scheduledRun: { ...scheduled.scheduledRun, completedAt: null } }, 1],
+    [scheduled, { scheduledRun: { ...scheduled.scheduledRun, completedAt: new Date(hour + 1).toISOString() } }, 1],
     [scheduled, { scheduledRun: { ...scheduled.scheduledRun, idempotencyKey: scheduledKey.replace("sha256:", "old:") } }, 1],
+    [scheduled, { workflowObservation: null }, 1],
+    [scheduled, { scheduledExecution: null }, 1],
+    ...[
+      { purpose: "cutover-release" }, { observationDigest: "a".repeat(64) },
+      { workflowSha: "b".repeat(40) }, { repositoryId: "0" }, { runAttempt: 0 },
+      { observedAt: new Date(now - 181_000).toISOString() }, { expiresAt: new Date(now - 1).toISOString() },
+      { token: "must-not-be-in-public-evidence" },
+    ].map((change) => [scheduled, { workflowObservation: { ...scheduled.workflowObservation, ...change } }, 1]),
+    ...[
+      { id: "unbound" }, { name: base.azureExecutionName }, { imageDigest: DIGEST_2 },
+      { templateDigest: "a".repeat(64) }, { status: "Running" },
+      { originAssurance: "scheduler-origin-proven" }, { unknownField: true },
+      { startedAt: new Date(hour + 1).toISOString() }, { completedAt: new Date(hour + 1).toISOString() },
+      { scheduleEnabledAt: start },
+    ].map((change) => [scheduled, { scheduledExecution: { ...scheduled.scheduledExecution, ...change } }, 1]),
   ]) {
     const reportPath = path.join(productionDirectory, "report.json");
     writeFileSync(reportPath, JSON.stringify({ ...report, ...overrides }));
@@ -360,6 +398,21 @@ try {
       scriptPath, "--report", reportPath, ...args, "--production-phase", report.phase,
     ], { encoding: "utf8" });
     assert.equal(result.status, expectedStatus, `${report.phase}/${JSON.stringify(overrides)}: ${result.stderr}`);
+    passCount += 1;
+  }
+  for (const flag of [
+    "--workflow-observation-digest", "--schedule-enabled-at", "--scheduled-execution-started-at",
+    "--scheduled-execution-completed-at", "--scheduled-execution-resource-id",
+    "--scheduled-execution-name", "--scheduled-execution-template-digest",
+  ]) {
+    const reportPath = path.join(productionDirectory, "report.json");
+    writeFileSync(reportPath, JSON.stringify(scheduled));
+    const index = args.indexOf(flag);
+    const result = spawnSync(process.execPath, [
+      scriptPath, "--report", reportPath, ...args.filter((_value, offset) => offset !== index && offset !== index + 1),
+      "--production-phase", "scheduled",
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 1, `missing ${flag}: ${result.stderr}`);
     passCount += 1;
   }
 } finally {

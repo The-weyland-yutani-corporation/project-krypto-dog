@@ -10,6 +10,7 @@ import {
   type ProductionVerificationOptions,
 } from "@/deployment/production-verification";
 import { buildIdempotencyKey } from "@/deployment/scheduled-trigger";
+import { OBSERVATION_TRUST, scheduledObservationFixture, verifiedCutoverFixture, verifiedScheduledFixture } from "./workflow-observation-fixture";
 
 jest.mock("postgres", () => ({ __esModule: true, default: jest.fn() }));
 jest.mock("@/deployment/activation-check", () => ({ runActivationCheck: jest.fn() }));
@@ -39,15 +40,9 @@ const ready: Extract<ProductionVerificationOptions, { phase: "ready" }> = {
   expectedShadowIdempotencyKey: "manual-shadow:production-test",
   expectedShadowStartedAfter: "2026-08-13T12:55:00Z",
 };
-const scheduled: Extract<ProductionVerificationOptions, { phase: "scheduled" }> = {
-  ...binding,
-  phase: "scheduled",
-  // The ARM operation crossed an hour boundary. Generation must not choose the observation hour.
-  scheduleEnabledAt: Date.parse("2026-08-13T12:00:05Z") / 1000,
-  scheduledExecutionStartedAt: "2026-08-13T13:00:01Z",
-};
+let scheduled: Extract<ProductionVerificationOptions, { phase: "scheduled" }>;
 const expectedKey = buildIdempotencyKey(
-  "/api/agent/run", new Date(scheduled.scheduledExecutionStartedAt),
+  "/api/agent/run", new Date("2026-08-13T13:00:01Z"),
   undefined, `${binding.imageDigest}-${generation}`,
 );
 const safeState = {
@@ -92,10 +87,20 @@ function mockDatabase(
 }
 
 describe("read-only paper production verification", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.useFakeTimers().setSystemTime(NOW);
     db.mockReset();
     activation.mockReset().mockResolvedValue(structuredClone(approval));
+    const defaults = scheduledObservationFixture({}, NOW);
+    scheduled = {
+      ...binding, phase: "scheduled", opsImageDigest: defaults.opsImageDigest,
+      observation: await verifiedScheduledFixture({
+        workflow: { ...OBSERVATION_TRUST, sha: binding.releaseSha, runId: "9876", runAttempt: 1 },
+        releaseSha: binding.releaseSha, imageDigest: binding.imageDigest, targetOrigin: binding.targetOrigin,
+        scheduleGeneration: generation, scheduleEnabledAt: "2026-08-13T12:00:05.000Z",
+        execution: { ...defaults.execution, imageDigest: binding.imageDigest },
+      }, NOW),
+    };
   });
   afterEach(() => jest.useRealTimers());
 
@@ -114,7 +119,9 @@ describe("read-only paper production verification", () => {
     expect(queries.every((query) => !/\b(INSERT|UPDATE|DELETE|COMMIT)\b/.test(query))).toBe(true);
     expect(JSON.stringify(report)).not.toContain(binding.posthogApiKey);
     expect(JSON.stringify(report)).not.toContain(binding.approvalSecret);
-    expect(report.schemaVersion).toBe("1.2.0");
+    expect(report.schemaVersion).toBe("1.3.0");
+    expect(report.workflowObservation).toBeNull();
+    expect(report.scheduledExecution).toBeNull();
     expect(report.posthog).not.toHaveProperty("keySha256");
     expect(report.posthog.keyBinding).toBe(scryptSync(
       binding.posthogApiKey,
@@ -140,9 +147,9 @@ describe("read-only paper production verification", () => {
   });
 
   it.each([
-    { ...ready, approvalSecret: "" }, { ...ready, approvalSecret: "too-short" },
-    { ...scheduled, approvalSecret: "" }, { ...scheduled, approvalSecret: "too-short" },
-  ])("requires the ops-only binding secret before reading either phase ($phase)", async (options) => {
+    ["ready", ""], ["ready", "too-short"], ["scheduled", ""], ["scheduled", "too-short"],
+  ])("requires the ops-only binding secret before reading either phase (%s)", async (phase, approvalSecret) => {
+    const options = { ...(phase === "ready" ? ready : scheduled), approvalSecret };
     await expect(runProductionVerification(options)).rejects.toThrow("DEPLOYMENT_APPROVAL_SECRET");
     expect(db).not.toHaveBeenCalled();
     expect(activation).not.toHaveBeenCalled();
@@ -170,6 +177,11 @@ describe("read-only paper production verification", () => {
     expect(parameters.flat()).toContain(expectedKey);
     expect(queries.join(" ")).not.toContain(expectedKey);
     expect(activation).not.toHaveBeenCalled();
+    expect(report.workflowObservation).toEqual(scheduled.observation.receipt);
+    expect(report.scheduledExecution).toMatchObject({
+      originAssurance: "schedule-observed-not-origin-proven",
+      scheduleEnabledAt: "2026-08-13T12:00:05.000Z",
+    });
   });
 
   it("accepts a journaled scheduled paper BUY without wrongly requiring a flat post-run position", async () => {
@@ -180,11 +192,16 @@ describe("read-only paper production verification", () => {
     expect((await runProductionVerification(scheduled)).approved).toBe(true);
   });
 
-  it("uses the first full window after observed enablement, not the earlier generation window", async () => {
-    mockDatabase();
+  it("rejects a copied verification object before reading the database", async () => {
+    await expect(runProductionVerification({ ...scheduled, observation: { ...scheduled.observation } }))
+      .rejects.toThrow("cryptographically verified");
+    expect(db).not.toHaveBeenCalled();
+  });
+
+  it("rejects a valid proof for another purpose before reading the database", async () => {
     await expect(runProductionVerification({
-      ...scheduled, scheduledExecutionStartedAt: "2026-08-13T12:00:06Z",
-    })).rejects.toThrow("first full scheduled");
+      ...scheduled, observation: await verifiedCutoverFixture({}, NOW),
+    })).rejects.toThrow("exact production release");
     expect(db).not.toHaveBeenCalled();
   });
 
@@ -195,6 +212,7 @@ describe("read-only paper production verification", () => {
     { completedAt: new Date("2026-08-13T13:03:00Z") },
     { startedAt: new Date("2026-08-13T12:59:59Z") },
     { completedAt: new Date("2026-08-13T13:00:00Z") },
+    { completedAt: new Date("2026-08-13T13:00:31Z") },
     { tradeCount: 1 }, { journalCount: 0 }, { errorType: "journal-failed" },
     { outcome: "EXECUTED", tradeCount: 1, tradeJournalCount: 0 },
     { outcome: "EXECUTED", tradeCount: 0 },
@@ -233,10 +251,34 @@ describe("read-only paper production verification", () => {
     { authorizationId: "" }, { scheduleGeneration: 0 }, { scheduleGeneration: NOW.getTime() },
     { posthogApiKey: "" }, { posthogEnvironment: "dev" }, { posthogHost: "https://collector.example.com" },
     { targetOrigin: "http://production.example.com" },
-    { scheduleEnabledAt: generation - 1 }, { scheduleEnabledAt: NOW.getTime() },
-    { scheduledExecutionStartedAt: "2026-08-13T13:00:01+00:00" },
+    { releaseSha: "f".repeat(40) }, { imageDigest: `sha256:${"f".repeat(64)}` },
+    { opsImageDigest: `sha256:${"f".repeat(64)}` }, { scheduleGeneration: generation + 1 },
+    { authorizationId: "f".repeat(64) }, { targetOrigin: "https://another.example.com" },
   ])("rejects unbound production inputs before a database read: %j", async (overrides) => {
     await expect(runProductionVerification({ ...scheduled, ...overrides })).rejects.toThrow();
     expect(db).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy caller-only timestamps without a verified observation", async () => {
+    await expect(Reflect.apply(runProductionVerification, undefined, [{
+      ...binding, phase: "scheduled", scheduleEnabledAt: generation + 10,
+      scheduledExecutionStartedAt: "2026-08-13T13:00:01Z",
+    }])).rejects.toThrow("cryptographically verified");
+    expect(db).not.toHaveBeenCalled();
+  });
+
+  it("rechecks signed-proof freshness after a slow database read", async () => {
+    const database = mockDatabase();
+    db.mockImplementationOnce(() => {
+      jest.setSystemTime(new Date(NOW.getTime() + 181_000));
+      return Object.assign(jest.fn(async (parts: TemplateStringsArray) => {
+        const query = parts.join(" ");
+        if (query.includes('FROM "krypto"."AgentState"')) return [safeState];
+        if (query.includes('FROM "krypto"."AgentRun"')) return [safeRun];
+        return [];
+      }), { end: jest.fn(async () => undefined) }) as never;
+    });
+    await expect(runProductionVerification(scheduled)).rejects.toThrow("expired");
+    expect(database.queries).toEqual([]);
   });
 });

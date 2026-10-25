@@ -10,6 +10,12 @@ import { buildIdempotencyKey } from "@/deployment/scheduled-trigger";
 import { readOnly, validateApprovalSecret, validateImageDigest, validateReleaseSha, validateTargetBaseUrl } from "@/deployment/target-smoke";
 import { ETH_SCALE, USD_SCALE, parseDecimal } from "@/trading/accounting";
 import { AccountingError } from "@/trading/errors";
+import {
+  assertFreshWorkflowObservation,
+  type ScheduledExecutionObservation,
+  type VerifiedWorkflowObservation,
+  type WorkflowObservationReceipt,
+} from "@/deployment/workflow-observation";
 
 type ProductionVerificationBinding = Pick<
   ActivationCheckOptions, "databaseUrl" | "releaseSha" | "imageDigest" | "targetOrigin" | "approvalSecret"
@@ -29,8 +35,8 @@ export type ProductionVerificationOptions = ProductionVerificationBinding & (
   })
   | {
     phase: "scheduled";
-    scheduleEnabledAt: number;
-    scheduledExecutionStartedAt: string;
+    opsImageDigest: string;
+    observation: VerifiedWorkflowObservation;
   }
 );
 
@@ -61,7 +67,7 @@ type RunRow = {
 };
 
 export type ProductionVerificationReport = {
-  schemaVersion: "1.2.0";
+  schemaVersion: "1.3.0";
   operation: "production-verification";
   intendedMode: "paper";
   phase: "ready" | "scheduled";
@@ -77,6 +83,11 @@ export type ProductionVerificationReport = {
   approvalId: string | null;
   shadowRun: ActivationCheckReport["shadowRun"] | null;
   posthog: { host: string; environment: "prod"; keyBinding: string };
+  workflowObservation: WorkflowObservationReceipt | null;
+  scheduledExecution: (ScheduledExecutionObservation["execution"] & {
+    scheduleEnabledAt: string;
+    originAssurance: ScheduledExecutionObservation["originAssurance"];
+  }) | null;
   scheduledRun: {
     id: string; idempotencyKey: string; outcome: string;
     startedAt: string; completedAt: string | null;
@@ -131,6 +142,8 @@ export async function runProductionVerification(
   }
   let expectedKey: string | undefined;
   let observedExecutionStart: Date | undefined;
+  let observedExecutionEnd: Date | undefined;
+  let scheduledObservation: ScheduledExecutionObservation | undefined;
   let shadowRun: ActivationCheckReport["shadowRun"] | null = null;
   if (options.phase === "ready") {
     timestamp(options.approvalCreatedAfter, "Approval boundary");
@@ -161,22 +174,25 @@ export async function runProductionVerification(
       shadowCompleted <= Date.now(),
       "The selected manual shadow run must be complete, error-free and zero-fill, without a lock outcome.");
   } else {
-    const enabled = options.scheduleEnabledAt;
-    if (!Number.isSafeInteger(enabled) || enabled === undefined ||
-        enabled < options.scheduleGeneration || enabled > Math.floor(Date.now() / 1000) ||
-        !options.scheduledExecutionStartedAt) {
-      throw new Error("The scheduled proof requires the actual enabled boundary and Azure execution start.");
+    assertFreshWorkflowObservation(options.observation, new Date());
+    const observed = options.observation.observation;
+    if (observed.purpose !== "scheduled-execution" ||
+        observed.releaseSha !== releaseSha || observed.workflow.sha !== releaseSha ||
+        observed.imageDigest !== imageDigest || observed.targetOrigin !== targetOrigin ||
+        observed.opsImageDigest !== validateImageDigest(options.opsImageDigest) ||
+        observed.authorizationId !== options.authorizationId ||
+        observed.scheduleGeneration !== options.scheduleGeneration) {
+      throw new Error("The authenticated Azure execution does not match this exact production release, target or authorization.");
     }
-    observedExecutionStart = timestamp(options.scheduledExecutionStartedAt, "Azure execution start");
-    const firstWindow = (Math.floor(enabled / 3600) + 1) * 3600;
-    if (Math.floor(observedExecutionStart.getTime() / 3_600_000) * 3600 !== firstWindow ||
-        observedExecutionStart.getTime() > Date.now()) {
-      throw new Error("The Azure execution must belong to the first full scheduled UTC-hour window.");
-    }
+    scheduledObservation = observed;
+    observedExecutionStart = new Date(observed.execution.startedAt);
+    observedExecutionEnd = new Date(observed.execution.completedAt);
     expectedKey = buildIdempotencyKey(
       "/api/agent/run", observedExecutionStart, undefined,
       `${imageDigest}-${options.scheduleGeneration}`,
     );
+    record("scheduled-execution-observation", true,
+      "Workflow-attested Azure readback binds the completed execution and verified schedule window; Azure does not expose manual-versus-scheduled origin.");
   }
 
   let state: StateRow | undefined;
@@ -223,9 +239,11 @@ export async function runProductionVerification(
     "No unreleased production cutover fence may remain.");
 
   if (options.phase === "scheduled") {
+    assertFreshWorkflowObservation(options.observation, new Date());
     const terminal = scheduledRun !== undefined && scheduledRun.completedAt instanceof Date &&
       Number.isFinite(scheduledRun.completedAt.getTime()) &&
-      scheduledRun.completedAt >= scheduledRun.startedAt && scheduledRun.completedAt.getTime() <= Date.now();
+      scheduledRun.completedAt >= scheduledRun.startedAt && scheduledRun.completedAt.getTime() <= Date.now() &&
+      observedExecutionEnd !== undefined && scheduledRun.completedAt <= observedExecutionEnd;
     record("scheduled-run-binding",
       scheduledRun?.idempotencyKey === expectedKey && scheduledRun?.triggerSource === "cron" &&
       scheduledRun.tradingMode === "PAPER" && observedExecutionStart !== undefined &&
@@ -244,13 +262,19 @@ export async function runProductionVerification(
   }
 
   return {
-    schemaVersion: "1.2.0", operation: "production-verification", intendedMode: "paper",
+    schemaVersion: "1.3.0", operation: "production-verification", intendedMode: "paper",
     phase: options.phase, generatedAt: new Date().toISOString(),
     releaseSha, imageDigest, targetOrigin, authorizationId: options.authorizationId,
     scheduleGeneration: options.scheduleGeneration,
     approved: blockers.length === 0, checks, blockers,
     approvalId: options.phase === "ready" ? options.expectedApprovalId : null,
     shadowRun,
+    workflowObservation: options.phase === "scheduled" ? options.observation.receipt : null,
+    scheduledExecution: scheduledObservation ? {
+      ...scheduledObservation.execution,
+      scheduleEnabledAt: scheduledObservation.scheduleEnabledAt,
+      originAssurance: scheduledObservation.originAssurance,
+    } : null,
     posthog: {
       host: options.posthogHost, environment: "prod",
       keyBinding: scryptSync(

@@ -51,6 +51,7 @@ deployment_candidate_release_sha=""
 deployment_source_image_digest=""
 production_config=""
 production_overrides="[]"
+production_phase=""
 workflow_observation_proof=""
 
 while [ $# -gt 0 ]; do
@@ -174,28 +175,36 @@ if [ -n "${production_config}" ]; then
     exit 1
   fi
   production_overrides="$(node "${script_dir}/production-evidence.cjs" verification-overrides "${production_config}")"
+  production_phase="$(printf '%s' "${production_overrides}" | jq -er '
+    .[] | select(.name == "PRODUCTION_VERIFICATION_PHASE") | .value')"
 fi
 
 proof_args=(--arg workflow_observation "")
+proof_purpose=""
 if [ "${deployment_fence_action}" = "release" ]; then
+  proof_purpose="cutover-release"
+elif [ "${production_phase}" = "scheduled" ]; then
+  proof_purpose="scheduled-execution"
+fi
+if [ -n "${proof_purpose}" ]; then
   if [ ! -f "${workflow_observation_proof}" ] || [ -L "${workflow_observation_proof}" ] ||
      [ "$(wc -c < "${workflow_observation_proof}")" -gt 16384 ]; then
-    echo "Fence release requires a bounded, private workflow-observation proof file." >&2
+    echo "This operation requires a bounded, private workflow-observation proof file." >&2
     exit 1
   fi
-  jq -e --arg invocation "${job_execution_id}" '
+  jq -e --arg invocation "${job_execution_id}" --arg purpose "${proof_purpose}" '
     (keys | sort) == ["observation", "token"]
     and (.token | type == "string" and length <= 12000
       and test("^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"))
-    and .observation.purpose == "cutover-release"
+    and .observation.purpose == $purpose
     and .observation.operationExecutionId == $invocation
   ' "${workflow_observation_proof}" >/dev/null || {
-    echo "The workflow proof does not match this constrained release invocation." >&2
+    echo "The workflow proof does not match this constrained operation invocation." >&2
     exit 1
   }
   proof_args=(--rawfile workflow_observation "${workflow_observation_proof}")
 elif [ -n "${workflow_observation_proof}" ]; then
-  echo "Workflow-observation proofs are accepted only by attested fence release." >&2
+  echo "Workflow-observation proofs are accepted only by attested release or scheduled verification." >&2
   exit 1
 fi
 

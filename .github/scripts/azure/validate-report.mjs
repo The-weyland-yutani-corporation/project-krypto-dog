@@ -125,6 +125,32 @@ function requireMatch(object, field, expected, context) {
   }
 }
 
+function requireWorkflowObservation(purpose, workflowSha, generatedAt) {
+  const digest = args["workflow-observation-digest"];
+  const receipt = requireField(report, "workflowObservation", "object");
+  const fields = [
+    "issuer", "purpose", "observationDigest", "repositoryId", "repositoryOwnerId",
+    "workflowRef", "workflowSha", "runId", "runAttempt", "observedAt", "expiresAt",
+  ];
+  if (!/^[0-9a-f]{64}$/.test(digest ?? "") ||
+      Object.keys(receipt).length !== fields.length || !fields.every((field) => field in receipt) ||
+      receipt.issuer !== "https://token.actions.githubusercontent.com" ||
+      receipt.purpose !== purpose || receipt.observationDigest !== digest ||
+      receipt.workflowSha !== workflowSha ||
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/azure-deploy-prod\.yml@refs\/heads\/main$/.test(receipt.workflowRef) ||
+      !["repositoryId", "repositoryOwnerId", "runId"].every((field) =>
+        typeof receipt[field] === "string" && /^[1-9][0-9]{0,19}$/.test(receipt[field])) ||
+      !Number.isSafeInteger(receipt.runAttempt) || receipt.runAttempt < 1) {
+    fail("The operation lacks its exact, closed, authenticated workflow-observation receipt.");
+  }
+  const observed = Date.parse(receipt.observedAt);
+  const expiry = Date.parse(receipt.expiresAt);
+  if (!Number.isFinite(observed) || !Number.isFinite(expiry) ||
+      observed > generatedAt || generatedAt - observed > 180_000 || expiry <= generatedAt) {
+    fail("The workflow observation was not fresh when the operation report was generated.");
+  }
+}
+
 switch (operation) {
   case "production-verification": {
     const phase = args["production-phase"];
@@ -152,7 +178,7 @@ switch (operation) {
     }
     if (origin.protocol !== "https:" || origin.origin !== targetOrigin) fail("--target-origin must be a bare HTTPS origin.");
     for (const [field, expected] of Object.entries({
-      schemaVersion: "1.2.0", operation, phase, intendedMode: "paper",
+      schemaVersion: "1.3.0", operation, phase, intendedMode: "paper",
       authorizationId, releaseSha: expectedReleaseSha, imageDigest: expectedImageDigest,
       targetOrigin, environmentName: "prod", jobExecutionId: executionId, azureExecutionName,
     })) requireMatch(report, field, expected, "production-verification report");
@@ -170,7 +196,8 @@ switch (operation) {
         "production-shadow-approval", "production-shadow-terminal-safe",
         "exact-approval-id", "fresh-approval",
       ] : [
-        "scheduled-run-binding", "scheduled-run-terminal", "scheduled-run-journal", "scheduled-run-fills",
+        "scheduled-execution-observation", "scheduled-run-binding", "scheduled-run-terminal",
+        "scheduled-run-journal", "scheduled-run-fills",
       ]),
     ];
     for (const id of requiredChecks) {
@@ -199,13 +226,15 @@ switch (operation) {
       const boundary = Date.parse(args["expected-shadow-started-after"]);
       const started = Date.parse(shadow.startedAt);
       const completed = Date.parse(shadow.completedAt);
-      if (report.scheduledRun !== null || shadow.tradeCount !== 0 || shadow.errorType !== null ||
+      if (report.scheduledRun !== null || report.workflowObservation !== null || report.scheduledExecution !== null ||
+          shadow.tradeCount !== 0 || shadow.errorType !== null ||
           !["SHADOW", "HOLD", "REJECTED"].includes(shadow.outcome) ||
           !Number.isFinite(boundary) || !Number.isFinite(started) || !Number.isFinite(completed) ||
           started < boundary || completed < started || completed > generatedAt) {
         fail("Ready proof must have a zero-fill safe shadow outcome and no scheduled run.");
       }
     } else {
+      requireWorkflowObservation("scheduled-execution", expectedReleaseSha, generatedAt);
       const expectedKey = args["expected-scheduled-idempotency-key"];
       if (!expectedKey || !expectedKey.startsWith(`cron:${expectedImageDigest}-${generation}:`) ||
           !/:\d{4}-\d{2}-\d{2}T\d{2}$/.test(expectedKey)) {
@@ -213,13 +242,38 @@ switch (operation) {
       }
       const scheduled = requireField(report, "scheduledRun", "object");
       requireMatch(scheduled, "idempotencyKey", expectedKey, "scheduled run");
-      const enabled = Number(args["schedule-enabled-at"]);
+      const execution = requireField(report, "scheduledExecution", "object");
+      if (Object.keys(execution).length !== 9) fail("Scheduled execution metadata must use the closed observation shape.");
+      for (const [field, expected] of Object.entries({
+        id: args["scheduled-execution-resource-id"], name: args["scheduled-execution-name"],
+        templateDigest: args["scheduled-execution-template-digest"], imageDigest: expectedImageDigest,
+        startedAt: args["scheduled-execution-started-at"], completedAt: args["scheduled-execution-completed-at"],
+        scheduleEnabledAt: args["schedule-enabled-at"], status: "Succeeded",
+        originAssurance: "schedule-observed-not-origin-proven",
+      })) requireMatch(execution, field, expected, "authenticated Azure execution");
+      if (!/^[a-z0-9][a-z0-9-]{0,127}$/.test(execution.name) ||
+          !/^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[A-Za-z0-9_.()-]+\/providers\/Microsoft\.App\/jobs\/[a-z][a-z0-9-]{0,31}\/executions\/[a-z0-9][a-z0-9-]{0,127}$/i.test(execution.id) ||
+          !execution.id.endsWith(`/executions/${execution.name}`) ||
+          !/^[0-9a-f]{64}$/.test(execution.templateDigest)) {
+        fail("The authenticated Azure execution identity or template digest is invalid.");
+      }
+      for (const field of ["scheduleEnabledAt", "startedAt", "completedAt"]) {
+        const value = execution[field];
+        if (!Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
+          fail("Scheduled execution metadata must use canonical millisecond UTC timestamps.");
+        }
+      }
+      const enabled = Date.parse(execution.scheduleEnabledAt);
       const executionStarted = Date.parse(args["scheduled-execution-started-at"]);
-      const firstWindow = (Math.floor(enabled / 3600) + 1) * 3600;
-      if (!/^[1-9][0-9]{0,9}$/.test(args["schedule-enabled-at"] ?? "") ||
-          enabled < Number(generation) || enabled > Date.now() / 1000 ||
+      const executionCompleted = Date.parse(execution.completedAt);
+      const observed = Date.parse(report.workflowObservation.observedAt);
+      const firstWindow = (Math.floor(enabled / 3_600_000) + 1) * 3_600_000;
+      if (!Number.isFinite(enabled) || enabled < Number(generation) * 1000 ||
+          enabled > observed || observed - enabled > 4_800_000 ||
           !Number.isFinite(executionStarted) || executionStarted > generatedAt ||
-          Math.floor(executionStarted / 3_600_000) * 3600 !== firstWindow ||
+          !Number.isFinite(executionCompleted) || executionCompleted < executionStarted ||
+          executionCompleted > observed ||
+          Math.floor(executionStarted / 3_600_000) * 3_600_000 !== firstWindow ||
           expectedKey !== `cron:${expectedImageDigest}-${generation}:${new Date(executionStarted).toISOString().slice(0, 13)}`) {
         fail("Scheduled proof must bind the actual first full UTC-hour execution after enablement.");
       }
@@ -232,7 +286,7 @@ switch (operation) {
           !Number.isSafeInteger(scheduled.tradeJournalCount) ||
           (scheduled.outcome === "EXECUTED" ? scheduled.tradeJournalCount < 1 : scheduled.tradeJournalCount !== 0) ||
           !Number.isFinite(started) || !Number.isFinite(completed) ||
-          started < executionStarted || completed < started || completed > generatedAt ||
+          started < executionStarted || completed < started || completed > executionCompleted ||
           report.shadowRun !== null || report.approvalId !== null) {
         fail("Scheduled evidence has an invalid run, outcome, fills or journal.");
       }
@@ -295,29 +349,7 @@ switch (operation) {
       fail("Admission evidence is invalid, future-dated, or older than 30 minutes.");
     }
     if (action === "release") {
-      const digest = args["workflow-observation-digest"];
-      const receipt = requireField(report, "workflowObservation", "object");
-      const fields = [
-        "issuer", "purpose", "observationDigest", "repositoryId", "repositoryOwnerId",
-        "workflowRef", "workflowSha", "runId", "runAttempt", "observedAt", "expiresAt",
-      ];
-      if (!/^[0-9a-f]{64}$/.test(digest ?? "") ||
-          Object.keys(receipt).length !== fields.length || !fields.every((field) => field in receipt) ||
-          receipt.issuer !== "https://token.actions.githubusercontent.com" ||
-          receipt.purpose !== "cutover-release" || receipt.observationDigest !== digest ||
-          receipt.workflowSha !== candidateSha ||
-          !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/azure-deploy-prod\.yml@refs\/heads\/main$/.test(receipt.workflowRef) ||
-          !["repositoryId", "repositoryOwnerId", "runId"].every((field) =>
-            typeof receipt[field] === "string" && /^[1-9][0-9]{0,19}$/.test(receipt[field])) ||
-          !Number.isSafeInteger(receipt.runAttempt) || receipt.runAttempt < 1) {
-        fail("Fence release lacks its exact, closed, authenticated workflow-observation receipt.");
-      }
-      const observed = Date.parse(receipt.observedAt);
-      const expiry = Date.parse(receipt.expiresAt);
-      if (!Number.isFinite(observed) || !Number.isFinite(expiry) ||
-          observed > generatedAt || generatedAt - observed > 180_000 || expiry <= generatedAt) {
-        fail("Fence release observation was not fresh when the release report was generated.");
-      }
+      requireWorkflowObservation("cutover-release", candidateSha, generatedAt);
     } else if (report.schemaVersion === "1.1.0" && report.workflowObservation !== null) {
       fail("Non-release admission cannot claim a workflow-observation receipt.");
     }

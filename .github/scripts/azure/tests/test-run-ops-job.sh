@@ -25,7 +25,8 @@ cleanup() {
     done
   fi
   rm -f "${tmpdir}/az" "${tmpdir}/started" "${tmpdir}/launch.log" "${tmpdir}/production-config.json" \
-    "${tmpdir}/observation-proof.json" "${tmpdir}/invalid-proof.json" "${tmpdir}/proof-link.json"
+    "${tmpdir}/observation-proof.json" "${tmpdir}/invalid-proof.json" "${tmpdir}/proof-link.json" \
+    "${tmpdir}/scheduled-proof.json"
   if [ -d "${tmpdir}/private" ]; then rmdir "${tmpdir}/private"; fi
   rmdir "${tmpdir}"
 }
@@ -168,14 +169,20 @@ if [ "$1 $2 $3" = "containerapp job start" ]; then
             ["EXPECTED_SHADOW_IDEMPOTENCY_KEY", "manual-shadow:run-1"],
             ["EXPECTED_SHADOW_STARTED_AFTER", "2026-08-13T12:00:00Z"],
             ["EXPECTED_APPROVAL_CREATED_AFTER", "2026-08-13T11:55:00Z"]
-           else
-            ["SCHEDULE_ENABLED_AT_UNIX_SECONDS", "1700000001"],
-            ["SCHEDULED_EXECUTION_STARTED_AT", "2026-08-13T13:00:01Z"]
-           end)
+           else empty end)
         ]
       | all(.[]; . as $pair |
           [$env[] | select(.name == $pair[0] and .value == $pair[1])] | length == 1)
     ' "${yaml_path}" >/dev/null
+    if [ "${FAKE_PRODUCTION_PHASE}" = "scheduled" ]; then
+      jq -e --rawfile expected "${FAKE_EXPECTED_PROOF}" '
+        [.containers[0].env[] | select(.name == "DEPLOYMENT_WORKFLOW_OBSERVATION")] as $entries
+        | ($entries | length) == 1 and $entries[0].value == $expected
+          and ([.containers[0].env[] | select(
+            .name == "SCHEDULE_ENABLED_AT_UNIX_SECONDS" or .name == "SCHEDULED_EXECUTION_STARTED_AT"
+          )] | length) == 0
+      ' "${yaml_path}" >/dev/null
+    fi
   else
     jq -e '
       ([.containers[0].env[] | select(.name == "SCHEDULED_IDEMPOTENCY_KEY" and .value == "manual-shadow:run-1")] | length) == 1
@@ -189,7 +196,7 @@ if [ "$1 $2 $3" = "containerapp job start" ]; then
 fi
 
 if [ "$1 $2 $3 $4" = "containerapp job execution list" ]; then
-  if [ "${FAKE_ADMISSION_ACTION:-}" = "release" ]; then
+  if [ "${FAKE_ADMISSION_ACTION:-}" = "release" ] || [ "${FAKE_PRODUCTION_PHASE:-}" = "scheduled" ]; then
     test -z "$(find "${TMPDIR}" -mindepth 1 -maxdepth 1 -type f -print)"
   fi
   jq -n --arg status "${FAKE_JOB_STATUS:-Succeeded}" \
@@ -325,6 +332,8 @@ else
 fi
 echo "PASS  attested release keeps proof out of argv/logs, uses the new wire action, and rejects invalid evidence before start"
 
+jq '.observation.purpose = "scheduled-execution"' "${tmpdir}/observation-proof.json" > "${tmpdir}/scheduled-proof.json"
+chmod 600 "${tmpdir}/scheduled-proof.json"
 production_case() {
   local phase="$1" expected="$2"
   shift 2
@@ -334,16 +343,21 @@ production_case() {
     } + (if $phase == "ready" then {
       approvalId:"approval-1", approvalCreatedAfter:"2026-08-13T11:55:00Z",
       shadowIdempotencyKey:"manual-shadow:run-1", shadowStartedAfter:"2026-08-13T12:00:00Z"
-    } else {
-      scheduleEnabledAt:1700000001, scheduledExecutionStartedAt:"2026-08-13T13:00:01Z"
-    } end)' > "${tmpdir}/production-config.json"
+    } else {} end)' > "${tmpdir}/production-config.json"
   local status=0
+  local proof="${PRODUCTION_TEST_PROOF-${tmpdir}/scheduled-proof.json}"
+  local proof_args=()
+  if [ -n "${proof}" ] && { [ "${phase}" = "scheduled" ] || [ -n "${PRODUCTION_TEST_PROOF:-}" ]; }; then
+    proof_args=(--workflow-observation-proof "${proof}")
+  fi
   rm -f "${tmpdir}/started"
-  env PATH="${tmpdir}:${PATH}" FAKE_AZ_CAPTURE_DIR="${tmpdir}" \
+  env PATH="${tmpdir}:${PATH}" TMPDIR="${tmpdir}/private" FAKE_AZ_CAPTURE_DIR="${tmpdir}" \
     FAKE_JOB_ENVIRONMENT=prod FAKE_JOB_OPERATION=target-smoke FAKE_PRODUCTION_PHASE="${phase}" \
+    FAKE_EXPECTED_PROOF="${proof}" \
     "$@" "${script_path}" \
       --job-name caj-prod-target-smoke --resource-group rg-krypto-prod \
       --job-execution-id run-1 --production-verification-config "${tmpdir}/production-config.json" \
+      "${proof_args[@]}" \
       --timeout-seconds 2 --poll-interval-seconds 1 > "${tmpdir}/launch.log" 2>&1 || status=$?
   if [ "${status}" -ne "${expected}" ]; then
     echo "FAIL production ${phase}: expected ${expected}, got ${status}" >&2
@@ -351,6 +365,11 @@ production_case() {
     exit 1
   fi
   if [ "${expected}" -eq 1 ]; then test ! -f "${tmpdir}/started"; fi
+  if grep -q 'fixture.header.signature' "${tmpdir}/launch.log"; then
+    echo "FAIL production ${phase} leaked its bearer proof" >&2
+    exit 1
+  fi
+  test -z "$(find "${tmpdir}/private" -mindepth 1 -maxdepth 1 -type f -print)"
 }
 production_case ready 0
 production_case scheduled 0
@@ -359,6 +378,11 @@ production_case ready 1 FAKE_JOB_ENVIRONMENT=dev
 production_case ready 1 FAKE_JOB_OPERATION=activation-check
 production_case ready 1 FAKE_JOB_RETRIES=1
 production_case ready 1 FAKE_JOB_PARALLELISM=2
+PRODUCTION_TEST_PROOF="" production_case scheduled 1
+PRODUCTION_TEST_PROOF="${tmpdir}/observation-proof.json" production_case scheduled 1
+PRODUCTION_TEST_PROOF="${tmpdir}/scheduled-proof.json" production_case ready 1
+PRODUCTION_TEST_PROOF="${tmpdir}/proof-link.json" production_case scheduled 1
+PRODUCTION_TEST_PROOF="${tmpdir}/invalid-proof.json" production_case scheduled 1
 echo "PASS  production verification preserves credentials and only overrides the exact no-retry production smoke job"
 
 if env PATH="${tmpdir}:${PATH}" FAKE_AZ_CAPTURE_DIR="${tmpdir}" FAKE_ADMISSION=1 \
