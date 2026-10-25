@@ -155,6 +155,17 @@ pinned source compiler passed; this does not convert a wrapper failure into an
 aggregate pass. Native Linux harness/current-head review evidence is still
 required. No global tool replacement or MonitorOps verification retry was used.
 
+The first integrated head `519afb2` passed native CI `40198625030`, including
+the Linux harness, PostgreSQL execution and Docker targets. Infrastructure
+`40198624974` passed Bicep and parameter compilation but found that the isolated
+ops-wrapper test omitted the validator's new shared production-report module.
+The follow-up copies and cleans up that dependency without changing admission
+expectations or production validation. The actual fake-Azure wrapper now passes
+locally; its existing filesystem-dependent symlink case is skipped on Windows.
+The corrected head still requires native checks. Code Review `40198624998`
+again stopped before execution at the unchanged
+6511.781075 / 5000 rolling credit guard; it supplies no substantive verdict.
+
 Source integration and verification do not establish Azure commissioning,
 current-head native reviews, live monitoring, first paper activation, an
 unpaused factory or a completed full canary. All external holds remain.

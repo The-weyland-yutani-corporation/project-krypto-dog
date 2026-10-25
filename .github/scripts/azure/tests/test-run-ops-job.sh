@@ -17,7 +17,8 @@ cleanup() {
       "${tmpdir}/wrapper/run-ops-job.sh" \
       "${tmpdir}/wrapper/download-evidence.sh" \
       "${tmpdir}/wrapper/validate-report.mjs" "${tmpdir}/wrapper/lib/common.sh" \
-      "${tmpdir}/wrapper/lib/deployment-owner.cjs"
+      "${tmpdir}/wrapper/lib/deployment-owner.cjs" \
+      "${tmpdir}/wrapper/lib/production-report.cjs"
     for directory in "${report_parent}" "${report_parent%/*}" \
       "${evidence}/prod/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "${evidence}/prod" \
       "${evidence}" "${tmpdir}/wrapper/lib" "${tmpdir}/wrapper"; do
@@ -399,6 +400,7 @@ cp "${script_dir}/../run-deployment-admission.sh" "${tmpdir}/wrapper/run-deploym
 cp "${script_dir}/../validate-report.mjs" "${tmpdir}/wrapper/validate-report.mjs"
 cp "${script_dir}/../lib/common.sh" "${tmpdir}/wrapper/lib/common.sh"
 cp "${script_dir}/../lib/deployment-owner.cjs" "${tmpdir}/wrapper/lib/deployment-owner.cjs"
+cp "${script_dir}/../lib/production-report.cjs" "${tmpdir}/wrapper/lib/production-report.cjs"
 cat > "${tmpdir}/wrapper/run-ops-job.sh" <<'FAKE_EXECUTE'
 #!/usr/bin/env bash
 set -euo pipefail
