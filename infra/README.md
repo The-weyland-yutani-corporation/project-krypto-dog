@@ -804,9 +804,12 @@ The existing authenticated observer then waits for the actual first full UTC-
 hour execution and supplies private proof to the fixed target-smoke job. HOLD
 or policy rejection is a valid zero-fill result; this path never forces a fill.
 
-The promotion artifact contains only closed nonsecret evidence. A successful
+The schema-2 promotion artifact contains only closed nonsecret evidence. A successful
 native workflow, all expected job conclusions, exact development receipt and
 receipt-bound production Deployment are required for lifecycle completion.
+Schema 2 requires the 18-job inventory including recovery fence completion;
+historical schema-1 receipts require their exact original 17 jobs, with no
+missing/extra-job fallback.
 Archived receipts expire after the existing 90-day retention period; missing
 or expired authority blocks continuity rather than falling back. The lifecycle
 controller's canonical bounded retry policy applies only to a verified
@@ -814,11 +817,32 @@ mutation-free continuous deferral. Claim/source-bound intent is consumed
 before dispatch; pending/newer attempts suppress duplicates and uncertain
 submissions are not replayed.
 
-Promotion or publication failures attempt owned disabled/Manual recovery,
-preserving balances, positions, stops, journals and leases. Candidate binding
-is repeated after the rollout preview; cloud quiescence is repeated immediately
-before disabling monitoring. Failure status, known Deployment failure and
-factory pause are attempted independently. A hard runner loss or force
+Every production mutation-capable predecessor and publisher participates in
+failure recovery, including failed/uncertain fence acquisition and partial
+forced-disable or monitoring updates before any promotion preparation.
+The original nonsecret source web/ops binding and rollout values are persisted
+before acquisition. Recovery persists retained intent before Azure access and
+uses a one-hour deadline that is not renewed during the attempt or by the
+fence-completion job. Only a complete owned source or candidate may be restored to disabled/Manual;
+missing, mixed or foreign bindings remain retained rather than guessed.
+Original fence ownership is verified before each pre-release recovery mutation;
+no acquire, extension, balance reset or lease/stop clearing is allowed.
+
+Rollout and monitoring recovery use `production-promotion`. After verified
+disabled/Manual quiescence, `release-recovered-fence` uses the existing
+`production-deploy` Environment and fresh private source/candidate cutover proof
+to invoke the fixed exact-owner release protocol. It never deploys a rollout.
+Source completion requires that candidate migration was never attempted;
+candidate completion retains the fence unless native migration and the new
+restore-verified baseline succeeded. Disabled readback cannot bypass backup
+requirements or stand in for a database rollback.
+Unknown owner completion remains retained, and a verified mutation-free deferral
+leaves the healthy source untouched. Failed login, setup or artifact publication
+is not verified recovery. Final failure reporting validates the bound receipts
+and independently attempts failure status, known Deployment failure, factory
+pause and nonsecret retained-state persistence. Even fully verified compensation
+does not turn the failed attempt into delivered paper production.
+A hard runner loss or force
 cancellation may prevent recovery code from running: retain independent alerts
 and explicit uncertainty until actual readback, not a claimed recovery from
 workflow conditions. See `specs/operations.md` and `specs/factory.md`; this

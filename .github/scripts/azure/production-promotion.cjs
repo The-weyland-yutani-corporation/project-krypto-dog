@@ -13,6 +13,7 @@ const {
 const { validateProductionReport } = require("./lib/production-report.cjs");
 const { validateWebRollout, validateRuntimeContainer } = require("./lib/disabled-rollout.cjs");
 const { readJobExecutions } = require("./lib/job-executions.cjs");
+const { deploymentFenceOwner } = require("./lib/deployment-owner.cjs");
 
 const exec = promisify(execFile);
 const OPS = Object.freeze({
@@ -219,17 +220,20 @@ function readJson(file, limit = 1_048_576) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-async function runProductionPromotion({ phase, github, core, owner, repo, env, execute }) {
+async function runProductionPromotion({ phase, github, core, owner, repo, env, execute, recoveryPlan }) {
   assert(["prepare", "activate", "recover"].includes(phase), "Unknown production orchestration phase.");
-  const release = JSON.parse(env.PRODUCTION_RELEASE);
-  assert.equal(release.status, "disabled", "Promotion requires the trusted successful disabled-release predecessor.");
-  assert.equal(release.releaseSha, env.RESOLVED_SHA, "The disabled release belongs to another source.");
-  assert.equal(release.runId, Number(env.GITHUB_RUN_ID), "The disabled release belongs to another workflow.");
-  assert.equal(release.runAttempt, Number(env.GITHUB_RUN_ATTEMPT), "The disabled release belongs to another attempt.");
-  const binding = validateBinding(release.binding);
-  const authority = JSON.parse(env.PROMOTION_AUTHORITY);
-  assert(["operator", "continuous"].includes(authority.mode), "No paper-promotion authority was admitted.");
-  const values = JSON.parse(env.ROLLOUT_VALUES);
+  assert(!recoveryPlan || phase === "recover", "Recovery bindings cannot authorize activation.");
+  const release = recoveryPlan ? null : JSON.parse(env.PRODUCTION_RELEASE);
+  if (release) {
+    assert.equal(release.status, "disabled", "Promotion requires the trusted successful disabled-release predecessor.");
+    assert.equal(release.releaseSha, env.RESOLVED_SHA, "The disabled release belongs to another source.");
+    assert.equal(release.runId, Number(env.GITHUB_RUN_ID), "The disabled release belongs to another workflow.");
+    assert.equal(release.runAttempt, Number(env.GITHUB_RUN_ATTEMPT), "The disabled release belongs to another attempt.");
+  }
+  const binding = validateBinding(recoveryPlan ? recoveryPlan.binding : release.binding);
+  const authority = phase === "recover" ? null : JSON.parse(env.PROMOTION_AUTHORITY);
+  if (authority) assert(["operator", "continuous"].includes(authority.mode), "No paper-promotion authority was admitted.");
+  const values = recoveryPlan ? recoveryPlan.values : JSON.parse(env.ROLLOUT_VALUES);
   const context = resourceContext(env);
   const command = commandRunner(execute);
   const read = async (args) => JSON.parse(await command("az", args, "Production Azure readback"));
@@ -259,6 +263,20 @@ async function runProductionPromotion({ phase, github, core, owner, repo, env, e
       "--image", `${binding.registryLoginServer}/krypto-web@${binding.webImageDigest}`,
     ], "Production disabled/Manual quiescence", 600_000);
     await check("disabled", "Manual", 0);
+  };
+  let recoveryChecks = 0;
+  const guardRecovery = async () => {
+    if (!recoveryPlan) return;
+    assert(Date.now() < Date.parse(recoveryPlan.deadlineAt), "The bounded recovery deadline expired.");
+    if (recoveryPlan.fence === "required") {
+      const id = logical(`recovery-check-${++recoveryChecks}`);
+      await command("bash", [
+        scripts("run-deployment-admission.sh"),
+        ...fenceArguments(recoveryPlan.cutover, binding, context, "verify", id, local(id)),
+      ], "Owned recovery fence verification", 650_000);
+    }
+    assert(Date.now() < Date.parse(recoveryPlan.deadlineAt), "The bounded recovery deadline expired.");
+    verifyBinding(await snapshot(), binding, env);
   };
   const guard = async () => {
     await loadLatestDevelopmentReceipt({
@@ -334,7 +352,10 @@ async function runProductionPromotion({ phase, github, core, owner, repo, env, e
     document.parameters.scheduleEnabledAtUnixSeconds.value = String(generation);
     const rendered = write(`${label}-rendered.json`, document);
     const apply = await planDeployment(infra("schedule-monitoring.bicep"), `@${rendered}`, label);
-    if (phase === "recover") await verifyQuiescence();
+    if (phase === "recover") {
+      await verifyQuiescence();
+      await guardRecovery();
+    }
     else await guard();
     const outputs = await apply();
     assert.equal(outputs.missingHourlySuccessAlertEnabled?.value, enabled);
@@ -411,10 +432,12 @@ async function runProductionPromotion({ phase, github, core, owner, repo, env, e
     if (phase === "recover") {
       verifyBinding(await snapshot(), binding, env);
       const apply = await planRollout("disabled", "Manual", 0, "prod-recover");
+      await guardRecovery();
       verifyBinding(await snapshot(), binding, env);
       await apply();
       await verifyQuiescence();
       await monitoring(false, 0, "prod-monitor-recover");
+      await verifyQuiescence();
       return { recovered: true };
     }
 
@@ -512,4 +535,327 @@ async function runProductionPromotion({ phase, github, core, owner, repo, env, e
   }
 }
 
-module.exports = { resolvePromotionAuthority, runProductionPromotion, nonsecretValue, verifyBinding, verifyRuntime };
+function recoveryIdentity(env) {
+  const positive = (value, name) => {
+    const result = Number(required(value, /^[1-9][0-9]*$/, name));
+    assert(Number.isSafeInteger(result), `${name} is not a safe integer.`);
+    return result;
+  };
+  const repository = required(env.GITHUB_REPOSITORY, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "Repository");
+  const releaseSha = required(env.RESOLVED_SHA, /^[0-9a-f]{40}$/, "Recovery candidate");
+  assert(env.GITHUB_REF === "refs/heads/main" && env.GITHUB_SHA === releaseSha &&
+    env.GITHUB_WORKFLOW_SHA === releaseSha &&
+    env.GITHUB_WORKFLOW_REF === `${repository}/.github/workflows/azure-deploy-prod.yml@refs/heads/main`,
+  "Recovery must use its exact admitted main workflow source.");
+  return {
+    schemaVersion: 1, repository,
+    repositoryId: positive(env.GITHUB_REPOSITORY_ID, "Repository ID"),
+    repositoryOwnerId: positive(env.GITHUB_REPOSITORY_OWNER_ID, "Repository owner ID"),
+    runId: positive(env.GITHUB_RUN_ID, "Recovery run"), runAttempt: positive(env.GITHUB_RUN_ATTEMPT, "Recovery attempt"),
+    workflowSha: releaseSha, releaseSha,
+  };
+}
+
+function rolloutValues(input) {
+  const result = {};
+  for (const key of [
+    "container_apps_environment_id", "runtime_identity_id", "runtime_identity_client_id",
+    "scheduler_identity_id", "communication_email_sender",
+  ]) {
+    assert(typeof input?.[key] === "string" && input[key].length > 0, `Missing recovery rollout value ${key}.`);
+    result[key] = input[key];
+  }
+  return result;
+}
+
+function recoveryScope(context) {
+  return { subscription: context.subscription, group: context.group, names: context.names };
+}
+
+async function captureProductionRecovery({ env, execute }) {
+  const identity = recoveryIdentity(env);
+  const context = resourceContext(env);
+  const command = commandRunner(execute);
+  const snapshot = await readSnapshot(context, async (args) =>
+    JSON.parse(await command("az", args, "Pre-mutation production binding")));
+  const webImage = container(snapshot.WEB_APP_NAME).image;
+  const opsImage = container(snapshot.TARGET_SMOKE_JOB_NAME).image;
+  assert(typeof webImage === "string" && typeof opsImage === "string", "Current immutable images are missing.");
+  const binding = validateBinding({
+    releaseSha: env.CURRENT_SHA, webImageDigest: `sha256:${env.CURRENT_WEB_DIGEST_HEX}`,
+    opsImageDigest: opsImage.split("@")[1], registryLoginServer: webImage.split("/")[0],
+    targetOrigin: env.TARGET_ORIGIN, evidenceContainerUrl: env.EVIDENCE_CONTAINER_URL,
+  });
+  verifyBinding(snapshot, binding, env);
+  const mode = nonsecretValue(container(snapshot.WEB_APP_NAME), "ROLLOUT_MODE");
+  assert(["disabled", "shadow", "paper"].includes(mode), "The source rollout mode is unknown.");
+  const namespace = nonsecretValue(container(snapshot.PROD_HOURLY_JOB_NAME), "SCHEDULED_IDEMPOTENCY_NAMESPACE");
+  assert(namespace.startsWith(`${binding.webImageDigest}-`), "The source generation is not image-bound.");
+  const generation = Number(required(namespace.slice(binding.webImageDigest.length + 1), /^[0-9]{1,10}$/, "Source generation"));
+  verifyRuntime(snapshot, binding, context, mode, mode === "paper" ? "Schedule" : "Manual", generation);
+  return {
+    ...identity, resources: recoveryScope(context), binding, values: rolloutValues(JSON.parse(env.ROLLOUT_VALUES)),
+    owner: deploymentFenceOwner(env.GITHUB_REPOSITORY_ID, env.GITHUB_RUN_ID),
+  };
+}
+
+function createRecoveryIntent(env, needs) {
+  const identity = recoveryIdentity(env);
+  assert(needs?.gate?.result === "success" && needs.gate.outputs?.sha === identity.releaseSha,
+    "Recovery requires the admitted workflow gate.");
+  const now = Date.now();
+  return {
+    ...identity, startedAt: new Date(now).toISOString(), deadlineAt: new Date(now + 3_600_000).toISOString(),
+    completedAt: null, status: "retained", scope: null, binding: null, cutover: null, fence: "unknown",
+    reason: "recovery-not-yet-proven",
+  };
+}
+
+function validateRecoveryReceipt(receipt, env) {
+  const identity = recoveryIdentity(env);
+  const keys = [...Object.keys(identity), "startedAt", "deadlineAt", "completedAt",
+    "status", "scope", "binding", "cutover", "fence", "reason"];
+  assert(receipt && typeof receipt === "object" && !Array.isArray(receipt) &&
+    Object.keys(receipt).length === keys.length && keys.every((key) => Object.hasOwn(receipt, key)),
+  "Recovery evidence has an unknown or missing field.");
+  for (const [key, value] of Object.entries(identity)) assert.equal(receipt[key], value, "Recovery identity changed.");
+  assert(["retained", "disabled", "untouched"].includes(receipt.status), "Unknown recovery state.");
+  assert([null, "source", "candidate"].includes(receipt.scope), "Unknown recovery scope.");
+  assert(["unknown", "required", "retained", "released", "none"].includes(receipt.fence), "Unknown recovery fence state.");
+  for (const key of ["startedAt", "deadlineAt"]) {
+    assert(typeof receipt[key] === "string" && Number.isFinite(Date.parse(receipt[key])) &&
+      new Date(receipt[key]).toISOString() === receipt[key], "Invalid recovery clock.");
+  }
+  assert(Date.parse(receipt.startedAt) <= Date.now() &&
+    Date.parse(receipt.deadlineAt) - Date.parse(receipt.startedAt) === 3_600_000, "Recovery must retain its one-hour bound.");
+  assert(receipt.completedAt === null || (typeof receipt.completedAt === "string" &&
+    Number.isFinite(Date.parse(receipt.completedAt)) &&
+    Date.parse(receipt.completedAt) >= Date.parse(receipt.startedAt) &&
+    Date.parse(receipt.completedAt) <= Date.now()), "Invalid recovery completion time.");
+  assert(typeof receipt.reason === "string" && /^[a-z-]{1,80}$/.test(receipt.reason), "Invalid recovery reason.");
+  if (receipt.binding !== null) validateBinding(receipt.binding);
+  if (receipt.cutover !== null) {
+    const cutover = receipt.cutover;
+    const fields = ["owner", "sourceReleaseSha", "candidateReleaseSha", "sourceImageDigest", "targetOrigin", "evidenceContainerUrl"];
+    assert(Object.keys(cutover).length === fields.length && fields.every((key) => typeof cutover[key] === "string"),
+      "The recovery fence binding is not closed.");
+    assert.equal(cutover.owner, deploymentFenceOwner(env.GITHUB_REPOSITORY_ID, env.GITHUB_RUN_ID), "Recovery cannot adopt another owner.");
+    required(cutover.sourceReleaseSha, /^[0-9a-f]{40}$/, "Recovery source");
+    required(cutover.sourceImageDigest, /^sha256:[0-9a-f]{64}$/, "Recovery source image");
+    assert.equal(cutover.candidateReleaseSha, identity.releaseSha, "Recovery cannot adopt another candidate.");
+    assert.equal(cutover.targetOrigin, receipt.binding?.targetOrigin, "Recovery fence origin changed.");
+    assert.equal(cutover.evidenceContainerUrl, receipt.binding?.evidenceContainerUrl, "Recovery evidence location changed.");
+  }
+  if (receipt.status === "disabled") {
+    assert(receipt.binding && receipt.scope && receipt.completedAt &&
+      Date.parse(receipt.completedAt) <= Date.parse(receipt.deadlineAt), "Disabled recovery lacks bounded proof.");
+    assert(["required", "retained", "released", "none"].includes(receipt.fence), "Disabled recovery has no fence disposition.");
+    assert(receipt.fence === "none" ? receipt.cutover === null : receipt.cutover,
+      "Owned recovery has no fence binding.");
+    assert.equal(receipt.binding.releaseSha,
+      receipt.scope === "source" ? receipt.cutover?.sourceReleaseSha : identity.releaseSha,
+      "Recovery cannot borrow another source or candidate.");
+    if (receipt.scope === "source") {
+      assert.equal(receipt.binding.webImageDigest, receipt.cutover.sourceImageDigest, "Recovery source image changed.");
+    }
+  }
+  if (receipt.status === "untouched") {
+    assert(receipt.scope === null && receipt.binding === null && receipt.cutover === null &&
+      receipt.fence === "unknown" && receipt.completedAt &&
+      receipt.reason === "verified-mutation-free-deferral", "Untouched recovery cannot claim a changed runtime or fence.");
+  }
+  return receipt;
+}
+
+function fenceArguments(cutover, binding, context, action, id, destination) {
+  return [
+    "--action", action, "--owner", cutover.owner,
+    "--source-release-sha", cutover.sourceReleaseSha, "--candidate-release-sha", cutover.candidateReleaseSha,
+    "--source-image-digest", cutover.sourceImageDigest, "--job-release-sha", binding.releaseSha,
+    "--target-origin", binding.targetOrigin, "--job-name", context.names.ACTIVATION_CHECK_JOB_NAME,
+    "--resource-group", context.group, "--container-url", binding.evidenceContainerUrl,
+    "--job-execution-id", id, "--destination", destination, "--timeout-seconds", "600",
+  ];
+}
+
+async function runProductionRecovery(options) {
+  const { env, execute } = options;
+  const intent = validateRecoveryReceipt(JSON.parse(env.PRODUCTION_RECOVERY_INTENT), env);
+  assert.equal(intent.status, "retained", "Recovery cannot replay a completed result.");
+  let result = { ...intent };
+  try {
+    assert(Date.now() < Date.parse(intent.deadlineAt), "Recovery intent expired.");
+    const needs = JSON.parse(env.PRODUCTION_JOB_RESULTS);
+    assert(needs.gate?.result === "success" && needs.gate.outputs?.sha === intent.releaseSha, "The recovery gate changed.");
+    const admission = needs["force-disable-rollout"];
+    if (admission?.result === "success" && admission.outputs?.admission_status === "deferred") {
+      assert.equal(admission.outputs.existing_release, "true", "A deferral requires the unchanged existing release.");
+      for (const id of ["backup-current-release", "deploy-environment", "build-images", "deploy-release",
+        "migrate-backup", "release-cutover-fence", "target-smoke", "verify-final-state", "prepare-paper", "promote-paper"]) {
+        assert.equal(needs[id]?.result, "skipped", "A deferred attempt also ran a mutation-capable job.");
+      }
+      return validateRecoveryReceipt({
+        ...intent, status: "untouched", completedAt: new Date().toISOString(),
+        reason: "verified-mutation-free-deferral",
+      }, env);
+    }
+    const context = resourceContext(env);
+    const command = commandRunner(execute);
+    const snapshot = await readSnapshot(context, async (args) =>
+      JSON.parse(await command("az", args, "Recovery runtime inspection")));
+    const existing = admission?.outputs?.existing_release;
+    assert(["true", "false"].includes(existing), "Recovery has no reliable release inventory.");
+    let source = null;
+    if (existing === "true") {
+      source = JSON.parse(admission.outputs.recovery_context);
+      const identity = recoveryIdentity(env);
+      for (const [key, value] of Object.entries(identity)) {
+        if (key === "runAttempt") assert(Number.isSafeInteger(source[key]) && source[key] > 0 && source[key] <= value,
+          "The captured recovery attempt is invalid.");
+        else assert.equal(source[key], value, "The captured source belongs to another workflow.");
+      }
+      assert.deepEqual(source.resources, recoveryScope(context), "The captured recovery resources changed.");
+      assert.equal(source.owner, deploymentFenceOwner(env.GITHUB_REPOSITORY_ID, env.GITHUB_RUN_ID));
+      validateBinding(source.binding);
+      assert.equal(source.binding.releaseSha, admission.outputs.current_sha);
+      assert.equal(source.binding.webImageDigest, `sha256:${admission.outputs.current_digest}`);
+    }
+    const cutover = source ? {
+      owner: source.owner, sourceReleaseSha: source.binding.releaseSha,
+      candidateReleaseSha: intent.releaseSha, sourceImageDigest: source.binding.webImageDigest,
+      targetOrigin: source.binding.targetOrigin, evidenceContainerUrl: source.binding.evidenceContainerUrl,
+    } : null;
+    const candidates = [];
+    if (needs["deploy-environment"]?.result === "success" && needs["build-images"]?.result === "success" &&
+        ["success", "failure", "cancelled"].includes(needs["deploy-release"]?.result)) {
+      const values = needs["deploy-environment"].outputs;
+      const images = needs["build-images"].outputs;
+      candidates.push({
+        scope: "candidate", values: rolloutValues(values),
+        binding: validateBinding({
+          releaseSha: intent.releaseSha, webImageDigest: `sha256:${images.web_digest_hex}`,
+          opsImageDigest: `sha256:${images.ops_digest_hex}`, registryLoginServer: values.acr_login_server,
+          targetOrigin: source?.binding.targetOrigin ?? `https://${snapshot.WEB_APP_NAME.properties.configuration.ingress.fqdn}`,
+          evidenceContainerUrl: values.evidence_container_url,
+        }),
+      });
+    }
+    if (source) candidates.push({ scope: "source", values: rolloutValues(source.values), binding: source.binding });
+    const selected = candidates.find(({ binding }) =>
+      container(snapshot.WEB_APP_NAME).image === `${binding.registryLoginServer}/krypto-web@${binding.webImageDigest}` &&
+      container(snapshot.TARGET_SMOKE_JOB_NAME).image === `${binding.registryLoginServer}/krypto-ops@${binding.opsImageDigest}` &&
+      nonsecretValue(container(snapshot.TARGET_SMOKE_JOB_NAME), "RELEASE_SHA") === binding.releaseSha);
+    assert(selected, "The runtime is not a complete owned source or candidate binding.");
+    verifyBinding(snapshot, selected.binding, env);
+    if (selected.scope === "source") {
+      assert.equal(needs["migrate-backup"]?.result, "skipped", "Source recovery cannot guess a database rollback.");
+    }
+    const checkpoint = needs["release-cutover-fence"];
+    const guardFence = !source ? "none" :
+      checkpoint?.result === "success" && checkpoint.outputs?.status === "released" ? "released" : "required";
+    assert(guardFence !== "released" || selected.scope === "candidate",
+      "A completed candidate cutover cannot authorize mutation of a restored source.");
+    const baseline = needs["migrate-backup"];
+    const verifiedBaseline = baseline?.result === "success" &&
+      /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(baseline.outputs?.job_execution_id ?? "");
+    const fence = guardFence === "required" && selected.scope === "candidate" && !verifiedBaseline ? "retained" : guardFence;
+    result = { ...intent, scope: selected.scope, binding: selected.binding, cutover, fence };
+    validateRecoveryReceipt(result, env);
+    await runProductionPromotion({
+      ...options, phase: "recover",
+      recoveryPlan: { ...selected, cutover, fence: guardFence, deadlineAt: intent.deadlineAt },
+    });
+    return validateRecoveryReceipt({
+      ...result, status: "disabled", completedAt: new Date().toISOString(),
+      reason: fence === "retained" ? "candidate-baseline-unverified" : "disabled-manual-verified",
+    }, env);
+  } catch {
+    const error = new Error("Production recovery remains retained; ownership, runtime or completion could not be proved.");
+    error.recovery = { ...result, status: "retained", completedAt: new Date().toISOString(), reason: "recovery-unverified" };
+    throw error;
+  }
+}
+
+async function releaseRecoveredProductionFence({ env, core, execute }) {
+  const receipt = validateRecoveryReceipt(JSON.parse(env.PRODUCTION_RECOVERY_RECEIPT), env);
+  assert(receipt.status === "disabled" && receipt.fence === "required" && receipt.cutover,
+    "Fence completion requires verified disabled recovery and its original owner.");
+  const context = resourceContext(env);
+  const command = commandRunner(execute);
+  const root = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "production-recovery-proof-"));
+  const scripts = (...parts) => path.join(env.GITHUB_WORKSPACE, ".github", "scripts", "azure", ...parts);
+  const binding = receipt.binding;
+  const image = `${binding.registryLoginServer}/krypto-web@${binding.webImageDigest}`;
+  const verify = async () => {
+    assert(Date.now() < Date.parse(receipt.deadlineAt), "The bounded fence recovery deadline expired.");
+    await command("bash", [
+      scripts("verify-disabled-rollout.sh"), "--resource-group", context.group,
+      "--web-app", context.names.WEB_APP_NAME, "--hourly-job", context.names.PROD_HOURLY_JOB_NAME,
+      "--daily-job", context.names.PROD_DAILY_JOB_NAME, "--image", image,
+    ], "Recovered runtime quiescence", 600_000);
+    const snapshot = await readSnapshot(context, async (args) =>
+      JSON.parse(await command("az", args, "Recovered binding verification")));
+    verifyBinding(snapshot, binding, env);
+    verifyRuntime(snapshot, binding, context, "disabled", "Manual", 0);
+  };
+  try {
+    await verify();
+    const id = required(`run${env.GITHUB_RUN_ID}-a${env.GITHUB_RUN_ATTEMPT}-recover-release`,
+      /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/, "Recovery invocation");
+    const proof = path.join(root, "proof.json");
+    const observation = path.join(root, "observation.json");
+    await command("node", [
+      "--import", "tsx", path.join(env.GITHUB_WORKSPACE, "scripts", "azure", "attest-cutover-state.ts"),
+      "--resource-group", context.group, "--web-app", context.names.WEB_APP_NAME,
+      "--hourly-job", context.names.PROD_HOURLY_JOB_NAME, "--daily-job", context.names.PROD_DAILY_JOB_NAME,
+      "--ops-job", context.names.ACTIVATION_CHECK_JOB_NAME, "--expected-image", image,
+      "--owner", receipt.cutover.owner, "--source-release-sha", receipt.cutover.sourceReleaseSha,
+      "--source-image-digest", receipt.cutover.sourceImageDigest, "--candidate-release-sha", receipt.releaseSha,
+      "--runtime-release-sha", binding.releaseSha, "--job-execution-id", id,
+      "--proof-output", proof, "--receipt-output", observation,
+    ], "Recovered cutover attestation", 150_000);
+    const privateProof = readJson(proof, 65_536);
+    assert(typeof privateProof.token === "string" && privateProof.observation?.purpose === "cutover-release",
+      "Recovery did not obtain private cutover proof.");
+    core.setSecret(privateProof.token);
+    const digest = required(readJson(observation, 8192).observationDigest, /^[0-9a-f]{64}$/, "Recovery observation digest");
+    assert(Date.now() < Date.parse(receipt.deadlineAt), "The bounded fence recovery deadline expired.");
+    await command("bash", [
+      scripts("run-deployment-admission.sh"),
+      ...fenceArguments(receipt.cutover, binding, context, "release", id, path.join(root, "evidence")),
+      "--workflow-observation-proof", proof, "--workflow-observation-digest", digest,
+    ], "Exact owned recovery fence release", 650_000);
+    await verify();
+    return validateRecoveryReceipt({
+      ...receipt, fence: "released", completedAt: new Date().toISOString(), reason: "disabled-and-owned-fence-released",
+    }, env);
+  } catch {
+    const error = new Error("Recovered fence completion is unverified; retain the recovery state.");
+    error.recovery = { ...receipt, status: "retained", completedAt: new Date().toISOString(), reason: "fence-release-unverified" };
+    throw error;
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function describeProductionRecovery(env) {
+  if (env.RECOVERY_RESULT !== "success") return "recovery-retained";
+  const receipt = validateRecoveryReceipt(JSON.parse(env.PRODUCTION_RECOVERY_RECEIPT), env);
+  if (receipt.status === "untouched") return "untouched-deferral";
+  if (receipt.status !== "disabled") return "recovery-retained";
+  if (receipt.fence === "none" || receipt.fence === "released") return "disabled-verified";
+  if (receipt.fence === "retained") return "fence-retained";
+  if (env.RECOVERY_FENCE_RESULT !== "success") return "fence-retained";
+  const completed = validateRecoveryReceipt(JSON.parse(env.RECOVERED_FENCE_RECEIPT), env);
+  assert(completed.status === "disabled" && completed.fence === "released", "Fence recovery is not complete.");
+  for (const key of ["scope", "binding", "cutover", "startedAt", "deadlineAt"]) {
+    assert.deepEqual(completed[key], receipt[key], "Fence completion belongs to another recovery.");
+  }
+  return "disabled-verified";
+}
+
+module.exports = {
+  resolvePromotionAuthority, runProductionPromotion, nonsecretValue, verifyBinding, verifyRuntime,
+  captureProductionRecovery, createRecoveryIntent, validateRecoveryReceipt,
+  runProductionRecovery, releaseRecoveredProductionFence, describeProductionRecovery,
+};

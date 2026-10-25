@@ -246,6 +246,7 @@ jobs:
       fence_owner: ${{ steps.admission.outputs.owner }}
       promotion_authority: ${{ steps.promotion.outputs.authority }}
       promotion_mode: ${{ steps.promotion.outputs.mode }}
+      recovery_context: ${{ steps.recovery.outputs.context }}
     steps:
       - name: Checkout ${{ needs.gate.outputs.sha }}
         uses: actions/checkout@v4
@@ -434,6 +435,36 @@ jobs:
             core.setOutput("authority", authority);
             core.setOutput("mode", authority.mode);
             core.notice(`Production promotion admission: ${authority.mode}.`);
+
+      - name: Capture the exact source recovery binding before fence acquisition
+        id: recovery
+        if: steps.detect.outputs.existing_release == 'true'
+        uses: actions/github-script@v9
+        env:
+          CURRENT_SHA: ${{ steps.current.outputs.sha }}
+          CURRENT_WEB_DIGEST_HEX: ${{ steps.current.outputs.digest }}
+          TARGET_ORIGIN: ${{ steps.live.outputs.target_origin }}
+          EVIDENCE_CONTAINER_URL: ${{ steps.live.outputs.evidence_container_url }}
+          ROLLOUT_VALUES: ${{ toJSON(steps.live.outputs) }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { captureProductionRecovery } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const recovery = await captureProductionRecovery({ env: process.env });
+            fs.mkdirSync("production-cutover-context", { recursive: true });
+            fs.writeFileSync("production-cutover-context/context.json", JSON.stringify(recovery) + "\n", { flag: "wx" });
+            core.setOutput("context", recovery);
+
+      - name: Retain the nonsecret source binding before any cutover mutation
+        if: steps.detect.outputs.existing_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-cutover-context-${{ github.run_id }}-${{ github.run_attempt }}
+          path: production-cutover-context/context.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Render rollout.prod.bicepparam from live state (disabled/Manual)
         if: steps.detect.outputs.existing_release == 'true'
@@ -2085,15 +2116,13 @@ jobs:
   recover-paper:
     name: Recover production to verified disabled/Manual
     needs:
-      [gate, force-disable-rollout, deploy-environment, publish-release-receipt,
-       prepare-paper, promote-paper, publish-promotion-receipt, publish-production-delivery]
+      [gate, force-disable-rollout, backup-current-release, deploy-environment,
+       build-images, deploy-release, migrate-backup, release-cutover-fence,
+       target-smoke, verify-final-state, publish-release-receipt, prepare-paper,
+       promote-paper, publish-promotion-receipt, publish-production-delivery]
     if: >-
       always() &&
       needs.gate.result == 'success' &&
-      needs.publish-release-receipt.outputs.status == 'disabled' &&
-      (needs.force-disable-rollout.outputs.promotion_mode == 'operator' ||
-       needs.force-disable-rollout.outputs.promotion_mode == 'continuous') &&
-      needs.prepare-paper.result != 'skipped' &&
       (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -2104,15 +2133,37 @@ jobs:
     env:
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
-      PRODUCTION_RELEASE: ${{ needs.publish-release-receipt.outputs.receipt }}
-      PROMOTION_AUTHORITY: ${{ needs.force-disable-rollout.outputs.promotion_authority }}
-      ROLLOUT_VALUES: ${{ toJSON(needs.deploy-environment.outputs) }}
+      PRODUCTION_JOB_RESULTS: ${{ toJSON(needs) }}
+    outputs:
+      status: ${{ steps.recovery.outputs.status || 'retained' }}
+      fence: ${{ steps.recovery.outputs.fence || 'unknown' }}
+      receipt: ${{ steps.recovery.outputs.receipt || steps.intent.outputs.receipt }}
     steps:
       - name: Check out the exact failed release
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
           persist-credentials: false
+      - name: Record bounded retained recovery before Azure access
+        id: intent
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { createRecoveryIntent } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const receipt = createRecoveryIntent(process.env, JSON.parse(process.env.PRODUCTION_JOB_RESULTS));
+            fs.mkdirSync("production-recovery", { recursive: true });
+            fs.writeFileSync("production-recovery/intent.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("receipt", receipt);
+      - name: Preserve recovery intent before any compensating mutation
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-recovery-intent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: production-recovery/intent.json
+          if-no-files-found: error
+          retention-days: 90
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
@@ -2120,24 +2171,121 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Preserve balances and prove disabled/Manual before disabling schedule monitoring
+        id: recovery
+        uses: actions/github-script@v9
+        env:
+          PRODUCTION_RECOVERY_INTENT: ${{ steps.intent.outputs.receipt }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { runProductionRecovery, validateRecoveryReceipt } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
+            const intent = validateRecoveryReceipt(JSON.parse(process.env.PRODUCTION_RECOVERY_INTENT), process.env);
+            let receipt;
+            try {
+              receipt = await runProductionRecovery({ github, core, ...context.repo, env: process.env });
+            } catch (error) {
+              receipt = { ...intent, ...error.recovery, status: "retained" };
+              core.setFailed("Production recovery is retained and unverified; no balances, stops or ownership were cleared.");
+            }
+            validateRecoveryReceipt(receipt, process.env);
+            if (receipt.fence === "retained") {
+              core.setFailed("Disabled/Manual was verified, but the candidate baseline is unverified; its fence remains retained.");
+            }
+            fs.writeFileSync("production-recovery/result.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("receipt", receipt);
+            core.setOutput("status", receipt.status);
+            core.setOutput("fence", receipt.fence);
+            core.notice(`Production recovery: ${receipt.status}; fence completion: ${receipt.fence}.`);
+      - name: Retain only bounded nonsecret recovery results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-recovery-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            production-recovery/intent.json
+            production-recovery/result.json
+          if-no-files-found: error
+          retention-days: 90
+
+  release-recovered-fence:
+    name: Release the recovered source or candidate fence with fresh proof
+    needs: [gate, recover-paper]
+    if: >-
+      always() &&
+      needs.gate.result == 'success' &&
+      needs.recover-paper.result == 'success' &&
+      needs.recover-paper.outputs.status == 'disabled' &&
+      needs.recover-paper.outputs.fence == 'required'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-deploy
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
+      PRODUCTION_RECOVERY_RECEIPT: ${{ needs.recover-paper.outputs.receipt }}
+    outputs:
+      receipt: ${{ steps.release.outputs.receipt }}
+    steps:
+      - name: Check out the exact recovery implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Set up the supported cutover observation runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install locked attestation dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Release only the original owner after fresh disabled readback
+        id: release
         uses: actions/github-script@v9
         with:
           script: |
-            const { runProductionPromotion } = require(
+            const fs = require("node:fs");
+            const { releaseRecoveredProductionFence, validateRecoveryReceipt } = require(
               require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
             );
-            await runProductionPromotion({
-              phase: "recover", github, core, ...context.repo, env: process.env,
-            });
-            core.notice("Production is disabled/Manual with cloud execution quiescence verified; account state was not reset.");
+            const initial = validateRecoveryReceipt(JSON.parse(process.env.PRODUCTION_RECOVERY_RECEIPT), process.env);
+            let receipt;
+            try {
+              receipt = await releaseRecoveredProductionFence({ core, env: process.env });
+            } catch (error) {
+              receipt = { ...initial, ...error.recovery, status: "retained" };
+              core.setFailed("The recovery fence remains unverified; no retry or completed recovery is inferred.");
+            }
+            validateRecoveryReceipt(receipt, process.env);
+            fs.mkdirSync("production-recovered-fence", { recursive: true });
+            fs.writeFileSync("production-recovered-fence/receipt.json", JSON.stringify(receipt) + "\n", { flag: "wx" });
+            core.setOutput("receipt", receipt);
+      - name: Retain only the nonsecret fence completion result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-recovered-fence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: production-recovered-fence/receipt.json
+          if-no-files-found: error
+          retention-days: 90
 
   publish-production-failure:
     name: Publish a durable production failure
     needs:
-      [gate, force-disable-rollout, deploy-environment, build-images, deploy-release,
+      [gate, force-disable-rollout, backup-current-release, deploy-environment, build-images, deploy-release,
        migrate-backup, release-cutover-fence, target-smoke, verify-final-state,
        publish-release-receipt, prepare-paper, promote-paper, publish-promotion-receipt,
-       publish-production-delivery, recover-paper]
+       publish-production-delivery, recover-paper, release-recovered-fence]
     if: >-
       always() &&
       needs.gate.outputs.sha != '' &&
@@ -2152,6 +2300,10 @@ jobs:
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
       RECOVERY_RESULT: ${{ needs.recover-paper.result }}
+      RECOVERY_FENCE_RESULT: ${{ needs.release-recovered-fence.result }}
+      PRODUCTION_RECOVERY_RECEIPT: ${{ needs.recover-paper.outputs.receipt }}
+      RECOVERED_FENCE_RECEIPT: ${{ needs.release-recovered-fence.outputs.receipt }}
+      PRODUCTION_JOB_RESULTS: ${{ toJSON(needs) }}
       PRODUCTION_DEPLOYMENT_ID: ${{ needs.publish-production-delivery.outputs.deployment_id }}
     steps:
       - name: Check out trusted failure reporting
@@ -2172,17 +2324,40 @@ jobs:
             const { pauseFactoryControl } = require(
               require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/agentic-lifecycle-reconciler.cjs"),
             );
+            const { describeProductionRecovery } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-promotion.cjs"),
+            );
             const url = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            let recoveryState = "recovery-retained";
+            try {
+              recoveryState = describeProductionRecovery(process.env);
+            } catch {
+              core.error("Recovery evidence is missing or invalid; retained recovery is not a success.");
+            }
+            const fs = require("node:fs");
             const reporting = [() => github.rest.repos.createCommitStatus({
               ...context.repo, sha: process.env.RESOLVED_SHA, state: "failure",
               context: PRODUCTION_STATUS_CONTEXT, target_url: url,
-              description: process.env.RECOVERY_RESULT === "success" ?
+              description: recoveryState === "disabled-verified" ?
                 "Delivery failed; disabled/Manual recovery verified." :
-                "Delivery failed; production activation/recovery is not verified.",
+                recoveryState === "fence-retained" ? "Delivery failed; disabled/Manual verified, fence recovery retained." :
+                  recoveryState === "untouched-deferral" ? "Delivery failed; the verified deferred source was left untouched." :
+                    "Delivery failed; production activation/recovery is not verified.",
             }), () => pauseFactoryControl({
               github, core, ...context.repo,
-              reason: `Production delivery failed for ${process.env.RESOLVED_SHA} (${url}); recovery: ${process.env.RECOVERY_RESULT}.`,
-            })];
+              reason: `Production delivery failed for ${process.env.RESOLVED_SHA} (${url}); recovery: ${recoveryState}.`,
+            }), () => {
+              fs.mkdirSync("production-recovery-status", { recursive: true });
+              const results = JSON.parse(process.env.PRODUCTION_JOB_RESULTS);
+              fs.writeFileSync("production-recovery-status/receipt.json", JSON.stringify({
+                schemaVersion: 1, releaseSha: process.env.RESOLVED_SHA,
+                runId: Number(process.env.GITHUB_RUN_ID), runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+                state: recoveryState, recoveryResult: process.env.RECOVERY_RESULT,
+                fenceResult: process.env.RECOVERY_FENCE_RESULT,
+                failedJobs: Object.entries(results).filter(([, value]) =>
+                  ["failure", "cancelled"].includes(value.result)).map(([name]) => name),
+              }) + "\n", { flag: "wx" });
+            }];
             if (/^[1-9][0-9]*$/.test(process.env.PRODUCTION_DEPLOYMENT_ID || "")) {
               reporting.push(() => github.rest.repos.createDeploymentStatus({
                 ...context.repo, deployment_id: Number(process.env.PRODUCTION_DEPLOYMENT_ID),
@@ -2195,3 +2370,11 @@ jobs:
               if (outcome.status === "rejected") core.error(`Production failure reporting action ${index + 1} failed; it was not retried.`);
             });
             core.setFailed(`Production delivery failed (${url}); recovery result: ${process.env.RECOVERY_RESULT}.`);
+      - name: Retain the explicit final recovery or retained state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-prod-recovery-status-${{ github.run_id }}-${{ github.run_attempt }}
+          path: production-recovery-status/receipt.json
+          if-no-files-found: error
+          retention-days: 90

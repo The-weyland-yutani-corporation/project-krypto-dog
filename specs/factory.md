@@ -61,6 +61,15 @@
   and the receipt-bound native production Deployment. Missing, expired,
   ambiguous or superseded evidence fails closed; an older successful run
   cannot substitute for the latest attempt.
+- Production failure recovery includes pre-promotion cutover and backup failures,
+  not just failed activation. A persisted original-source context and bounded
+  retained intent precede recovery mutation. Only a verified owned source or
+  candidate may be disabled; required fence completion uses fresh signed proof
+  in the existing deployment Environment. Mixed/unknown state stays explicitly
+  retained and a mutation-free deferral stays untouched. Recovery receipts never
+  convert a failed workflow into successful delivery or authorize factory resume.
+  Schema-2 promotion evidence binds the new recovery job inventory; historical
+  schema-1 evidence must still match its own exact inventory.
 - A verified mutation-free continuous-production deferral may use the bounded
   retry policy in `.github/agentic-policy.json`. The controller consumes a
   native, claim/PR/SHA-bound comment ledger before dispatching the existing

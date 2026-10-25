@@ -24,8 +24,10 @@ readback. Missing workloads now require read-only database inspection before
 production mutation. Receipt-publication failures use the existing development
 disabled/Manual recovery. The current source increment implements native
 paper promotion, bounded deferral recovery and production-aware lifecycle/full
-canary completion. Local component verification is complete, with the aggregate
-Windows harness limitations recorded below. Current-head native checks and
+canary completion. That published increment completed local component checks,
+with the aggregate Windows harness limitations recorded below. A subsequent
+Trading Safety finding requires the early-failure recovery repair described
+below. Current-head native checks and
 reviews remain required; these source changes do not enable either deployment
 workflow or resume the factory.
 
@@ -162,9 +164,53 @@ ops-wrapper test omitted the validator's new shared production-report module.
 The follow-up copies and cleans up that dependency without changing admission
 expectations or production validation. The actual fake-Azure wrapper now passes
 locally; its existing filesystem-dependent symlink case is skipped on Windows.
-The corrected head still requires native checks. Code Review `40198624998`
+The corrected head `3dfcd98` passed native CI `40199290196` and infrastructure
+`40199290209`, including the actual Linux helper fixture. Code Review `40198624998`
 again stopped before execution at the unchanged
 6511.781075 / 5000 rolling credit guard; it supplies no substantive verdict.
+
+### Required early-failure recovery correction
+
+Trading Safety workflow `40199290235` completed, but its substantive check
+`121188151532` failed with required fixes at `3dfcd98`. Its confirmed defect:
+the recovery gate depended on successful disabled-release publication and
+preparation having run. An uncertain fence acquisition or partial forced
+disable/monitoring failure could therefore skip recovery. The historical safe
+verdict at `519afb2` does not override that later finding. Current general Code
+Review `40199290216` again refused activation at the unchanged rolling credit
+guard, before agent execution.
+
+The source correction captures and persists exact source context before
+acquisition; includes every mutation-capable predecessor and publisher in
+bounded recovery; and no longer requires preparation, a disabled receipt or
+activation authority to compensate failure. It preserves verified deferral,
+accepts only complete current source/candidate bindings, and retains explicit
+failure on ambiguous ownership or runtime state. Recovery never reacquires or
+extends a fence, resets balances, clears stops/leases or guesses a restore point.
+
+Rollout recovery remains in `production-promotion`. Separate fence completion
+uses the existing `production-deploy` Environment and signed cutover protocol,
+preserving purpose-specific trust and source/candidate release validation.
+Source completion refuses any attempted candidate migration; candidate recovery
+retains its fence without successful native migration and baseline backup.
+One-hour retained intent is persisted before recovery Azure access; result,
+owner-completion and final failure artifacts contain only nonsecret state.
+Failure reporting requires validated bound receipts rather than equating job
+success with verified recovery, and independently attempts pause/failure writes.
+Schema-2 promotion receipts bind the additional native job; historical
+schema-1 receipts retain exact validation against their original inventory.
+
+The correction passed 712 tests across the eight production workflow,
+orchestration, evidence, signed-observation and fence suites; 916 factory tests;
+and all 232 assertions through the actual report CLI. Build, lint, script
+typecheck, canonical policy, generated docs and links passed; lint retains the
+existing PostCSS warning. Strict pinned GH-AW compilation passed all 18 sources
+without changing source or generated artifact bytes. These are local source
+checks, not Azure recovery execution or a current-head specialist verdict.
+
+The correction requires new exact-head native review. It has not run against Azure, enabled a workflow, dispatched
+a reviewer/deployment, changed an approval/credential/budget, resolved the
+denied MonitorOps command or stale run, or resumed the factory.
 
 Source integration and verification do not establish Azure commissioning,
 current-head native reviews, live monitoring, first paper activation, an

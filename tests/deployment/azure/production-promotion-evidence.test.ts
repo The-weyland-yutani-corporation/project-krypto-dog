@@ -46,7 +46,7 @@ describe("native paper-production evidence", () => {
   });
 
   it.each([
-    ["schemaVersion", 2], ["stage", "release"], ["status", "promoted"],
+    ["schemaVersion", 3], ["stage", "release"], ["status", "promoted"],
     ["repositoryId", 999], ["repositoryOwnerId", 999], ["runId", 1000],
     ["runAttempt", 1], ["workflowId", 999], ["actorId", 999], ["triggeringActorId", 999],
     ["releaseSha", "b".repeat(40)], ["generatedAt", "2026-10-21T00:00:00.000Z"],
@@ -93,7 +93,7 @@ describe("native paper-production evidence", () => {
     await expect(api.loadVerifiedPromotionReceipt(fixture.options)).rejects.toThrow("failed native workflow");
   });
 
-  it.each(["prepare-paper", "promote-paper", "publish-promotion-receipt", "publish-production-delivery", "recover-paper"])
+  it.each(["prepare-paper", "promote-paper", "publish-promotion-receipt", "publish-production-delivery", "recover-paper", "release-recovered-fence"])
     ("requires the actual native result for %s", async (id) => {
       const fixture = productionPromotionFixture();
       const names = jest.requireActual<{ PRODUCTION_JOB_NAMES: Record<string, string> }>(
@@ -104,6 +104,20 @@ describe("native paper-production evidence", () => {
       job.conclusion = job.conclusion === "success" ? "skipped" : "success";
       await expect(api.loadVerifiedPromotionReceipt(fixture.options)).rejects.toThrow("actual production attempt");
     });
+
+  it("keeps historical schema-1 jobs exact without allowing a schema downgrade to omit current recovery", async () => {
+    const historical = productionPromotionFixture();
+    historical.receipt.schemaVersion = 1;
+    historical.nativeJobs.splice(historical.nativeJobs.findIndex((job) => job.name.includes("recovered source or candidate")), 1);
+    await expect(api.loadVerifiedPromotionReceipt(historical.options)).resolves.toEqual(historical.receipt);
+
+    const downgrade = productionPromotionFixture();
+    downgrade.receipt.schemaVersion = 1;
+    await expect(api.loadVerifiedPromotionReceipt(downgrade.options)).rejects.toThrow("Unexpected native production jobs");
+    const missing = productionPromotionFixture();
+    missing.nativeJobs.splice(missing.nativeJobs.findIndex((job) => job.name.includes("recovered source or candidate")), 1);
+    await expect(api.loadVerifiedPromotionReceipt(missing.options)).rejects.toThrow("Unexpected native production jobs");
+  });
 
   it("rejects extra jobs and historical reports outside the actual native producer window", async () => {
     const extra = productionPromotionFixture();

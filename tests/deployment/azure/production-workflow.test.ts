@@ -32,6 +32,7 @@ const workflowSchema = z.object({
     env: strings.optional(),
     outputs: strings.optional(),
     permissions: strings.optional(),
+    "timeout-minutes": z.number().optional(),
     steps: z.array(stepSchema),
   })),
 });
@@ -1032,12 +1033,58 @@ describe("native paper-promotion job contract", () => {
     expect(job("promote-paper").if).toContain("needs.prepare-paper.result == 'success'");
     expect(job("publish-production-delivery").if).toContain("needs.publish-promotion-receipt.outputs.status == 'paper'");
     const recovery = job("recover-paper");
-    expect(recovery.needs).toEqual(expect.arrayContaining(["prepare-paper", "promote-paper", "publish-promotion-receipt", "publish-production-delivery"]));
+    expect(recovery.needs).toEqual(Object.keys(evidence.PRODUCTION_JOB_NAMES)
+      .filter((id) => !["recover-paper", "release-recovered-fence", "publish-production-failure"].includes(id)));
     expect(recovery.if).toContain("always()");
     expect(recovery.if).toContain("contains(needs.*.result, 'cancelled')");
     expect(recovery.if).toContain("contains(needs.*.result, 'failure')");
-    expect(recovery.if).toContain("needs.prepare-paper.result != 'skipped'");
+    expect(recovery.if).not.toMatch(/prepare-paper|publish-release-receipt|promotion_mode/);
     expect(job("publish-production-failure").needs).toContain("recover-paper");
+    expect(job("publish-production-failure").needs).toContain("backup-current-release");
+    expect(job("publish-production-failure").needs).toContain("release-recovered-fence");
+    expect(recovery["timeout-minutes"]).toBe(60);
+    expect(job("release-recovered-fence")["timeout-minutes"]).toBe(30);
+  });
+
+  it.each(Object.keys(evidence.PRODUCTION_JOB_NAMES)
+    .filter((id) => !["gate", "recover-paper", "release-recovered-fence", "publish-production-failure"].includes(id))
+    .flatMap((id) => ["failure", "cancelled"].map((result) => [id, result])))(
+    "the actual recovery condition covers %s %s even when other predecessors were skipped",
+    (id, result) => {
+      const needs = Object.fromEntries(Object.keys(evidence.PRODUCTION_JOB_NAMES)
+        .map((name) => [name, { result: name === "gate" ? "success" : "skipped" }]));
+      needs[id].result = result;
+      const expression = z.string().parse(job("recover-paper").if)
+        .replace("needs.*.result", "Object.values(needs).map(job => job.result)")
+        .replace("needs.*.result", "Object.values(needs).map(job => job.result)");
+      const evaluate = new Function("needs", "always", "contains", `return (${expression});`);
+      const includes = (values: string[], expected: string) => values.includes(expected);
+      expect(evaluate(needs, () => true, includes)).toBe(true);
+      needs[id].result = "success";
+      expect(evaluate(needs, () => true, includes)).toBe(false);
+      needs[id].result = result;
+      needs.gate.result = "failure";
+      expect(evaluate(needs, () => true, includes)).toBe(false);
+    },
+  );
+
+  it("persists source context before acquisition and retained intent before any recovery mutation", () => {
+    expectBefore("force-disable-rollout", "Capture the exact source recovery binding before fence acquisition",
+      "Retain the nonsecret source binding before any cutover mutation");
+    expectBefore("force-disable-rollout", "Retain the nonsecret source binding before any cutover mutation",
+      "Acquire the exact source release's owned cutover fence");
+    expectBefore("recover-paper", "Preserve recovery intent before any compensating mutation", "Azure login (OIDC)");
+    expect(step("recover-paper", "Retain only bounded nonsecret recovery results").if).toBe("always()");
+    const completion = job("release-recovered-fence");
+    expect(completion.needs).toEqual(["gate", "recover-paper"]);
+    expect(completion.if).toContain("needs.recover-paper.result == 'success'");
+    expect(completion.if).toContain("needs.recover-paper.outputs.status == 'disabled'");
+    expect(completion.if).toContain("needs.recover-paper.outputs.fence == 'required'");
+    expect(completion.environment).toBe("production-deploy");
+    expect(completion.permissions).toEqual({ contents: "read", "id-token": "write" });
+    const artifact = step("release-recovered-fence", "Retain only the nonsecret fence completion result");
+    expect(artifact.if).toBe("always()");
+    expect(artifact.with?.path).toBe("production-recovered-fence/receipt.json");
   });
 
   it("separates Azure promotion from GitHub publication with exact-source checkout and private proofs", () => {
@@ -1045,7 +1092,15 @@ describe("native paper-promotion job contract", () => {
       expect(job(id).environment).toBe("production-promotion");
       expect(job(id).permissions?.["id-token"]).toBe("write");
       expect(job(id).steps[0].with).toMatchObject({ ref: "${{ needs.gate.outputs.sha }}", "persist-credentials": false });
-      expect(job(id).steps.some((entry) => entry.uses?.startsWith("actions/upload-artifact"))).toBe(false);
+      if (id !== "recover-paper") {
+        expect(job(id).steps.some((entry) => entry.uses?.startsWith("actions/upload-artifact"))).toBe(false);
+      } else {
+        const paths = job(id).steps.filter((entry) => entry.uses?.startsWith("actions/upload-artifact"))
+          .map((entry) => entry.with?.path);
+        expect(paths).toEqual([
+          "production-recovery/intent.json", "production-recovery/intent.json\nproduction-recovery/result.json\n",
+        ]);
+      }
     }
     expect(job("recover-paper").permissions).toEqual({ contents: "read", "id-token": "write" });
     expect(job("publish-promotion-receipt").permissions).toEqual({ contents: "read", actions: "read" });
@@ -1072,6 +1127,9 @@ describe("native paper-promotion job contract", () => {
 describe("executable paper-production publishers", () => {
   const owned: string[] = [];
   const evidence = jest.requireActual<Record<string, unknown>>("../../../.github/scripts/azure/production-evidence.cjs");
+  const recoveryApi = jest.requireActual<{
+    createRecoveryIntent(env: unknown, needs: unknown): Record<string, unknown>;
+  } & Record<string, unknown>>("../../../.github/scripts/azure/production-promotion.cjs");
   beforeEach(() => jest.useFakeTimers({ now: new Date("2026-10-22T01:03:00Z") }));
   afterEach(() => {
     jest.useRealTimers();
@@ -1080,9 +1138,10 @@ describe("executable paper-production publishers", () => {
 
   function publisher() {
     const f = productionPromotionFixture();
+    f.needs.gate.outputs.sha = f.sha;
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "krypto-production-publisher-"));
     owned.push(directory);
-    const core = { setOutput: jest.fn(), notice: jest.fn(), error: jest.fn(), setFailed: jest.fn() };
+    const core = { setOutput: jest.fn(), notice: jest.fn(), error: jest.fn(), setFailed: jest.fn(), setSecret: jest.fn() };
     const pause = jest.fn(async () => {});
     const repos = {
       createDeployment: jest.fn(async (args: { ref: string }) => ({ data: {
@@ -1093,19 +1152,34 @@ describe("executable paper-production publishers", () => {
     };
     const fileSystem = {
       mkdirSync: (name: string) => {
-        expect(name).toBe("paper-production-receipt");
+        expect(["paper-production-receipt", "production-recovery-status", "production-recovery",
+          "production-recovered-fence", "production-cutover-context"]).toContain(name);
         fs.mkdirSync(path.join(directory, name), { recursive: true });
       },
       writeFileSync: jest.fn((name: string, body: string, options: fs.WriteFileOptions) => {
-        expect(name).toBe("paper-production-receipt/receipt.json");
+        expect(["paper-production-receipt/receipt.json", "production-recovery-status/receipt.json",
+          "production-recovery/intent.json", "production-recovery/result.json",
+          "production-recovered-fence/receipt.json", "production-cutover-context/context.json"]).toContain(name);
         fs.writeFileSync(path.join(directory, name), body, options);
       }),
     };
+    const intent = recoveryApi.createRecoveryIntent(f.env, f.needs);
+    const recovery: Record<string, unknown> = {
+      ...intent, status: "disabled", scope: "candidate", fence: "none", binding: f.binding,
+      completedAt: new Date().toISOString(), reason: "disabled-manual-verified",
+    };
+    const recover = jest.fn(async () => recovery);
+    const releaseFence = jest.fn(async () => recovery);
+    const capture = jest.fn(async () => ({ binding: f.binding }));
     const modules = (name: string) => {
       if (name === "node:fs") return fileSystem;
       if (name === "node:path") return path;
       if (name === "node:assert/strict") return jest.requireActual("node:assert/strict");
       if (name.endsWith("production-evidence.cjs")) return evidence;
+      if (name.endsWith("production-promotion.cjs")) return {
+        ...recoveryApi, runProductionRecovery: recover, releaseRecoveredProductionFence: releaseFence,
+        captureProductionRecovery: capture,
+      };
       if (name.endsWith("agentic-lifecycle-reconciler.cjs")) return { pauseFactoryControl: pause };
       throw new Error(`Unexpected publisher dependency ${name}`);
     };
@@ -1113,6 +1187,8 @@ describe("executable paper-production publishers", () => {
       ...f.env, GITHUB_WORKSPACE: root, GITHUB_SERVER_URL: "https://github.com",
       PRODUCTION_JOB_RESULTS: JSON.stringify(f.needs), PRODUCTION_RECEIPT: JSON.stringify(f.receipt),
       RECOVERY_RESULT: "success", PRODUCTION_DEPLOYMENT_ID: "301",
+      RECOVERY_FENCE_RESULT: "skipped", PRODUCTION_RECOVERY_RECEIPT: JSON.stringify(recovery),
+      PRODUCTION_RECOVERY_INTENT: JSON.stringify(intent),
     };
     const github = { ...f.github, rest: { ...f.github.rest, repos } };
     const execute = async (id: string, name: string) => {
@@ -1120,7 +1196,7 @@ describe("executable paper-production publishers", () => {
       const runScript = new Function("github", "context", "core", "require", "process", `return (async () => { ${script} })();`);
       await runScript(github, { repo: { owner: "owner", repo: "project" } }, core, modules, { env });
     };
-    return { f, directory, core, pause, repos, env, execute, fileSystem };
+    return { f, directory, core, pause, repos, env, execute, fileSystem, recovery, intent, recover, releaseFence, capture };
   }
 
   it("creates the real closed nonsecret promotion receipt with exclusive persistence", async () => {
@@ -1169,7 +1245,7 @@ describe("executable paper-production publishers", () => {
     expect(h.repos.createDeploymentStatus).not.toHaveBeenCalled();
   });
 
-  it.each(["commit-status", "pause", "deployment-status", "synchronous-error"])(
+  it.each(["commit-status", "pause", "deployment-status", "synchronous-error", "recovery-persistence"])(
     "attempts every failure publication even if %s fails, without logging private errors",
     async (failure) => {
       const h = publisher();
@@ -1178,6 +1254,7 @@ describe("executable paper-production publishers", () => {
       if (failure === "pause") h.pause.mockRejectedValue(error);
       if (failure === "deployment-status") h.repos.createDeploymentStatus.mockRejectedValue(error);
       if (failure === "synchronous-error") h.repos.createCommitStatus.mockImplementation(() => { throw error; });
+      if (failure === "recovery-persistence") h.fileSystem.writeFileSync.mockImplementation(() => { throw error; });
       await h.execute("publish-production-failure", "Record exact-SHA failure without claiming recovery succeeded");
       expect(h.pause).toHaveBeenCalledTimes(1);
       expect(h.repos.createCommitStatus).toHaveBeenCalledTimes(1);
@@ -1199,5 +1276,126 @@ describe("executable paper-production publishers", () => {
     }));
     expect(h.pause).toHaveBeenCalledTimes(1);
     expect(h.core.setFailed).toHaveBeenCalledWith(expect.stringContaining("recovery result: failure"));
+  });
+
+  it("executes exclusive source capture and bounded intent persistence before invoking recovery", async () => {
+    const h = publisher();
+    await h.execute("force-disable-rollout", "Capture the exact source recovery binding before fence acquisition");
+    expect(h.capture).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fs.readFileSync(path.join(h.directory, "production-cutover-context", "context.json"), "utf8")))
+      .toEqual({ binding: h.f.binding });
+    await h.execute("recover-paper", "Record bounded retained recovery before Azure access");
+    expect(h.recover).not.toHaveBeenCalled();
+    const intent = JSON.parse(fs.readFileSync(path.join(h.directory, "production-recovery", "intent.json"), "utf8"));
+    expect(intent).toMatchObject({ status: "retained", fence: "unknown", binding: null, runAttempt: 2 });
+    expect(Date.parse(intent.deadlineAt) - Date.parse(intent.startedAt)).toBe(3_600_000);
+    await h.execute("recover-paper", "Preserve balances and prove disabled/Manual before disabling schedule monitoring");
+    expect(h.recover).toHaveBeenCalledTimes(1);
+    expect(h.core.setOutput).toHaveBeenCalledWith("status", "disabled");
+    expect(h.fileSystem.writeFileSync).toHaveBeenCalledWith("production-recovery/result.json", expect.any(String), { flag: "wx" });
+    await expect(h.execute("recover-paper", "Record bounded retained recovery before Azure access")).rejects.toThrow("EEXIST");
+  });
+
+  it.each(["recover-paper", "release-recovered-fence"])("persists explicit retained failure for %s without leaking an exception", async (id) => {
+    const h = publisher();
+    const error = new Error("private-service-template");
+    h.recover.mockRejectedValue(error);
+    h.releaseFence.mockRejectedValue(error);
+    if (id === "recover-paper") {
+      await h.execute(id, "Record bounded retained recovery before Azure access");
+      await h.execute(id, "Preserve balances and prove disabled/Manual before disabling schedule monitoring");
+    } else await h.execute(id, "Release only the original owner after fresh disabled readback");
+    const file = id === "recover-paper" ? ["production-recovery", "result.json"] : ["production-recovered-fence", "receipt.json"];
+    const body = fs.readFileSync(path.join(h.directory, ...file), "utf8");
+    expect(JSON.parse(body).status).toBe("retained");
+    expect(body).not.toContain(error.message);
+    expect(JSON.stringify(h.core.setFailed.mock.calls)).not.toContain(error.message);
+    expect(h.core.setFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["missing", "invalid", "private-field", "wrong-attempt"])(
+    "cannot equate a green recovery job with verified recovery when its receipt is %s",
+    async (kind) => {
+      const h = publisher();
+      h.env.PRODUCTION_RECOVERY_RECEIPT = kind === "missing" ? "" : kind === "invalid" ? "not-json" :
+        JSON.stringify(kind === "private-field" ? { ...h.recovery, token: "private-service-template" } :
+          { ...h.recovery, runAttempt: 1 });
+      await h.execute("publish-production-failure", "Record exact-SHA failure without claiming recovery succeeded");
+      expect(h.repos.createCommitStatus).toHaveBeenCalledWith(expect.objectContaining({
+        state: "failure", description: "Delivery failed; production activation/recovery is not verified.",
+      }));
+      const output = fs.readFileSync(path.join(h.directory, "production-recovery-status", "receipt.json"), "utf8");
+      expect(JSON.parse(output).state).toBe("recovery-retained");
+      expect(output).not.toContain("private-service-template");
+      expect(h.pause).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("keeps failed upload/login recovery unverified even if a step produced a disabled receipt", async () => {
+    const h = publisher();
+    h.env.RECOVERY_RESULT = "failure";
+    await h.execute("publish-production-failure", "Record exact-SHA failure without claiming recovery succeeded");
+    expect(h.repos.createCommitStatus).toHaveBeenCalledWith(expect.objectContaining({
+      description: "Delivery failed; production activation/recovery is not verified.",
+    }));
+  });
+
+  it("fails the recovery step explicitly when candidate backup failure retains its fence", async () => {
+    const h = publisher();
+    const { deploymentFenceOwner } = jest.requireActual<{ deploymentFenceOwner(repositoryId: string, runId: string): string }>(
+      "../../../.github/scripts/azure/lib/deployment-owner.cjs",
+    );
+    h.recover.mockResolvedValue({
+      ...h.recovery, fence: "retained", reason: "candidate-baseline-unverified", cutover: {
+        owner: deploymentFenceOwner("456", "1001"), sourceReleaseSha: h.f.sha, candidateReleaseSha: h.f.sha,
+        sourceImageDigest: h.f.binding.webImageDigest, targetOrigin: h.f.binding.targetOrigin,
+        evidenceContainerUrl: h.f.binding.evidenceContainerUrl,
+      },
+    });
+    await h.execute("recover-paper", "Record bounded retained recovery before Azure access");
+    await h.execute("recover-paper", "Preserve balances and prove disabled/Manual before disabling schedule monitoring");
+    expect(h.core.setFailed).toHaveBeenCalledWith(expect.stringContaining("fence remains retained"));
+    expect(h.core.setOutput).toHaveBeenCalledWith("fence", "retained");
+    expect(h.releaseFence).not.toHaveBeenCalled();
+  });
+
+  it.each(["failure", "skipped", "missing-receipt", "wrong-attempt", "success"])(
+    "reports a %s recovered fence without treating it as delivered paper production",
+    async (result) => {
+      const h = publisher();
+      const { deploymentFenceOwner } = jest.requireActual<{ deploymentFenceOwner(repositoryId: string, runId: string): string }>(
+        "../../../.github/scripts/azure/lib/deployment-owner.cjs",
+      );
+      const receipt = { ...h.recovery, fence: "required", cutover: {
+        owner: deploymentFenceOwner("456", "1001"), sourceReleaseSha: h.f.sha, candidateReleaseSha: h.f.sha,
+        sourceImageDigest: h.f.binding.webImageDigest, targetOrigin: h.f.binding.targetOrigin,
+        evidenceContainerUrl: h.f.binding.evidenceContainerUrl,
+      } };
+      h.env.PRODUCTION_RECOVERY_RECEIPT = JSON.stringify(receipt);
+      h.env.RECOVERY_FENCE_RESULT = ["failure", "skipped"].includes(result) ? result : "success";
+      if (result !== "missing-receipt") {
+        h.env.RECOVERED_FENCE_RECEIPT = JSON.stringify({
+          ...receipt, fence: "released", runAttempt: result === "wrong-attempt" ? 1 : 2,
+        });
+      }
+      await h.execute("publish-production-failure", "Record exact-SHA failure without claiming recovery succeeded");
+      const output = JSON.parse(fs.readFileSync(path.join(h.directory, "production-recovery-status", "receipt.json"), "utf8"));
+      expect(output.state).toBe(result === "success" ? "disabled-verified" :
+        ["failure", "skipped"].includes(result) ? "fence-retained" : "recovery-retained");
+      expect(h.repos.createCommitStatus).toHaveBeenCalledWith(expect.objectContaining({ state: "failure" }));
+      expect(h.repos.createDeploymentStatus).toHaveBeenCalledWith(expect.objectContaining({ state: "failure" }));
+      expect(h.pause).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("reports untouched deferral distinctly and still publishes the actual failed attempt", async () => {
+    const h = publisher();
+    h.env.PRODUCTION_RECOVERY_RECEIPT = JSON.stringify({
+      ...h.intent, status: "untouched", completedAt: new Date().toISOString(), reason: "verified-mutation-free-deferral",
+    });
+    await h.execute("publish-production-failure", "Record exact-SHA failure without claiming recovery succeeded");
+    expect(h.repos.createCommitStatus).toHaveBeenCalledWith(expect.objectContaining({
+      state: "failure", description: "Delivery failed; the verified deferred source was left untouched.",
+    }));
   });
 });

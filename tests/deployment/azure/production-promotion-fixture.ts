@@ -115,7 +115,7 @@ export function productionPromotionFixture(base = "2026-10-22T00:00:00.000Z", re
     ready, scheduled,
   };
   const receipt = {
-    schemaVersion: 1, stage: "promotion", repository: env.GITHUB_REPOSITORY,
+    schemaVersion: 2, stage: "promotion", repository: env.GITHUB_REPOSITORY,
     repositoryId: 456, repositoryOwnerId: 12, runId: 1001, runAttempt: 2, workflowId: 81,
     actorId: 7, triggeringActorId: 7, workflowSha: sha, releaseSha: sha, generatedAt: time(63),
     status: "paper", results: {
@@ -131,7 +131,7 @@ export function productionPromotionFixture(base = "2026-10-22T00:00:00.000Z", re
   needs["promote-paper"].outputs.evidence = JSON.stringify(evidence);
   const nativeJobs = Object.entries(api.PRODUCTION_JOB_NAMES).map(([id, name]) => ({
     id: 2000 + Object.keys(api.PRODUCTION_JOB_NAMES).indexOf(id), name,
-    status: "completed", conclusion: ["backup-current-release", "recover-paper", "publish-production-failure"].includes(id) ?
+    status: "completed", conclusion: ["backup-current-release", "recover-paper", "release-recovered-fence", "publish-production-failure"].includes(id) ?
       "skipped" : "success",
     started_at: time(id === "prepare-paper" ? 9 : id === "promote-paper" ? 17 : 0),
     completed_at: time(id === "prepare-paper" ? 16 : 65),

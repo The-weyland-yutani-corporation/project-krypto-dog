@@ -51,6 +51,7 @@ const PRODUCTION_JOB_NAMES = Object.freeze({
   "publish-promotion-receipt": "Publish immutable paper-production evidence",
   "publish-production-delivery": "Publish exact-SHA paper-production delivery",
   "recover-paper": "Recover production to verified disabled/Manual",
+  "release-recovered-fence": "Release the recovered source or candidate fence with fresh proof",
   "publish-production-failure": "Publish a durable production failure",
 });
 const PROMOTION_MODES = Object.freeze(["disabled", "operator", "continuous"]);
@@ -798,7 +799,7 @@ function createPromotionReceipt(env, needs, run) {
       "disabled" : results["prepare-paper"] === "success" && results["promote-paper"] === "success" ? "paper" : "failed") :
     release.status === "deferred" ? "deferred" : "failed";
   const receipt = {
-    ...base, workflowId: run.workflow_id,
+    ...base, schemaVersion: 2, workflowId: run.workflow_id,
     repositoryOwnerId: integer(Number(env.GITHUB_REPOSITORY_OWNER_ID), "Repository owner ID"),
     actorId: run.actor.id, triggeringActorId: run.triggering_actor.id,
     status, results, release, authority,
@@ -816,8 +817,9 @@ function createPromotionReceipt(env, needs, run) {
 function validatePromotionReceipt(receipt, run, expected) {
   validateWorkflowRun(run, { ...expected, stage: "promotion" });
   object(receipt, "Promotion receipt");
+  assert([1, 2].includes(receipt.schemaVersion), "Unknown promotion receipt schema.");
   for (const [field, value] of Object.entries({
-    schemaVersion: 1, stage: "promotion", repository: expected.repository,
+    stage: "promotion", repository: expected.repository,
     repositoryId: run.repository.id, repositoryOwnerId: run.repository.owner?.id,
     runId: run.id, runAttempt: run.run_attempt, workflowId: run.workflow_id,
     actorId: run.actor.id, triggeringActorId: run.triggering_actor.id,
@@ -851,6 +853,13 @@ function validatePromotionReceipt(receipt, run, expected) {
   return receipt;
 }
 
+function promotionJobEntries(receipt) {
+  assert([1, 2].includes(receipt.schemaVersion), "Unknown promotion job inventory.");
+  // Schema 1 predates the separate recovery fence-release job.
+  return Object.entries(PRODUCTION_JOB_NAMES)
+    .filter(([id]) => receipt.schemaVersion !== 1 || id !== "release-recovered-fence");
+}
+
 async function loadVerifiedPromotionReceipt({ github, owner, repo, repositoryId, reference }) {
   validatePromotionReference(reference);
   assert.equal(reference.repositoryId, integer(repositoryId, "Expected repository ID"));
@@ -871,8 +880,8 @@ async function loadVerifiedPromotionReceipt({ github, owner, repo, repositoryId,
     github, owner, repo, run, name: receiptName("promotion", reference.releaseSha, run.id, run.run_attempt),
   }), run, expected);
   assert.deepEqual(promotionReference(receipt), reference, "Production reference does not match its native evidence.");
-  const conclusions = Object.fromEntries(Object.entries(PRODUCTION_JOB_NAMES).map(([id, name]) => [
-    name, ["recover-paper", "publish-production-failure"].includes(id) ||
+  const conclusions = Object.fromEntries(promotionJobEntries(receipt).map(([id, name]) => [
+    name, ["recover-paper", "release-recovered-fence", "publish-production-failure"].includes(id) ||
       (id === "backup-current-release" && !receipt.existingRelease) ? "skipped" : "success",
   ]));
   const jobs = await verifyNativeJobs({ github, owner, repo, run, conclusions, exact: true });
@@ -966,7 +975,7 @@ async function inspectProductionDelivery({ github, owner, repo, repositoryId, re
     const successful = ["gate", "force-disable-rollout", "publish-release-receipt", "publish-promotion-receipt"];
     await verifyNativeJobs({
       github, owner, repo, run, exact: true,
-      conclusions: Object.fromEntries(Object.entries(PRODUCTION_JOB_NAMES).map(([id, name]) => [
+      conclusions: Object.fromEntries(promotionJobEntries(receipt).map(([id, name]) => [
         name, successful.includes(id) ? "success" : "skipped",
       ])),
     });

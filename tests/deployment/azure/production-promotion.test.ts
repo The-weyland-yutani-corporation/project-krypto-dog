@@ -16,7 +16,15 @@ type Resource = {
 const api = jest.requireActual<{
   runProductionPromotion(input: unknown): Promise<Record<string, unknown>>;
   resolvePromotionAuthority(input: unknown): Promise<{ mode: string; previous: unknown }>;
+  captureProductionRecovery(input: unknown): Promise<Record<string, unknown>>;
+  createRecoveryIntent(env: unknown, needs: unknown): Record<string, unknown>;
+  validateRecoveryReceipt(receipt: unknown, env: unknown): Record<string, unknown>;
+  runProductionRecovery(input: unknown): Promise<Record<string, unknown>>;
+  releaseRecoveredProductionFence(input: unknown): Promise<Record<string, unknown>>;
 }>("../../../.github/scripts/azure/production-promotion.cjs");
+const { PRODUCTION_JOB_NAMES } = jest.requireActual<{ PRODUCTION_JOB_NAMES: Record<string, string> }>(
+  "../../../.github/scripts/azure/production-evidence.cjs",
+);
 const workspace = path.resolve(__dirname, "../../..");
 const privateToken = "private-test-oidc-token-not-for-publication";
 const names = {
@@ -44,8 +52,6 @@ function harness(initialMode = "disabled") {
   owned.push(directory);
   const prefix = "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-prod";
   const id = (name: string, web = false) => `${prefix}/providers/Microsoft.App/${web ? "containerApps" : "jobs"}/${name}`;
-  const webImage = `${f.binding.registryLoginServer}/krypto-web@${f.binding.webImageDigest}`;
-  const opsImage = `${f.binding.registryLoginServer}/krypto-ops@${f.binding.opsImageDigest}`;
   const env: Record<string, string> = {
     ...f.env, ...names, AZURE_SUBSCRIPTION_ID: "00000000-0000-0000-0000-000000000001",
     PROD_RESOURCE_GROUP_NAME: "rg-prod", GITHUB_WORKSPACE: workspace, RUNNER_TEMP: directory,
@@ -67,11 +73,15 @@ function harness(initialMode = "disabled") {
   const state = {
     mode: initialMode, generation: initialMode === "disabled" ? 0 : f.evidence.scheduleGeneration,
     manualCount: 0, failAt: "", monitoringAt: "0", monitoringEnabled: false, stopped: false,
+    binding: { ...f.binding }, fence: "owned", partialDisable: false,
     corruptResource: undefined as ((resources: Record<string, Resource>) => void) | undefined,
   };
   const events: string[] = [];
   const entries = (fields: Record<string, string>): Entry[] => Object.entries(fields).map(([name, value]) => ({ name, value }));
   function snapshot() {
+    const binding = state.binding;
+    const webImage = `${binding.registryLoginServer}/krypto-web@${binding.webImageDigest}`;
+    const opsImage = `${binding.registryLoginServer}/krypto-ops@${binding.opsImageDigest}`;
     const web: Resource = {
       id: id(names.WEB_APP_NAME, true), name: names.WEB_APP_NAME,
       properties: {
@@ -79,7 +89,7 @@ function harness(initialMode = "disabled") {
         configuration: { activeRevisionsMode: "Single", ingress: { fqdn: "production.example.com" } },
         template: { containers: [{
           name: names.WEB_APP_NAME, image: webImage,
-          env: entries({ APP_ORIGIN: f.binding.targetOrigin, ROLLOUT_MODE: state.mode }),
+          env: entries({ APP_ORIGIN: binding.targetOrigin, ROLLOUT_MODE: state.mode }),
         }] },
       },
     };
@@ -102,9 +112,9 @@ function harness(initialMode = "disabled") {
             name: names[key], image: webImage, command: ["node"],
             args: ["--experimental-strip-types", "scripts/scheduled-trigger.mjs"],
             env: [
-              ...entries({ TARGET_BASE_URL: f.binding.targetOrigin, SCHEDULED_ROUTE: route, ROLLOUT_MODE: state.mode }),
+              ...entries({ TARGET_BASE_URL: binding.targetOrigin, SCHEDULED_ROUTE: route, ROLLOUT_MODE: state.mode }),
               ...(key === "PROD_HOURLY_JOB_NAME" ? entries({
-                SCHEDULED_IDEMPOTENCY_NAMESPACE: `${f.binding.webImageDigest}-${state.generation}`,
+                SCHEDULED_IDEMPOTENCY_NAMESPACE: `${binding.webImageDigest}-${state.generation}`,
               }) : []),
               { name: "CRON_SECRET", secretRef: "cron-secret" },
             ],
@@ -120,15 +130,16 @@ function harness(initialMode = "disabled") {
           template: { containers: [{
             name: env[key], image: opsImage,
             env: entries({
-              OPERATION: operation, ENVIRONMENT_NAME: "prod", RELEASE_SHA: f.sha,
-              IMAGE_DIGEST: f.binding.webImageDigest, OPS_IMAGE_DIGEST: f.binding.opsImageDigest,
-              TARGET_BASE_URL: f.binding.targetOrigin, DEPLOYMENT_REPOSITORY: f.env.GITHUB_REPOSITORY,
+              OPERATION: operation, ENVIRONMENT_NAME: "prod", RELEASE_SHA: binding.releaseSha,
+              IMAGE_DIGEST: binding.webImageDigest, OPS_IMAGE_DIGEST: binding.opsImageDigest,
+              TARGET_BASE_URL: binding.targetOrigin, DEPLOYMENT_REPOSITORY: f.env.GITHUB_REPOSITORY,
               DEPLOYMENT_REPOSITORY_ID: "456", DEPLOYMENT_REPOSITORY_OWNER_ID: "12",
             }),
           }] },
         },
       };
     }
+    if (state.partialDisable) resources.PROD_DAILY_JOB_NAME.properties.configuration.triggerType = "Schedule";
     state.corruptResource?.(resources);
     return {
       resources,
@@ -185,6 +196,13 @@ function harness(initialMode = "disabled") {
     }
     if (command === "node" && script === "validate-report.mjs") return "";
     if (command === "node" && args.includes("tsx")) {
+      if (args.some((arg) => arg.endsWith("attest-cutover-state.ts"))) {
+        fs.writeFileSync(value(args, "--proof-output"), JSON.stringify({
+          token: privateToken, observation: { purpose: "cutover-release" },
+        }));
+        fs.writeFileSync(value(args, "--receipt-output"), JSON.stringify({ observationDigest: "d".repeat(64) }));
+        return "";
+      }
       const execution = f.evidence.scheduled.scheduledExecution;
       if (!execution) throw new Error("Missing scheduled fixture");
       fs.writeFileSync(value(args, "--proof-output"), JSON.stringify({
@@ -221,6 +239,15 @@ function harness(initialMode = "disabled") {
       return "";
     }
     if (command === "bash" && script === "verify-disabled-rollout.sh") return "";
+    if (command === "bash" && script === "run-deployment-admission.sh") {
+      const action = value(args, "--action");
+      if (action === "verify" && state.fence === "owned") return "";
+      if (action === "release" && ["owned", "released", "expired"].includes(state.fence)) {
+        state.fence = "released";
+        return "";
+      }
+      throw Object.assign(new Error(privateToken), { code: 1 });
+    }
     if (command !== "az") throw new Error(`Unexpected test command ${command} ${script}`);
     if (args[0] === "containerapp") {
       const current = snapshot();
@@ -255,6 +282,7 @@ function harness(initialMode = "disabled") {
       if (!mode || !generation) throw new Error("Rendered rollout did not contain overrides");
       state.mode = mode;
       state.generation = Number(generation);
+      state.partialDisable = false;
       if (mode === "shadow") jest.setSystemTime(new Date(f.time(11)));
       if (mode === "paper") jest.setSystemTime(new Date(f.time(21)));
       return JSON.stringify({
@@ -273,10 +301,35 @@ function harness(initialMode = "disabled") {
     return JSON.stringify(execution);
   });
   const core = { info: jest.fn(), warning: jest.fn(), setSecret: jest.fn() };
+  const needs: Record<string, { result: string; outputs: Record<string, string> }> = Object.fromEntries(
+    Object.keys(PRODUCTION_JOB_NAMES).filter((id) =>
+      !["recover-paper", "release-recovered-fence", "publish-production-failure"].includes(id))
+      .map((id) => [id, { result: "skipped", outputs: {} }]),
+  );
+  needs.gate = { result: "success", outputs: { sha: f.sha } };
+  needs["force-disable-rollout"] = { result: "failure", outputs: { existing_release: "true" } };
+  const capture = async () => {
+    env.CURRENT_SHA = state.binding.releaseSha;
+    env.CURRENT_WEB_DIGEST_HEX = state.binding.webImageDigest.slice(7);
+    env.TARGET_ORIGIN = state.binding.targetOrigin;
+    const captured = await api.captureProductionRecovery({ env, execute });
+    Object.assign(needs["force-disable-rollout"].outputs, {
+      current_sha: env.CURRENT_SHA, current_digest: env.CURRENT_WEB_DIGEST_HEX, recovery_context: JSON.stringify(captured),
+    });
+    return captured;
+  };
   return {
-    f, env, state, events, execute, github, core, directory, activeRun,
+    f, env, state, events, execute, github, core, directory, activeRun, needs, capture,
     run: (phase: string) => api.runProductionPromotion({ phase, github, core, owner: "owner", repo: "project", env, execute }),
     resolve: () => api.resolvePromotionAuthority({ github, core, owner: "owner", repo: "project", env, execute }),
+    recover: () => {
+      env.PRODUCTION_JOB_RESULTS = JSON.stringify(needs);
+      env.PRODUCTION_RECOVERY_INTENT ??= JSON.stringify(api.createRecoveryIntent(env, needs));
+      return api.runProductionRecovery({ github, core, owner: "owner", repo: "project", env, execute });
+    },
+    release: (receipt: Record<string, unknown>) => api.releaseRecoveredProductionFence({
+      core, env: { ...env, PRODUCTION_RECOVERY_RECEIPT: JSON.stringify(receipt) }, execute,
+    }),
   };
 }
 
@@ -509,5 +562,233 @@ describe("native production promotion orchestration", () => {
     h.state.generation += 1;
     await expect(h.resolve()).rejects.toThrow("generation changed");
     expect(h.events.some((entry) => entry.startsWith("deployment"))).toBe(false);
+  });
+
+  it.each(["acquire-response", "partial-disable", "partial-monitoring", "backup-current-release", "deploy-environment", "build-images"])(
+    "recovers the exact owned source after %s failure with no preparation or successful receipt",
+    async (failure) => {
+      const h = harness("paper");
+      h.state.binding = { ...h.f.binding, releaseSha: "1".repeat(40), webImageDigest: `sha256:${"2".repeat(64)}`,
+        opsImageDigest: `sha256:${"3".repeat(64)}` };
+      const source = await h.capture();
+      h.state.stopped = true;
+      delete h.env.PRODUCTION_RELEASE;
+      delete h.env.PROMOTION_AUTHORITY;
+      if (failure !== "acquire-response") {
+        h.state.mode = "disabled";
+        h.state.generation = 0;
+      }
+      h.state.partialDisable = failure === "partial-disable";
+      if (["backup-current-release", "deploy-environment", "build-images"].includes(failure)) {
+        h.needs["force-disable-rollout"].result = "success";
+        h.needs[failure].result = "failure";
+      }
+      const receipt = await h.recover();
+      expect(receipt).toMatchObject({ status: "disabled", scope: "source", fence: "required", binding: source.binding });
+      expect(h.needs["prepare-paper"].result).toBe("skipped");
+      expect(h.needs["publish-release-receipt"].result).toBe("skipped");
+      expect(h.state.mode).toBe("disabled");
+      expect(h.state.partialDisable).toBe(false);
+      expect(h.state.monitoringEnabled).toBe(false);
+      const fences = h.execute.mock.calls.filter(([, args]) => args[0].endsWith("run-deployment-admission.sh"));
+      expect(fences).toHaveLength(2);
+      for (const [, args] of fences) {
+        expect(value(args, "--action")).toBe("verify");
+        expect(value(args, "--owner")).toBe(source.owner);
+        expect(value(args, "--source-release-sha")).toBe(h.state.binding.releaseSha);
+        expect(value(args, "--job-release-sha")).toBe(h.state.binding.releaseSha);
+        expect(value(args, "--candidate-release-sha")).toBe(h.f.sha);
+      }
+      expect(h.events.indexOf("run-deployment-admission.sh")).toBeLessThan(h.events.indexOf("prod-recover-1001-a2"));
+      expect(h.github.rest.actions.getWorkflowRun).not.toHaveBeenCalled();
+      expect(JSON.stringify(receipt)).not.toContain(privateToken);
+      expect(fs.readdirSync(h.directory)).toEqual([]);
+    },
+  );
+
+  it.each(["none", "owned", "released", "baseline-failed", "baseline-missing-output"])(
+    "recovers candidate failures with %s fence disposition without inventing a release receipt", async (fence) => {
+    const h = harness("paper");
+    if (fence !== "none") {
+      h.state.binding = { ...h.f.binding, releaseSha: "1".repeat(40) };
+      await h.capture();
+      h.state.binding = { ...h.f.binding };
+    } else h.needs["force-disable-rollout"].outputs.existing_release = "false";
+    h.needs["deploy-environment"] = { result: "success", outputs: {
+      ...JSON.parse(h.env.ROLLOUT_VALUES), acr_login_server: h.f.binding.registryLoginServer,
+      evidence_container_url: h.f.binding.evidenceContainerUrl,
+    } };
+    h.needs["build-images"] = { result: "success", outputs: {
+      web_digest_hex: h.f.binding.webImageDigest.slice(7), ops_digest_hex: h.f.binding.opsImageDigest.slice(7),
+    } };
+    h.needs["deploy-release"].result = "failure";
+    h.needs["migrate-backup"] = { result: "success", outputs: { job_execution_id: "run1001-a2-backup" } };
+    if (fence === "baseline-failed") h.needs["migrate-backup"].result = "failure";
+    if (fence === "baseline-missing-output") h.needs["migrate-backup"].outputs = {};
+    if (fence === "released") {
+      h.needs["release-cutover-fence"] = { result: "success", outputs: { status: "released" } };
+      h.state.fence = "released";
+    }
+    const receipt = await h.recover();
+    const baselineMissing = fence.startsWith("baseline-");
+    expect(receipt).toMatchObject({ status: "disabled", scope: "candidate", binding: h.f.binding,
+      fence: baselineMissing ? "retained" : fence === "owned" ? "required" : fence });
+    const checks = h.execute.mock.calls.filter(([, args]) => args.includes("--action"));
+    expect(checks).toHaveLength(fence === "owned" || baselineMissing ? 2 : 0);
+    if (baselineMissing) {
+      expect(receipt.reason).toBe("candidate-baseline-unverified");
+      h.execute.mockClear();
+      await expect(h.release(receipt)).rejects.toThrow("requires verified disabled recovery");
+      expect(h.execute).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["missing-context", "foreign-owner", "foreign-run", "mixed-images", "partial-foundation", "expired-fence", "active-stop", "changed-source"])(
+    "retains %s rather than acquiring, extending, stealing or guessing a recoverable binding",
+    async (failure) => {
+      const h = harness("paper");
+      const source = await h.capture();
+      if (failure === "missing-context") delete h.needs["force-disable-rollout"].outputs.recovery_context;
+      if (failure === "foreign-owner") h.state.fence = "foreign";
+      if (failure === "expired-fence") h.state.fence = "expired";
+      if (failure === "active-stop") h.state.fence = "stop-blocked";
+      if (failure === "foreign-run") h.needs["force-disable-rollout"].outputs.recovery_context = JSON.stringify({ ...source, runId: 999 });
+      if (failure === "mixed-images") h.state.corruptResource = (resources) => {
+        resources.PREFLIGHT_JOB_NAME.properties.template.containers[0].image = "foreign";
+      };
+      if (failure === "partial-foundation") h.needs["force-disable-rollout"].outputs.existing_release = "false";
+      if (failure === "changed-source") h.state.binding.webImageDigest = `sha256:${"f".repeat(64)}`;
+      const failureResult = await h.recover().then(() => null, (error: Error & { recovery: Record<string, unknown> }) => error);
+      expect(failureResult?.recovery).toMatchObject({ status: "retained", reason: "recovery-unverified" });
+      expect(failureResult?.message).not.toContain(privateToken);
+      expect(h.events).not.toContain("prod-recover-1001-a2");
+      expect(h.state.mode).toBe("paper");
+      expect(h.execute.mock.calls.some(([, args]) => args.includes("acquire") || args.includes("release"))).toBe(false);
+    },
+  );
+
+  it.each(["rollout", "monitoring"])("rechecks ownership after the recovery %s preview", async (stage) => {
+    const h = harness("paper");
+    await h.capture();
+    const execute = h.execute.getMockImplementation();
+    if (!execute) throw new Error("Missing command fixture");
+    h.execute.mockImplementation(async (command, args) => {
+      const result = await execute(command, args);
+      if (command === "az" && args.includes("what-if") &&
+        args.some((arg) => arg.endsWith(stage === "rollout" ? "rollout.bicep" : "schedule-monitoring.bicep"))) {
+        h.state.fence = "foreign";
+      }
+      return result;
+    });
+    await expect(h.recover()).rejects.toThrow("retained");
+    expect(h.events).not.toContain(stage === "rollout" ? "prod-recover-1001-a2" : "prod-monitor-recover-1001-a2");
+  });
+
+  it("preserves a verified mutation-free deferral despite a publication failure, without any Azure execution", async () => {
+    const h = harness("paper");
+    h.needs["force-disable-rollout"] = { result: "success", outputs: {
+      existing_release: "true", admission_status: "deferred",
+    } };
+    h.needs["publish-release-receipt"].result = "failure";
+    await expect(h.recover()).resolves.toMatchObject({ status: "untouched", fence: "unknown" });
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(h.state.mode).toBe("paper");
+    h.needs["deploy-environment"].result = "failure";
+    await expect(h.recover()).rejects.toThrow("retained");
+    expect(h.execute).not.toHaveBeenCalled();
+  });
+
+  it("uses a single bounded clock and refuses expired recovery before Azure access", async () => {
+    const h = harness();
+    const now = Date.now();
+    const clock = jest.spyOn(Date, "now").mockReturnValueOnce(now).mockReturnValueOnce(now + 1);
+    const intent = api.createRecoveryIntent(h.env, h.needs);
+    clock.mockRestore();
+    expect(api.validateRecoveryReceipt(intent, h.env)).toBe(intent);
+    h.env.PRODUCTION_RECOVERY_INTENT = JSON.stringify(intent);
+    jest.setSystemTime(new Date(now + 3_600_000));
+    await expect(h.recover()).rejects.toThrow("retained");
+    expect(h.execute).not.toHaveBeenCalled();
+  });
+
+  it("does not extend the deadline while previewing a recovery mutation", async () => {
+    const h = harness("paper");
+    await h.capture();
+    const execute = h.execute.getMockImplementation();
+    if (!execute) throw new Error("Missing command fixture");
+    h.execute.mockImplementation(async (command, args) => {
+      const result = await execute(command, args);
+      if (command === "az" && args.includes("what-if")) jest.setSystemTime(new Date(Date.now() + 3_600_000));
+      return result;
+    });
+    await expect(h.recover()).rejects.toThrow("retained");
+    expect(h.events).not.toContain("prod-recover-1001-a2");
+  });
+
+  it.each(["owned", "expired", "released"])("uses fresh source-bound private proof and the existing signed release protocol for an %s fence", async (fence) => {
+    const h = harness("paper");
+    h.state.binding = { ...h.f.binding, releaseSha: "1".repeat(40), webImageDigest: `sha256:${"2".repeat(64)}` };
+    const source = await h.capture();
+    const recovered = await h.recover();
+    h.state.fence = fence;
+    const completed = await h.release(recovered);
+    expect(completed).toMatchObject({ status: "disabled", scope: "source", fence: "released" });
+    const attestation = h.execute.mock.calls.find(([, args]) => args.some((arg) => arg.endsWith("attest-cutover-state.ts")));
+    expect(attestation).toBeDefined();
+    if (!attestation) throw new Error("Missing private attestation");
+    expect(value(attestation[1], "--runtime-release-sha")).toBe(h.state.binding.releaseSha);
+    expect(value(attestation[1], "--source-release-sha")).toBe(h.state.binding.releaseSha);
+    expect(value(attestation[1], "--candidate-release-sha")).toBe(h.f.sha);
+    expect(value(attestation[1], "--owner")).toBe(source.owner);
+    const releases = h.execute.mock.calls.filter(([, args]) => args.includes("--action") && args.includes("release"));
+    expect(releases).toHaveLength(1);
+    expect(releases[0][1]).toContain("--workflow-observation-proof");
+    expect(value(releases[0][1], "--workflow-observation-digest")).toBe("d".repeat(64));
+    expect(h.core.setSecret).toHaveBeenCalledWith(privateToken);
+    expect(JSON.stringify(completed)).not.toContain(privateToken);
+    expect(fs.readdirSync(h.directory)).toEqual([]);
+  });
+
+  it.each(["verify-disabled-rollout.sh", "attest-cutover-state.ts", "run-deployment-admission.sh"])(
+    "retains failed fence completion at %s without retries, raw errors or private files",
+    async (failure) => {
+      const h = harness("paper");
+      await h.capture();
+      const receipt = await h.recover();
+      h.execute.mockClear();
+      h.state.failAt = failure;
+      const error = await h.release(receipt).then(() => null, (error: Error & { recovery: Record<string, unknown> }) => error);
+      expect(error?.recovery).toMatchObject({ status: "retained", reason: "fence-release-unverified" });
+      expect(error?.message).not.toContain(privateToken);
+      const attempts = h.execute.mock.calls.filter(([, args]) => args.some((arg) => arg.endsWith(failure)));
+      expect(attempts).toHaveLength(1);
+      expect(fs.readdirSync(h.directory)).toEqual([]);
+    },
+  );
+
+  it("does not borrow a completed candidate cutover to change a restored source", async () => {
+    const h = harness("paper");
+    h.state.binding.releaseSha = "1".repeat(40);
+    await h.capture();
+    h.needs["release-cutover-fence"] = { result: "success", outputs: { status: "released" } };
+    await expect(h.recover()).rejects.toThrow("retained");
+    expect(h.events).not.toContain("prod-recover-1001-a2");
+  });
+
+  it("does not release a restored source after an attempted candidate migration", async () => {
+    const h = harness("paper");
+    await h.capture();
+    h.needs["migrate-backup"].result = "failure";
+    await expect(h.recover()).rejects.toThrow("retained");
+    expect(h.events).not.toContain("prod-recover-1001-a2");
+  });
+
+  it("rejects extra private receipt fields and excludes unrelated live values from captured context", async () => {
+    const h = harness();
+    h.env.ROLLOUT_VALUES = JSON.stringify({ ...JSON.parse(h.env.ROLLOUT_VALUES), privateProof: privateToken });
+    expect(JSON.stringify(await h.capture())).not.toContain(privateToken);
+    const intent = api.createRecoveryIntent(h.env, h.needs);
+    expect(() => api.validateRecoveryReceipt({ ...intent, privateProof: privateToken }, h.env)).toThrow("unknown or missing field");
+    expect(() => api.validateRecoveryReceipt({ ...intent, runAttempt: 1 }, h.env)).toThrow("identity changed");
   });
 });
