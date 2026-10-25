@@ -12,6 +12,7 @@ const {
   RELEASE_JOBS, createReleaseReceipt, receiptName, validateReceipt, validateWorkflowRun,
   productionVerificationOverrides, DEVELOPMENT_JOBS, DEVELOPMENT_WORKFLOW, DEVELOPMENT_PUBLISHER,
   DEVELOPMENT_RECEIPT_PUBLISHER, DEVELOPMENT_ROLLBACK, createDevelopmentReceipt, loadLatestDevelopmentReceipt,
+  resolveProductionInvocation, assertProductionFactoryMode,
 } = jest.requireActual<{
   RELEASE_JOBS: string[];
   createReleaseReceipt: (env: Record<string, string | undefined>, needs: Record<string, Job>) => Receipt;
@@ -26,6 +27,10 @@ const {
   DEVELOPMENT_ROLLBACK: string;
   createDevelopmentReceipt: (env: Record<string, string | undefined>, needs: Record<string, Job>, run: unknown) => Receipt;
   loadLatestDevelopmentReceipt: (options: DevelopmentOptions) => Promise<Receipt>;
+  resolveProductionInvocation: (env: Record<string, string | undefined>, event: unknown) => Record<string, string | number>;
+  assertProductionFactoryMode: (options: {
+    github: unknown; core: unknown; owner: string; repo: string; eventName: string;
+  }) => Promise<void>;
 }>("../../../.github/scripts/azure/production-evidence.cjs");
 
 const SHA = "a".repeat(40);
@@ -69,6 +74,139 @@ function jobs(existing = false): Record<string, Job> {
   result["target-smoke"].outputs.job_execution_id = "run1001-a2-smoke";
   return result;
 }
+
+describe("production trigger admission", () => {
+  const manualEnv = {
+    ...env, GITHUB_WORKFLOW_SHA: SHA, GITHUB_EVENT_NAME: "workflow_dispatch",
+    GITHUB_WORKFLOW_REF: "owner/project/.github/workflows/azure-deploy-prod.yml@refs/heads/main",
+    INPUT_COMMIT_SHA: SHA, INPUT_DEPLOYMENT_STAGE: "full",
+  };
+  const automaticEnv = {
+    ...manualEnv, GITHUB_EVENT_NAME: "workflow_run", INPUT_COMMIT_SHA: "", INPUT_DEPLOYMENT_STAGE: "",
+  };
+  const event = {
+    action: "completed",
+    workflow_run: {
+      id: 900, run_attempt: 2, head_sha: SHA, head_branch: "main",
+      status: "completed", conclusion: "success",
+    },
+  };
+
+  it.each(["foundation", "full"])("keeps exact-source manual %s commissioning separate", (stage) => {
+    expect(resolveProductionInvocation({ ...manualEnv, INPUT_DEPLOYMENT_STAGE: stage }, {}))
+      .toEqual({ sha: SHA, deployment_stage: stage });
+  });
+
+  it("pins automatic full release to the triggering development run and attempt", () => {
+    expect(resolveProductionInvocation(automaticEnv, event)).toEqual({
+      sha: SHA, deployment_stage: "full", development_run_id: 900, development_run_attempt: 2,
+    });
+    expect(resolveProductionInvocation({
+      ...automaticEnv, INPUT_COMMIT_SHA: "b".repeat(40), INPUT_DEPLOYMENT_STAGE: "foundation",
+    }, event).deployment_stage).toBe("full");
+  });
+
+  it.each([
+    { GITHUB_REF: "refs/heads/feature" }, { GITHUB_REF: "refs/tags/main" },
+    { GITHUB_SHA: "b".repeat(40) }, { GITHUB_WORKFLOW_SHA: "b".repeat(40) },
+    { GITHUB_SHA: "" }, { GITHUB_WORKFLOW_SHA: "" },
+    { GITHUB_WORKFLOW_REF: "owner/project/.github/workflows/another.yml@refs/heads/main" },
+    { GITHUB_WORKFLOW_REF: "owner/project/.github/workflows/azure-deploy-prod.yml@refs/heads/feature" },
+    { GITHUB_EVENT_NAME: "pull_request" }, { GITHUB_REPOSITORY: "" },
+  ])("rejects unrelated or incomplete automatic source identity %j", (overrides) => {
+    expect(() => resolveProductionInvocation({ ...automaticEnv, ...overrides }, event)).toThrow();
+  });
+
+  it.each([
+    { INPUT_COMMIT_SHA: "" }, { INPUT_COMMIT_SHA: "main" },
+    { INPUT_COMMIT_SHA: "b".repeat(40) }, { INPUT_COMMIT_SHA: SHA.toUpperCase() },
+    { INPUT_DEPLOYMENT_STAGE: "" }, { INPUT_DEPLOYMENT_STAGE: "paper" },
+  ])("rejects invalid manual source or stage %j", (overrides) => {
+    expect(() => resolveProductionInvocation({ ...manualEnv, ...overrides }, {})).toThrow();
+  });
+
+  it.each([
+    { id: 0 }, { id: "900" }, { id: Number.MAX_SAFE_INTEGER + 1 },
+    { run_attempt: 0 }, { run_attempt: "2" }, { run_attempt: 1.5 },
+    { status: "in_progress" }, { conclusion: "failure" }, { conclusion: null },
+    { head_branch: "feature" }, { head_sha: "b".repeat(40) }, { head_sha: "" },
+  ])("rejects invalid development completion %j", (overrides) => {
+    expect(() => resolveProductionInvocation(automaticEnv, {
+      ...event, workflow_run: { ...event.workflow_run, ...overrides },
+    })).toThrow();
+  });
+
+  it.each([null, {}, { ...event, action: "requested" }, { ...event, workflow_run: null }])
+    ("rejects missing or non-completion payloads %j", (payload) => {
+      expect(() => resolveProductionInvocation(automaticEnv, payload)).toThrow();
+    });
+
+  function factory(mode = "active", actorType = "User") {
+    const controls = [{
+      number: 233, labels: [{ name: "factory-control" }, { name: `factory-mode:${mode}` }],
+    }];
+    const timeline = [{
+      event: "labeled", label: { name: "factory-mode:active" },
+      actor: { type: actorType }, created_at: "2026-10-22T00:00:00Z",
+    }];
+    const methods = { listForRepo: jest.fn(), listEventsForTimeline: jest.fn() };
+    const github = {
+      rest: { issues: methods },
+      paginate: jest.fn(async (method: unknown) => {
+        if (method === methods.listForRepo) return controls;
+        if (method === methods.listEventsForTimeline) return timeline;
+        throw new Error("Unexpected factory mutation or read.");
+      }),
+    };
+    const core = { warning: jest.fn() };
+    return {
+      controls, timeline, github, core,
+      options: { github, core, owner: "owner", repo: "project", eventName: "workflow_run" },
+    };
+  }
+
+  it("admits automatic work only after the existing human-activation readback", async () => {
+    const fixture = factory();
+    await expect(assertProductionFactoryMode(fixture.options)).resolves.toBeUndefined();
+    expect(fixture.github.paginate).toHaveBeenCalledTimes(2);
+    expect(fixture.github.paginate).toHaveBeenLastCalledWith(
+      fixture.github.rest.issues.listEventsForTimeline,
+      { owner: "owner", repo: "project", issue_number: 233, per_page: 100 },
+    );
+  });
+
+  it.each([["paused", "User"], ["shadow", "User"], ["active", "Bot"], ["unknown", "User"]])
+    ("blocks automatic admission for factory %s applied by %s", async (mode, actorType) => {
+      const fixture = factory(mode, actorType);
+      await expect(assertProductionFactoryMode(fixture.options)).rejects.toThrow("human-activated factory");
+    });
+
+  it("blocks missing, ambiguous, unattested or unreadable factory control", async () => {
+    const missing = factory();
+    missing.controls.length = 0;
+    const ambiguous = factory();
+    ambiguous.controls.push({ ...ambiguous.controls[0], number: 234 });
+    const unattested = factory();
+    unattested.timeline.length = 0;
+    const unreadable = factory();
+    unreadable.github.paginate.mockRejectedValue(new Error("GitHub read denied"));
+    for (const fixture of [missing, ambiguous, unattested, unreadable]) {
+      await expect(assertProductionFactoryMode(fixture.options)).rejects.toThrow("human-activated factory");
+      expect(fixture.core.warning).toHaveBeenCalled();
+    }
+  });
+
+  it("does not grant activation or require an active factory for manual disabled commissioning", async () => {
+    const fixture = factory("paused");
+    await expect(assertProductionFactoryMode({
+      ...fixture.options, eventName: "workflow_dispatch",
+    })).resolves.toBeUndefined();
+    expect(fixture.github.paginate).not.toHaveBeenCalled();
+    await expect(assertProductionFactoryMode({
+      ...fixture.options, eventName: "push",
+    })).rejects.toThrow("Unsupported production trigger");
+  });
+});
 
 describe("immutable production release evidence", () => {
   beforeEach(() => {
@@ -145,6 +283,13 @@ describe("immutable production release evidence", () => {
     expect(validateReceipt(receipt, run, expected)).toBe(receipt);
     expect(receiptName("release", SHA, 1001, 2)).toBe(`production-release-${SHA}-1001-2`);
     expect(receiptName("release", SHA, 1001, 1)).not.toBe(receiptName("release", SHA, 1001, 2));
+  });
+
+  it("accepts automatic workflow provenance only as the same disabled-release receipt", () => {
+    const receipt = createReleaseReceipt(env, jobs());
+    expect(validateReceipt(receipt, { ...run, event: "workflow_run" }, expected)).toBe(receipt);
+    expect(() => validateReceipt({ ...receipt, rolloutMode: "paper" },
+      { ...run, event: "workflow_run" }, expected)).toThrow();
   });
 
   it("distinguishes a successful no-mutation deferral from a disabled release", () => {

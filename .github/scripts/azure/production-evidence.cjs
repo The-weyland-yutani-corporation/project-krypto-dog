@@ -83,6 +83,46 @@ function validateBinding(binding) {
   return binding;
 }
 
+function resolveProductionInvocation(env, event) {
+  object(env, "Production environment");
+  object(event, "Production event");
+  const repository = matching(env.GITHUB_REPOSITORY, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "Repository");
+  assert.equal(env.GITHUB_REF, "refs/heads/main", "Production requires protected main.");
+  assert.equal(env.GITHUB_WORKFLOW_REF,
+    `${repository}/.github/workflows/${RELEASE_WORKFLOW}@refs/heads/main`, "Wrong production workflow source.");
+  let sha;
+  let deploymentStage;
+  const triggeringDevelopment = {};
+  if (env.GITHUB_EVENT_NAME === "workflow_dispatch") {
+    sha = matching(env.INPUT_COMMIT_SHA, SHA, "Manual release SHA");
+    deploymentStage = env.INPUT_DEPLOYMENT_STAGE;
+    assert(["foundation", "full"].includes(deploymentStage), "Production stage must be foundation or full.");
+  } else {
+    assert.equal(env.GITHUB_EVENT_NAME, "workflow_run", "Unsupported production trigger.");
+    assert.equal(event.action, "completed", "Development completion is required.");
+    const run = object(event.workflow_run, "Triggering development run");
+    assert.equal(run.status, "completed", "Development is not terminal.");
+    assert.equal(run.conclusion, "success", "Development did not succeed.");
+    assert.equal(run.head_branch, "main", "Development must originate on main.");
+    sha = matching(run.head_sha, SHA, "Development source SHA");
+    triggeringDevelopment.development_run_id = integer(run.id, "Triggering development run ID");
+    triggeringDevelopment.development_run_attempt = integer(run.run_attempt, "Triggering development attempt");
+    deploymentStage = "full";
+  }
+  assert.equal(sha, matching(env.GITHUB_SHA, SHA, "Workflow SHA"), "Production must deploy its exact workflow source.");
+  assert.equal(sha, matching(env.GITHUB_WORKFLOW_SHA, SHA, "Workflow definition SHA"),
+    "Production must execute its exact release source.");
+  return { sha, deployment_stage: deploymentStage, ...triggeringDevelopment };
+}
+
+async function assertProductionFactoryMode({ github, core, owner, repo, eventName }) {
+  assert(["workflow_dispatch", "workflow_run"].includes(eventName), "Unsupported production trigger.");
+  if (eventName === "workflow_dispatch") return;
+  const { resolveHumanAttestedFactoryMode } = require("../agentic-automerge-sweeper.cjs");
+  assert.equal(await resolveHumanAttestedFactoryMode({ github, core, owner, repo }), "active",
+    "Automatic production admission requires a human-activated factory; paused, shadow or unreadable control blocks it.");
+}
+
 function productionVerificationOverrides(config) {
   object(config, "Production verification configuration");
   assert(["ready", "scheduled"].includes(config.phase), "Unknown production verification phase.");
@@ -323,7 +363,7 @@ function validateWorkflowRun(run, { repository, repositoryId, stage, releaseSha 
     integer(run.triggering_actor?.id, "Development rerun actor ID");
     matching(run.triggering_actor?.login, /^[A-Za-z0-9_.-]+(?:\[bot\])?$/, "Development rerun actor");
   } else {
-    assert.equal(run.event, "workflow_dispatch", "Wrong production event.");
+    assert(["workflow_dispatch", "workflow_run"].includes(run.event), "Wrong production event.");
   }
   return run;
 }
@@ -483,7 +523,7 @@ module.exports = {
   DEVELOPMENT_PUBLISHER, DEVELOPMENT_RECEIPT_PUBLISHER, DEVELOPMENT_ROLLBACK,
   receiptName, validateBinding, baseReceipt, createReleaseReceipt, createDevelopmentReceipt,
   validateWorkflowRun, validateReceipt, loadProductionReceipt, productionVerificationOverrides,
-  assertCurrentMain, loadLatestDevelopmentReceipt,
+  assertCurrentMain, loadLatestDevelopmentReceipt, resolveProductionInvocation, assertProductionFactoryMode,
 };
 
 if (require.main === module) {

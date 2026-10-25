@@ -357,16 +357,22 @@ describe("agentic SDLC workflow contracts", () => {
     expect(devDeploy).toContain("production_environment: false");
   });
 
-  it("keeps production deployment structurally manual-only", () => {
+  it("gates automatic disabled production releases on verified development and factory activation", () => {
     const triggerBlock = prodDeploy.slice(
       prodDeploy.indexOf("on:"),
       prodDeploy.indexOf("concurrency:"),
     );
 
     expect(triggerBlock).toContain("workflow_dispatch:");
-    expect(triggerBlock).not.toContain("workflow_run:");
+    expect(triggerBlock).toContain("workflow_run:");
+    expect(triggerBlock).toContain('workflows: ["Azure deploy dev"]');
+    expect(prodDeploy).toContain("resolveProductionInvocation");
+    expect(prodDeploy).toContain("assertProductionFactoryMode");
+    expect(prodDeploy).toContain("expectedRunId: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ID)");
+    expect(prodDeploy).toContain("expectedRunAttempt: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ATTEMPT)");
     expect(prodDeploy).toContain("environment: production-promotion");
     expect(prodDeploy).toContain("environment: production-deploy");
+    expect(prodDeploy).not.toMatch(/--set-string-param rolloutMode=(paper|shadow)/);
   });
 
   it("keeps the full-cycle canary goal-authorized and dev-only", () => {

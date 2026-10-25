@@ -1,7 +1,9 @@
 name: Azure deploy prod
 
-# Production deployment is manual-only. An operator supplies an exact
-# CI-passed workflow commit SHA through workflow_dispatch. Existing releases pass the
+# Production releases follow verified development completion only while the
+# factory has a human-attested active state. Manual foundation/full commissioning
+# remains available with an exact CI-passed workflow commit SHA. Both paths end
+# disabled/Manual; neither authorizes first paper activation. Existing releases pass the
 # `production-promotion` approval
 # before forced disable, then the separate `production-deploy` approval for
 # current-release safety and infrastructure/release work.
@@ -35,6 +37,10 @@ name: Azure deploy prod
 #      exact release SHA, and exact web/ops digests. This workflow never
 #      promotes shadow/paper or enables a schedule.
 on:
+  workflow_run:
+    workflows: ["Azure deploy dev"]
+    branches: [main]
+    types: [completed]
   workflow_dispatch:
     inputs:
       commit_sha:
@@ -93,8 +99,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+      issues: read
     env:
-      EVENT_NAME: ${{ github.event_name }}
       INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
       INPUT_DEPLOYMENT_STAGE: ${{ inputs.deployment_stage }}
       GH_TOKEN: ${{ github.token }}
@@ -105,41 +111,27 @@ jobs:
       development_run_attempt: ${{ steps.development.outputs.run_attempt }}
       development_workflow_id: ${{ steps.development.outputs.workflow_id }}
     steps:
-      # fetch-depth: 0 is required so verify-deploy-sha.sh's
-      # `git merge-base --is-ancestor` (manual-dispatch path only) can
-      # walk the FULL commit history, not just a shallow tip.
+      # Full history and read-only checkout credentials are required by
+      # verify-deploy-sha.sh's authenticated main refresh and ancestry check.
       - name: Checkout (full history, for lib/common.sh and SHA verification)
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: true
           fetch-depth: 0
 
       - name: Resolve and format-validate the exact commit SHA to deploy
         id: resolve
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
-            echo "Production foundation and release execution require the protected main branch." >&2
-            exit 1
-          fi
-          candidate="${INPUT_COMMIT_SHA}"
-          source .github/scripts/azure/lib/common.sh
-          validated="$(azure_validate_release_sha "${candidate}")"
-          if [ "${validated}" != "${GITHUB_SHA}" ] || [ "${validated}" != "${GITHUB_WORKFLOW_SHA}" ]; then
-            echo "Production requires the exact workflow source commit, not an older main ancestor." >&2
-            exit 1
-          fi
-          deployment_stage="${INPUT_DEPLOYMENT_STAGE}"
-          if [ "${deployment_stage}" != "foundation" ] && [ "${deployment_stage}" != "full" ]; then
-            echo "deployment_stage must be exactly 'foundation' or 'full'." >&2
-            exit 1
-          fi
-          echo "sha=${validated}" >> "$GITHUB_OUTPUT"
-          echo "deployment_stage=${deployment_stage}" >> "$GITHUB_OUTPUT"
-          echo "Resolved candidate commit ${validated} (event=${EVENT_NAME}, deployment_stage=${deployment_stage})."
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { resolveProductionInvocation } = require(
+              require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
+            );
+            const invocation = resolveProductionInvocation(process.env, context.payload);
+            for (const [name, value] of Object.entries(invocation)) core.setOutput(name, value);
 
-      # A manually dispatched SHA is arbitrary operator input and must have
-      # successful push CI on main for both foundation and full stages.
-      - name: Verify manually-dispatched SHA branch and successful push CI
+      - name: Verify exact main SHA has successful push CI
         env:
           RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
           DEPLOYMENT_STAGE: ${{ steps.resolve.outputs.deployment_stage }}
@@ -158,17 +150,28 @@ jobs:
         env:
           RESOLVED_SHA: ${{ steps.resolve.outputs.sha }}
           DEPLOYMENT_STAGE: ${{ steps.resolve.outputs.deployment_stage }}
+          TRIGGERED_DEVELOPMENT_RUN_ID: ${{ steps.resolve.outputs.development_run_id }}
+          TRIGGERED_DEVELOPMENT_RUN_ATTEMPT: ${{ steps.resolve.outputs.development_run_attempt }}
         with:
           script: |
-            const { assertCurrentMain, loadLatestDevelopmentReceipt } = require(
+            const { assertCurrentMain, loadLatestDevelopmentReceipt, assertProductionFactoryMode } = require(
               require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
             );
             const options = {
               github, ...context.repo, repositoryId: Number(process.env.GITHUB_REPOSITORY_ID),
               releaseSha: process.env.RESOLVED_SHA,
             };
+            await assertProductionFactoryMode({
+              ...options, core, eventName: process.env.GITHUB_EVENT_NAME,
+            });
             if (process.env.DEPLOYMENT_STAGE === "full") {
-              const receipt = await loadLatestDevelopmentReceipt(options);
+              const receipt = await loadLatestDevelopmentReceipt({
+                ...options,
+                ...(process.env.GITHUB_EVENT_NAME === "workflow_run" ? {
+                  expectedRunId: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ID),
+                  expectedRunAttempt: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ATTEMPT),
+                } : {}),
+              });
               core.setOutput("run_id", receipt.runId);
               core.setOutput("run_attempt", receipt.runAttempt);
               core.setOutput("workflow_id", receipt.workflowId);
@@ -198,6 +201,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      issues: read
       id-token: write
     env:
       RESOLVED_SHA: ${{ needs.gate.outputs.sha }}
@@ -226,7 +230,7 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const { assertCurrentMain, loadLatestDevelopmentReceipt } = require(
+            const { assertCurrentMain, loadLatestDevelopmentReceipt, assertProductionFactoryMode } = require(
               require("node:path").join(process.env.GITHUB_WORKSPACE, ".github/scripts/azure/production-evidence.cjs"),
             );
             const options = {
@@ -241,6 +245,9 @@ jobs:
             } else {
               await assertCurrentMain(options);
             }
+            await assertProductionFactoryMode({
+              ...options, core, eventName: process.env.GITHUB_EVENT_NAME,
+            });
 
       - name: Azure login (OIDC)
         uses: azure/login@v2

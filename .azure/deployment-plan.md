@@ -50,6 +50,10 @@ overlapping specialist subreviews and duplicated completed CI while preserving
 full diff coverage, independent review requirements and both credit limits.
 It has not yet demonstrated lower cost or a successful native code-review
 verdict. No additional trial runs or A/B rollout are authorized by this change.
+The published review-cost repair `48a6e93` subsequently passed native CI,
+infrastructure and substantive Trading Safety. Its Code Review `40185637618`
+again stopped before agent execution at 6511.781075 / 5000 rolling credits,
+so it provides no measurement of the changed review prompt's cost.
 
 The four review prompts now require exact committed revisions and complete
 merge-base-to-head diffs rather than temporary checkout changes. Trading Safety
@@ -67,6 +71,23 @@ the existing MonitorOps execution-denial hold and stale deployment run
 `37642379119`. None of those holds was bypassed.
 The completed stage-specific checks below are historical receipts, not evidence
 that the current application source is approved or the factory is commissioned.
+
+### Automatic disabled-release source wiring
+
+Source wiring now admits development-completion events to the existing
+production workflow only when the factory has a human-attested active state.
+It binds the exact triggering development run/attempt to the latest verified
+receipt and repeats source, development and factory checks before Azure access.
+Automatic events use the full disabled/Manual release; manual foundation/full
+commissioning remains separate. No workflow is enabled or dispatched by this
+source change, and no first paper activation or schedule is introduced.
+Local source checks passed: 845 factory tests, 277 production evidence/workflow
+tests, lint, script typecheck, build and strict pinned compilation. These are
+not hosted production execution or Azure commissioning evidence.
+
+The activation-design question received no explicit user choice. This increment
+therefore does not introduce a new first-activation authorization mechanism or
+claim that paper-promotion/lifecycle integration is complete.
 
 ### Fresh-database admission repair
 
@@ -150,8 +171,8 @@ evidence requirements.
   [MonitorOps run](https://github.com/The-weyland-yutani-corporation/project-krypto-dog/actions/runs/39551325097)
   also executed its agent successfully, but the collector command was denied
   permission and the agent emitted a no-op instead of a status report.
-  That run proved the model selection then; it does not override the newer
-  Code Review authentication failure. Operational monitoring is not yet verified.
+  That run proved the model selection then; it does not override the current
+  Code Review budget block. Operational monitoring is not yet verified.
 - Target selection does not authorize provisioning, permission changes,
   production activation, or removal of platform protections.
 

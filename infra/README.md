@@ -302,13 +302,17 @@ workflow consumes the principal IDs through explicit reviewed inputs; it
 does not guess them.
 
 Manual workflows support `foundation` and `full`; the workflow definition maps
-`workflow_run` events to `full` for development. Production remains manual-only
-and disabled/Manual. The development workflow uses the `development`
+`workflow_run` events to `full`. Automatic production release follows the exact
+verified development run/attempt only while the factory is human-activated;
+that activation and development admission are rechecked before Azure access.
+Manual commissioning does not require an active factory. Both production paths
+remain disabled/Manual and cannot authorize first paper activation.
+The development workflow uses the `development`
 Environment, not the legacy `development-promotion` Environment; inspect the
 protections actually referenced by each workflow. Any approved dispatch must
 use the configured branch, exact CI-passed SHA, and existing CI gate.
 
-Both production stages require dispatch from protected `main`, a candidate
+Both production stages require execution from protected `main`, a candidate
 equal to both `GITHUB_SHA` and `GITHUB_WORKFLOW_SHA`, and successful main push
 CI for that exact SHA. An older main ancestor cannot run through newer
 privileged workflow code. The verifier refreshes the exact

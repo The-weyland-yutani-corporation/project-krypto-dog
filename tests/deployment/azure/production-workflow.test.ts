@@ -134,7 +134,14 @@ describe("development-to-production handoff", () => {
       DEPLOYMENT_STAGE: "${{ steps.resolve.outputs.deployment_stage }}",
     });
     expect(admission.with?.script).toContain('process.env.DEPLOYMENT_STAGE === "full"');
-    expect(admission.with?.script).toContain("await loadLatestDevelopmentReceipt(options)");
+    expect(admission.with?.script).toContain("await loadLatestDevelopmentReceipt({");
+    expect(admission.with?.script).toContain("await assertProductionFactoryMode({");
+    expect(admission.env).toMatchObject({
+      TRIGGERED_DEVELOPMENT_RUN_ID: "${{ steps.resolve.outputs.development_run_id }}",
+      TRIGGERED_DEVELOPMENT_RUN_ATTEMPT: "${{ steps.resolve.outputs.development_run_attempt }}",
+    });
+    expect(admission.with?.script).toContain("expectedRunId: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ID)");
+    expect(admission.with?.script).toContain("expectedRunAttempt: Number(process.env.TRIGGERED_DEVELOPMENT_RUN_ATTEMPT)");
     expect(admission.with?.script).toContain("await assertCurrentMain(options)");
     expect(job("gate").outputs).toMatchObject({
       development_run_id: "${{ steps.development.outputs.run_id }}",
@@ -144,7 +151,13 @@ describe("development-to-production handoff", () => {
     const check = step("force-disable-rollout", "Revalidate development admission before Azure access");
     expect(check.with?.script).toContain("expectedRunId: Number(process.env.DEVELOPMENT_RUN_ID)");
     expect(check.with?.script).toContain("expectedRunAttempt: Number(process.env.DEVELOPMENT_RUN_ATTEMPT)");
+    expect(check.with?.script).toContain("await assertProductionFactoryMode({");
+    const admissionScript = z.string().parse(check.with?.script);
+    expect(admissionScript.indexOf("await assertProductionFactoryMode("))
+      .toBeGreaterThan(admissionScript.indexOf("await loadLatestDevelopmentReceipt("));
     expect(job("force-disable-rollout").permissions?.actions).toBe("read");
+    expect(job("force-disable-rollout").permissions?.issues).toBe("read");
+    expect(job("gate").permissions?.issues).toBe("read");
     expectBefore("force-disable-rollout", check.name, "Azure login (OIDC)");
     expectBefore("force-disable-rollout", check.name, "Acquire the exact source release's owned cutover fence");
   });
@@ -367,23 +380,63 @@ describe("production cutover workflow", () => {
   });
 
   it("keeps protected main admission and successful push CI for both stages", () => {
-    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
+    expect(Object.keys(workflow.on)).toEqual(["workflow_run", "workflow_dispatch"]);
+    expect(workflow.on.workflow_run).toEqual({
+      workflows: ["Azure deploy dev"], branches: ["main"], types: ["completed"],
+    });
     expect(workflow.concurrency).toEqual({
       group: "azure-production-mutation",
       "cancel-in-progress": false,
     });
-    const resolve = run("gate", "Resolve and format-validate the exact commit SHA to deploy");
-    expect(resolve).toContain('if [ "${GITHUB_REF}" != "refs/heads/main" ]');
-    expect(resolve).toContain('azure_validate_release_sha "${candidate}"');
-    expect(resolve).toContain('"${validated}" != "${GITHUB_SHA}"');
-    expect(resolve).toContain('"${validated}" != "${GITHUB_WORKFLOW_SHA}"');
-    expect(resolve).toContain('"${deployment_stage}" != "foundation"');
-    expect(resolve).toContain('"${deployment_stage}" != "full"');
-    const verify = step("gate", "Verify manually-dispatched SHA branch and successful push CI");
+    const resolve = step("gate", "Resolve and format-validate the exact commit SHA to deploy");
+    expect(resolve.with?.script).toContain("resolveProductionInvocation(process.env, context.payload)");
+    expect(resolve.with?.script).toContain("core.setOutput(name, value)");
+    expect(job("gate").steps[0].with).toMatchObject({
+      ref: "${{ github.workflow_sha }}", "persist-credentials": true, "fetch-depth": 0,
+    });
+    const verify = step("gate", "Verify exact main SHA has successful push CI");
     expect(verify.if).toBeUndefined();
     expect(verify.run).toContain("--branch main");
     expect(verify.run).toContain("--ci-workflow ci.yml");
     expect(verify.env?.RESOLVED_SHA).toBe("${{ steps.resolve.outputs.sha }}");
+  });
+
+  it.each(["workflow_dispatch", "workflow_run"])("executes the real %s source resolver", (eventName) => {
+    const script = z.string().parse(
+      step("gate", "Resolve and format-validate the exact commit SHA to deploy").with?.script,
+    );
+    const sha = "a".repeat(40);
+    const event = {
+      action: "completed", workflow_run: {
+        id: 900, run_attempt: 2, head_sha: sha, head_branch: "main", status: "completed", conclusion: "success",
+      },
+    };
+    const execute = (workflowSha: string) => spawnSync(process.execPath, ["-e", `
+      const context = { payload: JSON.parse(process.env.TEST_EVENT) };
+      const outputs = {};
+      const core = { setOutput: (name, value) => { outputs[name] = value; } };
+      ${script}
+      console.log(JSON.stringify(outputs));
+    `], {
+      cwd: root, encoding: "utf8",
+      env: {
+        ...process.env, GITHUB_WORKSPACE: root, GITHUB_REPOSITORY: "owner/project",
+        GITHUB_REF: "refs/heads/main", GITHUB_SHA: sha, GITHUB_WORKFLOW_SHA: workflowSha,
+        GITHUB_WORKFLOW_REF: "owner/project/.github/workflows/azure-deploy-prod.yml@refs/heads/main",
+        GITHUB_EVENT_NAME: eventName, INPUT_COMMIT_SHA: sha, INPUT_DEPLOYMENT_STAGE: "foundation",
+        TEST_EVENT: JSON.stringify(event),
+      },
+    });
+    const result = execute(sha);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual(eventName === "workflow_run" ? {
+      sha, deployment_stage: "full", development_run_id: 900, development_run_attempt: 2,
+    } : { sha, deployment_stage: "foundation" });
+    const wrongSource = execute("b".repeat(40));
+    expect(wrongSource.status).not.toBe(0);
+    expect(wrongSource.stdout).toBe("");
+    expect(wrongSource.stderr).toContain("exact release source");
   });
 
   it("rejects foundation on an existing release and never treats partial inventory as fresh", () => {
