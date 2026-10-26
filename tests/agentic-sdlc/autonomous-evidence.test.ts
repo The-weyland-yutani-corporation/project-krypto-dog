@@ -309,10 +309,21 @@ describe("exact-head atomic merge", () => {
       commit_message: `Verified head: ${"a".repeat(40)}\n\nIssue completion requires exact-source lifecycle evidence.`,
     });
   });
-  it("does not substitute a different PR returned by the final target read", async () => {
+  it("does not substitute a different PR returned by the initial target read", async () => {
     const fixture = mergeFixture();
     fixture.current.number = 9;
     await mergeVerifiedHead(fixture);
+    expect(fixture.github.rest.pulls.merge).not.toHaveBeenCalled();
+    expect(fixture.github.graphql).not.toHaveBeenCalled();
+  });
+  it("rejects a different PR returned by the target reread after authorization", async () => {
+    const fixture = mergeFixture();
+    fixture.github.rest.pulls.get
+      .mockResolvedValueOnce({ data: fixture.current })
+      .mockResolvedValueOnce({ data: { ...fixture.current, number: 9 } });
+    await mergeVerifiedHead(fixture);
+    expect(reconciler.verifyAutonomousMergeCandidate).toHaveBeenCalledTimes(1);
+    expect(fixture.github.rest.pulls.get).toHaveBeenCalledTimes(2);
     expect(fixture.github.rest.pulls.merge).not.toHaveBeenCalled();
     expect(fixture.github.graphql).not.toHaveBeenCalled();
   });

@@ -69,26 +69,29 @@ describe("native issue-closure evidence", () => {
     expect(fixture.github.rest.issues.createComment).not.toHaveBeenCalled();
   });
 
-  const malformedResponses: Array<[string, unknown]> = [
-    ["missing response", undefined],
-    ["null response", null],
-    ["REST-style wrapper", { data: nativeEvidence() }],
-    ["partial GraphQL errors", { ...nativeEvidence(), errors: [{ message: "partial query" }] }],
-    ["missing repository", {}],
-    ["null repository", { repository: null }],
-    ["wrong outer repository", { repository: { ...nativeEvidence().repository, nameWithOwner: "other/r" } }],
-    ["non-string repository", { repository: { ...nativeEvidence().repository, nameWithOwner: 123 } }],
-    ["missing PR", { repository: { nameWithOwner: "o/r" } }],
-    ["null PR", { repository: { nameWithOwner: "o/r", pullRequest: null } }],
-    ["wrong PR repository", nativeEvidence({ repository: { nameWithOwner: "o/other" } })],
-    ["wrong PR number", nativeEvidence({ number: 9 })],
-    ["string PR number", nativeEvidence({ number: "8" })],
-    ["wrong PR node", nativeEvidence({ id: "PR_other" })],
-    ["missing PR node", nativeEvidence({ id: undefined })],
-    ["wrong head", nativeEvidence({ headRefOid: "b".repeat(40) })],
-    ["missing head", nativeEvidence({ headRefOid: undefined })],
-    ["missing connection", nativeEvidence({ closingIssuesReferences: undefined })],
-    ["null connection", nativeEvidence({ closingIssuesReferences: null })],
+  const incompleteResponse = "native-closing-issues-response-incomplete";
+  const targetMismatch = "native-closing-issues-target-mismatch";
+  const incompleteConnection = "native-closing-issues-connection-incomplete";
+  const malformedResponses: Array<[string, unknown, string]> = [
+    ["missing response", undefined, incompleteResponse],
+    ["null response", null, incompleteResponse],
+    ["REST-style wrapper", { data: nativeEvidence() }, targetMismatch],
+    ["partial GraphQL errors", { ...nativeEvidence(), errors: [{ message: "partial query" }] }, incompleteResponse],
+    ["missing repository", {}, targetMismatch],
+    ["null repository", { repository: null }, targetMismatch],
+    ["wrong outer repository", { repository: { ...nativeEvidence().repository, nameWithOwner: "other/r" } }, targetMismatch],
+    ["non-string repository", { repository: { ...nativeEvidence().repository, nameWithOwner: 123 } }, targetMismatch],
+    ["missing PR", { repository: { nameWithOwner: "o/r" } }, targetMismatch],
+    ["null PR", { repository: { nameWithOwner: "o/r", pullRequest: null } }, targetMismatch],
+    ["wrong PR repository", nativeEvidence({ repository: { nameWithOwner: "o/other" } }), targetMismatch],
+    ["wrong PR number", nativeEvidence({ number: 9 }), targetMismatch],
+    ["string PR number", nativeEvidence({ number: "8" }), targetMismatch],
+    ["wrong PR node", nativeEvidence({ id: "PR_other" }), targetMismatch],
+    ["missing PR node", nativeEvidence({ id: undefined }), targetMismatch],
+    ["wrong head", nativeEvidence({ headRefOid: "b".repeat(40) }), targetMismatch],
+    ["missing head", nativeEvidence({ headRefOid: undefined }), targetMismatch],
+    ["missing connection", nativeEvidence({ closingIssuesReferences: undefined }), incompleteConnection],
+    ["null connection", nativeEvidence({ closingIssuesReferences: null }), incompleteConnection],
   ];
   const malformedConnections: Array<[string, unknown]> = [
     ["missing count", { ...emptyConnection(), totalCount: undefined }],
@@ -115,19 +118,24 @@ describe("native issue-closure evidence", () => {
 
   it.each([
     ...malformedResponses,
-    ...malformedConnections.map(([name, closingIssuesReferences]): [string, unknown] =>
-      [name, nativeEvidence({ closingIssuesReferences })]),
-  ])("blocks and durably reports %s", async (_name, response) => {
+    ...malformedConnections.map(([name, closingIssuesReferences]): [string, unknown, string] =>
+      [name, nativeEvidence({ closingIssuesReferences }), incompleteConnection]),
+  ])("blocks and durably reports %s", async (_name, response, reason) => {
     const fixture = guardFixture();
     fixture.github.graphql.mockResolvedValueOnce(response);
-    await expect(reconciler.assertNoClosingIssueReferences(fixture)).rejects.toThrow("Native issue-closure safeguard blocked");
+    await expect(reconciler.assertNoClosingIssueReferences(fixture)).rejects.toThrow(reason);
     expect(fixture.core.warning).toHaveBeenCalledWith(expect.stringContaining(sha));
     expect(fixture.github.rest.issues.addLabels).toHaveBeenCalledWith({
       owner: "o", repo: "r", issue_number: 8, labels: ["blocked"],
     });
     expect(fixture.github.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
-      issue_number: 8, body: expect.stringContaining("issue-closure-block"),
+      owner: "o", repo: "r", issue_number: 8,
+      body: expect.stringContaining(`- Requested head: \`${sha}\``),
     }));
+    expect(fixture.github.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining(`- Reason: ${reason}`),
+    }));
+    expect(fixture.github.rest.issues.createComment).toHaveBeenCalledTimes(1);
     expect(fixture.github.graphql).toHaveBeenCalledTimes(1);
   });
 
@@ -335,6 +343,15 @@ describe("native closure guard across actual controller authorization and public
     });
     expect(fixture.github.graphql).toHaveBeenCalledTimes(1);
     expect(publisherGraphql).toHaveBeenCalledTimes(2);
+    expect(fixture.github.rest.pulls.get).toHaveBeenCalledTimes(2);
+    const finalTargetRead = fixture.github.rest.pulls.get.mock.invocationCallOrder[1];
+    const finalReviewIndex = fixture.github.paginate.mock.calls.findLastIndex(([endpoint]) => endpoint === "reviews");
+    const finalReviewRead = fixture.github.paginate.mock.invocationCallOrder[finalReviewIndex];
+    const finalNativeRead = publisherGraphql.mock.invocationCallOrder[1];
+    expect(publisherGraphql.mock.invocationCallOrder[0]).toBeLessThan(finalTargetRead);
+    expect(finalTargetRead).toBeLessThan(finalReviewRead);
+    expect(finalReviewRead).toBeLessThan(finalNativeRead);
+    expect(finalNativeRead).toBeLessThan(fixture.github.rest.pulls.merge.mock.invocationCallOrder[0]);
     expect(fixture.github.rest.pulls.merge).toHaveBeenCalledWith({
       owner: "o", repo: "r", pull_number: 8, sha, merge_method: "squash",
       commit_title: "[factory] Merge PR #8",
