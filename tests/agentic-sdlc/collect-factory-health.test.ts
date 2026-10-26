@@ -37,6 +37,7 @@ interface Collector {
     end: string;
   };
   listWorkflowSources(dir: string): string[];
+  splitFrontmatter(source: string): { frontmatter: string; body: string };
   parseWorkflowSource(id: string, text: string): {
     id: string;
     active: boolean;
@@ -90,6 +91,10 @@ interface Collector {
 }
 
 const collector = jest.requireActual<Collector>(collectorPath);
+const preparation = jest.requireActual<{
+  GH_AW_VERSION: string;
+  main(argv: string[], deps?: Record<string, unknown>): number;
+}>(path.join(root, "scripts", "agentic", "prepare-monitor-ops.cjs"));
 
 function parseUniqueJson<T>(filePath: string): T {
   const document = parseDocument(fs.readFileSync(filePath, "utf8"), {
@@ -144,6 +149,9 @@ function fakeRunner(overrides: {
   return (command, args) => {
     expect(command).toBe("gh");
     const joined = args.join(" ");
+    if (joined === "aw version") {
+      return { status: 0, stdout: `gh aw version ${preparation.GH_AW_VERSION}\n`, stderr: "" };
+    }
     if (joined.includes("aw status")) return json(overrides.status ?? fixtures.status);
     if (joined.includes("aw logs")) return json(overrides.logs ?? fixtures.logsGovernance);
     if (joined.includes("run list")) {
@@ -717,5 +725,372 @@ describe("MonitorOps collector — CLI (no GitHub access)", () => {
     );
     expect(rc).toBe(1);
     expect(fs.existsSync(path.join(tmpDir, "failed.json"))).toBe(false);
+  });
+});
+
+describe("MonitorOps trusted pre-agent preparation", () => {
+  let tmpDir: string;
+  let errors: jest.SpyInstance;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "monitor-ops-preparation-"));
+    errors = jest.spyOn(process.stderr, "write").mockReturnValue(true);
+  });
+  afterEach(() => {
+    errors.mockRestore();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function prepare(profile: string, overrides: Record<string, unknown> = {}): number {
+    return preparation.main([profile], {
+      repoRoot: root,
+      workflowRoot: tmpDir,
+      now: new Date(fixtures.now),
+      runner: fakeRunner(),
+      gitRunner: () => ({ status: 0, stdout: "a".repeat(40), stderr: "" }),
+      ...overrides,
+    });
+  }
+
+  function readOutput(name: string): Record<string, unknown> {
+    return JSON.parse(fs.readFileSync(path.join(tmpDir, name), "utf8"));
+  }
+
+  function writeHealth(argv: string[], value: string): number {
+    fs.writeFileSync(argv[argv.indexOf("--out") + 1], value);
+    return 0;
+  }
+
+  it.each(["daily", "governance", "entropy"])(
+    "collects and validates %s without invoking an agent shell",
+    (profile) => {
+      const runner = jest.fn(fakeRunner());
+      expect(prepare(profile, { runner })).toBe(0);
+      expect(runner.mock.calls[0]).toEqual(["gh", ["aw", "version"]]);
+      expect(runner.mock.calls.every(([command]) => command === "gh")).toBe(true);
+      const snapshot = readOutput("factory-health.json");
+      expect(snapshot.mode).toBe(profile === "daily" ? "daily" : "governance");
+      expect(snapshot.materialState).toMatchObject({ changed: true });
+      if (profile === "entropy") {
+        const manifest = readOutput("entropy-manifest.json");
+        expect(manifest.monitorOps).toBeDefined();
+        expect(manifest.summary).toHaveProperty("shouldReport");
+      }
+      expect(errors).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["aw status", "aw logs", "run list", "issue list", "pr list"])(
+    "fails preparation when required %s access fails",
+    (commandPrefix) => {
+      const successful = fakeRunner();
+      const entropyMain = jest.fn();
+      const runner: Runner = (command, args) => args.join(" ").startsWith(commandPrefix)
+        ? { status: 1, stdout: "", stderr: "Permission denied" }
+        : successful(command, args);
+      expect(prepare("entropy", { runner, entropyMain })).toBe(1);
+      expect(entropyMain).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(tmpDir, "factory-health.json"))).toBe(false);
+      expect(fs.existsSync(path.join(tmpDir, "entropy-manifest.json"))).toBe(false);
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining("Permission denied"));
+    },
+  );
+
+  it.each([
+    { status: 1, stdout: "", stderr: "extension missing" },
+    { status: 0, stdout: "gh aw version v0.80.0", stderr: "" },
+  ])("requires the installed pinned CLI before collection: %j", (version) => {
+    const healthMain = jest.fn();
+    expect(prepare("daily", { runner: () => version, healthMain })).toBe(1);
+    expect(healthMain).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining(preparation.GH_AW_VERSION));
+  });
+
+  it("does not reuse a stale snapshot when a collector returns success without writing", () => {
+    fs.writeFileSync(path.join(tmpDir, "factory-health.json"), '{"materialState":{"changed":false}}');
+    const entropyMain = jest.fn();
+    expect(prepare("entropy", { healthMain: () => 0, entropyMain })).toBe(1);
+    expect(entropyMain).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(tmpDir, "factory-health.json"))).toBe(false);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("ENOENT"));
+  });
+
+  it("rejects restored cache-directory links before accessing GitHub", () => {
+    const target = path.join(tmpDir, "outside-cache");
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, path.join(tmpDir, "cache-memory"), "junction");
+    const runner = jest.fn();
+    expect(prepare("daily", { runner })).toBe(1);
+    expect(runner).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("must not redirect host access"));
+  });
+
+  it("rejects a restored cache hard link without overwriting its target", () => {
+    const target = path.join(tmpDir, "outside-cache.json");
+    fs.writeFileSync(target, "preserve this file");
+    fs.mkdirSync(path.join(tmpDir, "cache-memory"));
+    fs.linkSync(target, path.join(tmpDir, "cache-memory", "monitor-ops-daily.json"));
+    expect(prepare("daily")).toBe(1);
+    expect(fs.readFileSync(target, "utf8")).toBe("preserve this file");
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("must not redirect host access"));
+  });
+
+  it.each(["{", "null", "[]", "{}"])("rejects invalid health JSON: %s", (value) => {
+    const entropyMain = jest.fn();
+    expect(prepare("entropy", {
+      healthMain: (argv: string[]) => writeHealth(argv, value),
+      entropyMain,
+    })).toBe(1);
+    expect(entropyMain).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalled();
+  });
+
+  it("rejects malformed JSON returned by a required command", () => {
+    const successful = fakeRunner();
+    const runner: Runner = (command, args) => args.join(" ") === "aw status --json"
+      ? { status: 0, stdout: "{", stderr: "" }
+      : successful(command, args);
+    expect(prepare("daily", { runner })).toBe(1);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("returned invalid JSON"));
+  });
+
+  it.each(["aw status", "aw logs", "run list", "issue list", "pr list"])(
+    "rejects a valid JSON error object from %s instead of reporting empty metrics",
+    (commandPrefix) => {
+      const successful = fakeRunner();
+      const runner: Runner = (command, args) => args.join(" ").startsWith(commandPrefix)
+        ? { status: 0, stdout: '{"error":"data unavailable"}', stderr: "" }
+        : successful(command, args);
+      expect(prepare("daily", { runner })).toBe(1);
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining("invalid JSON row collection"));
+    },
+  );
+
+  it("rejects an incomplete pinned CLI log download", () => {
+    expect(prepare("daily", {
+      runner: fakeRunner({ logs: {
+        runs: [], continuation: { before_run_id: 123, message: "Download timed out" },
+      } }),
+    })).toBe(1);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("incomplete collection"));
+  });
+
+  it.each([
+    {},
+    { workflow_path: ".github/workflows/retired.lock.yml", conclusion: "success" },
+    { workflow_path: ".github/workflows/retired.lock.yml", created_at: "not a timestamp", conclusion: "success" },
+    { workflow_path: ".github/workflows/retired.lock.yml", created_at: fixtures.now },
+  ])("rejects an unclassifiable usage row instead of inventing zero runs: %j", (run) => {
+    expect(prepare("daily", {
+      runner: fakeRunner({ logs: { runs: [run], summary: { total_runs: 1 } } }),
+    })).toBe(1);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("without valid workflow, timestamp, or outcome"));
+  });
+
+  it("allows valid historical runs for workflows outside the current inventory", () => {
+    expect(prepare("daily", {
+      runner: fakeRunner({ logs: { runs: [{
+        workflow_path: ".github/workflows/retired.lock.yml",
+        created_at: fixtures.now,
+        conclusion: "success",
+      }], summary: { total_runs: 1 } } }),
+    })).toBe(0);
+  });
+
+  it("rejects an empty run collection when the CLI summary reports a run", () => {
+    expect(prepare("daily", {
+      runner: fakeRunner({ logs: { runs: [], summary: { total_runs: 1 } } }),
+    })).toBe(1);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("does not match its summary"));
+  });
+
+  it("preserves genuine zero-run results from the pinned CLI", () => {
+    expect(prepare("daily", {
+      runner: fakeRunner({ logs: { runs: null, summary: { total_runs: 0 } } }),
+    })).toBe(0);
+  });
+
+  it("uses the pinned CLI workflow path and token_usage fields", () => {
+    const usage = collector.normalizeUsage({ runs: [{
+      run_id: 123,
+      workflow_name: "Daily Repo Status (MonitorOps)",
+      workflow_path: ".github/workflows/daily-repo-status.lock.yml",
+      created_at: "2026-08-09T12:00:00Z",
+      conclusion: "success",
+      duration: "2m",
+      aic: 7,
+      token_usage: 4321,
+    }] }, ["daily-repo-status"], collector.computeWindow("daily", fixtures.now));
+    expect(usage["daily-repo-status"]).toMatchObject({
+      runs: 1, conclusions: { success: 1 }, durationSecondsTotal: 120, aiCredits: 7, tokens: 4321,
+    });
+  });
+
+  it("rejects a no-change decision without a matching published baseline", () => {
+    expect(prepare("daily", {
+      healthMain: (argv: string[], deps: Record<string, unknown>) => {
+        const status = collector.main(argv, deps);
+        const snapshot = readOutput("factory-health.json");
+        snapshot.materialState = { ...snapshot.materialState as object, changed: false };
+        return status || writeHealth(argv, JSON.stringify(snapshot));
+      },
+    })).toBe(1);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("published baseline"));
+  });
+
+  it("retains a valid health no-change decision even without a cache", () => {
+    expect(prepare("daily")).toBe(0);
+    const hash = (readOutput("factory-health.json").materialState as { hash: string }).hash;
+    fs.rmSync(path.join(tmpDir, "cache-memory", "monitor-ops-daily.json"));
+    expect(prepare("daily", {
+      runner: fakeRunner({ reportIssues: [{
+        number: 951,
+        createdAt: fixtures.now,
+        body: `<!-- factory-state-hash: ${hash} -->`,
+      }] }),
+    })).toBe(0);
+    expect(readOutput("factory-health.json").materialState).toMatchObject({
+      hash, publishedHash: hash, changed: false, cacheHit: false,
+    });
+  });
+
+  it("retains a valid entropy no-change decision after both collectors succeed", () => {
+    expect(prepare("entropy")).toBe(0);
+    const hash = readOutput("entropy-manifest.json").materialHash;
+    fs.rmSync(path.join(tmpDir, "cache-memory", "entropy.json"));
+    expect(prepare("entropy", {
+      runner: fakeRunner({ reportIssues: [{
+        number: 952,
+        createdAt: fixtures.now,
+        body: `<!-- entropy-state-hash: ${hash} -->`,
+      }] }),
+    })).toBe(0);
+    expect(readOutput("entropy-manifest.json").summary).toMatchObject({ shouldReport: false });
+    expect(readOutput("entropy-manifest.json").baselineDelta).toMatchObject({
+      publishedHash: hash, changed: false, cacheHit: false,
+    });
+  });
+
+  it.each([
+    '{"error":"data unavailable"}',
+    "[{}]",
+    '[{"number":1,"body":"missing timestamp"}]',
+  ])("fails if only the entropy-history lookup returns malformed data: %s", (value) => {
+    const successful = fakeRunner();
+    const runner: Runner = (command, args) =>
+      args[args.indexOf("--search") + 1]?.startsWith("[factory-entropy]")
+        ? { status: 0, stdout: value, stderr: "" }
+        : successful(command, args);
+    expect(prepare("entropy", { runner })).toBe(1);
+    expect(fs.existsSync(path.join(tmpDir, "factory-health.json"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "entropy-manifest.json"))).toBe(false);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("published entropy state"));
+  });
+
+  it("propagates entropy collector failure instead of producing a successful noop", () => {
+    expect(prepare("entropy", { entropyMain: () => 1 })).toBe(1);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("Entropy collector failed"));
+  });
+
+  it.each([undefined, "{", "null", "[]", "{}"])(
+    "rejects missing or invalid entropy JSON: %s",
+    (value) => {
+      expect(prepare("entropy", {
+        entropyMain: (argv: string[]) => value === undefined ? 0 : writeHealth(argv, value),
+      })).toBe(1);
+      expect(errors).toHaveBeenCalled();
+    },
+  );
+
+  it("rejects unknown profiles before running any commands", () => {
+    const runner = jest.fn();
+    expect(prepare("hourly", { runner })).toBe(1);
+    expect(runner).not.toHaveBeenCalled();
+  });
+});
+
+interface MonitorOpsStep {
+  name?: string;
+  id?: string;
+  run?: string;
+  uses?: string;
+  if?: string;
+  "continue-on-error"?: boolean;
+  "timeout-minutes"?: number;
+  with?: Record<string, unknown>;
+  env?: Record<string, string>;
+}
+
+describe.each([
+  ["daily-repo-status", "daily"],
+  ["agentic-governance", "governance"],
+  ["harness-entropy", "entropy"],
+])("MonitorOps %s execution boundary", (workflow, profile) => {
+  const source = fs.readFileSync(path.join(workflowsDir, `${workflow}.md`), "utf8");
+  const { frontmatter, body } = collector.splitFrontmatter(source);
+  const authored = parseDocument(frontmatter).toJS() as {
+    "pre-agent-steps": MonitorOpsStep[];
+    tools: { bash: string[] };
+  };
+  const compiled = parseUniqueJson<{
+    jobs: Record<string, { if?: string; steps: MonitorOpsStep[] }>;
+  }>(path.join(workflowsDir, `${workflow}.lock.yml`));
+
+  it("does not ask the model to authorize the formerly denied collector command", () => {
+    expect(authored.tools.bash).toEqual(profile === "entropy"
+      ? ["cat /tmp/gh-aw/factory-health.json", "cat /tmp/gh-aw/entropy-manifest.json"]
+      : ["cat /tmp/gh-aw/factory-health.json"]);
+    expect(body).not.toContain("node scripts/agentic/collect-");
+    expect(body).toContain("missing_data");
+    expect(body).toContain("never use `noop`");
+    const execution = compiled.jobs.agent.steps.find((step) => step.name === "Execute GitHub Copilot CLI");
+    expect(execution?.run).toBeDefined();
+    expect(execution?.run).not.toContain("shell(node");
+    expect(execution?.run).not.toContain("--allow-all-tools");
+  });
+
+  it("runs trusted collection after any PR checkout and before the agent", () => {
+    const authoredSteps = authored["pre-agent-steps"];
+    expect(authoredSteps.map((step) => step.name)).toEqual([
+      "Restore trusted MonitorOps source",
+      "Set up collector Node.js",
+      "Install pinned MonitorOps CLI",
+      "Collect and validate MonitorOps snapshot",
+    ]);
+    expect(authoredSteps[0].with).toEqual({
+      ref: "${{ github.event.repository.default_branch }}",
+      "persist-credentials": false,
+    });
+    expect(authoredSteps[1].with).toEqual({ "node-version-file": ".nvmrc" });
+    expect(authoredSteps[2].uses).toMatch(
+      /^github\/gh-aw-actions\/setup-cli@[a-f0-9]{40}$/,
+    );
+    expect(authoredSteps[2].with).toEqual({ version: preparation.GH_AW_VERSION });
+    expect(authoredSteps[3]).toMatchObject({
+      run: `timeout 10m node scripts/agentic/prepare-monitor-ops.cjs ${profile}`,
+      env: { GH_TOKEN: "${{ github.token }}" },
+    });
+    const steps = compiled.jobs.agent.steps;
+    const restore = steps.findIndex((step) => step.name === authoredSteps[0].name);
+    const collect = steps.findIndex((step) => step.name === authoredSteps[3].name);
+    expect(restore).toBeGreaterThan(steps.findIndex((step) => step.id === "checkout-pr"));
+    expect(collect).toBeGreaterThan(restore);
+    expect(collect).toBeLessThan(steps.findIndex((step) => step.name === "Execute GitHub Copilot CLI"));
+    expect(steps[collect]["continue-on-error"]).not.toBe(true);
+    expect(steps[collect].if).toBeUndefined();
+    expect(steps[collect].run).toBe(authoredSteps[3].run);
+  });
+
+  it("routes a failed prerequisite through the existing durable failure handler", () => {
+    const conclusion = compiled.jobs.conclusion;
+    expect(conclusion.if).toContain("always()");
+    expect(conclusion.if).toContain("needs.agent.result != 'skipped'");
+    const handler = conclusion.steps.find((step) => step.id === "handle_agent_failure");
+    expect(handler?.if).toBe("always()");
+    expect(handler?.env).toMatchObject({
+      GH_AW_AGENT_CONCLUSION: "${{ needs.agent.result }}",
+      GH_AW_FAILURE_REPORT_AS_ISSUE: "true",
+      GH_AW_MISSING_DATA_REPORT_AS_FAILURE: "true",
+    });
   });
 });

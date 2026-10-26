@@ -40,3 +40,19 @@ _Generated from `.github/workflows/*.md` frontmatter by `scripts/generate-agenti
 ## Typical paths
 
 Issues flow through PM/planning/implementation; PRs flow through code/QA and conditional security/trading review; failures may enter capped self-heal; schedules produce read-only governance, evaluation, status, or opportunity evidence.
+
+## MonitorOps collection
+
+Daily status, weekly governance, and entropy run deterministic collection in
+trusted pre-agent steps, not through model-selected shell commands. The steps
+restore default-branch source, select Node from `.nvmrc`, and install the pinned
+GH-AW CLI before `prepare-monitor-ops.cjs` calls `gh aw status` and `gh aw logs`
+with a read-only job token. Snapshot and cache writes stay under `/tmp/gh-aw/`.
+
+Collection has a ten-minute limit. Preparation rejects failed collectors,
+incomplete log downloads, missing or invalid JSON, and inconsistent
+material-state hashes before the agent starts. A failed step reaches GH-AW's
+existing conclusion/failure-issue handler; it is not a successful no-op. Only a
+successfully collected and validated snapshot can justify a no-material-change
+no-op. The entropy path also preserves its valid no-actionable-findings no-op.
+Local checks and compilation do not prove that a hosted report was published.

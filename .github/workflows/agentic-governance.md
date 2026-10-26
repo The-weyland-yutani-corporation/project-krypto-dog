@@ -17,9 +17,26 @@ tools:
   cache-memory:
     retention-days: 90
   bash:
-    - "node scripts/agentic/collect-factory-health.cjs *"
     - "cat /tmp/gh-aw/factory-health.json"
 network: defaults
+pre-agent-steps:
+  - name: Restore trusted MonitorOps source
+    uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    with:
+      ref: ${{ github.event.repository.default_branch }}
+      persist-credentials: false
+  - name: Set up collector Node.js
+    uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+    with:
+      node-version-file: .nvmrc
+  - name: Install pinned MonitorOps CLI
+    uses: github/gh-aw-actions/setup-cli@ba6380cc6e5be5d21677bebe04d52fb48e3abec7 # v0.81.6
+    with:
+      version: v0.81.6
+  - name: Collect and validate MonitorOps snapshot
+    env:
+      GH_TOKEN: ${{ github.token }}
+    run: timeout 10m node scripts/agentic/prepare-monitor-ops.cjs governance
 safe-outputs:
   update-issue:
     target: "*"
@@ -48,22 +65,12 @@ summarize it. You never re-derive metrics by hand.
 
 ## Steps
 
-### 1. Run the collector first
+### 1. Read the validated snapshot
 
-Run exactly this command (it is read-only toward GitHub and writes only under
-`/tmp/gh-aw/`):
-
-```
-node scripts/agentic/collect-factory-health.cjs \
-  --mode governance \
-  --out /tmp/gh-aw/factory-health.json \
-  --cache /tmp/gh-aw/cache-memory/monitor-ops-governance.json \
-  --workflow-mode \
-  --title-prefix "[factory-governance] "
-```
-
-Then read `/tmp/gh-aw/factory-health.json`. Do not run any other data-gathering
-commands; the snapshot is the single source of truth for this report.
+The trusted pre-agent step has already collected and validated
+`/tmp/gh-aw/factory-health.json` using the pinned CLI and read-only GitHub token.
+Read that file. Do not run collectors or other data-gathering commands; the
+snapshot is the single source of truth for this report.
 
 ### 2. Decide whether to report
 
@@ -112,7 +119,9 @@ Replace `MATERIAL_STATE_HASH` with `materialState.hash` from the snapshot.
 
 ## Rules
 
-- The collector — not the agent — gathers data. If the collector fails or its
-  JSON is missing, call `noop` explaining the failure; do not fabricate metrics.
+- The collector — not the agent — gathers data. Collection and JSON validation
+  failures stop the agent job and use GH-AW's failure reporting. If you cannot
+  read the prepared snapshot, call `missing_data` and stop; never use `noop` for
+  missing data or fabricate metrics.
 - Do not add GitHub references, backlinks, or @mentions.
 - Keep everything read-only. The only visible write is the single report issue.
