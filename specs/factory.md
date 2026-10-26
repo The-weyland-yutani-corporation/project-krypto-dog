@@ -61,6 +61,22 @@
   current claim, scope, review and receipt verification before the mutation.
   GitHub branch protection remains effective. Forks are outside unattended
   same-repository delivery. Explicit review vetoes and emergency stops remain.
+- Reconciliation and the isolated merge publisher require native
+  `closingIssuesReferences` evidence bound to the repository, PR identity,
+  and exact head. Both keyword-derived and manually linked associations are
+  included; body references, negation, and review receipts cannot substitute
+  for a complete empty native connection. Nonempty, missing, malformed,
+  partial, inaccessible, or mismatched evidence blocks publication, records
+  a PR comment and the existing blocking label, and fails the controller
+  operation. Reporting failures also fail closed; an existing block is not
+  automatically cleared.
+  The publisher repeats this read with its own credential immediately before
+  its SHA-bound merge, after the other final checks. Squash title and message
+  contain only controller-generated text and the checked PR number/head,
+  never PR or original-commit text. GitHub does not atomically bind association
+  reads to the merge mutation: an association change after the last read
+  remains a race. These checks do not prove operational restoration or
+  replace lifecycle-owned issue completion after deployment evidence.
 - Repairs are capped and restricted to the existing issue scope. Exhausted or
   unsafe work is reported rather than deleting tests or weakening checks.
 - Exact-SHA development/deployment evidence is separate from a successful

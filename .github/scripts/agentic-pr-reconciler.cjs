@@ -65,6 +65,25 @@ const DEPRECATED_POLICY_CHECKS = Object.freeze([
   "Human boundary approval",
 ]);
 
+const CLOSING_ISSUES_QUERY = `
+  query FactoryClosingIssues($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      nameWithOwner
+      pullRequest(number: $number) {
+        id
+        number
+        headRefOid
+        repository { nameWithOwner }
+        closingIssuesReferences(first: 1, userLinkedOnly: false, excludeUserLinked: false) {
+          totalCount
+          nodes { number }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }
+`;
+
 function getLabels(pullRequest) {
   return new Set(
     (pullRequest.labels || [])
@@ -709,6 +728,86 @@ function evaluateMergePolicy({
   };
 }
 
+function closingIssuesEvidenceFailure(response, repository, pullRequest) {
+  if (!response || typeof response !== "object" || Object.hasOwn(response, "errors")) {
+    return "native-closing-issues-response-incomplete";
+  }
+  const nativeRepository = response.repository;
+  const nativePull = nativeRepository?.pullRequest;
+  const matchesRepository = (name) =>
+    typeof name === "string" && name.toLowerCase() === repository.toLowerCase();
+  if (!matchesRepository(nativeRepository?.nameWithOwner) ||
+      !matchesRepository(nativePull?.repository?.nameWithOwner) ||
+      typeof pullRequest.node_id !== "string" || !pullRequest.node_id ||
+      nativePull?.id !== pullRequest.node_id ||
+      nativePull?.number !== pullRequest.number ||
+      nativePull?.headRefOid !== pullRequest.head.sha) {
+    return "native-closing-issues-target-mismatch";
+  }
+  const connection = nativePull.closingIssuesReferences;
+  if (!connection ||
+      !Number.isSafeInteger(connection.totalCount) || connection.totalCount < 0 ||
+      !Array.isArray(connection.nodes) ||
+      connection.nodes.length !== Math.min(connection.totalCount, 1) ||
+      !connection.nodes.every((issue) => Number.isSafeInteger(issue?.number) && issue.number > 0) ||
+      connection.pageInfo?.hasNextPage !== (connection.totalCount > connection.nodes.length) ||
+      (connection.nodes.length === 0
+        ? connection.pageInfo?.endCursor !== null
+        : typeof connection.pageInfo?.endCursor !== "string" || !connection.pageInfo.endCursor)) {
+    return "native-closing-issues-connection-incomplete";
+  }
+  // Only a complete empty connection can authorize merge. One node suffices
+  // to reject a nonempty connection; pagination cannot make it safe.
+  return connection.totalCount === 0
+    ? null
+    : `native-closing-issues-present (${connection.totalCount})`;
+}
+
+async function assertNoClosingIssueReferences({ github, owner, repo, pullRequest, core }) {
+  if (!Number.isSafeInteger(pullRequest?.number) || pullRequest.number <= 0 ||
+      !/^[0-9a-f]{40}$/.test(pullRequest?.head?.sha)) {
+    throw new Error("Invalid exact-head target for native issue-closure verification");
+  }
+  let response;
+  let failure;
+  try {
+    response = await github.graphql(CLOSING_ISSUES_QUERY, {
+      owner, repo, number: pullRequest.number,
+    });
+  } catch (error) {
+    const status = getErrorStatus(error);
+    failure = `native-closing-issues-read-failed${Number.isInteger(status) ? ` (HTTP ${status})` : ""}`;
+  }
+  failure ||= closingIssuesEvidenceFailure(response, `${owner}/${repo}`, pullRequest);
+  if (!failure) return;
+
+  const message = `Native issue-closure safeguard blocked PR #${pullRequest.number} at ${pullRequest.head.sha}: ${failure}.`;
+  core.warning(message);
+  const reports = await Promise.allSettled([
+    github.rest.issues.addLabels({
+      owner, repo, issue_number: pullRequest.number, labels: [BLOCKED_LABEL],
+    }),
+    github.rest.issues.createComment({
+      owner, repo, issue_number: pullRequest.number,
+      body: [
+        "<!-- agentic-pr-reconciler:v1 issue-closure-block -->",
+        "**Native issue-closure safeguard blocked merge**",
+        `- Requested head: \`${pullRequest.head.sha}\``,
+        `- Reason: ${failure}`,
+        "- This guard did not authorize a merge. Issue completion remains owned by exact-source lifecycle evidence.",
+        "- Correct the native association or evidence problem before removing the blocking label and retrying.",
+      ].join("\n"),
+    }),
+  ]);
+  const reportErrors = reports
+    .filter((result) => result.status === "rejected")
+    .map((result) => result.reason);
+  if (reportErrors.length) {
+    throw new AggregateError(reportErrors, `${message} Could not persist all blocking reports.`);
+  }
+  throw new Error(message);
+}
+
 async function verifyAutonomousMergeCandidate({
   github, owner, repo, pullRequest, core, assignmentActorNodeId, serverUrl,
 }) {
@@ -736,11 +835,15 @@ async function verifyAutonomousMergeCandidate({
     issueAllowedPaths: provenance.allowedPaths, goalMaxRiskTier: provenance.goalMaxRiskTier,
   });
   if (decision.state !== "success") return { valid: false, reason: decision.description };
-  return verifyTrustedReviewEvidence({
+  const evidence = await verifyTrustedReviewEvidence({
     github, owner, repo, defaultBranch: "main", serverUrl,
     pullNumber: pullRequest.number, headSha: pullRequest.head.sha, checkRuns,
     requiredChecks: [...AGENTIC_POLICY.requiredContexts, ...decision.requiredSpecialistChecks],
   });
+  if (evidence.valid) {
+    await assertNoClosingIssueReferences({ github, owner, repo, pullRequest, core });
+  }
+  return evidence;
 }
 
 function hasPendingSpecialistReview({ requiredChecks, checkStates, ciFailed, autonomous }) {
@@ -1511,6 +1614,7 @@ async function reconcileAgenticPullRequests({
           if (typeof onVerifiedMerge !== "function") {
             throw new Error("Autonomous merging requires the isolated merge publisher.");
           }
+          await assertNoClosingIssueReferences({ github, owner, repo, pullRequest, core });
           await onVerifiedMerge({ number, headSha: sha });
         });
       }
@@ -1604,6 +1708,7 @@ module.exports = {
   SECURITY_CHECK_NAME,
   TRUSTED_AGENT_AUTHORS,
   TRADING_SAFETY_CHECK_NAME,
+  assertNoClosingIssueReferences,
   canAttemptSelfHeal,
   countRepairAttempts,
   evaluateMergePolicy,

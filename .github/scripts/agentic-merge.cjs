@@ -1,7 +1,7 @@
 "use strict";
 
 const { resolveHumanAttestedFactoryMode } = require("./agentic-automerge-sweeper.cjs");
-const { getReviewState } = require("./agentic-pr-reconciler.cjs");
+const { assertNoClosingIssueReferences, getReviewState } = require("./agentic-pr-reconciler.cjs");
 
 async function readActiveMergeTarget({ github, owner, repo, pullRequest, core }) {
   if (await resolveHumanAttestedFactoryMode({ github, core, owner, repo }) !== "active") {
@@ -10,7 +10,8 @@ async function readActiveMergeTarget({ github, owner, repo, pullRequest, core })
   }
   const { data: current } = await github.rest.pulls.get({ owner, repo, pull_number: pullRequest.number });
   const labels = new Set((current.labels || []).map((label) => typeof label === "string" ? label : label.name));
-  if (current.state !== "open" || current.draft || current.head.sha !== pullRequest.head.sha ||
+  if (current.number !== pullRequest.number ||
+      current.state !== "open" || current.draft || current.head.sha !== pullRequest.head.sha ||
       current.head.repo?.full_name?.toLowerCase() !== `${owner}/${repo}`.toLowerCase() ||
       current.base?.ref !== "main" || !labels.has("agentic-automerge") ||
       labels.has("blocked") || labels.has("self-heal-exhausted")) {
@@ -52,9 +53,12 @@ async function mergeVerifiedHead({ github, owner, repo, pullRequest, core, assig
     core.info(`Exact-head merge waiting for GitHub protection/mergeability: ${current.mergeable_state}.`);
     return;
   }
+  await assertNoClosingIssueReferences({ github, owner, repo, pullRequest: current, core });
   const { data } = await github.rest.pulls.merge({
     owner, repo, pull_number: current.number,
     sha: pullRequest.head.sha, merge_method: "squash",
+    commit_title: `[factory] Merge PR #${current.number}`,
+    commit_message: `Verified head: ${pullRequest.head.sha}\n\nIssue completion requires exact-source lifecycle evidence.`,
   });
   if (data.merged !== true) throw new Error(`GitHub declined the exact-head merge: ${data.message}`);
   core.info(`Merged PR #${current.number} at ${data.sha}.`);

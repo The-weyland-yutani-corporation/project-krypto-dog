@@ -253,13 +253,28 @@ describe("bounded artifact decoding", () => {
 
 function mergeFixture() {
   const pullRequest = {
-    number: 8, state: "open", draft: false, labels: ["agentic-automerge"], mergeable_state: "clean",
+    number: 8, node_id: "PR_test", state: "open", draft: false, labels: ["agentic-automerge"], mergeable_state: "clean",
     base: { ref: "main" }, head: { sha: "a".repeat(40), repo: { full_name: "o/r" } },
   };
   const current = { ...pullRequest, head: { ...pullRequest.head } };
   const github = {
+    graphql: jest.fn(async () => ({
+      repository: {
+        nameWithOwner: "o/r",
+        pullRequest: {
+          id: current.node_id, number: current.number, headRefOid: current.head.sha,
+          repository: { nameWithOwner: "o/r" },
+          closingIssuesReferences: {
+            totalCount: 0, nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      },
+    })),
     rest: {
-      issues: { listForRepo: "controls", listEventsForTimeline: "timeline" },
+      issues: {
+        listForRepo: "controls", listEventsForTimeline: "timeline",
+        addLabels: jest.fn(), createComment: jest.fn(),
+      },
       pulls: {
         listReviews: "reviews",
         get: jest.fn(async () => ({ data: current })),
@@ -290,7 +305,16 @@ describe("exact-head atomic merge", () => {
     await mergeVerifiedHead(fixture);
     expect(fixture.github.rest.pulls.merge).toHaveBeenCalledWith({
       owner: "o", repo: "r", pull_number: 8, sha: "a".repeat(40), merge_method: "squash",
+      commit_title: "[factory] Merge PR #8",
+      commit_message: `Verified head: ${"a".repeat(40)}\n\nIssue completion requires exact-source lifecycle evidence.`,
     });
+  });
+  it("does not substitute a different PR returned by the final target read", async () => {
+    const fixture = mergeFixture();
+    fixture.current.number = 9;
+    await mergeVerifiedHead(fixture);
+    expect(fixture.github.rest.pulls.merge).not.toHaveBeenCalled();
+    expect(fixture.github.graphql).not.toHaveBeenCalled();
   });
   it("does not merge a changed head", async () => {
     const fixture = mergeFixture();
