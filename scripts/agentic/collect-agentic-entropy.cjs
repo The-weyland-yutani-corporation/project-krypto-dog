@@ -1122,7 +1122,7 @@ function summarizeMonitorOps(snapshot) {
 // ---------------------------------------------------------------------------
 
 function ghReportIssues(runner, titlePrefix) {
-  return factory.runJson(
+  return factory.requireReportIssues(factory.runJson(
     runner,
     [
       "issue",
@@ -1137,7 +1137,7 @@ function ghReportIssues(runner, titlePrefix) {
       "number,body,createdAt",
     ],
     "gh issue list for published entropy state",
-  );
+  ), "gh issue list for published entropy state");
 }
 
 // ---------------------------------------------------------------------------

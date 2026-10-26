@@ -176,6 +176,28 @@ function runJson(runner, args, label) {
   }
 }
 
+function requireRows(value, label) {
+  if (
+    !Array.isArray(value) ||
+    value.some((row) => !row || typeof row !== "object" || Array.isArray(row))
+  ) {
+    throw new Error(`${label} returned an invalid JSON row collection`);
+  }
+  return value;
+}
+
+function requireReportIssues(value, label) {
+  const rows = requireRows(value, label);
+  if (rows.some((row) =>
+    !Number.isSafeInteger(row.number) || row.number <= 0 ||
+    typeof row.body !== "string" ||
+    typeof row.createdAt !== "string" || !Number.isFinite(Date.parse(row.createdAt))
+  )) {
+    throw new Error(`${label} returned an invalid report-history row`);
+  }
+  return rows;
+}
+
 // ---------------------------------------------------------------------------
 // Explicit closed UTC windows
 // ---------------------------------------------------------------------------
@@ -552,7 +574,11 @@ function normalizeUsage(logsJson, knownIds, window, options) {
     }
 
     const tokens = numericOrNull(
-      run.totalTokens != null ? run.totalTokens : run.total_tokens,
+      run.totalTokens != null
+        ? run.totalTokens
+        : run.total_tokens != null
+          ? run.total_tokens
+          : run.token_usage,
     );
     if (tokens != null && tokens > 0) {
       entry._tokens = (entry._tokens || 0) + tokens;
@@ -1228,9 +1254,11 @@ function buildSnapshot(inputs) {
 // ---------------------------------------------------------------------------
 
 function ghStatus(runner) {
-  return normalizeStatus(
-    runJson(runner, ["aw", "status", "--json"], "gh aw status"),
-  );
+  const parsed = runJson(runner, ["aw", "status", "--json"], "gh aw status");
+  return normalizeStatus(requireRows(
+    Array.isArray(parsed) ? parsed : parsed && parsed.workflows,
+    "gh aw status",
+  ));
 }
 
 function ghUsage(runner, inventory, window, outputDir) {
@@ -1256,6 +1284,32 @@ function ghUsage(runner, inventory, window, outputDir) {
     ],
     "gh aw logs",
   );
+  if (parsed && parsed.continuation != null) {
+    throw new Error("gh aw logs returned incomplete collection with a continuation");
+  }
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : parsed && (parsed.runs || parsed.workflows ||
+      (parsed.runs === null && parsed.summary?.total_runs === 0 ? [] : null));
+  requireRows(rows, "gh aw logs");
+  const runs = requireRows(extractRunRows(parsed), "gh aw logs");
+  for (const run of runs) {
+    const createdAt = run.createdAt || run.created_at || run.startedAt || run.timestamp;
+    if (
+      !deriveWorkflowId(run) ||
+      typeof createdAt !== "string" || !Number.isFinite(Date.parse(createdAt)) ||
+      !normalizeConclusion(run)
+    ) {
+      throw new Error("gh aw logs returned a run without valid workflow, timestamp, or outcome metadata");
+    }
+  }
+  if (
+    parsed.summary?.total_runs != null &&
+    (!Number.isSafeInteger(parsed.summary.total_runs) ||
+      parsed.summary.total_runs !== runs.length)
+  ) {
+    throw new Error("gh aw logs run count does not match its summary");
+  }
   return normalizeUsage(parsed, knownIds, window);
 }
 
@@ -1274,7 +1328,7 @@ function ghIssues(runner, window, policy, now) {
     ],
     "gh issue list",
   );
-  return normalizeIssues(parsed, window, policy, now);
+  return normalizeIssues(requireRows(parsed, "gh issue list"), window, policy, now);
 }
 
 function ghPullRequests(runner) {
@@ -1292,7 +1346,7 @@ function ghPullRequests(runner) {
     ],
     "gh pr list",
   );
-  return normalizePullRequests(parsed);
+  return normalizePullRequests(requireRows(parsed, "gh pr list"));
 }
 
 /**
@@ -1353,7 +1407,7 @@ function ghAuxiliaryWorkflows(runner, files, window) {
       );
     }
     const knownIds = [id];
-    const tagged = (Array.isArray(rows) ? rows : []).map((r) =>
+    const tagged = requireRows(rows, `gh run list --workflow ${file}`).map((r) =>
       Object.assign({ workflow: id }, r),
     );
     const usage = normalizeUsage({ runs: tagged }, knownIds, window)[id];
@@ -1378,7 +1432,7 @@ function ghAuxiliaryWorkflows(runner, files, window) {
 
 function ghReportIssues(runner, titlePrefix) {
   // Search only the report series; never persist raw bodies beyond hash reading.
-  return runJson(
+  return requireReportIssues(runJson(
     runner,
     [
       "issue",
@@ -1393,7 +1447,7 @@ function ghReportIssues(runner, titlePrefix) {
       "number,body,createdAt",
     ],
     "gh issue list for published report state",
-  );
+  ), "gh issue list for published report state");
 }
 
 // ---------------------------------------------------------------------------
@@ -1698,6 +1752,7 @@ module.exports = {
   createRunner,
   parseJsonSafe,
   runJson,
+  requireReportIssues,
   computeWindow,
   isWithinWindow,
   listWorkflowSources,

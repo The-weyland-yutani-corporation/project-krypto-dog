@@ -17,11 +17,27 @@ tools:
   cache-memory:
     retention-days: 90
   bash:
-    - "node scripts/agentic/collect-factory-health.cjs *"
-    - "node scripts/agentic/collect-agentic-entropy.cjs *"
     - "cat /tmp/gh-aw/factory-health.json"
     - "cat /tmp/gh-aw/entropy-manifest.json"
 network: defaults
+pre-agent-steps:
+  - name: Restore trusted MonitorOps source
+    uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    with:
+      ref: ${{ github.event.repository.default_branch }}
+      persist-credentials: false
+  - name: Set up collector Node.js
+    uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+    with:
+      node-version-file: .nvmrc
+  - name: Install pinned MonitorOps CLI
+    uses: github/gh-aw-actions/setup-cli@ba6380cc6e5be5d21677bebe04d52fb48e3abec7 # v0.81.6
+    with:
+      version: v0.81.6
+  - name: Collect and validate MonitorOps snapshot
+    env:
+      GH_TOKEN: ${{ github.token }}
+    run: timeout 10m node scripts/agentic/prepare-monitor-ops.cjs entropy
 safe-outputs:
   create-issue:
     title-prefix: "[factory-entropy] "
@@ -51,39 +67,18 @@ deterministic evidence and remediation.
 
 ## Steps
 
-### 1. Run the MonitorOps collector first
+### 1. Read the validated manifest
 
-Run exactly this command (read-only toward GitHub; writes only under
-`/tmp/gh-aw/`):
+The trusted pre-agent step has already collected and validated the MonitorOps
+snapshot, then generated and validated `/tmp/gh-aw/entropy-manifest.json` from
+it. Collection uses the pinned CLI and read-only GitHub token. The entropy
+collector reuses the health snapshot for WIP, telemetry, and repeated-failure
+signals instead of querying them again.
 
-```
-node scripts/agentic/collect-factory-health.cjs \
-  --mode governance \
-  --out /tmp/gh-aw/factory-health.json \
-  --cache /tmp/gh-aw/cache-memory/monitor-ops-governance.json \
-  --workflow-mode \
-  --title-prefix "[factory-governance] "
-```
+Read `/tmp/gh-aw/entropy-manifest.json`. Do not run collectors or other
+data-gathering commands; the manifest is the single source of truth for this report.
 
-### 2. Run the entropy collector with that snapshot
-
-Run exactly this command. It reuses the MonitorOps snapshot for WIP, telemetry,
-and repeated-failure signals and never re-queries GitHub for them:
-
-```
-node scripts/agentic/collect-agentic-entropy.cjs \
-  --snapshot /tmp/gh-aw/factory-health.json \
-  --out /tmp/gh-aw/entropy-manifest.json \
-  --cache /tmp/gh-aw/cache-memory/entropy.json \
-  --report-prefix "[factory-entropy] " \
-  --workflow-mode
-```
-
-Then read `/tmp/gh-aw/entropy-manifest.json`. Do not run any other
-data-gathering commands; the manifest is the single source of truth for this
-report.
-
-### 3. Decide whether to report
+### 2. Decide whether to report
 
 - If `summary.shouldReport` is `false`, call `noop` with a one-line reason (no
   material entropy delta since the last published report, or no actionable
@@ -93,7 +88,7 @@ report.
 A cache miss never suppresses a report: when there is no published baseline the
 collector sets `baselineDelta.changed` to `true`, so a first run still reports.
 
-### 4. Write the report
+### 3. Write the report
 
 Rank the manifest's `violations` by severity (zero-tolerance first, then
 advisory) and group them under their `dimensions`. Report only what the manifest
@@ -118,7 +113,7 @@ contains. Use `###`/`####` headings and GitHub alerts (`> [!NOTE]`,
 - **Baseline delta** — summarize `baselineDelta` (added/removed violations when
   present); note whether this is a new baseline.
 
-### 5. Embed the state-hash marker
+### 4. Embed the state-hash marker
 
 End the issue body with the exact material-state marker on its own line so the
 next run can detect a noop:
@@ -131,8 +126,10 @@ Replace `MATERIAL_STATE_HASH` with `materialHash` from the manifest.
 
 ## Rules
 
-- The collectors — not the agent — gather data. If either collector fails or its
-  JSON is missing, call `noop` explaining the failure; do not fabricate findings.
+- The collectors — not the agent — gather data. Collection and JSON validation
+  failures stop the agent job and use GH-AW's failure reporting. If you cannot
+  read the prepared manifest, call `missing_data` and stop; never use `noop` for
+  missing data or fabricate findings.
 - This workflow is **report-only**. It has no `create-pull-request`, branch push,
   file edit, or deletion output, and it must never apply a code, policy,
   instruction, or trading change. It may quote the collector's remediation for a

@@ -802,9 +802,11 @@ describe("entropy — harness-entropy workflow contract", () => {
     expect(source).toContain("retention-days: 90");
   });
 
-  it("exposes only the two trusted collectors and cat on the bash allowlist", () => {
-    expect(source).toContain('"node scripts/agentic/collect-factory-health.cjs *"');
-    expect(source).toContain('"node scripts/agentic/collect-agentic-entropy.cjs *"');
+  it("prepares both collectors before the agent and only allows snapshot reads", () => {
+    expect(source).toContain("pre-agent-steps:");
+    expect(source).toContain("run: timeout 10m node scripts/agentic/prepare-monitor-ops.cjs entropy");
+    expect(source).not.toContain('"node scripts/agentic/collect-factory-health.cjs *"');
+    expect(source).not.toContain('"node scripts/agentic/collect-agentic-entropy.cjs *"');
     expect(source).toContain('"cat /tmp/gh-aw/factory-health.json"');
     expect(source).toContain('"cat /tmp/gh-aw/entropy-manifest.json"');
   });
