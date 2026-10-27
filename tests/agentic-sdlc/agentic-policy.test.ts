@@ -181,9 +181,7 @@ describe("canonical agentic policy", () => {
     "specs/product.md",
     "specs/operations.md",
     "specs/evaluation.md",
-    "specs/factory.md",
     "specs/governance.md",
-    "specs/rfcs/live-trading.md",
   ])("preserves trading-safety routing for %s", (filename) => {
     expect(reconciler.requiresTradingSafetyReview(filename)).toBe(true);
   });
@@ -197,6 +195,14 @@ describe("canonical agentic policy", () => {
     expect(reconciler.requiresSecurityReview(filename)).toBe(false);
     expect(reconciler.requiresTradingSafetyReview(filename)).toBe(false);
   });
+
+  it.each(["specs/factory.md", "specs/rfcs/live-trading.md"])(
+    "keeps non-canonical specs on the security review path but not trading safety for %s",
+    (filename) => {
+      expect(reconciler.requiresSecurityReview(filename)).toBe(true);
+      expect(reconciler.requiresTradingSafetyReview(filename)).toBe(false);
+    },
+  );
 
   it.each([
     ["docs/guides/contributing.md", true],
