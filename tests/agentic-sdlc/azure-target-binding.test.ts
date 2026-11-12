@@ -100,6 +100,43 @@ describe("Azure deployment target bindings", () => {
     },
   );
 
+  it("keeps dev workflow deterministic names aligned with release and rollout parameters", () => {
+    const workflow = read(".github/workflows/azure-deploy-dev.yml");
+    const release = "infra/params/release.dev.bicepparam";
+    const rollout = "infra/params/rollout.dev.bicepparam";
+    const expected: Record<string, { value: string; rolloutParam: string }> = {
+      DEV_WEB_APP_NAME: {
+        value: stringParameter(release, "webAppName"),
+        rolloutParam: "webAppName",
+      },
+      DEV_HOURLY_JOB_NAME: {
+        value: stringParameter(release, "hourlyJobName"),
+        rolloutParam: "hourlyJobName",
+      },
+      DEV_DAILY_JOB_NAME: {
+        value: stringParameter(release, "dailyJobName"),
+        rolloutParam: "dailyJobName",
+      },
+    };
+    for (const [name, binding] of Object.entries(expected)) {
+      expect(workflow.split(/\r?\n/)).toContain(`  ${name}: ${binding.value}`);
+      expect(stringParameter(rollout, binding.rolloutParam)).toBe(binding.value);
+    }
+  });
+
+  it("keeps dev workflow target binding identity and Azure auth variable-driven", () => {
+    const workflow = read(".github/workflows/azure-deploy-dev.yml");
+    expect(workflow.split(/\r?\n/)).toContain(
+      "  DEV_RESOURCE_GROUP_NAME: ${{ vars.DEV_RESOURCE_GROUP_NAME }}",
+    );
+    expect(workflow.split(/\r?\n/)).toContain(
+      "  DEV_IDENTITY_NAME: ${{ vars.DEV_IDENTITY_NAME }}",
+    );
+    expect(workflow).toContain("client-id: ${{ vars.AZURE_CLIENT_ID }}");
+    expect(workflow).toContain("tenant-id: ${{ vars.AZURE_TENANT_ID }}");
+    expect(workflow).toContain("subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}");
+  });
+
   it("keeps globally unique names distinct between environments", () => {
     for (const parameter of [
       "namePrefix",
